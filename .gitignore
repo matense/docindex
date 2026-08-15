@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Virtual environment
+venv/
+.venv/
+
+# Instance data (database, test artifacts) and user uploads
+instance/
+uploads/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,22 @@
+<!-- Upload modal -->
+<dialog id="upload-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-4"><i class="fas fa-cloud-arrow-up text-primary"></i> Upload files</h3>
+        <form method="POST" action="{{ url_for('drive.upload') }}" enctype="multipart/form-data" id="upload-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="folder_id" value="{{ folder.id if folder else '' }}">
+            <div id="upload-dropzone" class="border-2 border-dashed border-primary/40 rounded-xl p-8 text-center transition-colors hover:border-primary hover:bg-primary/5 cursor-pointer">
+                <i class="fas fa-file-arrow-up text-4xl text-primary mb-2"></i>
+                <p class="font-medium">Drop files here or click to browse</p>
+                <p class="text-xs opacity-50 mt-1">Max 16 MB per file</p>
+                <input type="file" name="files" id="upload-input" multiple class="hidden">
+            </div>
+            <ul id="upload-file-list" class="mt-3 text-sm flex flex-col gap-1"></ul>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost" onclick="document.getElementById('upload-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-upload"></i> Upload</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>

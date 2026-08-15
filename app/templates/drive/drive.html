@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}{{ folder.name if folder else (drive.name if drive else 'My Drive') }} - DocIndex{% endblock %}
+
+{% macro file_icon(f) -%}
+    {%- if f.is_image -%}fa-file-image text-pink-500
+    {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
+    {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
+    {%- elif f.extension in ['csv', 'xlsx'] -%}fa-file-excel text-green-500
+    {%- elif f.extension in editable_exts -%}fa-file-code text-violet-500
+    {%- else -%}fa-file text-gray-400{%- endif -%}
+{%- endmacro %}
+
+{% macro human_size(n) -%}
+    {%- if n < 1024 -%}{{ n }} B
+    {%- elif n < 1048576 -%}{{ (n / 1024) | round(1) }} KB
+    {%- else -%}{{ (n / 1048576) | round(1) }} MB{%- endif -%}
+{%- endmacro %}
+
+{% macro index_badge(f) -%}
+    {% set idx = f.index %}
+    {%- if idx and idx.status == 'pending' -%}
+        <span class="badge badge-sm badge-warning gap-1"><i class="fas fa-spinner fa-spin"></i> indexing</span>
+    {%- elif idx and idx.status == 'error' -%}
+        <span class="badge badge-sm badge-error" title="{{ idx.error }}">index error</span>
+    {%- elif idx and idx.status == 'ok' -%}
+        <span class="badge badge-sm badge-success badge-outline">indexed</span>
+    {%- else -%}
+        <span class="opacity-30">—</span>
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro dupe_badge(f) -%}
+    {%- if f.checksum in dupe_checksums -%}
+        <span class="badge badge-sm badge-warning badge-outline gap-1"
+              title="Another file has identical content — open Info to handle it">
+            <i class="fas fa-clone"></i> dupe
+        </span>
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro file_actions(f) -%}
+    <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Download" onclick="event.stopPropagation()">
+        <i class="fas fa-download"></i>
+    </a>
+    {% if f.extension in editable_exts %}
+    <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit">
+        <i class="fas fa-pen"></i>
+    </a>
+    {% endif %}
+    <button class="btn btn-circle btn-xs btn-ghost" title="Rename"
+            onclick="event.stopPropagation(); renameFile({{ f.id }}, '{{ f.name }}')">
+        <i class="fas fa-i-cursor"></i>
+    </button>
+    <button class="btn btn-circle btn-xs btn-ghost" title="Info"
+            onclick="event.stopPropagation(); showFileInfo({{ f.id }})">
+        <i class="fas fa-circle-info"></i>
+    </button>
+    <form method="POST" action="{{ url_for('drive.delete', file_id=f.id) }}" class="inline"
+          onsubmit="return confirm('Delete {{ f.name }}?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-circle btn-xs btn-ghost text-error" title="Delete">
+            <i class="fas fa-trash"></i>
+        </button>
+    </form>
+{%- endmacro %}
+
+{% macro tree_file(f) -%}
+<div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
+     data-nav="{{ url_for('drive.view', file_id=f.id) }}"
+     draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+    <i class="fas {{ file_icon(f) }} w-4 text-center"></i>
+    <span class="truncate flex-1">{{ f.name }}</span>
+    {% if f.checksum in dupe_checksums %}<i class="fas fa-clone text-warning text-xs" title="Duplicate content"></i>{% endif %}
+    <span class="text-xs opacity-40 flex-shrink-0">{{ human_size(f.size) }}</span>
+</div>
+{%- endmacro %}
+
+{% macro tree_folder(f) -%}
+<details class="tree-node" open>
+    <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
+             data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+        <i class="fas fa-folder text-warning"></i> {{ f.name }}
+    </summary>
+    <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col">
+        {% for child in f.children | sort(attribute='name') %}{{ tree_folder(child) }}{% endfor %}
+        {% for file in f.files | sort(attribute='name') %}{{ tree_file(file) }}{% endfor %}
+    </div>
+</details>
+{%- endmacro %}
+
+{% block content %}
+<div data-folder-id="{{ folder.id if folder else '' }}"></div>
+<!-- Breadcrumb + toolbar + view switcher -->
+<div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+    <div class="flex items-center gap-2 flex-wrap">
+        <div class="breadcrumbs text-sm glass-panel rounded-xl px-4 py-2">
+            <ul>
+                <li><a href="{{ url_for('drive.index') }}"><i class="fas fa-hard-drive mr-1"></i> {{ drive.name if drive else 'My Drive' }}</a></li>
+                {% if folder %}
+                    {% for part in folder.breadcrumb() %}
+                        <li><a href="{{ url_for('drive.index', folder_id=part.id) }}">{{ part.name }}</a></li>
+                    {% endfor %}
+                {% endif %}
+            </ul>
+        </div>
+        <!-- Selection toolbar -->
+        <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-1" id="drive-toolbar">
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5" title="New folder"
+                    onclick="document.getElementById('new-folder-modal').showModal()">
+                <i class="fas fa-folder-plus text-amber-500"></i><span class="hidden sm:inline">New Folder</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-cut" title="Cut selected (Ctrl+click to select)"
+                    onclick="driveCutSelection()" disabled>
+                <i class="fas fa-scissors text-secondary"></i><span class="hidden sm:inline">Cut</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-paste" title="Paste here"
+                    onclick="drivePasteSelection()" disabled>
+                <i class="fas fa-paste text-primary"></i><span class="hidden sm:inline">Paste</span>
+                <span id="tb-paste-count" class="badge badge-xs badge-primary hidden"></span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5 text-error" id="tb-delete" title="Delete selected"
+                    onclick="driveDeleteSelection()" disabled>
+                <i class="fas fa-trash"></i><span class="hidden sm:inline">Delete</span>
+                <span id="tb-sel-count" class="badge badge-xs badge-error hidden"></span>
+            </button>
+        </div>
+    </div>
+    <div class="flex items-center gap-2">
+        <div class="view-switch" title="View style">
+            <a href="{{ url_for('drive.index', folder_id=folder.id if folder else None, view='grid') }}"
+               class="view-switch-btn {{ 'active' if view_mode == 'grid' }}" title="Grid view">
+                <i class="fas fa-grip"></i>
+            </a>
+            <a href="{{ url_for('drive.index', folder_id=folder.id if folder else None, view='list') }}"
+               class="view-switch-btn {{ 'active' if view_mode == 'list' }}" title="Detailed list view">
+                <i class="fas fa-list"></i>
+            </a>
+            <a href="{{ url_for('drive.index', folder_id=folder.id if folder else None, view='tree') }}"
+               class="view-switch-btn {{ 'active' if view_mode == 'tree' }}" title="Tree view (whole drive)">
+                <i class="fas fa-folder-tree"></i>
+            </a>
+        </div>
+        {% if folder %}
+        <form method="POST" action="{{ url_for('drive.delete_folder', folder_id=folder.id) }}"
+              onsubmit="return confirm('Delete this folder and ALL its contents?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost btn-sm text-error"><i class="fas fa-trash"></i> Delete folder</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+{% if drive and drive.description and not folder %}
+<p class="text-sm opacity-60 mb-4 flex items-center gap-2">
+    <i class="fas fa-circle-info text-secondary"></i> {{ drive.description }}
+</p>
+{% endif %}
+
+{% if not folders and not files %}
+<div class="glass-panel rounded-2xl p-16 text-center mt-4">
+    <i class="fas fa-folder-open text-6xl text-primary/30 mb-4"></i>
+    <h2 class="text-xl font-bold mb-2">This folder is empty</h2>
+    <p class="opacity-60 mb-4">Upload files and they'll be indexed automatically — even text inside images.</p>
+    <button class="btn btn-primary" onclick="document.getElementById('upload-modal').showModal()">
+        <i class="fas fa-cloud-arrow-up"></i> Upload files
+    </button>
+</div>
+
+{% elif view_mode == 'list' %}
+<!-- Detailed list view -->
+<div class="glass-panel rounded-2xl overflow-hidden mt-4">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-left text-xs uppercase tracking-wide opacity-50 border-b border-base-content/10">
+                <th class="px-4 py-3 font-semibold">Name</th>
+                <th class="px-4 py-3 font-semibold w-24">Type</th>
+                <th class="px-4 py-3 font-semibold w-24">Size</th>
+                <th class="px-4 py-3 font-semibold w-28">Status</th>
+                <th class="px-4 py-3 font-semibold w-36">Modified</th>
+                <th class="px-4 py-3 font-semibold w-44 text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for f in folders %}
+            <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors"
+                data-nav="{{ url_for('drive.index', folder_id=f.id) }}" data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+                <td class="px-4 py-2.5">
+                    <span class="flex items-center gap-2 font-medium">
+                        <i class="fas fa-folder text-warning"></i> {{ f.name }}
+                    </span>
+                </td>
+                <td class="px-4 py-2.5 opacity-60">Folder</td>
+                <td class="px-4 py-2.5 opacity-60">—</td>
+                <td class="px-4 py-2.5 opacity-30">—</td>
+                <td class="px-4 py-2.5 opacity-60 text-xs">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at }}</td>
+                <td class="px-4 py-2.5"></td>
+            </tr>
+            {% endfor %}
+            {% for f in files %}
+            <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors group"
+                data-nav="{{ url_for('drive.view', file_id=f.id) }}"
+                draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+                <td class="px-4 py-2.5">
+                    <span class="flex items-center gap-2 font-medium min-w-0">
+                        <i class="fas {{ file_icon(f) }} w-4 text-center flex-shrink-0"></i>
+                        <span class="truncate" title="{{ f.name }}">{{ f.name }}</span>
+                    </span>
+                </td>
+                <td class="px-4 py-2.5 opacity-60 uppercase text-xs">{{ f.extension or 'file' }}</td>
+                <td class="px-4 py-2.5 opacity-60">{{ human_size(f.size) }}</td>
+                <td class="px-4 py-2.5">{{ index_badge(f) }} {{ dupe_badge(f) }}</td>
+                <td class="px-4 py-2.5 opacity-60 text-xs">{{ (f.updated_at or f.created_at).strftime('%Y-%m-%d %H:%M') if (f.updated_at or f.created_at) }}</td>
+                <td class="px-4 py-2.5 text-right whitespace-nowrap opacity-40 group-hover:opacity-100 transition-opacity">
+                    {{ file_actions(f) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% elif view_mode == 'tree' %}
+<!-- Tree view: whole drive hierarchy -->
+<div class="glass-panel rounded-2xl p-4 mt-4 flex flex-col">
+    <div class="flex items-center gap-2 py-1 px-2 text-sm font-bold border-b border-base-content/10 pb-2 mb-2">
+        <i class="fas fa-hard-drive text-secondary"></i> {{ drive.name if drive else 'My Drive' }}
+    </div>
+    {% for f in folders %}{{ tree_folder(f) }}{% endfor %}
+    {% for f in files %}{{ tree_file(f) }}{% endfor %}
+</div>
+
+{% else %}
+<!-- Grid view -->
+<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 mt-4">
+    {% for f in folders %}
+    <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 cursor-pointer relative group"
+         style="--i:{{ loop.index }}" data-nav="{{ url_for('drive.index', folder_id=f.id) }}"
+         data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+        <i class="fas fa-folder text-5xl text-warning"></i>
+        <span class="font-medium text-sm text-center break-all line-clamp-2">{{ f.name }}</span>
+    </div>
+    {% endfor %}
+
+    {% for f in files %}
+    <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 relative group cursor-pointer"
+         style="--i:{{ loop.index + (folders | length) }}" data-nav="{{ url_for('drive.view', file_id=f.id) }}"
+         draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+        {% if f.is_image %}
+            <div class="h-20 w-full flex items-center justify-center overflow-hidden rounded-lg bg-base-200/50">
+                <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}" class="max-h-20 object-contain"
+                     onerror="this.outerHTML='<i class=\'fas fa-file-image text-4xl text-pink-500\'></i>'">
+            </div>
+        {% else %}
+            <i class="fas {{ file_icon(f) }} text-5xl"></i>
+        {% endif %}
+
+        <span class="font-medium text-sm text-center break-all line-clamp-2" title="{{ f.name }}">{{ f.name }}</span>
+        <span class="text-xs opacity-50">{{ human_size(f.size) }}</span>
+
+        {{ index_badge(f) }}
+        {{ dupe_badge(f) }}
+
+        <!-- Hover actions -->
+        <div class="absolute top-2 right-2 hidden group-hover:flex flex-col gap-1">
+            {{ file_actions(f) }}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Rename modal -->
+<dialog id="rename-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-4"><i class="fas fa-i-cursor text-primary"></i> Rename file</h3>
+        <form method="POST" id="rename-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" id="rename-input" class="input input-bordered w-full" required>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost" onclick="document.getElementById('rename-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Rename</button>
+            </div>
+        </form>
+    </div>
+</dialog>
+
+<!-- Info modal -->
+<dialog id="info-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-4" id="info-title"></h3>
+        <div id="info-body" class="text-sm flex flex-col gap-2"></div>
+        <div class="modal-action">
+            <button type="button" class="btn" onclick="document.getElementById('info-modal').close()">Close</button>
+        </div>
+    </div>
+</dialog>
+
+<script src="{{ url_for('static', filename='js/drive.js') }}" defer></script>
+{% endblock %}

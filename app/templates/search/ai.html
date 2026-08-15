@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}AI Assistant - DocIndex{% endblock %}
+{% block content %}
+<div id="ai-page" class="flex-1 flex flex-col w-full max-w-3xl mx-auto min-h-0 relative">
+    <!-- Header: mode toggle + actions -->
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="ai-mode-switch">
+            <a href="{{ url_for('search.results') }}" class="ai-mode-btn">
+                <i class="fas fa-magnifying-glass"></i> Search
+            </a>
+            <a href="{{ url_for('search.results', mode='ai') }}" class="ai-mode-btn active">
+                <i class="fas fa-robot"></i> AI
+            </a>
+        </div>
+        <div class="flex items-center gap-1">
+            <select id="aip-model-select" title="Active model — switch between your configured AI connections"
+                    class="select select-bordered select-xs font-mono max-w-52 hidden"></select>
+            <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.toggleList()" title="Conversations">
+                <i class="fas fa-clock-rotate-left"></i><span class="hidden sm:inline">History</span>
+            </button>
+            <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.newConversation()" title="New conversation">
+                <i class="fas fa-plus"></i><span class="hidden sm:inline">New chat</span>
+            </button>
+            <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost btn-sm btn-circle" title="AI settings">
+                <i class="fas fa-gear"></i>
+            </a>
+        </div>
+    </div>
+
+    <!-- Conversation list (replaces messages when open) -->
+    <div id="aip-conv-list" class="hidden flex-1 overflow-y-auto glass-panel rounded-2xl p-3 mt-2 flex-col gap-1"></div>
+
+    <!-- Messages -->
+    <div id="aip-messages" class="flex-1 overflow-y-auto flex flex-col gap-4 py-4 px-1 min-h-0">
+        <div id="aip-empty" class="flex-1 flex flex-col items-center justify-center gap-6 text-center py-10">
+            <span class="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-xl">
+                <i class="fas fa-robot ai-robot-icon text-white text-2xl"></i>
+            </span>
+            <div>
+                <h1 class="text-2xl font-extrabold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">DocIndex AI</h1>
+                <p class="opacity-50 mt-1 text-sm">Ask questions about all your files — or just chat.</p>
+            </div>
+            <div class="flex flex-wrap justify-center gap-2 max-w-lg">
+                <button class="aip-suggestion">What files do I have in my drive?</button>
+                <button class="aip-suggestion">Summarize the main README</button>
+                <button class="aip-suggestion">Find my largest documents</button>
+                <button class="aip-suggestion">Are there duplicate files?</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Composer -->
+    <div class="relative pb-2">
+        <div id="aip-mention-dropdown" class="hidden absolute bottom-full left-2 right-2 mb-1 glass-menu max-h-48 overflow-y-auto z-10"></div>
+        <div id="aip-attachments" class="hidden flex-wrap gap-1 px-2 pb-2"></div>
+        <form id="aip-form" data-no-spa class="ai-composer !m-0 shadow-lg">
+            <input type="text" id="aip-input" placeholder="Ask anything about your files…"
+                   class="w-full bg-transparent focus:outline-none px-4 pt-3.5 pb-2" autocomplete="off">
+            <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
+                <button type="button" id="aip-attach-here" class="ai-attach-btn"
+                        title="Attach the file open in the viewer (@here)">
+                    <i class="fas fa-at"></i><span>Current file</span>
+                </button>
+                <button type="button" id="aip-attach-search" class="ai-attach-btn"
+                        title="Search files to attach (#)">
+                    <i class="fas fa-hashtag"></i><span>Search files</span>
+                </button>
+                <span class="text-xs opacity-30 hidden md:inline">drop files here to attach</span>
+                <span class="flex-1"></span>
+                <button type="submit" id="aip-send" class="ai-send-btn" title="Send">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </form>
+        <!-- Drag & drop overlay -->
+        <div id="aip-drop-overlay" class="hidden absolute inset-0 z-20 rounded-2xl border-2 border-dashed border-primary bg-primary/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+            <div class="font-bold text-primary flex items-center gap-2"><i class="fas fa-cloud-arrow-up text-2xl"></i> Drop files to attach</div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/ai_page.js') }}" defer></script>
+{% endblock %}

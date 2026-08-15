@@ -1,0 +1,79 @@
+<!-- AI Chat Panel -->
+<div id="ai-chat-backdrop" class="hidden"></div>
+<div id="ai-chat-panel" class="fixed bottom-24 right-4 z-50 w-[27rem] max-w-[95vw] hidden">
+    <div class="ai-chat-shell glass-panel rounded-2xl shadow-2xl flex flex-col overflow-hidden" style="height: min(620px, 80vh);">
+        <!-- Header -->
+        <div class="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-base-content/10 bg-gradient-to-r from-primary/10 to-secondary/10">
+            <div class="flex items-center gap-2 font-bold text-sm whitespace-nowrap min-w-0">
+                <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-robot ai-robot-icon text-white text-xs"></i>
+                </span>
+                <div class="flex flex-col min-w-0">
+                    <span>DocIndex Assistant</span>
+                    <select id="ai-model-select" title="Active model — switch between your configured AI connections"
+                            class="select select-ghost select-xs -ml-2 h-5 min-h-0 font-normal font-mono text-[10px] opacity-70 max-w-44 hidden"></select>
+                </div>
+            </div>
+            <div class="flex items-center gap-0.5 flex-shrink-0">
+                <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn" title="AI settings">
+                    <i class="fas fa-gear"></i>
+                </a>
+                <button class="btn btn-ghost btn-xs btn-circle ai-hdr-btn" title="Expand to center" onclick="window.aiChat.toggleCenter()">
+                    <i class="fas fa-expand"></i>
+                </button>
+                <button class="btn btn-ghost btn-xs btn-circle ai-hdr-btn" title="Conversations" onclick="window.aiChat.toggleList()">
+                    <i class="fas fa-clock-rotate-left"></i>
+                </button>
+                <button class="btn btn-ghost btn-xs btn-circle ai-hdr-btn" title="New conversation" onclick="window.aiChat.newConversation()">
+                    <i class="fas fa-plus"></i>
+                </button>
+                <button class="btn btn-ghost btn-xs btn-circle ai-hdr-btn" title="Close" onclick="window.aiChat.toggle()">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Conversation list -->
+        <div id="ai-conv-list" class="hidden flex-1 overflow-y-auto p-2 flex-col gap-1"></div>
+
+        <!-- Messages -->
+        <div id="ai-messages" class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            <div class="text-center text-sm opacity-50 mt-8">
+                <i class="fas fa-wand-magic-sparkles text-3xl text-primary/40 mb-2 block"></i>
+                Ask anything about your files.<br>I'll search, read and connect the dots.
+            </div>
+        </div>
+
+        <!-- Input area -->
+        <div class="border-t border-base-content/10 relative">
+            <!-- Mention dropdown (# quick search) -->
+            <div id="ai-mention-dropdown" class="hidden absolute bottom-full left-3 right-3 mb-1 glass-menu max-h-48 overflow-y-auto z-10"></div>
+            <!-- Attachment chips -->
+            <div id="ai-attachments" class="hidden flex-wrap gap-1 px-3 pt-2"></div>
+
+            <!-- Composer -->
+            <form id="ai-chat-form" data-no-spa class="ai-composer">
+                <input type="text" id="ai-chat-input" placeholder="Ask about your files…"
+                       class="w-full bg-transparent focus:outline-none text-sm px-4 pt-3 pb-2" autocomplete="off">
+                <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
+                    <button type="button" id="ai-attach-here" class="ai-attach-btn"
+                            title="Attach the file open in the viewer (@here)">
+                        <i class="fas fa-at"></i><span>Current file</span>
+                    </button>
+                    <button type="button" id="ai-attach-search" class="ai-attach-btn"
+                            title="Search files to attach (#)">
+                        <i class="fas fa-hashtag"></i><span>Search files</span>
+                    </button>
+                    <span class="flex-1"></span>
+                    <button type="submit" id="ai-chat-send" class="ai-send-btn" title="Send">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <!-- Drag & drop overlay -->
+    <div id="ai-drop-overlay" class="hidden absolute inset-0 z-20 rounded-2xl border-2 border-dashed border-primary bg-primary/10 backdrop-blur-sm flex items-center justify-center">
+        <div class="font-bold text-primary flex items-center gap-2"><i class="fas fa-cloud-arrow-up text-2xl"></i> Drop files to attach</div>
+    </div>
+</div>

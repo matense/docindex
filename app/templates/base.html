@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{% block title %}DocIndex{% endblock %}</title>
+    <script>
+        // Attach the CSRF token to every same-origin mutating fetch() call,
+        // so JSON endpoints protected by Flask-WTF accept AJAX requests.
+        (function () {
+            const token = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+            const originalFetch = window.fetch;
+            window.fetch = function (resource, options) {
+                options = options || {};
+                const method = (options.method || 'GET').toUpperCase();
+                const url = typeof resource === 'string' ? resource : resource.url;
+                const sameOrigin = !url || url.startsWith('/') || url.startsWith(window.location.origin);
+                if (sameOrigin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+                    const headers = new Headers(options.headers || {});
+                    if (!headers.has('X-CSRFToken')) {
+                        headers.set('X-CSRFToken', token);
+                    }
+                    options.headers = headers;
+                }
+                return originalFetch.call(this, resource, options);
+            };
+        })();
+    </script>
+    <!-- Tailwind CSS + DaisyUI -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Highlight.js -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- PDF.js for PDF preview -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <!-- Markdown rendering for AI answers -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
+    {% if current_user.is_authenticated %}
+        <div class="flex flex-col h-full w-full relative" id="app-container">
+
+            <!-- Top Bar (Mac Style) -->
+            <header class="fixed top-0 left-0 right-0 h-14 px-4 flex items-center z-50 shadow-sm bg-white/80 backdrop-blur-md border-b border-base-200" id="main-header">
+                <!-- Left: Brand + Drive selector -->
+                <div class="flex items-center gap-2 lg:gap-4 flex-shrink-0">
+                    <a href="{{ url_for('search.results') }}" class="text-xl font-bold text-primary flex items-center gap-2">
+                        <i class="fas fa-folder-open"></i><span class="hidden lg:inline">{{ app_name }}</span>
+                    </a>
+                    {% if current_drive %}
+                    <div class="dropdown" id="drive-dropdown">
+                        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 glass-panel max-w-[11rem]" title="Current drive — click to switch">
+                            <i class="fas fa-database text-secondary"></i>
+                            <span class="truncate">{{ current_drive.name }}</span>
+                            <i class="fas fa-chevron-down text-[10px] opacity-50"></i>
+                        </div>
+                        <div tabindex="0" class="dropdown-content z-[60] glass-menu w-64 p-2 mt-1">
+                            <div class="px-3 py-1 text-[10px] uppercase tracking-wide opacity-40">Your drives</div>
+                            {% for d in user_drives %}
+                            <form method="POST" action="{{ url_for('drive.select_drive', drive_id=d.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="next" value="{{ request.full_path }}">
+                                <button type="submit" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors {{ 'bg-primary/10 font-bold' if d.id == current_drive.id }}">
+                                    <i class="fas fa-hard-drive opacity-60"></i>
+                                    <span class="truncate flex-1 text-left">{{ d.name }}</span>
+                                    {% if d.id == current_drive.id %}<i class="fas fa-check text-primary"></i>{% endif %}
+                                </button>
+                            </form>
+                            {% endfor %}
+                            <div class="border-t border-base-content/10 mt-1 pt-2 flex flex-col gap-2">
+                                <button type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors"
+                                        onclick="document.getElementById('edit-drive-modal').showModal()">
+                                    <i class="fas fa-pen opacity-60"></i>
+                                    <span class="flex-1 text-left">Edit "{{ current_drive.name }}"</span>
+                                </button>
+                                <form method="POST" action="{{ url_for('drive.create_drive') }}" class="drive-create-row">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="next" value="{{ request.full_path }}">
+                                    <input type="text" name="name" placeholder="New drive name..." class="input input-bordered input-xs flex-1 min-w-0 rounded-lg" required>
+                                    <button type="submit" class="drive-add-btn" title="Create drive">
+                                        <i class="fas fa-plus"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Center: Navigation Dock -->
+                <nav class="flex-1 flex justify-center" id="nav-dock">
+                    <div class="glass-dock rounded-2xl px-2 py-1 flex items-center gap-1">
+                        <a href="{{ url_for('search.results') }}" class="dock-btn btn btn-ghost btn-sm gap-2 {{ 'btn-active' if request.endpoint == 'search.results' }}" title="Search (Alt+1)">
+                            <i class="fas fa-magnifying-glass"></i><span class="hidden md:inline">Search</span>
+                        </a>
+                        <a href="{{ url_for('drive.index') }}" class="dock-btn btn btn-ghost btn-sm gap-2 {{ 'btn-active' if request.endpoint == 'drive.index' }}" title="My Drive (Alt+2)">
+                            <i class="fas fa-hard-drive"></i><span class="hidden md:inline">Drive</span>
+                        </a>
+                    </div>
+                </nav>
+
+                <!-- Right: Profile -->
+                <div class="flex items-center gap-2 flex-shrink-0 w-48 lg:w-64 justify-end" id="header-right-section">
+                    <div class="dropdown dropdown-end dropdown-hover" id="profile-dropdown">
+                        <div tabindex="0" role="button" class="avatar cursor-pointer transition-transform hover:scale-105 duration-200">
+                            <div class="w-10 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 shadow-md">
+                                <img src="https://ui-avatars.com/api/?name={{ current_user.username }}&background=random" />
+                            </div>
+                        </div>
+                        <ul tabindex="0" class="menu menu-sm dropdown-content mt-0 z-[1] glass-menu w-56">
+                            <li class="px-4 py-3 border-b border-base-content/10 mb-2">
+                                <div class="font-bold text-lg">{{ current_user.username }}</div>
+                                <div class="text-xs opacity-50">{{ current_user.email }}</div>
+                            </li>
+                            <li><a href="{{ url_for('settings.ai_settings') }}"><i class="fas fa-robot w-5"></i> AI Settings</a></li>
+                            <li><a href="{{ url_for('auth.logout') }}" class="text-error hover:bg-error/10"><i class="fas fa-sign-out-alt w-5"></i> Logout</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Seamless-navigation loading bar -->
+            <div id="spa-progress" class="hidden"></div>
+
+            <!-- Search Sub-Dock with Instant Search -->
+            <div class="fixed top-16 left-0 right-0 z-40 flex justify-center px-4 pointer-events-none" id="search-dock-container">
+                <div class="w-full max-w-2xl pointer-events-auto">
+                    <form action="{{ url_for('search.results') }}" method="GET" class="relative group" id="global-search-form">
+                        <div class="glass-dock rounded-2xl p-2 pl-4 flex items-center shadow-lg border border-white/50 backdrop-blur-xl bg-white/40 transition-all duration-300 focus-within:bg-white/60 focus-within:shadow-xl focus-within:scale-[1.02]">
+                            <i class="fas fa-search text-primary text-xl mr-3"></i>
+                            <input type="text" name="q" placeholder="Search your files... (Alt+S)"
+                                   id="global-search-input"
+                                   value="{{ request.args.get('q', '') }}"
+                                   class="bg-transparent w-full focus:outline-none text-lg placeholder:text-base-content/40 h-10 text-base-content"
+                                   autocomplete="off" />
+                            <button type="submit" class="btn btn-circle btn-ghost btn-sm">
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                        </div>
+
+                        <!-- Instant Search Dropdown -->
+                        <div id="search-dropdown" class="pdo-search-dropdown hidden">
+                            <div id="search-dropdown-content"></div>
+                            <div class="pdo-search-dropdown-footer">
+                                <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+                                <span><kbd>Enter</kbd> Select</span>
+                                <span><kbd>Esc</kbd> Close</span>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Main Content Area -->
+            <main class="flex-1 flex flex-col relative z-0 h-full overflow-hidden pt-36" id="main-content-area">
+                <div class="w-full h-full {% block page_scroll_class %}overflow-y-auto{% endblock %}">
+                    <div class="w-full mx-auto max-w-[95%] {% block page_container_class %}p-6 pb-64 min-h-full{% endblock %} flex flex-col" id="page-content-container">
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                <div class="toast toast-bottom toast-center z-[60] mb-24" id="flash-messages-toast">
+                                {% for category, message in messages %}
+                                    <div class="alert alert-{{ 'info' if category == 'message' else category }} shadow-[0_0_20px_rgba(0,0,0,0.1)] glass-panel border border-base-content/10">
+                                        <span>{{ message }}</span>
+                                    </div>
+                                {% endfor %}
+                                </div>
+                                <script>
+                                    setTimeout(() => {
+                                        document.querySelectorAll('.toast .alert').forEach(t => t.remove());
+                                    }, 3000);
+                                </script>
+                            {% endif %}
+                        {% endwith %}
+
+                        {% block content %}{% endblock %}
+                    </div>
+                </div>
+            </main>
+
+            <!-- Bottom Dock -->
+            <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50" id="bottom-dock">
+                <div class="glass-dock rounded-3xl px-5 py-3 flex items-end gap-5 shadow-2xl">
+                    <button type="button" class="dock-item" data-shortcut="U"
+                            onclick="document.getElementById('upload-modal').showModal()" title="Upload files (Alt+U)">
+                        <span class="shortcut-badge">⌥U</span>
+                        <span class="dock-icon dock-tile dock-tile-primary"><i class="fas fa-cloud-arrow-up"></i></span>
+                        <span class="dock-label">Upload</span>
+                    </button>
+                    {% if ai_enabled %}
+                    <button type="button" class="dock-item" data-shortcut="A"
+                            onclick="window.aiChat && window.aiChat.toggle()" title="AI Assistant (Alt+A)">
+                        <span class="shortcut-badge">⌥A</span>
+                        <span class="dock-icon dock-tile dock-tile-violet"><i class="fas fa-robot ai-robot-icon"></i></span>
+                        <span class="dock-label">Ask AI</span>
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Keyboard Shortcut Help Panel (appears while Alt is held) -->
+            <div id="shortcut-help-panel">
+                <div class="shortcut-title">Keyboard Shortcuts</div>
+                <div class="shortcut-grid">
+                    <div class="shortcut-item"><span class="shortcut-key">Alt 1</span><span class="shortcut-label">Search</span></div>
+                    <div class="shortcut-item"><span class="shortcut-key">Alt 2</span><span class="shortcut-label">Drive</span></div>
+                    <div class="shortcut-item"><span class="shortcut-key">Alt S</span><span class="shortcut-label">Search box</span></div>
+                    <div class="shortcut-item"><span class="shortcut-key">Alt U</span><span class="shortcut-label">Upload</span></div>
+                    {% if ai_enabled %}
+                    <div class="shortcut-item"><span class="shortcut-key">Alt A</span><span class="shortcut-label">Ask AI</span></div>
+                    {% endif %}
+                    <div class="shortcut-item"><span class="shortcut-key">Esc</span><span class="shortcut-label">Close</span></div>
+                </div>
+            </div>
+
+            {% include 'components/upload_modal.html' %}
+            {% include 'components/new_folder_modal.html' %}
+            {% if current_drive %}
+            <!-- Edit drive modal -->
+            <dialog id="edit-drive-modal" class="modal">
+                <div class="modal-box glass-panel">
+                    <h3 class="font-bold text-lg mb-4"><i class="fas fa-pen text-primary"></i> Edit drive</h3>
+                    <form method="POST" action="{{ url_for('drive.edit_drive', drive_id=current_drive.id) }}" class="flex flex-col gap-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="next" value="{{ request.full_path }}">
+                        <label class="flex flex-col gap-1">
+                            <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Name</span>
+                            <input type="text" name="name" value="{{ current_drive.name }}"
+                                   class="input input-bordered w-full" required>
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Description</span>
+                            <textarea name="description" rows="3" maxlength="500"
+                                      placeholder="What is this drive for?"
+                                      class="textarea textarea-bordered w-full">{{ current_drive.description }}</textarea>
+                        </label>
+                        <div class="modal-action">
+                            <button type="button" class="btn btn-ghost" onclick="document.getElementById('edit-drive-modal').close()">Cancel</button>
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> Save</button>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+            {% endif %}
+            {% if ai_enabled %}
+                {% include 'components/ai_chat.html' %}
+                <script src="{{ url_for('static', filename='js/ai_chat.js') }}" defer></script>
+            {% endif %}
+            <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>
+        </div>
+    {% else %}
+        <!-- Simple layout for login/register pages -->
+        <div class="fixed inset-0 flex items-center justify-center bg-base-200/50 backdrop-blur-sm" id="auth-layout-container">
+            <div class="card w-96 glass-panel shadow-2xl" id="auth-card">
+                <div class="card-body">
+                    <h1 class="card-title justify-center text-3xl text-primary mb-4"><i class="fas fa-folder-open"></i> {{ app_name }}</h1>
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ 'info' if category == 'message' else category }} mb-4 text-sm py-2">
+                                    <span>{{ message }}</span>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    {% block auth_content %}{% endblock %}
+                </div>
+            </div>
+        </div>
+    {% endif %}
+</body>
+</html>

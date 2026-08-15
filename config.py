@@ -1,0 +1,67 @@
+import os
+
+from dotenv import load_dotenv
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+load_dotenv(os.path.join(basedir, ".env"))
+
+
+class Config:
+    SECRET_KEY = os.environ.get("SECRET_KEY")
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY environment variable is not set. "
+            "Add it to your .env file (see .env.example)."
+        )
+
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        "DATABASE_URL", "sqlite:///" + os.path.join(basedir, "instance", "docindex.sqlite")
+    )
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+    # Uploads
+    UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
+    THUMBNAIL_FOLDER = os.path.join(basedir, "uploads", "thumbnails")
+    MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB per request batch
+    MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB per file
+    ALLOWED_EXTENSIONS = {
+        # documents
+        "pdf", "docx", "txt", "md", "csv", "json", "xml", "html", "log",
+        # code
+        "py", "js", "ts", "java", "c", "cpp", "h", "cs", "go", "rs", "rb",
+        "php", "sql", "sh", "css", "yaml", "yml", "toml", "ini",
+        # images
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg",
+    }
+    IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+    EDITABLE_EXTENSIONS = {
+        "txt", "md", "csv", "json", "xml", "html", "log",
+        "py", "js", "ts", "java", "c", "cpp", "h", "cs", "go", "rs", "rb",
+        "php", "sql", "sh", "css", "yaml", "yml", "toml", "ini",
+    }
+
+    # OCR
+    TESSERACT_LANGS = os.environ.get("TESSERACT_LANGS", "eng+por")
+
+    # AI (OpenAI-compatible endpoint: Ollama, LM Studio, OpenAI API, ...)
+    AI_ENABLED = os.environ.get("AI_ENABLED", "false").lower() in ("1", "true", "yes")
+    AI_BASE_URL = os.environ.get("AI_BASE_URL", "http://localhost:11434/v1")
+    AI_API_KEY = os.environ.get("AI_API_KEY", "")
+    AI_MODEL = os.environ.get("AI_MODEL", "llama3.1")
+    AI_VISION_MODEL = os.environ.get("AI_VISION_MODEL", "")  # falls back to AI_MODEL
+    AI_MAX_STEPS = int(os.environ.get("AI_MAX_STEPS", "16"))
+    AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
+
+    # Index files in a background thread on upload (disable in tests)
+    INDEX_ASYNC = True
+
+
+class TestConfig(Config):
+    SECRET_KEY = "test-secret-key"
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    TESTING = True
+    WTF_CSRF_ENABLED = False
+    AI_ENABLED = False
+    INDEX_ASYNC = False
+    UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
+    THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")

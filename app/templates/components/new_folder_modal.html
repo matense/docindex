@@ -1,0 +1,16 @@
+<!-- New folder modal -->
+<dialog id="new-folder-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-4"><i class="fas fa-folder-plus text-primary"></i> New folder</h3>
+        <form method="POST" action="{{ url_for('drive.create_folder') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="parent_id" value="{{ folder.id if folder else '' }}">
+            <input type="text" name="name" placeholder="Folder name" class="input input-bordered w-full" required autofocus>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost" onclick="document.getElementById('new-folder-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Create</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>

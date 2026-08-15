@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ file.name }} - DocIndex{% endblock %}
+{% block content %}
+<div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 h-full">
+    <div class="flex items-center justify-between">
+        <h1 class="text-xl font-bold flex items-center gap-2">
+            <i class="fas fa-pen text-primary"></i> {{ file.name }}
+        </h1>
+        <a href="{{ url_for('drive.index', folder_id=file.folder_id) }}" class="btn btn-ghost btn-sm">
+            <i class="fas fa-arrow-left"></i> Back
+        </a>
+    </div>
+    <form method="POST" class="flex flex-col gap-4 flex-1">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <textarea name="content" class="textarea textarea-bordered w-full font-mono text-sm flex-1"
+                  style="min-height: 60vh;" spellcheck="false">{{ content }}</textarea>
+        <div class="flex justify-end gap-2">
+            <a href="{{ url_for('drive.index', folder_id=file.folder_id) }}" class="btn btn-ghost">Cancel</a>
+            <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> Save</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

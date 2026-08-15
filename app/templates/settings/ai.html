@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block title %}AI Settings - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-6">
+    <h1 class="text-2xl font-bold"><i class="fas fa-robot text-primary"></i> AI Connections</h1>
+    <p class="opacity-60 -mt-4">Connect any OpenAI-compatible provider. The active connection powers the assistant and image captioning.</p>
+
+    <!-- Existing connections -->
+    <div class="flex flex-col gap-3">
+        {% for c in connections %}
+        <div class="glass-panel rounded-xl p-4 flex flex-col gap-2 card-hover">
+            <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                     style="background: var(--pdo-gradient)">
+                    <i class="fas fa-plug"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="font-bold flex items-center gap-2">
+                        {{ c.name }}
+                        {% if c.is_active %}
+                            <span class="badge badge-success badge-sm">active</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}</div>
+                </div>
+                <button type="button" class="btn btn-sm btn-ghost test-existing-btn" data-conn-id="{{ c.id }}" title="Test connection">
+                    <i class="fas fa-plug-circle-check"></i>
+                </button>
+                <a href="{{ url_for('settings.ai_settings', edit=c.id) }}" class="btn btn-sm btn-ghost" title="Edit">
+                    <i class="fas fa-pen"></i>
+                </a>
+                {% if not c.is_active %}
+                <form method="POST" action="{{ url_for('settings.ai_activate', conn_id=c.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-sm btn-outline btn-primary">Set active</button>
+                </form>
+                {% endif %}
+                <form method="POST" action="{{ url_for('settings.ai_delete', conn_id=c.id) }}"
+                      onsubmit="return confirm('Delete this connection?')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-sm btn-ghost text-error"><i class="fas fa-trash"></i></button>
+                </form>
+            </div>
+            <div id="test-result-{{ c.id }}" class="hidden text-sm rounded-lg px-3 py-2"></div>
+        </div>
+        {% else %}
+        <div class="glass-panel rounded-xl p-8 text-center opacity-60">
+            <i class="fas fa-plug-circle-xmark text-3xl mb-2 block"></i>
+            No connections yet — add one below.
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Add / edit connection -->
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4">
+            {% if editing %}
+                <i class="fas fa-pen text-primary"></i> Edit "{{ editing.name }}"
+            {% else %}
+                <i class="fas fa-plus text-primary"></i> Add connection
+            {% endif %}
+        </h2>
+        <form method="POST"
+              action="{{ url_for('settings.ai_edit', conn_id=editing.id) if editing else url_for('settings.ai_add') }}"
+              id="ai-add-form" class="flex flex-col gap-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div>
+                <label class="text-sm font-medium opacity-70">Provider preset</label>
+                <select id="provider-preset" class="select select-bordered w-full mt-1">
+                    {% for key, p in providers.items() %}
+                    <option value="{{ key }}">{{ p.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="text-sm font-medium opacity-70">Name *</label>
+                    <input type="text" name="name" id="conn-name" class="input input-bordered w-full mt-1"
+                           value="{{ editing.name if editing else '' }}" placeholder="My OpenAI" required>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">API key</label>
+                    <input type="password" name="api_key" id="conn-key" class="input input-bordered w-full mt-1"
+                           placeholder="{{ 'leave empty to keep current key' if editing else 'sk-... (empty for local servers)' }}">
+                </div>
+            </div>
+
+            <div>
+                <label class="text-sm font-medium opacity-70">Base URL *</label>
+                <div class="flex gap-2 mt-1">
+                    <input type="text" name="base_url" id="conn-base-url" class="input input-bordered w-full font-mono text-sm"
+                           value="{{ editing.base_url if editing else '' }}" placeholder="https://api.openai.com/v1" required>
+                    <button type="button" class="btn btn-outline btn-primary" id="fetch-models-btn">
+                        <i class="fas fa-rotate"></i> Fetch models
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="text-sm font-medium opacity-70">Chat model *</label>
+                    <select name="model" id="conn-model" class="select select-bordered w-full mt-1 font-mono text-sm" required></select>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">Vision model (image captions)</label>
+                    <select name="vision_model" id="conn-vision" class="select select-bordered w-full mt-1 font-mono text-sm"></select>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">Max agent steps</label>
+                    <input type="number" name="max_steps" min="1" max="100" class="input input-bordered w-full mt-1"
+                           value="{{ editing.max_steps if editing and editing.max_steps else '' }}"
+                           placeholder="default (16)">
+                    <p class="text-xs opacity-40 mt-1">How many tool/reasoning steps the agent may take per question. Empty = global default.</p>
+                </div>
+            </div>
+
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" name="is_active" class="checkbox checkbox-primary checkbox-sm"
+                       {{ 'checked' if editing and editing.is_active else '' }}>
+                Use this connection immediately
+            </label>
+
+            <div id="test-result" class="hidden text-sm rounded-lg px-3 py-2"></div>
+
+            <div class="flex justify-end gap-2">
+                {% if editing %}
+                <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost">Cancel edit</a>
+                {% endif %}
+                <button type="button" class="btn btn-ghost" id="test-conn-btn">
+                    <i class="fas fa-plug-circle-check"></i> Test connection
+                </button>
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-floppy-disk"></i> {{ 'Save changes' if editing else 'Save connection' }}
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+const PRESETS = {{ providers | tojson }};
+const EDITING = {{ 'true' if editing else 'false' }};
+const EDIT_ID = {{ (editing.id if editing else 'null') | tojson }};
+const CURRENT_MODEL = {{ (editing.model if editing else '') | tojson }};
+const CURRENT_VISION = {{ (editing.vision_model if editing else '') | tojson }};
+
+const presetSel = document.getElementById('provider-preset');
+const modelSel = document.getElementById('conn-model');
+const visionSel = document.getElementById('conn-vision');
+
+function setSelectOptions(sel, values, selected) {
+    sel.innerHTML = '';
+    if (sel === visionSel) {
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '(same as chat model)';
+        sel.appendChild(empty);
+    }
+    values.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        sel.appendChild(opt);
+    });
+    if (selected) {
+        if (!Array.from(sel.options).some(o => o.value === selected)) {
+            const opt = document.createElement('option');
+            opt.value = selected;
+            opt.textContent = selected;
+            sel.appendChild(opt);
+        }
+        sel.value = selected;
+    }
+}
+
+function applyPreset() {
+    const p = PRESETS[presetSel.value];
+    if (!p) return;
+    document.getElementById('conn-base-url').value = p.base_url;
+    setSelectOptions(modelSel, [p.model].filter(Boolean), p.model);
+    setSelectOptions(visionSel, [p.vision_model].filter(Boolean), p.vision_model);
+    const nameInput = document.getElementById('conn-name');
+    if (!nameInput.value || Object.values(PRESETS).some(x => x.label === nameInput.value)) {
+        nameInput.value = p.label;
+    }
+}
+
+presetSel.addEventListener('change', applyPreset);
+
+if (EDITING) {
+    setSelectOptions(modelSel, [], CURRENT_MODEL);
+    setSelectOptions(visionSel, [], CURRENT_VISION);
+} else {
+    applyPreset();
+}
+
+// Fetch available models from the provider into the dropdowns
+document.getElementById('fetch-models-btn').addEventListener('click', async () => {
+    const box = document.getElementById('test-result');
+    box.classList.remove('hidden', 'bg-success/20', 'bg-error/20');
+    box.textContent = 'Fetching models...';
+    const resp = await fetch('/settings/ai/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            base_url: document.getElementById('conn-base-url').value,
+            api_key: document.getElementById('conn-key').value,
+            conn_id: EDIT_ID,
+        }),
+    });
+    const data = await resp.json();
+    if (data.ok && data.models.length) {
+        setSelectOptions(modelSel, data.models, modelSel.value || data.models[0]);
+        setSelectOptions(visionSel, data.models, visionSel.value);
+        box.classList.add('bg-success/20');
+        box.textContent = data.models.length + ' model(s) loaded.';
+    } else {
+        box.classList.add('bg-error/20');
+        box.textContent = data.ok ? 'No models returned by the provider.' : data.message;
+    }
+});
+
+// Test button on the form. When editing without a new key, test the stored credentials.
+document.getElementById('test-conn-btn').addEventListener('click', async () => {
+    const box = document.getElementById('test-result');
+    box.classList.remove('hidden', 'bg-success/20', 'bg-error/20');
+    box.textContent = 'Testing...';
+    const apiKey = document.getElementById('conn-key').value;
+    let resp;
+    if (EDITING && !apiKey) {
+        resp = await fetch('/settings/ai/' + EDIT_ID + '/test', { method: 'POST' });
+    } else {
+        resp = await fetch('/settings/ai/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                base_url: document.getElementById('conn-base-url').value,
+                api_key: apiKey,
+            }),
+        });
+    }
+    const data = await resp.json();
+    box.textContent = data.message;
+    box.classList.add(data.ok ? 'bg-success/20' : 'bg-error/20');
+});
+
+// Test buttons on existing connections
+document.querySelectorAll('.test-existing-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const box = document.getElementById('test-result-' + btn.dataset.connId);
+        box.classList.remove('hidden', 'bg-success/20', 'bg-error/20');
+        box.textContent = 'Testing...';
+        const resp = await fetch('/settings/ai/' + btn.dataset.connId + '/test', { method: 'POST' });
+        const data = await resp.json();
+        box.textContent = data.message;
+        box.classList.add(data.ok ? 'bg-success/20' : 'bg-error/20');
+    });
+});
+</script>
+{% endblock %}

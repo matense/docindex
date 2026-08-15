@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} - DocIndex{% endblock %}
+{% block content %}
+<script>
+    // Exposed for the AI chat: "@here" attaches this file.
+    window.currentFile = { id: {{ file.id }}, name: {{ file.name | tojson }} };
+</script>
+<div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
+    <!-- Toolbar -->
+    <div class="flex items-center justify-between flex-wrap gap-2">
+        <h1 class="text-xl font-bold flex items-center gap-2 min-w-0">
+            <i class="fas fa-file-lines text-primary flex-shrink-0"></i>
+            <span class="truncate">{{ file.name }}</span>
+        </h1>
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('drive.index', folder_id=file.folder_id) }}" class="btn btn-ghost btn-sm">
+                <i class="fas fa-arrow-left"></i> Back
+            </a>
+            <a href="{{ url_for('drive.download', file_id=file.id) }}" class="btn btn-ghost btn-sm">
+                <i class="fas fa-download"></i> Download
+            </a>
+            {% if file.is_editable %}
+            <a href="{{ url_for('drive.edit', file_id=file.id) }}" class="btn btn-primary btn-sm">
+                <i class="fas fa-pen"></i> Edit
+            </a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="text-xs opacity-50 flex gap-4">
+        <span>{{ file.extension | upper }} · {{ (file.size / 1024) | round(1) }} KB</span>
+        <span>Uploaded {{ file.created_at.strftime('%Y-%m-%d %H:%M') if file.created_at }}</span>
+        {% if file.index %}<span>Index: {{ file.index.status }}</span>{% endif %}
+    </div>
+
+    <!-- Content -->
+    <div class="border-t border-base-content/10 pt-4">
+        {% if file.is_image %}
+            <div class="flex justify-center">
+                <img src="{{ url_for('drive.raw', file_id=file.id) }}" alt="{{ file.name }}"
+                     class="max-h-[70vh] object-contain rounded-lg shadow-lg">
+            </div>
+            {% if file.index and file.index.caption %}
+            <div class="mt-4 text-sm italic opacity-70">
+                <i class="fas fa-robot mr-1"></i>{{ file.index.caption }}
+            </div>
+            {% endif %}
+        {% elif file.extension == 'pdf' %}
+            <iframe src="{{ url_for('drive.raw', file_id=file.id) }}" class="w-full rounded-lg bg-white"
+                    style="height: 72vh"></iframe>
+        {% elif rendered %}
+            <div class="markdown-body">{{ rendered | safe }}</div>
+        {% elif content is not none %}
+            <pre class="code-view bg-base-200/60 rounded-xl p-4 overflow-x-auto text-sm"><code class="language-{{ file.extension }}">{{ content }}</code></pre>
+            <script>hljs.highlightAll();</script>
+        {% else %}
+            <div class="text-center py-12 opacity-60">
+                <i class="fas fa-eye-slash text-4xl mb-3 block"></i>
+                <p>No preview available for this file type yet — it may still be indexing.</p>
+                <a href="{{ url_for('drive.download', file_id=file.id) }}" class="btn btn-primary btn-sm mt-3">
+                    <i class="fas fa-download"></i> Download instead
+                </a>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

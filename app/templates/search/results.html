@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ ('Search: ' + query) if query else 'Search' }} - DocIndex{% endblock %}
+{% block content %}
+{% if not query %}
+<!-- Google-style hero: search box centered until a query is submitted -->
+<div id="search-hero" class="flex-1 flex flex-col items-center justify-center gap-8 py-10">
+    <div class="ai-mode-switch">
+        <a href="{{ url_for('search.results') }}" class="ai-mode-btn active">
+            <i class="fas fa-magnifying-glass"></i> Search
+        </a>
+        <a href="{{ url_for('search.results', mode='ai') }}" class="ai-mode-btn">
+            <i class="fas fa-robot"></i> AI
+        </a>
+    </div>
+    <div class="flex items-center gap-3">
+        <i class="fas fa-folder-open text-5xl text-primary"></i>
+        <span class="text-5xl font-extrabold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">DocIndex</span>
+    </div>
+    <form id="hero-search-form" action="{{ url_for('search.results') }}" method="GET" class="w-full max-w-2xl px-4">
+        <div class="glass-dock rounded-2xl p-3 pl-5 flex items-center shadow-xl border border-white/50 backdrop-blur-xl bg-white/50 transition-all duration-300 focus-within:bg-white/70 focus-within:shadow-2xl focus-within:scale-[1.02]">
+            <i class="fas fa-search text-primary text-2xl mr-4"></i>
+            <input type="text" name="q" id="hero-search-input" placeholder="Search your files..."
+                   class="bg-transparent w-full focus:outline-none text-xl h-12 text-base-content placeholder:text-base-content/40"
+                   autocomplete="off" autofocus>
+            <button type="submit" class="ai-send-btn" title="Search" style="width:2.5rem;height:2.5rem;font-size:1rem;">
+                <i class="fas fa-arrow-right"></i>
+            </button>
+        </div>
+    </form>
+    <p class="text-sm opacity-40">Full-text search across all your documents — even inside images. Or ask the AI below.</p>
+</div>
+{% else %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-4">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+        <h1 class="text-2xl font-bold">
+            <i class="fas fa-magnifying-glass text-primary"></i> Results for "{{ query }}"
+            <span class="text-sm font-normal opacity-50 ml-2">{{ results | length }} file(s)</span>
+        </h1>
+        <div class="ai-mode-switch">
+            <a href="{{ url_for('search.results') }}" class="ai-mode-btn active">
+                <i class="fas fa-magnifying-glass"></i> Search
+            </a>
+            <a href="{{ url_for('search.results', mode='ai') }}" class="ai-mode-btn">
+                <i class="fas fa-robot"></i> AI
+            </a>
+        </div>
+    </div>
+
+    {% if not results %}
+    <div class="glass-panel rounded-2xl p-12 text-center">
+        <i class="fas fa-magnifying-glass-minus text-5xl text-primary/30 mb-4"></i>
+        <p class="opacity-60">No files matched your search. Try different keywords.</p>
+    </div>
+    {% endif %}
+
+    {% for r in results %}
+    <div class="glass-panel rounded-xl p-4 card-hover">
+        <div class="flex items-start gap-3">
+            <div class="flex-shrink-0 mt-1">
+                {% if r.file.is_image %}
+                    <i class="fas fa-file-image text-2xl" style="color:#ec4899"></i>
+                {% elif r.file.extension == 'pdf' %}
+                    <i class="fas fa-file-pdf text-2xl" style="color:#ef4444"></i>
+                {% elif r.file.extension == 'docx' %}
+                    <i class="fas fa-file-word text-2xl" style="color:#3b82f6"></i>
+                {% else %}
+                    <i class="fas fa-file-lines text-2xl" style="color:#6366f1"></i>
+                {% endif %}
+            </div>
+            <div class="flex-1 min-w-0">
+                <a href="{{ url_for('drive.view', file_id=r.file.id) }}" class="font-bold text-primary hover:underline">{{ r.file.name }}</a>
+                <div class="text-sm opacity-80 mt-1">{{ r.snippet }}</div>
+                {% if r.caption %}
+                <div class="text-xs mt-2 italic opacity-60">
+                    <i class="fas fa-robot mr-1"></i>AI caption: {{ r.caption[:200] }}{% if r.caption|length > 200 %}…{% endif %}
+                </div>
+                {% endif %}
+            </div>
+            <div class="flex-shrink-0 flex gap-1">
+                <a href="{{ url_for('drive.view', file_id=r.file.id) }}" class="btn btn-circle btn-xs glass-panel" title="View">
+                    <i class="fas fa-eye"></i>
+                </a>
+                <a href="{{ url_for('drive.download', file_id=r.file.id) }}" class="btn btn-circle btn-xs glass-panel" title="Download">
+                    <i class="fas fa-download"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

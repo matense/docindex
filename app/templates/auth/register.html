@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Register - DocIndex{% endblock %}
+{% block auth_content %}
+<form method="POST" action="{{ url_for('auth.register') }}" class="flex flex-col gap-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="input input-bordered flex items-center gap-2">
+        <i class="fas fa-user opacity-50"></i>
+        <input type="text" name="username" class="grow" placeholder="Username" required autofocus>
+    </label>
+    <label class="input input-bordered flex items-center gap-2">
+        <i class="fas fa-envelope opacity-50"></i>
+        <input type="email" name="email" class="grow" placeholder="Email" required>
+    </label>
+    <label class="input input-bordered flex items-center gap-2">
+        <i class="fas fa-lock opacity-50"></i>
+        <input type="password" name="password" class="grow" placeholder="Password" required>
+    </label>
+    <label class="input input-bordered flex items-center gap-2">
+        <i class="fas fa-lock opacity-50"></i>
+        <input type="password" name="confirm" class="grow" placeholder="Confirm password" required>
+    </label>
+    <button type="submit" class="btn btn-primary w-full">Create account</button>
+    <p class="text-center text-sm opacity-70">
+        Already registered? <a href="{{ url_for('auth.login') }}" class="link link-primary">Login</a>
+    </p>
+</form>
+{% endblock %}
