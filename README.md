@@ -133,7 +133,14 @@ migrations/          # Flask-Migrate (Alembic) schema versions
 create_admin.py      # CLI: create the first admin user
 run.py               # entry point
 DOCUMENTATION.md     # detailed internal technical documentation
+CONTRIBUTING.md      # development rules and workflow (read before contributing)
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow —
+database migrations, git flow, and the rules that keep existing
+installations compatible.
 
 ## License
 
