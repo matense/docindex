@@ -5,6 +5,15 @@ and DocIndex indexes their full text — including AI-generated captions for
 images — so you can search everything. A built-in AI assistant answers
 questions about your files by searching and reading them step by step.
 
+> [!WARNING]
+> **Early initial release** — DocIndex works, but expect bugs and rough
+> edges. It needs a lot more work before it is production-ready. Use it at
+> your own risk and do not expose it to the public internet.
+
+> [!NOTE]
+> This project was developed with AI assistance (code, documentation and
+> reviews).
+
 ## Features
 
 - **File drive** — folders, multi-file upload, download, rename, move, delete,
