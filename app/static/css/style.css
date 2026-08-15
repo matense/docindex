@@ -2815,3 +2815,81 @@ body.search-hero-mode #search-dock-container {
     line-height: 1;
     transform: translateY(-0.08em);
 }
+
+/* ---------- Auth pages (login / register) ---------- */
+.auth-page {
+    background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 50%, #ecfeff 100%);
+}
+
+.auth-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.45;
+    animation: auth-float 18s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.auth-blob-1 {
+    width: 420px; height: 420px;
+    background: var(--pdo-primary);
+    top: -120px; left: -100px;
+}
+
+.auth-blob-2 {
+    width: 360px; height: 360px;
+    background: var(--pdo-secondary);
+    bottom: -100px; right: -80px;
+    animation-delay: -6s;
+}
+
+.auth-blob-3 {
+    width: 240px; height: 240px;
+    background: #22d3ee;
+    bottom: 10%; left: 12%;
+    animation-delay: -12s;
+}
+
+@keyframes auth-float {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33%      { transform: translate(30px, -40px) scale(1.08); }
+    66%      { transform: translate(-25px, 25px) scale(0.95); }
+}
+
+.auth-logo {
+    width: 72px; height: 72px;
+    border-radius: 22px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.9rem; color: #fff;
+    background: var(--pdo-gradient);
+    box-shadow: 0 12px 30px rgba(99, 102, 241, 0.35);
+}
+
+.auth-brand {
+    background: var(--pdo-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+}
+
+.auth-card {
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.auth-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 24px 60px rgba(99, 102, 241, 0.18);
+}
+
+.auth-submit {
+    background: var(--pdo-gradient);
+    border: none;
+    color: #fff;
+}
+
+.auth-submit:hover {
+    filter: brightness(1.08);
+}

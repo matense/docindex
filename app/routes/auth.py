@@ -2,7 +2,7 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 from ..extensions import db
-from ..models import User
+from ..models import Setting, User
 
 bp = Blueprint("auth", __name__)
 
@@ -20,13 +20,17 @@ def login():
             next_page = request.args.get("next")
             return redirect(next_page or url_for("search.results"))
         flash("Invalid username or password.", "error")
-    return render_template("auth/login.html")
+    return render_template("auth/login.html",
+                           registration_enabled=Setting.get_bool("registration_enabled", True))
 
 
 @bp.route("/register", methods=["GET", "POST"])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for("search.results"))
+    if not Setting.get_bool("registration_enabled", True):
+        flash("New registrations are currently disabled by the administrator.", "error")
+        return redirect(url_for("auth.login"))
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         email = request.form.get("email", "").strip()

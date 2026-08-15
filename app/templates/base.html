@@ -123,6 +123,7 @@
                                 <div class="font-bold text-lg">{{ current_user.username }}</div>
                                 <div class="text-xs opacity-50">{{ current_user.email }}</div>
                             </li>
+                            <li><a href="{{ url_for('settings.profile') }}"><i class="fas fa-user w-5"></i> Profile</a></li>
                             <li><a href="{{ url_for('settings.ai_settings') }}"><i class="fas fa-robot w-5"></i> AI Settings</a></li>
                             <li><a href="{{ url_for('auth.logout') }}" class="text-error hover:bg-error/10"><i class="fas fa-sign-out-alt w-5"></i> Logout</a></li>
                         </ul>
@@ -260,22 +261,40 @@
             <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>
         </div>
     {% else %}
-        <!-- Simple layout for login/register pages -->
-        <div class="fixed inset-0 flex items-center justify-center bg-base-200/50 backdrop-blur-sm" id="auth-layout-container">
-            <div class="card w-96 glass-panel shadow-2xl" id="auth-card">
-                <div class="card-body">
-                    <h1 class="card-title justify-center text-3xl text-primary mb-4"><i class="fas fa-folder-open"></i> {{ app_name }}</h1>
-                    {% with messages = get_flashed_messages(with_categories=true) %}
-                        {% if messages %}
-                            {% for category, message in messages %}
-                                <div class="alert alert-{{ 'info' if category == 'message' else category }} mb-4 text-sm py-2">
-                                    <span>{{ message }}</span>
-                                </div>
-                            {% endfor %}
-                        {% endif %}
-                    {% endwith %}
-                    {% block auth_content %}{% endblock %}
+        <!-- Auth layout (login/register) -->
+        <div class="fixed inset-0 flex items-center justify-center overflow-hidden auth-page" id="auth-layout-container">
+            <!-- Decorative animated gradient blobs -->
+            <div class="auth-blob auth-blob-1"></div>
+            <div class="auth-blob auth-blob-2"></div>
+            <div class="auth-blob auth-blob-3"></div>
+
+            <div class="relative z-10 flex flex-col items-center gap-6 px-4 w-full max-w-md">
+                <!-- Branding -->
+                <div class="text-center">
+                    <div class="auth-logo mx-auto">
+                        <i class="fas fa-folder-open"></i>
+                    </div>
+                    <h1 class="auth-brand text-4xl font-extrabold mt-4 tracking-tight">{{ app_name }}</h1>
+                    <p class="opacity-60 mt-1 text-sm">Your personal, searchable file drive with an AI assistant</p>
                 </div>
+
+                <!-- Card -->
+                <div class="card w-full glass-panel shadow-2xl auth-card" id="auth-card">
+                    <div class="card-body">
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    <div class="alert alert-{{ 'info' if category == 'message' else category }} mb-4 text-sm py-2">
+                                        <span>{{ message }}</span>
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                        {% block auth_content %}{% endblock %}
+                    </div>
+                </div>
+
+                <p class="text-xs opacity-40">Self-hosted · Private · Yours</p>
             </div>
         </div>
     {% endif %}

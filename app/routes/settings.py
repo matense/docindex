@@ -1,8 +1,10 @@
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy import func
 
 from ..extensions import db
-from ..models import AIConnection
+from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
+                      FileIndex, Folder, Setting, StoredFile, User)
 from ..services import ai_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
@@ -53,6 +55,90 @@ def _get_owned(conn_id):
     if not conn or conn.user_id != current_user.id:
         return None
     return conn
+
+
+@bp.route("/profile")
+@login_required
+def profile():
+    """User profile: account details, per-drive stats and AI usage."""
+    drive_stats = []
+    drives = (Drive.query.filter_by(user_id=current_user.id)
+              .order_by(Drive.created_at).all())
+    for d in drives:
+        file_count, total_size = (db.session.query(
+            func.count(StoredFile.id),
+            func.coalesce(func.sum(StoredFile.size), 0))
+            .filter_by(drive_id=d.id).first())
+        total_words = (db.session.query(func.coalesce(func.sum(FileIndex.word_count), 0))
+                       .join(StoredFile, FileIndex.file_id == StoredFile.id)
+                       .filter(StoredFile.drive_id == d.id).scalar())
+        drive_stats.append({
+            "drive": d,
+            "file_count": file_count,
+            "folder_count": Folder.query.filter_by(drive_id=d.id).count(),
+            "total_size": total_size,
+            "total_words": total_words,
+        })
+
+    ai_stats = {
+        "conversations": ChatConversation.query.filter_by(user_id=current_user.id).count(),
+        "messages": (db.session.query(func.count(ChatMessage.id))
+                     .join(ChatConversation)
+                     .filter(ChatConversation.user_id == current_user.id).scalar()),
+        "active_connection": AIConnection.query.filter_by(user_id=current_user.id,
+                                                          is_active=True).first(),
+    }
+    return render_template("settings/profile.html",
+                           drive_stats=drive_stats,
+                           ai_stats=ai_stats,
+                           registration_enabled=Setting.get_bool("registration_enabled", True))
+
+
+@bp.route("/profile/email", methods=["POST"])
+@login_required
+def profile_email():
+    email = request.form.get("email", "").strip()
+    if not email:
+        flash("Email is required.", "error")
+    elif User.query.filter(User.email == email, User.id != current_user.id).first():
+        flash("That email is already in use.", "error")
+    else:
+        current_user.email = email
+        db.session.commit()
+        flash("Email updated.", "success")
+    return redirect(url_for("settings.profile"))
+
+
+@bp.route("/profile/password", methods=["POST"])
+@login_required
+def profile_password():
+    current = request.form.get("current_password", "")
+    new = request.form.get("new_password", "")
+    confirm = request.form.get("confirm_password", "")
+    if not current_user.check_password(current):
+        flash("Current password is incorrect.", "error")
+    elif not new:
+        flash("New password is required.", "error")
+    elif new != confirm:
+        flash("New passwords do not match.", "error")
+    else:
+        current_user.set_password(new)
+        db.session.commit()
+        flash("Password changed.", "success")
+    return redirect(url_for("settings.profile"))
+
+
+@bp.route("/profile/registration", methods=["POST"])
+@login_required
+def profile_registration():
+    """Admin-only: enable/disable new user registrations."""
+    if not current_user.is_admin:
+        flash("Only administrators can change this setting.", "error")
+        return redirect(url_for("settings.profile"))
+    enabled = bool(request.form.get("enabled"))
+    Setting.set("registration_enabled", "1" if enabled else "0")
+    flash(f"New registrations {'enabled' if enabled else 'disabled'}.", "success")
+    return redirect(url_for("settings.profile"))
 
 
 @bp.route("/ai")

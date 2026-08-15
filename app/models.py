@@ -165,6 +165,36 @@ class AIConnection(db.Model):
         return f"<AIConnection {self.name} ({self.model})>"
 
 
+class Setting(db.Model):
+    """Instance-wide key/value setting (e.g. registration_enabled)."""
+
+    __tablename__ = "settings"
+
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.String(500), nullable=False, default="")
+
+    @staticmethod
+    def get(key, default=""):
+        s = db.session.get(Setting, key)
+        return s.value if s else default
+
+    @staticmethod
+    def get_bool(key, default=False):
+        return Setting.get(key, "1" if default else "0").lower() in ("1", "true", "yes")
+
+    @staticmethod
+    def set(key, value):
+        s = db.session.get(Setting, key)
+        if not s:
+            s = Setting(key=key)
+            db.session.add(s)
+        s.value = str(value)
+        db.session.commit()
+
+    def __repr__(self):
+        return f"<Setting {self.key}={self.value}>"
+
+
 class ChatConversation(db.Model):
     __tablename__ = "chat_conversations"
 

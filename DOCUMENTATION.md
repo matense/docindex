@@ -50,7 +50,7 @@ pdo-app/
 │   │   ├── drive.py        # drive browser, upload, file & folder ops
 │   │   ├── search.py       # /search page + /api/search instant search
 │   │   ├── ai.py           # /ai/chat NDJSON stream + conversations API
-│   │   └── settings.py     # /settings/ai connection management
+│   │   └── settings.py     # /settings/ai connections + /settings/profile
 │   ├── services/
 │   │   ├── drive_service.py      # multi-drive support, current-drive session
 │   │   ├── file_service.py       # storage on disk, checksums, thumbnails
@@ -236,9 +236,21 @@ has `is_active=True` (enforced in the settings routes).
 | `is_active` | Boolean, default False | |
 | `created_at` | DateTime | |
 
+### `settings` (`Setting`)
+
+Instance-wide key/value store. Known keys:
+
+| Key | Values | Effect |
+|-----|--------|--------|
+| `registration_enabled` | `"1"` / `"0"` (default `"1"`) | when off, `GET/POST /register` redirect to `/login` and the login page hides the register link; toggled by admins on the profile page |
+
+Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, default)`,
+`Setting.set(key, value)`.
+
 ## HTTP surface
 
-- `auth.py`: `GET/POST /login`, `GET/POST /register`, `GET /logout`.
+- `auth.py`: `GET/POST /login`, `GET/POST /register` (blocked when the
+  `registration_enabled` setting is off), `GET /logout`.
 - `drive.py` (all `login_required`): `/` and `/folder/<id>` (drive browser,
   `view` = grid/list/tree stored in session), `/drives/create|select|edit`,
   `/upload` (multi-file, HTML redirect or JSON when `Accept: application/json`),
@@ -254,6 +266,13 @@ has `is_active=True` (enforced in the settings routes).
   `/models`), `POST /settings/ai/models` (fetch model list for dropdowns).
   `PROVIDERS` holds presets for OpenAI, Claude, Kimi, LM Studio, Ollama,
   Custom.
+- `settings.py` (`/settings/profile`): user profile page — account card,
+  email update (`POST /settings/profile/email`), password change
+  (`POST /settings/profile/password`, requires the current password),
+  per-drive stats (files, folders, space used, indexed words), AI usage
+  (conversations, messages, active connection) and, for admins only,
+  `POST /settings/profile/registration` to toggle the
+  `registration_enabled` setting.
 
 Ownership is enforced everywhere by filtering on `user_id` (`_get_owned`
 returns 404 for foreign objects).
