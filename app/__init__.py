@@ -23,6 +23,7 @@ def create_app(config_class=Config):
     os.makedirs(app.instance_path, exist_ok=True)
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(app.config["THUMBNAIL_FOLDER"], exist_ok=True)
+    os.makedirs(app.config["VERSIONS_FOLDER"], exist_ok=True)
 
     db.init_app(app)
     login_manager.init_app(app)

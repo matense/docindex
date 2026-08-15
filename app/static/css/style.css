@@ -2893,3 +2893,77 @@ body.search-hero-mode #search-dock-container {
 .auth-submit:hover {
     filter: brightness(1.08);
 }
+
+/* ---------- Version history timeline ---------- */
+.version-timeline {
+    position: relative;
+    padding-left: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.version-timeline::before {
+    content: "";
+    position: absolute;
+    left: 0.55rem;
+    top: 0.5rem;
+    bottom: 0.5rem;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--pdo-primary), var(--pdo-secondary));
+    opacity: 0.25;
+    border-radius: 2px;
+}
+
+.version-entry {
+    position: relative;
+    display: flex;
+    gap: 0.75rem;
+}
+
+.version-dot {
+    position: absolute;
+    left: -1.4rem;
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.5rem;
+    color: #fff;
+    background: var(--pdo-primary);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.version-dot-upload  { background: #0ea5e9; box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15); }
+.version-dot-edit    { background: var(--pdo-primary); }
+.version-dot-merge   { background: var(--pdo-secondary); box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15); }
+.version-dot-restore { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15); }
+
+.version-current .version-dot {
+    background: #22c55e;
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+}
+
+.version-body {
+    flex: 1;
+    min-width: 0;
+    padding: 0.65rem 0.9rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    background: rgba(255, 255, 255, 0.55);
+}
+
+/* ---------- Diff view ---------- */
+.diff-view {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.diff-add  { display: block; background: rgba(34, 197, 94, 0.14); color: #15803d; }
+.diff-del  { display: block; background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+.diff-hunk { display: block; color: var(--pdo-primary); font-weight: 600; }
+.diff-meta { display: block; opacity: 0.5; }
+.diff-ctx  { display: block; opacity: 0.75; }

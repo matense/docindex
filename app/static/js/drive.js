@@ -218,10 +218,12 @@ function showFileInfo(fileId) {
                     const merge = document.createElement('button');
                     merge.className = 'btn btn-xs btn-outline btn-secondary gap-1 flex-shrink-0';
                     merge.innerHTML = '<i class="fas fa-robot"></i> Merge with AI';
-                    merge.title = 'Ask the AI to compare both files and suggest a merge';
+                    merge.title = 'Open the merge review page — the AI proposes a merged content and you review it before anything is saved';
                     merge.onclick = () => {
                         document.getElementById('info-modal').close();
-                        if (window.aiChat && window.aiChat.attachAndAsk) {
+                        if (info.is_editable) {
+                            window.location.href = '/file/' + fileId + '/merge/' + dup.id;
+                        } else if (window.aiChat && window.aiChat.attachAndAsk) {
                             window.aiChat.attachAndAsk(
                                 [{ id: fileId, name: info.name }, { id: dup.id, name: dup.name }],
                                 'These two files have identical content (same SHA-256). ' +

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Merge - {{ file.name }} - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto w-full flex flex-col gap-6">
+    <div class="glass-panel rounded-2xl p-6">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <h1 class="text-xl font-bold flex items-center gap-2 min-w-0">
+                <i class="fas fa-code-merge text-primary flex-shrink-0"></i>
+                <span class="truncate">Merge "{{ other.name }}" into "{{ file.name }}"</span>
+            </h1>
+            <a href="{{ url_for('drive.view', file_id=file.id) }}" class="btn btn-ghost btn-sm">
+                <i class="fas fa-xmark"></i> Cancel
+            </a>
+        </div>
+        <p class="text-sm opacity-60 mt-2">
+            <i class="fas fa-shield-halved text-success mr-1"></i>
+            Nothing is overwritten without your review — when you accept, the current content of
+            "{{ file.name }}" is kept in its version history.
+        </p>
+    </div>
+
+    <!-- Side-by-side previews -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="glass-panel rounded-2xl p-4 flex flex-col gap-2">
+            <div class="font-bold text-sm flex items-center gap-2">
+                <i class="fas fa-file-lines text-primary"></i>
+                <span class="truncate">{{ file.name }}</span>
+                <span class="badge badge-primary badge-sm">target</span>
+            </div>
+            <pre class="bg-base-200/60 rounded-xl p-3 overflow-auto text-xs max-h-72 whitespace-pre-wrap">{{ content }}</pre>
+        </div>
+        <div class="glass-panel rounded-2xl p-4 flex flex-col gap-2">
+            <div class="font-bold text-sm flex items-center gap-2">
+                <i class="fas fa-file-lines text-secondary"></i>
+                <span class="truncate">{{ other.name }}</span>
+                <span class="badge badge-secondary badge-sm">source</span>
+            </div>
+            <pre class="bg-base-200/60 rounded-xl p-3 overflow-auto text-xs max-h-72 whitespace-pre-wrap">{{ other_content }}</pre>
+        </div>
+    </div>
+
+    <!-- Merged proposal -->
+    <div class="glass-panel rounded-2xl p-6 flex flex-col gap-4">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+            <h2 class="font-bold text-lg"><i class="fas fa-wand-magic-sparkles text-primary"></i> Merged proposal</h2>
+            <div class="flex gap-2">
+                {% if ai_enabled %}
+                <button type="button" class="btn btn-primary btn-sm" id="ai-merge-btn">
+                    <i class="fas fa-robot"></i> Generate AI merge
+                </button>
+                {% else %}
+                <span class="text-xs opacity-50">AI is not configured — paste or write the merged content manually.</span>
+                {% endif %}
+                <button type="button" class="btn btn-ghost btn-sm" id="preview-diff-btn" disabled>
+                    <i class="fas fa-code-compare"></i> Preview changes
+                </button>
+            </div>
+        </div>
+        <div id="ai-merge-status" class="hidden text-sm rounded-lg px-3 py-2"></div>
+        <textarea id="merged-content" class="textarea textarea-bordered w-full font-mono text-sm"
+                  rows="12" placeholder="The merged content goes here — generate it with AI or write it yourself."></textarea>
+
+        <!-- Diff preview -->
+        <pre id="merge-diff" class="diff-view bg-base-200/60 rounded-xl p-4 overflow-x-auto text-sm leading-relaxed hidden"></pre>
+
+        <!-- Accept -->
+        <form method="POST" action="{{ url_for('drive.merge_accept', file_id=file.id, other_id=other.id) }}"
+              class="flex items-center justify-between flex-wrap gap-3"
+              onsubmit="return confirm('Accept this merge into \'{{ file.name }}\'?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="content" id="accept-content">
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" name="delete_other" class="checkbox checkbox-sm">
+                Delete "{{ other.name }}" afterwards
+            </label>
+            <button type="submit" class="btn btn-success btn-sm" id="accept-btn" disabled>
+                <i class="fas fa-check"></i> Accept merge
+            </button>
+        </form>
+    </div>
+</div>
+
+<script>
+(function () {
+    const textarea = document.getElementById('merged-content');
+    const previewBtn = document.getElementById('preview-diff-btn');
+    const acceptBtn = document.getElementById('accept-btn');
+    const acceptContent = document.getElementById('accept-content');
+    const diffView = document.getElementById('merge-diff');
+    const status = document.getElementById('ai-merge-status');
+    const aiBtn = document.getElementById('ai-merge-btn');
+
+    function refresh() {
+        const has = textarea.value.trim().length > 0;
+        previewBtn.disabled = !has;
+        acceptBtn.disabled = !has;
+        acceptContent.value = textarea.value;
+        diffView.classList.add('hidden');
+    }
+    textarea.addEventListener('input', refresh);
+
+    function showStatus(msg, ok) {
+        status.textContent = msg;
+        status.className = 'text-sm rounded-lg px-3 py-2 ' + (ok ? 'bg-success/10 text-success' : 'bg-error/10 text-error');
+    }
+
+    if (aiBtn) {
+        aiBtn.addEventListener('click', async () => {
+            aiBtn.disabled = true;
+            aiBtn.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Merging...';
+            status.classList.add('hidden');
+            try {
+                const resp = await fetch("{{ url_for('drive.merge_ai', file_id=file.id, other_id=other.id) }}", { method: 'POST' });
+                const data = await resp.json();
+                if (data.ok) {
+                    textarea.value = data.merged;
+                    showStatus('AI merge generated — review it below before accepting.', true);
+                } else {
+                    showStatus(data.message || 'AI merge failed.', false);
+                }
+            } catch {
+                showStatus('Could not reach the server.', false);
+            }
+            aiBtn.disabled = false;
+            aiBtn.innerHTML = '<i class="fas fa-robot"></i> Generate AI merge';
+            refresh();
+        });
+    }
+
+    previewBtn.addEventListener('click', async () => {
+        const resp = await fetch("{{ url_for('drive.merge_preview', file_id=file.id, other_id=other.id) }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: textarea.value }),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            diffView.innerHTML = data.diff.length
+                ? data.diff.map(line => {
+                    let cls = 'diff-ctx';
+                    if (line.startsWith('+++') || line.startsWith('---')) cls = 'diff-meta';
+                    else if (line.startsWith('@@')) cls = 'diff-hunk';
+                    else if (line.startsWith('+')) cls = 'diff-add';
+                    else if (line.startsWith('-')) cls = 'diff-del';
+                    const span = document.createElement('span');
+                    span.className = cls;
+                    span.textContent = line + '\n';
+                    return span.outerHTML;
+                }).join('')
+                : '<span class="opacity-50">No differences vs the current content.</span>';
+            diffView.classList.remove('hidden');
+        }
+    });
+})();
+</script>
+{% endblock %}

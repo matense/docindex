@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Diff - {{ file.name }} - DocIndex{% endblock %}
+{% block content %}
+<div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
+    <div class="flex items-center justify-between flex-wrap gap-2">
+        <h1 class="text-xl font-bold flex items-center gap-2 min-w-0">
+            <i class="fas fa-code-compare text-primary flex-shrink-0"></i>
+            <span class="truncate">{{ file.name }} — {{ title }}</span>
+        </h1>
+        <a href="{{ url_for('drive.view', file_id=file.id) }}" class="btn btn-ghost btn-sm">
+            <i class="fas fa-arrow-left"></i> Back to file
+        </a>
+    </div>
+
+    <div class="text-xs opacity-50">
+        Lines prefixed with <span class="diff-del px-1">-</span> exist only in the old version,
+        lines with <span class="diff-add px-1">+</span> only in the new one.
+    </div>
+
+    {% if diff %}
+    <pre class="diff-view bg-base-200/60 rounded-xl p-4 overflow-x-auto text-sm leading-relaxed">{% for line in diff %}{% if line.startswith('+++') or line.startswith('---') %}<span class="diff-meta">{{ line }}
+</span>{% elif line.startswith('@@') %}<span class="diff-hunk">{{ line }}
+</span>{% elif line.startswith('+') %}<span class="diff-add">{{ line }}
+</span>{% elif line.startswith('-') %}<span class="diff-del">{{ line }}
+</span>{% else %}<span class="diff-ctx">{{ line }}
+</span>{% endif %}{% endfor %}</pre>
+    {% else %}
+    <div class="text-center py-12 opacity-60">
+        <i class="fas fa-equals text-4xl mb-3 block"></i>
+        <p>No differences — both contents are identical.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

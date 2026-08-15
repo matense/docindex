@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 import uuid
 
 from flask import current_app
@@ -7,7 +8,7 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import FileIndex, StoredFile
+from ..models import FileIndex, FileVersion, StoredFile
 
 THUMBNAIL_SIZE = (256, 256)
 
@@ -116,7 +117,15 @@ def duplicate_checksums(user_id):
 
 
 def delete_file(stored_file):
-    """Delete a stored file: DB rows (index cascades), disk file, thumbnail."""
+    """Delete a stored file: DB rows (index/versions cascade), disk blobs."""
+    for version in stored_file.versions:
+        try:
+            path = version_path(version)
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            current_app.logger.exception("Failed to remove version blob %s",
+                                         version.stored_name)
     for path in (file_path(stored_file), thumbnail_path(stored_file)):
         try:
             if os.path.exists(path):
@@ -127,8 +136,94 @@ def delete_file(stored_file):
     db.session.commit()
 
 
-def update_file_content(stored_file, content):
-    """Overwrite an editable text file's content on disk and bump timestamps."""
+def version_path(version):
+    return os.path.join(current_app.config["VERSIONS_FOLDER"], version.stored_name)
+
+
+def _sha256_of(path):
+    checksum = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def snapshot_version(stored_file, source, note=""):
+    """Snapshot the file's current content as a FileVersion before overwriting."""
+    ext = stored_file.extension
+    stored_name = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
+    shutil.copyfile(file_path(stored_file), os.path.join(
+        current_app.config["VERSIONS_FOLDER"], stored_name))
+    next_version = (stored_file.versions[0].version + 1) if stored_file.versions else 1
+    version = FileVersion(
+        file_id=stored_file.id,
+        version=next_version,
+        stored_name=stored_name,
+        size=stored_file.size,
+        checksum=stored_file.checksum,
+        source=source,
+        note=note,
+    )
+    db.session.add(version)
+    db.session.commit()
+    return version
+
+
+def find_by_name(user_id, drive_id, folder_id, name):
+    """Existing file with this exact name in the same folder of a drive."""
+    return (StoredFile.query
+            .filter_by(user_id=user_id, drive_id=drive_id,
+                       folder_id=folder_id, name=name)
+            .first())
+
+
+def replace_with_upload(stored_file, file_storage):
+    """Replace a file's content with a new upload (same name, same folder).
+
+    Returns "replaced" (a version was snapshotted) or "identical" (same
+    content — no-op, no version churn).
+    """
+    ext = stored_file.extension
+    tmp_name = f"tmp_{uuid.uuid4().hex}.{ext}" if ext else f"tmp_{uuid.uuid4().hex}"
+    tmp_path = os.path.join(current_app.config["UPLOAD_FOLDER"], tmp_name)
+    file_storage.save(tmp_path)
+
+    size = os.path.getsize(tmp_path)
+    if size > current_app.config["MAX_FILE_SIZE"]:
+        os.remove(tmp_path)
+        raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
+
+    new_checksum = _sha256_of(tmp_path)
+    if new_checksum == stored_file.checksum:
+        os.remove(tmp_path)
+        return "identical"
+
+    snapshot_version(stored_file, "upload")
+    os.replace(tmp_path, file_path(stored_file))
+    stored_file.size = size
+    stored_file.checksum = new_checksum
+    stored_file.mime_type = file_storage.mimetype
+    if stored_file.is_image:
+        _make_thumbnail(file_path(stored_file), stored_file.stored_name)
+    db.session.commit()
+    return "replaced"
+
+
+def restore_version(stored_file, version):
+    """Roll the file back to a past version (current state is snapshotted)."""
+    snapshot_version(stored_file, "restore",
+                     note=f"Before restore to v{version.version}")
+    shutil.copyfile(version_path(version), file_path(stored_file))
+    stored_file.size = version.size
+    stored_file.checksum = version.checksum
+    if stored_file.is_image:
+        _make_thumbnail(file_path(stored_file), stored_file.stored_name)
+    db.session.commit()
+
+
+def update_file_content(stored_file, content, source="edit", note=""):
+    """Overwrite an editable text file's content, keeping a version snapshot."""
+    snapshot_version(stored_file, source, note=note)
     path = file_path(stored_file)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(content)

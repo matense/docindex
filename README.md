@@ -18,6 +18,13 @@ questions about your files by searching and reading them step by step.
 
 - **File drive** — folders, multi-file upload, download, rename, move, delete,
   and in-place editing of text/code files.
+- **Version history** — re-uploading a file with the same name into the same
+  folder creates a new version instead of a duplicate. The file page has a
+  history timeline with diffs and one-click restore for text files, and
+  downloads for every past version.
+- **AI-assisted merge** — duplicate files can be merged by the AI, but only
+  after you review the proposed diff; the previous content is always kept in
+  the history.
 - **Full-text indexing** — text is extracted from PDFs (pdfplumber, incl.
   tables), DOCX (python-docx), text/code files, and images (OCR via
   Tesseract). Everything lands in a searchable database index.

@@ -174,9 +174,37 @@ Relationships: `children` (self-ref, cascade delete-orphan), `files`.
 | `drive_id` | FK -> drives.id, nullable, indexed | |
 | `created_at`, `updated_at` | DateTime | `updated_at` auto-bumps |
 
-Relationship: `index` (one-to-one `FileIndex`, cascade delete-orphan).
+Relationship: `index` (one-to-one `FileIndex`, cascade delete-orphan) and
+`versions` (`FileVersion`, ordered newest first, cascade delete-orphan).
 Properties: `is_image` (png/jpg/jpeg/gif/webp/bmp), `is_editable` (extension
 in `EDITABLE_EXTENSIONS`).
+
+### `file_versions` (`FileVersion`)
+
+A snapshot of a file's previous content. Snapshots are taken *before* any
+overwrite (same-name re-upload, edit, AI merge accept, restore); the live
+file is always the current version. Blobs live in `uploads/versions/`
+(`VERSIONS_FOLDER`) and are removed from disk by `delete_file`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | Integer PK | |
+| `file_id` | FK -> files.id, indexed | |
+| `version` | Integer | per-file sequence starting at 1 |
+| `stored_name` | String(255), unique | `<uuid4hex>.<ext>` under `uploads/versions/` |
+| `size` | Integer | bytes |
+| `checksum` | String(64), nullable | SHA-256 of that version |
+| `source` | String(20) | `upload` / `edit` / `merge` / `restore` |
+| `note` | String(255), default "" | e.g. "Merged with 'b.txt'" |
+| `created_at` | DateTime | |
+
+Same-name re-upload into the same folder of the same drive replaces the
+existing file (snapshot first) instead of creating a duplicate row; identical
+content is a no-op. Text versions support diff vs current and in-place
+restore; binary versions are download-only. The AI merge flow
+(`/file/<id>/merge/<other_id>`) lets the AI propose a merged text that the
+user reviews (server-side `difflib` diff) before accepting — accepting saves
+a `merge` version and optionally deletes the other file.
 
 ### `file_index` (`FileIndex`)
 
@@ -253,8 +281,13 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   `registration_enabled` setting is off), `GET /logout`.
 - `drive.py` (all `login_required`): `/` and `/folder/<id>` (drive browser,
   `view` = grid/list/tree stored in session), `/drives/create|select|edit`,
-  `/upload` (multi-file, HTML redirect or JSON when `Accept: application/json`),
-  `/file/<id>/download|raw|thumbnail|rename|move|delete|view|edit|reindex|info`
+  `/upload` (multi-file, HTML redirect or JSON when `Accept: application/json`;
+  same-name same-folder upload becomes a new version),
+  `/file/<id>/download|raw|thumbnail|rename|move|delete|view|edit|reindex|info`,
+  `/file/<id>/history/<vid>/download|diff` and `POST .../restore` (version
+  history; diff/restore are text-only), `/file/<id>/merge/<other_id>` (merge
+  review page; `POST .../ai` JSON proposal, `POST .../preview` JSON diff,
+  `POST .../accept` saves the reviewed merge)
   (info is JSON), `/folder/create`, `/folder/<id>/delete` (recursive),
   `/selection/delete` and `/selection/move` (bulk ops, JSON; move guards
   against moving a folder into itself/descendants).
@@ -282,7 +315,11 @@ returns 404 for foreign objects).
 ### Upload -> indexing -> search
 
 1. `POST /upload` (`drive.py`) validates extensions against
-   `ALLOWED_EXTENSIONS` and calls `file_service.save_upload()`:
+   `ALLOWED_EXTENSIONS`. If a file with the same (secured) name already
+   exists in the same folder of the current drive, `replace_with_upload()`
+   snapshots the old content as a `FileVersion(source="upload")` and
+   overwrites in place (identical checksum = no-op). Otherwise
+   `file_service.save_upload()`:
    stores the file as `uploads/files/<uuid>.<ext>`, enforces `MAX_FILE_SIZE`,
    computes the SHA-256 checksum, creates the `StoredFile` row and a
    `FileIndex(status="pending")` row, generates a 256 px PNG thumbnail for
@@ -347,8 +384,10 @@ and `model` per message (including thinking/step rows for the history view);
   the session pointer.
 - **file_service** — physical storage: path helpers, `save_upload`,
   thumbnails, SHA-256 checksums + duplicate detection
-  (`find_duplicates`, `duplicate_checksums`), `delete_file` (disk + DB +
-  thumbnail), `update_file_content`, `read_text_content`.
+  (`find_duplicates`, `duplicate_checksums`), version history
+  (`snapshot_version`, `replace_with_upload`, `restore_version`,
+  `find_by_name`), `delete_file` (disk + DB + thumbnail + version blobs),
+  `update_file_content` (snapshots before overwriting), `read_text_content`.
 - **indexing_service** — extraction and indexing (see flow above).
 - **search_service** — query parsing, scoring, snippet generation.
 - **ai_service** — OpenAI-compatible client: `config_for(user)` resolves the

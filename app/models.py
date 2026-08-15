@@ -109,6 +109,9 @@ class StoredFile(db.Model):
 
     index = db.relationship("FileIndex", backref="file", uselist=False,
                             cascade="all, delete-orphan")
+    versions = db.relationship("FileVersion", backref="file", lazy="select",
+                               cascade="all, delete-orphan",
+                               order_by="FileVersion.version.desc()")
 
     @property
     def is_image(self):
@@ -121,6 +124,25 @@ class StoredFile(db.Model):
 
     def __repr__(self):
         return f"<StoredFile {self.name}>"
+
+
+class FileVersion(db.Model):
+    """A snapshot of a file's previous content (version history)."""
+
+    __tablename__ = "file_versions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=False, index=True)
+    version = db.Column(db.Integer, nullable=False)
+    stored_name = db.Column(db.String(255), nullable=False, unique=True)
+    size = db.Column(db.Integer, nullable=False, default=0)
+    checksum = db.Column(db.String(64), nullable=True)
+    source = db.Column(db.String(20), nullable=False, default="upload")  # upload/edit/merge/restore
+    note = db.Column(db.String(255), nullable=False, default="")
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def __repr__(self):
+        return f"<FileVersion file={self.file_id} v{self.version}>"
 
 
 class FileIndex(db.Model):

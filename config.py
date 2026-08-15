@@ -22,6 +22,7 @@ class Config:
     # Uploads
     UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
     THUMBNAIL_FOLDER = os.path.join(basedir, "uploads", "thumbnails")
+    VERSIONS_FOLDER = os.path.join(basedir, "uploads", "versions")
     MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB per request batch
     MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB per file
     ALLOWED_EXTENSIONS = {
@@ -65,3 +66,4 @@ class TestConfig(Config):
     INDEX_ASYNC = False
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
+    VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")

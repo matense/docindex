@@ -24,7 +24,72 @@
                 <i class="fas fa-pen"></i> Edit
             </a>
             {% endif %}
+            <button type="button" class="btn btn-ghost btn-sm" id="history-toggle"
+                    onclick="document.getElementById('history-panel').classList.toggle('hidden'); this.classList.toggle('btn-active')">
+                <i class="fas fa-clock-rotate-left"></i> History
+                {% if file.versions %}<span class="badge badge-primary badge-sm">{{ file.versions | length }}</span>{% endif %}
+            </button>
         </div>
+    </div>
+
+    <!-- Version history timeline -->
+    <div id="history-panel" class="hidden">
+        {% if file.versions %}
+        <div class="version-timeline">
+            <div class="version-entry version-current">
+                <div class="version-dot"><i class="fas fa-circle"></i></div>
+                <div class="version-body">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-bold">Current version</span>
+                        <span class="badge badge-success badge-sm">live</span>
+                    </div>
+                    <div class="text-xs opacity-50">
+                        {{ file.updated_at.strftime('%Y-%m-%d %H:%M') if file.updated_at }} ·
+                        {{ (file.size / 1024) | round(1) }} KB
+                    </div>
+                </div>
+            </div>
+            {% for v in file.versions %}
+            <div class="version-entry">
+                <div class="version-dot version-dot-{{ v.source }}">
+                    <i class="fas {{ {'upload': 'fa-cloud-arrow-up', 'edit': 'fa-pen', 'merge': 'fa-code-merge', 'restore': 'fa-rotate-left'}.get(v.source, 'fa-clock') }}"></i>
+                </div>
+                <div class="version-body">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-bold">v{{ v.version }}</span>
+                        <span class="badge badge-ghost badge-sm">{{ v.source }}</span>
+                        {% if v.note %}<span class="text-xs opacity-60">{{ v.note }}</span>{% endif %}
+                    </div>
+                    <div class="text-xs opacity-50">
+                        {{ v.created_at.strftime('%Y-%m-%d %H:%M') if v.created_at }} ·
+                        {{ (v.size / 1024) | round(1) }} KB
+                    </div>
+                    <div class="flex gap-2 mt-1.5">
+                        <a href="{{ url_for('drive.version_download', file_id=file.id, version_id=v.id) }}"
+                           class="btn btn-xs btn-ghost"><i class="fas fa-download"></i> Download</a>
+                        {% if file.is_editable %}
+                        <a href="{{ url_for('drive.version_diff', file_id=file.id, version_id=v.id) }}"
+                           class="btn btn-xs btn-ghost"><i class="fas fa-code-compare"></i> Diff vs current</a>
+                        <form method="POST" action="{{ url_for('drive.version_restore', file_id=file.id, version_id=v.id) }}"
+                              onsubmit="return confirm('Restore v{{ v.version }}? The current content is kept in the history.')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-xs btn-outline btn-primary">
+                                <i class="fas fa-rotate-left"></i> Restore
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-6 opacity-50 text-sm border border-dashed border-base-content/20 rounded-xl">
+            <i class="fas fa-clock-rotate-left text-2xl mb-2 block"></i>
+            No previous versions yet. Editing this file or uploading a file with the same
+            name into the same folder will start the history.
+        </div>
+        {% endif %}
     </div>
 
     <div class="text-xs opacity-50 flex gap-4">

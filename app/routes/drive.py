@@ -1,12 +1,14 @@
+import difflib
 import os
 
 from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
                    render_template, request, send_file, session, url_for)
 from flask_login import current_user, login_required
+from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Folder, StoredFile
-from ..services import drive_service, file_service, indexing_service
+from ..models import FileVersion, Folder, StoredFile
+from ..services import ai_service, drive_service, file_service, indexing_service
 
 bp = Blueprint("drive", __name__)
 
@@ -140,6 +142,25 @@ def upload():
             errors.append(f"{file_storage.filename}: file type not allowed")
             continue
         try:
+            name = secure_filename(file_storage.filename) or "unnamed"
+            existing = file_service.find_by_name(
+                current_user.id, drive.id, folder.id if folder else None, name)
+            if existing:
+                # Same name in the same folder -> new version, not a duplicate.
+                result = file_service.replace_with_upload(existing, file_storage)
+                if result == "identical":
+                    flash(f'"{name}" already exists with identical content — nothing to do.',
+                          "info")
+                else:
+                    _trigger_indexing(existing.id)
+                    flash(f'"{name}" updated — previous content kept as '
+                          f'v{existing.versions[0].version} in the history.', "success")
+                    saved += 1
+                saved_files.append({"id": existing.id, "name": existing.name,
+                                    "checksum": existing.checksum,
+                                    "versioned": result == "replaced",
+                                    "duplicates": []})
+                continue
             stored = file_service.save_upload(file_storage, current_user, folder)
             stored.drive_id = drive.id
             db.session.commit()
@@ -150,6 +171,7 @@ def upload():
                 "id": stored.id,
                 "name": stored.name,
                 "checksum": stored.checksum,
+                "versioned": False,
                 "duplicates": [{"id": d.id, "name": d.name} for d in dupes],
             })
             for d in dupes:
@@ -307,6 +329,150 @@ def info(file_id):
         "is_editable": stored.is_editable,
         "has_thumbnail": file_service.has_thumbnail(stored),
     })
+
+
+# ---------- Version history ----------
+
+def _get_version(stored, version_id):
+    version = db.session.get(FileVersion, version_id)
+    if not version or version.file_id != stored.id:
+        abort(404)
+    return version
+
+
+def _version_text(version, max_chars=200_000):
+    with open(file_service.version_path(version), "r",
+              encoding="utf-8", errors="replace") as fh:
+        return fh.read(max_chars)
+
+
+def _diff_lines(old_text, new_text, old_label, new_label):
+    return list(difflib.unified_diff(
+        old_text.splitlines(), new_text.splitlines(),
+        fromfile=old_label, tofile=new_label, lineterm=""))
+
+
+@bp.route("/file/<int:file_id>/history/<int:version_id>/download")
+@login_required
+def version_download(file_id, version_id):
+    stored = _get_owned(StoredFile, file_id)
+    version = _get_version(stored, version_id)
+    stem = stored.name.rsplit(".", 1)[0] if "." in stored.name else stored.name
+    download_name = (f"{stem}.v{version.version}.{stored.extension}"
+                     if stored.extension else f"{stem}.v{version.version}")
+    return send_file(file_service.version_path(version), as_attachment=True,
+                     download_name=download_name)
+
+
+@bp.route("/file/<int:file_id>/history/<int:version_id>/diff")
+@login_required
+def version_diff(file_id, version_id):
+    """Unified diff of a past version against the current content (text only)."""
+    stored = _get_owned(StoredFile, file_id)
+    if not stored.is_editable:
+        abort(400)
+    version = _get_version(stored, version_id)
+    diff = _diff_lines(_version_text(version),
+                       file_service.read_text_content(stored),
+                       f"v{version.version}", "current")
+    return render_template("drive/diff.html", file=stored, version=version,
+                           diff=diff, title=f"v{version.version} → current")
+
+
+@bp.route("/file/<int:file_id>/history/<int:version_id>/restore", methods=["POST"])
+@login_required
+def version_restore(file_id, version_id):
+    """Roll a text file back to a past version (current state is snapshotted)."""
+    stored = _get_owned(StoredFile, file_id)
+    if not stored.is_editable:
+        abort(400)
+    version = _get_version(stored, version_id)
+    file_service.restore_version(stored, version)
+    _trigger_indexing(stored.id)
+    flash(f'"{stored.name}" restored to v{version.version} — the previous '
+          "state was kept in the history.", "success")
+    return redirect(url_for("drive.view", file_id=stored.id))
+
+
+# ---------- AI-assisted merge (with user review) ----------
+
+MERGE_TEXT_LIMIT = 20_000
+
+
+def _get_merge_pair(file_id, other_id):
+    stored = _get_owned(StoredFile, file_id)
+    other = _get_owned(StoredFile, other_id)
+    if other.id == stored.id:
+        abort(400)
+    if not (stored.is_editable and other.is_editable):
+        abort(400)
+    return stored, other
+
+
+@bp.route("/file/<int:file_id>/merge/<int:other_id>")
+@login_required
+def merge_review(file_id, other_id):
+    stored, other = _get_merge_pair(file_id, other_id)
+    return render_template("drive/merge.html", file=stored, other=other,
+                           content=file_service.read_text_content(stored),
+                           other_content=file_service.read_text_content(other))
+
+
+@bp.route("/file/<int:file_id>/merge/<int:other_id>/ai", methods=["POST"])
+@login_required
+def merge_ai(file_id, other_id):
+    """Ask the AI for a merged version of both texts (nothing is saved yet)."""
+    stored, other = _get_merge_pair(file_id, other_id)
+    if not ai_service.is_enabled(current_user):
+        return jsonify({"ok": False,
+                        "message": "AI is not configured. Add a connection in AI Settings."}), 400
+    text_a = file_service.read_text_content(stored, MERGE_TEXT_LIMIT)
+    text_b = file_service.read_text_content(other, MERGE_TEXT_LIMIT)
+    messages = [
+        {"role": "system", "content":
+         "You merge two versions of a document into one coherent text. "
+         "Keep all unique information from both, resolve overlaps, and output "
+         "ONLY the merged document content — no commentary, no code fences."},
+        {"role": "user", "content":
+         f"Merge these two files into one.\n\n"
+         f"=== FILE A: {stored.name} ===\n{text_a}\n\n"
+         f"=== FILE B: {other.name} ===\n{text_b}"},
+    ]
+    try:
+        reply = ai_service.chat_completion(
+            messages, config=ai_service.config_for(current_user))
+    except ai_service.AIError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 502
+    return jsonify({"ok": True, "merged": reply.get("content", "")})
+
+
+@bp.route("/file/<int:file_id>/merge/<int:other_id>/preview", methods=["POST"])
+@login_required
+def merge_preview(file_id, other_id):
+    """Unified diff of the current content vs a proposed merge (JSON)."""
+    stored, other = _get_merge_pair(file_id, other_id)
+    data = request.get_json(silent=True) or {}
+    proposal = data.get("content", "")
+    diff = _diff_lines(file_service.read_text_content(stored), proposal,
+                       "current", "merged proposal")
+    return jsonify({"ok": True, "diff": diff})
+
+
+@bp.route("/file/<int:file_id>/merge/<int:other_id>/accept", methods=["POST"])
+@login_required
+def merge_accept(file_id, other_id):
+    """Save the reviewed merge as the file's content (history is kept)."""
+    stored, other = _get_merge_pair(file_id, other_id)
+    content = request.form.get("content", "")
+    file_service.update_file_content(stored, content, source="merge",
+                                     note=f"Merged with '{other.name}'")
+    _trigger_indexing(stored.id)
+    if request.form.get("delete_other"):
+        file_service.delete_file(other)
+        flash(f'Merged — "{other.name}" was deleted.', "success")
+    else:
+        flash("Merged — both files kept, history preserved.", "success")
+    return redirect(url_for("drive.view", file_id=stored.id))
 
 
 @bp.route("/folder/create", methods=["POST"])
