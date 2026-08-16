@@ -280,7 +280,10 @@ def ai_models():
             api_key = conn.api_key
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok, result = ai_service.list_models(base_url, api_key)
-    if ok:
-        return jsonify({"ok": True, "models": result})
-    return jsonify({"ok": False, "message": result})
+    try:
+        ok, result = ai_service.list_models(base_url, api_key)
+        if ok:
+            return jsonify({"ok": True, "models": result})
+        return jsonify({"ok": False, "message": result})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
