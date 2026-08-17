@@ -141,6 +141,10 @@
             div.className = 'text-xs opacity-60 flex items-center gap-2 pl-2';
             div.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
             div.querySelector('span').textContent = content;
+        } else if (role === 'tool_result') {
+            div.className = 'text-xs opacity-50 flex items-center gap-2 pl-6';
+            div.innerHTML = '<i class="fas fa-arrow-turn-up fa-rotate-90"></i><span></span>';
+            div.querySelector('span').textContent = content;
         } else {
             div.className = 'chat chat-start';
             div.innerHTML =

@@ -130,6 +130,32 @@ Examples:
 - **OpenAI**: `AI_BASE_URL=https://api.openai.com/v1`, `AI_API_KEY=sk-...`,
   `AI_MODEL=gpt-4o-mini`, `AI_VISION_MODEL=gpt-4o-mini`
 
+## Upgrading an existing installation
+
+When a new version changes the database structure, your data is preserved —
+upgrades are applied through migrations, never by recreating the database.
+
+**Local installation:**
+
+```bash
+git pull
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt   # pick up new/updated dependencies
+flask --app run.py db upgrade     # apply database migrations (no data loss)
+python run.py
+```
+
+**Docker:**
+
+```bash
+git pull
+docker compose up --build -d      # migrations run automatically on start
+```
+
+The database (`instance/`), uploaded files and version history (`uploads/`)
+are never touched by `git pull` — they live outside version control (or in
+Docker volumes). Your `.env` is also preserved.
+
 ## Tests
 
 ```bash

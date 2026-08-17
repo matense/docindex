@@ -2051,42 +2051,49 @@ body.show-shortcuts #shortcut-help-panel {
     line-height: 1;
 }
 
-/* --- AI chat: panel sizing + animated expand-to-center toggle --- */
-#ai-chat-panel {
-    transform: translate(0, 0);
-    transition:
-        right 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        bottom 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        width 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+/* --- AI chat: floating multi-session windows --- */
+.ai-chat-window {
+    position: fixed;
+    z-index: 60;
+    min-width: 320px;
+    min-height: 380px;
+    box-shadow: 0 25px 60px -12px rgba(99, 102, 241, 0.25);
 }
 
-#ai-chat-panel .ai-chat-shell {
-    height: min(800px, calc(100vh - 7rem));
-    max-height: min(800px, calc(100vh - 7rem));
-    transition:
-        height 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        max-height 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        box-shadow 0.5s ease;
+.acw-header {
+    cursor: move;
+    user-select: none;
 }
 
-#ai-chat-panel.ai-expanded {
-    right: 50%;
-    bottom: 50%;
-    transform: translate(50%, 50%);
-    width: min(880px, calc(100vw - 3rem));
+.acw-header button,
+.acw-header a,
+.acw-header select {
+    cursor: pointer;
 }
 
-#ai-chat-panel.ai-expanded .ai-chat-shell {
-    height: min(86vh, 940px);
-    max-height: min(86vh, 940px);
-    box-shadow: 0 25px 70px -12px rgba(126, 34, 206, 0.35);
+.acw-resize {
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    padding: 3px 5px;
+    font-size: 0.6rem;
+    opacity: 0.35;
+    cursor: nwse-resize;
+    z-index: 25;
+    color: var(--pdo-primary-dark);
 }
 
-/* Restoring state after page navigation: no expand/dock animation */
-#ai-chat-panel.ai-no-anim,
-#ai-chat-panel.ai-no-anim .ai-chat-shell {
-    transition: none !important;
+.acw-resize:hover {
+    opacity: 0.8;
+}
+
+.acw-messages .chat-image {
+    align-self: flex-start;
+    margin-top: 0.15rem;
+}
+
+.acw-attachments .badge {
+    animation: card-in 0.2s ease both;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2248,33 +2255,6 @@ body.show-shortcuts #shortcut-help-panel {
 
 .dock-item:hover .dock-label {
     opacity: 1;
-}
-
-/* AI chat centered mode */
-#ai-chat-panel {
-    transition: all 0.25s ease;
-}
-
-#ai-chat-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.35);
-    backdrop-filter: blur(4px);
-    z-index: 49;
-}
-
-#ai-chat-panel.ai-chat-centered {
-    top: 50%;
-    left: 50%;
-    right: auto;
-    bottom: auto;
-    transform: translate(-50%, -50%);
-    width: min(760px, 92vw);
-}
-
-#ai-chat-panel.ai-chat-centered .ai-chat-shell {
-    height: min(78vh, 760px) !important;
-    max-height: none;
 }
 
 /* --- Seamless page transitions (spa.js) --- */
