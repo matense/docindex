@@ -21,7 +21,7 @@
                             <span class="badge badge-success badge-sm">active</span>
                         {% endif %}
                     </div>
-                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}</div>
+                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}</div>
                 </div>
                 <button type="button" class="btn btn-sm btn-ghost test-existing-btn" data-conn-id="{{ c.id }}" title="Test connection">
                     <i class="fas fa-plug-circle-check"></i>
@@ -113,6 +113,13 @@
                            value="{{ editing.max_steps if editing and editing.max_steps else '' }}"
                            placeholder="default (16)">
                     <p class="text-xs opacity-40 mt-1">How many tool/reasoning steps the agent may take per question. Empty = global default.</p>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">Requests per minute</label>
+                    <input type="number" name="rate_limit_rpm" min="0" max="10000" class="input input-bordered w-full mt-1"
+                           value="{{ editing.rate_limit_rpm if editing and editing.rate_limit_rpm is not none else '' }}"
+                           placeholder="default (30)">
+                    <p class="text-xs opacity-40 mt-1">Rate limit for providers that throttle (e.g. free tiers). Empty = global default (30), 0 = unlimited.</p>
                 </div>
             </div>
 

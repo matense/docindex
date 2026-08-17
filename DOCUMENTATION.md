@@ -261,6 +261,7 @@ has `is_active=True` (enforced in the settings routes).
 | `model` | String(120) | chat model |
 | `vision_model` | String(120), default "" | empty -> falls back to `model` |
 | `max_steps` | Integer, **nullable** | per-connection agent step limit; NULL falls back to global `AI_MAX_STEPS` |
+| `rate_limit_rpm` | Integer, **nullable** | per-connection requests/minute limit; NULL falls back to global `AI_RATE_LIMIT_RPM` (default 30), 0 = unlimited. Enforced in `ai_service._check_rate_limit` (in-memory sliding window per connection); provider HTTP 429s get a friendly `AIError` with `Retry-After` |
 | `is_active` | Boolean, default False | |
 | `created_at` | DateTime | |
 

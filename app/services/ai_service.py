@@ -1,4 +1,6 @@
 import base64
+import time
+from collections import deque
 
 import requests
 from flask import current_app
@@ -8,6 +10,29 @@ from ..models import AIConnection
 
 class AIError(Exception):
     """Raised when the AI backend is unreachable or returns an error."""
+
+
+# Sliding-window rate limiter: rate_key -> deque of request timestamps.
+# In-memory is fine (single-process app); resets on restart.
+_rate_windows = {}
+
+
+def _check_rate_limit(cfg):
+    """Enforce the per-connection requests-per-minute limit (0 = unlimited)."""
+    limit = cfg.get("rate_limit_rpm")
+    if not limit:
+        return
+    key = cfg.get("rate_key", "env")
+    now = time.monotonic()
+    window = _rate_windows.setdefault(key, deque())
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= limit:
+        wait = int(60 - (now - window[0])) + 1
+        raise AIError(
+            f"Rate limit reached for this connection ({limit} requests/minute). "
+            f"Wait ~{wait}s or raise the limit in AI Settings.")
+    window.append(now)
 
 
 def _env_config():
@@ -20,6 +45,8 @@ def _env_config():
         "vision_model": cfg.get("AI_VISION_MODEL") or cfg.get("AI_MODEL", ""),
         "timeout": cfg.get("AI_REQUEST_TIMEOUT", 120),
         "max_steps": cfg.get("AI_MAX_STEPS", 16),
+        "rate_limit_rpm": cfg.get("AI_RATE_LIMIT_RPM", 30),
+        "rate_key": "env",
     }
 
 
@@ -38,6 +65,11 @@ def config_for(user=None):
                 # NULL on the connection falls back to the global default.
                 "max_steps": conn.max_steps
                              or current_app.config.get("AI_MAX_STEPS", 16),
+                # NULL falls back to the global default; 0 = unlimited.
+                "rate_limit_rpm": (conn.rate_limit_rpm
+                                   if conn.rate_limit_rpm is not None
+                                   else current_app.config.get("AI_RATE_LIMIT_RPM", 30)),
+                "rate_key": f"conn:{conn.id}",
             }
     return _env_config()
 
@@ -69,6 +101,8 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
         if tool_choice:
             payload["tool_choice"] = tool_choice
 
+    _check_rate_limit(cfg)
+
     try:
         resp = requests.post(
             f"{cfg['base_url']}/chat/completions",
@@ -79,6 +113,12 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
     except requests.RequestException as exc:
         raise AIError(f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
 
+    if resp.status_code == 429:
+        retry = resp.headers.get("Retry-After")
+        raise AIError(
+            "The provider's rate limit was hit (HTTP 429)"
+            + (f" — retry in ~{retry}s." if retry else ".")
+            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.")
     if resp.status_code != 200:
         raise AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}")
 

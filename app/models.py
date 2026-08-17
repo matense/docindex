@@ -180,6 +180,9 @@ class AIConnection(db.Model):
     vision_model = db.Column(db.String(120), nullable=False, default="")
     # Per-connection agent step limit; NULL falls back to the global AI_MAX_STEPS.
     max_steps = db.Column(db.Integer, nullable=True)
+    # Per-connection request limit (requests/minute); NULL falls back to the
+    # global AI_RATE_LIMIT_RPM (default 30). 0 = unlimited.
+    rate_limit_rpm = db.Column(db.Integer, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 

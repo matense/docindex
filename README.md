@@ -119,6 +119,7 @@ AI can be configured in two places:
 | `AI_MODEL`          | Chat model for the assistant                   | `llama3.1`                  |
 | `AI_VISION_MODEL`   | Vision model for image captions (fallback: `AI_MODEL`) | —                   |
 | `AI_MAX_STEPS`      | Max tool-call steps per question (overridable per connection) | `16` |
+| `AI_RATE_LIMIT_RPM` | Max AI requests per minute (overridable per connection; `0` = unlimited) | `30` |
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 
 Examples:

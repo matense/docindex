@@ -51,6 +51,7 @@ class Config:
     AI_MODEL = os.environ.get("AI_MODEL", "llama3.1")
     AI_VISION_MODEL = os.environ.get("AI_VISION_MODEL", "")  # falls back to AI_MODEL
     AI_MAX_STEPS = int(os.environ.get("AI_MAX_STEPS", "16"))
+    AI_RATE_LIMIT_RPM = int(os.environ.get("AI_RATE_LIMIT_RPM", "30"))
     AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
 
     # Index files in a background thread on upload (disable in tests)
