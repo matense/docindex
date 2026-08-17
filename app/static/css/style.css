@@ -2126,7 +2126,7 @@ body.show-shortcuts #shortcut-help-panel {
     transform: translateY(-4px) scale(1.05);
 }
 
-#ai-messages mark,
+.ai-messages mark,
 .pdo-search-dropdown-item-snippet mark,
 .search-snippet mark {
     background: rgba(99, 102, 241, 0.25);
@@ -2134,7 +2134,7 @@ body.show-shortcuts #shortcut-help-panel {
     padding: 0 2px;
 }
 
-#ai-messages .chat-bubble p {
+.ai-messages .chat-bubble p {
     margin: 0.25rem 0;
 }
 
@@ -2170,7 +2170,8 @@ body.show-shortcuts #shortcut-help-panel {
 }
 
 .markdown-body pre {
-    background: rgba(0, 0, 0, 0.05);
+    background: #0d1117;
+    color: #e6edf3;
     border-radius: 12px;
     padding: 1rem;
     overflow-x: auto;
@@ -2439,20 +2440,20 @@ body.show-shortcuts #shortcut-help-panel {
 }
 
 /* Chat bubbles */
-#ai-messages .chat-end .chat-bubble {
+.ai-messages .chat-end .chat-bubble {
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
     color: white;
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
 }
 
-#ai-messages .chat-start .chat-bubble {
+.ai-messages .chat-start .chat-bubble {
     background: linear-gradient(135deg, rgba(224, 231, 255, 0.95) 0%, rgba(243, 232, 255, 0.95) 100%);
     border: 1px solid rgba(139, 92, 246, 0.22);
     box-shadow: 0 2px 10px rgba(139, 92, 246, 0.12);
 }
 
 /* Avatar aligned to the top of the bubble */
-#ai-messages .chat-image {
+.ai-messages .chat-image {
     align-self: flex-start;
     margin-top: 0.15rem;
 }
@@ -2540,51 +2541,51 @@ body.search-hero-mode #search-dock-container {
 }
 
 /* Markdown tables inside AI answers */
-#ai-messages .chat-bubble table {
+.ai-messages .chat-bubble table {
     width: 100%;
     border-collapse: collapse;
     margin: 0.5rem 0;
     font-size: 0.8rem;
 }
 
-#ai-messages .chat-bubble th,
-#ai-messages .chat-bubble td {
+.ai-messages .chat-bubble th,
+.ai-messages .chat-bubble td {
     padding: 0.35rem 0.75rem;
     border: 1px solid rgba(99, 102, 241, 0.15);
     text-align: left;
 }
 
-#ai-messages .chat-bubble th {
+.ai-messages .chat-bubble th {
     background: rgba(99, 102, 241, 0.08);
     font-weight: 700;
 }
 
-#ai-messages .chat-bubble tr:nth-child(even) td {
+.ai-messages .chat-bubble tr:nth-child(even) td {
     background: rgba(99, 102, 241, 0.03);
 }
 
-#ai-messages .chat-bubble ul,
-#ai-messages .chat-bubble ol {
+.ai-messages .chat-bubble ul,
+.ai-messages .chat-bubble ol {
     padding-left: 1.25rem;
     margin: 0.35rem 0;
 }
 
-#ai-messages .chat-bubble ul { list-style: disc; }
-#ai-messages .chat-bubble ol { list-style: decimal; }
+.ai-messages .chat-bubble ul { list-style: disc; }
+.ai-messages .chat-bubble ol { list-style: decimal; }
 
-#ai-messages .chat-bubble p { margin: 0.35rem 0; }
-#ai-messages .chat-bubble h1,
-#ai-messages .chat-bubble h2,
-#ai-messages .chat-bubble h3 { font-weight: 700; margin: 0.6rem 0 0.3rem; }
+.ai-messages .chat-bubble p { margin: 0.35rem 0; }
+.ai-messages .chat-bubble h1,
+.ai-messages .chat-bubble h2,
+.ai-messages .chat-bubble h3 { font-weight: 700; margin: 0.6rem 0 0.3rem; }
 
-#ai-messages .chat-bubble code {
+.ai-messages .chat-bubble code {
     background: rgba(99, 102, 241, 0.1);
     border-radius: 0.3rem;
     padding: 0.05rem 0.3rem;
     font-size: 0.85em;
 }
 
-#ai-messages .chat-bubble pre {
+.ai-messages .chat-bubble pre {
     background: rgba(15, 23, 42, 0.85);
     color: #e2e8f0;
     border-radius: 0.6rem;
@@ -2593,7 +2594,7 @@ body.search-hero-mode #search-dock-container {
     margin: 0.4rem 0;
 }
 
-#ai-messages .chat-bubble pre code {
+.ai-messages .chat-bubble pre code {
     background: transparent;
     padding: 0;
 }

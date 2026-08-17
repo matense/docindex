@@ -116,7 +116,7 @@
         {% elif rendered %}
             <div class="markdown-body">{{ rendered | safe }}</div>
         {% elif content is not none %}
-            <pre class="code-view bg-base-200/60 rounded-xl p-4 overflow-x-auto text-sm"><code class="language-{{ file.extension }}">{{ content }}</code></pre>
+            <pre class="code-view rounded-xl p-4 overflow-x-auto text-sm" style="background: #0d1117; color: #e6edf3;"><code class="language-{{ file.extension }}">{{ content }}</code></pre>
             <script>hljs.highlightAll();</script>
         {% else %}
             <div class="text-center py-12 opacity-60">

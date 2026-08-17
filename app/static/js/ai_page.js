@@ -83,6 +83,12 @@
         if (window.marked) {
             const div = document.createElement('div');
             div.innerHTML = marked.parse(linked, { breaks: true });
+            // Syntax-highlight fenced code blocks.
+            if (window.hljs) {
+                div.querySelectorAll('pre code').forEach(block => {
+                    try { hljs.highlightElement(block); } catch { /* unknown language */ }
+                });
+            }
             return div.innerHTML;
         }
         const div = document.createElement('div');
