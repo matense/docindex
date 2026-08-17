@@ -47,6 +47,20 @@ AI: any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI API, ...).
 Requirements: Python 3.11+. Optional:
 [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR of images.
 
+**Quick install (scripts):**
+
+```bash
+git clone https://github.com/matense/docindex.git
+cd docindex
+./install.sh        # Windows: install.bat
+```
+
+The script creates the virtualenv, installs dependencies, generates a `.env`
+with a random `SECRET_KEY`, creates the database and prompts for the first
+admin user. Then run `python run.py`.
+
+**Manual step by step:**
+
 ```bash
 # 1. Clone and enter the project
 git clone https://github.com/matense/docindex.git
@@ -136,6 +150,17 @@ Examples:
 When a new version changes the database structure, your data is preserved —
 upgrades are applied through migrations, never by recreating the database.
 
+**Quick update (scripts):**
+
+```bash
+./update.sh         # Windows: update.bat
+```
+
+The script pulls the latest code, updates dependencies and applies database
+migrations. Restart the server afterwards.
+
+**Manual step by step:**
+
 **Local installation:**
 
 ```bash
@@ -174,6 +199,8 @@ app/
   templates/         # Jinja2 templates
 migrations/          # Flask-Migrate (Alembic) schema versions
 create_admin.py      # CLI: create the first admin user
+install.sh / install.bat   # one-shot installer (venv, deps, .env, DB, admin)
+update.sh / update.bat     # pull + deps + migrations
 run.py               # entry point
 DOCUMENTATION.md     # detailed internal technical documentation
 CONTRIBUTING.md      # development rules and workflow (read before contributing)
