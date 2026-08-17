@@ -66,7 +66,7 @@
         <!-- Accept -->
         <form method="POST" action="{{ url_for('drive.merge_accept', file_id=file.id, other_id=other.id) }}"
               class="flex items-center justify-between flex-wrap gap-3"
-              onsubmit="return confirm('Accept this merge into \'{{ file.name }}\'?')">
+              data-confirm="Accept this merge into &quot;{{ file.name }}&quot;?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="content" id="accept-content">
             <label class="flex items-center gap-2 text-sm cursor-pointer">

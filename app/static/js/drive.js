@@ -110,11 +110,14 @@
         });
     };
 
-    window.driveDeleteSelection = function () {
+    window.driveDeleteSelection = async function () {
         if (!selected.size) return;
         const names = [...selected.values()].map(s => s.name);
-        if (!confirm('Delete ' + selected.size + ' item(s)?\n\n' + names.slice(0, 10).join('\n') +
-                     (names.length > 10 ? '\n…' : ''))) return;
+        const ok = await window.uiConfirm(
+            'Delete ' + selected.size + ' item(s)?\n\n' + names.slice(0, 10).join('\n') +
+            (names.length > 10 ? '\n…' : ''),
+            { danger: true, title: 'Delete selection', confirmText: 'Delete' });
+        if (!ok) return;
         const files = [], folders = [];
         selected.forEach((s) => (s.kind === 'file' ? files : folders).push(s.id));
         const body = new URLSearchParams();

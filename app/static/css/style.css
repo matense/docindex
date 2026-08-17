@@ -2948,3 +2948,38 @@ body.search-hero-mode #search-dock-container {
 .diff-hunk { display: block; color: var(--pdo-primary); font-weight: 600; }
 .diff-meta { display: block; opacity: 0.5; }
 .diff-ctx  { display: block; opacity: 0.75; }
+
+/* ---------- UI dialogs (ui.js): styled confirm/alert modals ---------- */
+.ui-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.35);
+    backdrop-filter: blur(4px);
+}
+
+.ui-dialog-box {
+    animation: ui-dialog-in 0.2s ease both;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+@keyframes ui-dialog-in {
+    from { opacity: 0; transform: translateY(10px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ui-dialog-icon {
+    width: 2.4rem;
+    height: 2.4rem;
+    border-radius: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: #fff;
+    font-size: 1rem;
+    background: var(--pdo-gradient);
+    box-shadow: 0 6px 16px rgba(99, 102, 241, 0.3);
+}
+
+.ui-dialog-icon-danger {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    box-shadow: 0 6px 16px rgba(239, 68, 68, 0.3);
+}

@@ -36,7 +36,7 @@
                 </form>
                 {% endif %}
                 <form method="POST" action="{{ url_for('settings.ai_delete', conn_id=c.id) }}"
-                      onsubmit="return confirm('Delete this connection?')">
+                      data-confirm="Delete this connection?" data-confirm-danger>
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-sm btn-ghost text-error"><i class="fas fa-trash"></i></button>
                 </form>

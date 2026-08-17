@@ -71,7 +71,7 @@
                         <a href="{{ url_for('drive.version_diff', file_id=file.id, version_id=v.id) }}"
                            class="btn btn-xs btn-ghost"><i class="fas fa-code-compare"></i> Diff vs current</a>
                         <form method="POST" action="{{ url_for('drive.version_restore', file_id=file.id, version_id=v.id) }}"
-                              onsubmit="return confirm('Restore v{{ v.version }}? The current content is kept in the history.')">
+                              data-confirm="Restore v{{ v.version }}? The current content is kept in the history.">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-xs btn-outline btn-primary">
                                 <i class="fas fa-rotate-left"></i> Restore

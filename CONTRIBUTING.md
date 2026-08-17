@@ -78,6 +78,10 @@ git push
   keep routes thin. Protect routes with `@login_required`.
 - **Frontend**: vanilla ES6+ in `app/static/js/`, Tailwind + DaisyUI classes,
   templates extend `base.html`.
+- **Dialogs**: never use native `alert()` / `confirm()` / `prompt()`. Use the
+  global modal in `app/static/js/ui.js`: `await window.uiConfirm(msg, { danger: true })`
+  in JS, or declarative `data-confirm="..."` (+ optional `data-confirm-danger`)
+  attributes on forms/links.
 - **Tests**: add tests for new features — `tests/conftest.py` provides the
   app/client fixtures with an in-memory database.
 
