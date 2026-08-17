@@ -98,7 +98,8 @@ def find_duplicates(stored_file):
     return (StoredFile.query
             .filter(StoredFile.user_id == stored_file.user_id,
                     StoredFile.checksum == stored_file.checksum,
-                    StoredFile.id != stored_file.id)
+                    StoredFile.id != stored_file.id,
+                    StoredFile.deleted_at.is_(None))
             .order_by(StoredFile.created_at)
             .all())
 
@@ -109,7 +110,8 @@ def duplicate_checksums(user_id):
 
     rows = (db.session.query(StoredFile.checksum)
             .filter(StoredFile.user_id == user_id,
-                    StoredFile.checksum.isnot(None))
+                    StoredFile.checksum.isnot(None),
+                    StoredFile.deleted_at.is_(None))
             .group_by(StoredFile.checksum)
             .having(func.count() > 1)
             .all())
@@ -117,7 +119,20 @@ def duplicate_checksums(user_id):
 
 
 def delete_file(stored_file):
-    """Delete a stored file: DB rows (index/versions cascade), disk blobs."""
+    """Soft-delete: move the file to the trash (blob and history are kept)."""
+    from ..models import utcnow
+    stored_file.deleted_at = utcnow()
+    db.session.commit()
+
+
+def restore_file(stored_file):
+    """Bring a trashed file back to its drive."""
+    stored_file.deleted_at = None
+    db.session.commit()
+
+
+def purge_file(stored_file):
+    """Permanently delete: DB rows (index/versions cascade) and disk blobs."""
     for version in stored_file.versions:
         try:
             path = version_path(version)
@@ -134,6 +149,15 @@ def delete_file(stored_file):
             current_app.logger.exception("Failed to remove %s", path)
     db.session.delete(stored_file)
     db.session.commit()
+
+
+def trashed_files(user_id):
+    """Files currently in the user's trash, most recently deleted first."""
+    return (StoredFile.query
+            .filter(StoredFile.user_id == user_id,
+                    StoredFile.deleted_at.isnot(None))
+            .order_by(StoredFile.deleted_at.desc())
+            .all())
 
 
 def version_path(version):
@@ -170,10 +194,11 @@ def snapshot_version(stored_file, source, note=""):
 
 
 def find_by_name(user_id, drive_id, folder_id, name):
-    """Existing file with this exact name in the same folder of a drive."""
+    """Existing active (non-trashed) file with this name in the same folder."""
     return (StoredFile.query
             .filter_by(user_id=user_id, drive_id=drive_id,
                        folder_id=folder_id, name=name)
+            .filter(StoredFile.deleted_at.is_(None))
             .first())
 
 

@@ -106,7 +106,8 @@ def chat():
     if attachment_ids:
         attached = (StoredFile.query
                     .filter(StoredFile.id.in_(attachment_ids),
-                            StoredFile.user_id == current_user.id)
+                            StoredFile.user_id == current_user.id,
+                            StoredFile.deleted_at.is_(None))
                     .all())
 
     conv = _get_conversation(data.get("conversation_id"))

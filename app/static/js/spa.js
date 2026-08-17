@@ -187,6 +187,7 @@
     // --- form interception ------------------------------------------------------
     document.addEventListener('submit', async (e) => {
         const form = e.target;
+        if (e.defaultPrevented) return; // ui.js data-confirm modal is intercepting
         if (form.dataset.noSpa !== undefined) return;
         if ((form.method || '').toLowerCase() !== 'post') return;
         const action = form.getAttribute('action') || window.location.pathname;

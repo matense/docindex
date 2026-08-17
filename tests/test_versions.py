@@ -149,6 +149,11 @@ def test_delete_removes_version_blobs(auth_client, app):
             assert os.path.exists(os.path.join(versions_dir, name))
     auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
     with app.app_context():
+        # soft-delete keeps everything; purge removes blobs and rows
+        assert StoredFile.query.count() == 1
+        assert FileVersion.query.count() == 1
+    auth_client.post(f"/file/{fid}/purge", follow_redirects=True)
+    with app.app_context():
         assert StoredFile.query.count() == 0
         assert FileVersion.query.count() == 0
         for name in blob_names:
@@ -222,7 +227,9 @@ def test_merge_accept_keeps_history_and_deletes_other(auth_client, app):
                      follow_redirects=True)
     with app.app_context():
         stored = db.session.get(StoredFile, a_id)
-        assert StoredFile.query.count() == 1
+        # the merged-away file is soft-deleted (trash), its row remains
+        other = StoredFile.query.filter_by(name="b.txt").one()
+        assert other.deleted_at is not None
         assert len(stored.versions) == 1
         assert stored.versions[0].source == "merge"
         assert "b.txt" in stored.versions[0].note

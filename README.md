@@ -18,6 +18,9 @@ questions about your files by searching and reading them step by step.
 
 - **File drive** — folders, multi-file upload, download, rename, move, delete,
   and in-place editing of text/code files.
+- **Trash bin** — deleting a file moves it to a trash bin on your profile
+  page, where you can restore it or delete it forever (nothing is lost until
+  you purge it).
 - **Version history** — re-uploading a file with the same name into the same
   folder creates a new version instead of a duplicate. The file page has a
   history timeline with diffs and one-click restore for text files, and

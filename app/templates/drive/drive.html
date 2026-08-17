@@ -56,7 +56,7 @@
         <i class="fas fa-circle-info"></i>
     </button>
     <form method="POST" action="{{ url_for('drive.delete', file_id=f.id) }}" class="inline"
-          data-confirm="Delete &quot;{{ f.name }}&quot;?" data-confirm-danger>
+          data-confirm="Move &quot;{{ f.name }}&quot; to the trash?" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-circle btn-xs btn-ghost text-error" title="Delete">
             <i class="fas fa-trash"></i>
@@ -142,7 +142,7 @@
         </div>
         {% if folder %}
         <form method="POST" action="{{ url_for('drive.delete_folder', folder_id=folder.id) }}"
-              data-confirm="Delete this folder and ALL its contents?" data-confirm-danger>
+              data-confirm="Delete this folder? Its files will be moved to the trash." data-confirm-danger>
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-ghost btn-sm text-error"><i class="fas fa-trash"></i> Delete folder</button>
         </form>

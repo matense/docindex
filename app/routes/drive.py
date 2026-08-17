@@ -20,6 +20,14 @@ def _get_owned(model, obj_id):
     return obj
 
 
+def _get_file(file_id, include_trashed=False):
+    """Fetch one of the user's files; trashed files are hidden by default."""
+    stored = _get_owned(StoredFile, file_id)
+    if not include_trashed and stored.deleted_at is not None:
+        abort(404)
+    return stored
+
+
 def _trigger_indexing(file_id):
     if current_app.config.get("INDEX_ASYNC", True):
         indexing_service.index_file_async(file_id, current_app._get_current_object())
@@ -37,7 +45,9 @@ def _delete_folder_recursive(folder):
     for child in list(folder.children):
         _delete_folder_recursive(child)
     for stored in list(folder.files):
-        file_service.delete_file(stored)
+        if stored.deleted_at is None:
+            stored.folder_id = None  # folder row is removed; restore lands at root
+            file_service.delete_file(stored)
     db.session.delete(folder)
 
 
@@ -72,6 +82,7 @@ def index(folder_id=None):
     files = (StoredFile.query
              .filter_by(user_id=current_user.id, folder_id=scope,
                         drive_id=drive.id)
+             .filter(StoredFile.deleted_at.is_(None))
              .order_by(StoredFile.name).all())
     return render_template(
         "drive/drive.html",
@@ -193,7 +204,7 @@ def upload():
 @bp.route("/file/<int:file_id>/download")
 @login_required
 def download(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     return send_file(file_service.file_path(stored), as_attachment=True,
                      download_name=stored.name)
 
@@ -202,7 +213,7 @@ def download(file_id):
 @login_required
 def raw(file_id):
     """Serve the file inline (used by previews)."""
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     return send_file(file_service.file_path(stored), as_attachment=False,
                      download_name=stored.name)
 
@@ -210,7 +221,7 @@ def raw(file_id):
 @bp.route("/file/<int:file_id>/thumbnail")
 @login_required
 def thumbnail(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     path = file_service.thumbnail_path(stored)
     if not os.path.exists(path):
         abort(404)
@@ -220,7 +231,7 @@ def thumbnail(file_id):
 @bp.route("/file/<int:file_id>/rename", methods=["POST"])
 @login_required
 def rename(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     new_name = request.form.get("name", "").strip()
     if not new_name:
         flash("Name cannot be empty.", "error")
@@ -236,7 +247,7 @@ def rename(file_id):
 @bp.route("/file/<int:file_id>/move", methods=["POST"])
 @login_required
 def move(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     folder_id = request.form.get("folder_id", type=int)
     if folder_id:
         _get_owned(Folder, folder_id)
@@ -249,18 +260,50 @@ def move(file_id):
 @bp.route("/file/<int:file_id>/delete", methods=["POST"])
 @login_required
 def delete(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     folder_id = stored.folder_id
     file_service.delete_file(stored)
-    flash("File deleted.", "success")
+    flash(f'"{stored.name}" moved to the trash — restore it from your profile.',
+          "success")
     return redirect(url_for("drive.index", folder_id=folder_id))
+
+
+# ---------- Trash (soft-deleted files) ----------
+
+@bp.route("/file/<int:file_id>/restore", methods=["POST"])
+@login_required
+def restore(file_id):
+    stored = _get_file(file_id, include_trashed=True)
+    file_service.restore_file(stored)
+    flash(f'"{stored.name}" restored.', "success")
+    return redirect(url_for("settings.profile"))
+
+
+@bp.route("/file/<int:file_id>/purge", methods=["POST"])
+@login_required
+def purge(file_id):
+    stored = _get_file(file_id, include_trashed=True)
+    name = stored.name
+    file_service.purge_file(stored)
+    flash(f'"{name}" permanently deleted.', "success")
+    return redirect(url_for("settings.profile"))
+
+
+@bp.route("/trash/empty", methods=["POST"])
+@login_required
+def empty_trash():
+    trashed = file_service.trashed_files(current_user.id)
+    for stored in trashed:
+        file_service.purge_file(stored)
+    flash(f"Trash emptied — {len(trashed)} file(s) permanently deleted.", "success")
+    return redirect(url_for("settings.profile"))
 
 
 @bp.route("/file/<int:file_id>/view")
 @login_required
 def view(file_id):
     """In-app document viewer for all file types."""
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     content = None
     rendered = None
     if stored.extension == "md":
@@ -279,7 +322,7 @@ def view(file_id):
 @bp.route("/file/<int:file_id>/edit", methods=["GET", "POST"])
 @login_required
 def edit(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     if not stored.is_editable:
         abort(400)
     if request.method == "POST":
@@ -295,7 +338,7 @@ def edit(file_id):
 @bp.route("/file/<int:file_id>/reindex", methods=["POST"])
 @login_required
 def reindex(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     _trigger_indexing(stored.id)
     flash("Re-indexing started.", "success")
     return redirect(url_for("drive.index", folder_id=stored.folder_id))
@@ -304,7 +347,7 @@ def reindex(file_id):
 @bp.route("/file/<int:file_id>/info")
 @login_required
 def info(file_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     index = stored.index
     dupes = file_service.find_duplicates(stored)
     return jsonify({
@@ -355,7 +398,7 @@ def _diff_lines(old_text, new_text, old_label, new_label):
 @bp.route("/file/<int:file_id>/history/<int:version_id>/download")
 @login_required
 def version_download(file_id, version_id):
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     version = _get_version(stored, version_id)
     stem = stored.name.rsplit(".", 1)[0] if "." in stored.name else stored.name
     download_name = (f"{stem}.v{version.version}.{stored.extension}"
@@ -368,7 +411,7 @@ def version_download(file_id, version_id):
 @login_required
 def version_diff(file_id, version_id):
     """Unified diff of a past version against the current content (text only)."""
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     if not stored.is_editable:
         abort(400)
     version = _get_version(stored, version_id)
@@ -383,7 +426,7 @@ def version_diff(file_id, version_id):
 @login_required
 def version_restore(file_id, version_id):
     """Roll a text file back to a past version (current state is snapshotted)."""
-    stored = _get_owned(StoredFile, file_id)
+    stored = _get_file(file_id)
     if not stored.is_editable:
         abort(400)
     version = _get_version(stored, version_id)
@@ -400,8 +443,8 @@ MERGE_TEXT_LIMIT = 20_000
 
 
 def _get_merge_pair(file_id, other_id):
-    stored = _get_owned(StoredFile, file_id)
-    other = _get_owned(StoredFile, other_id)
+    stored = _get_file(file_id)
+    other = _get_file(other_id)
     if other.id == stored.id:
         abort(400)
     if not (stored.is_editable and other.is_editable):
@@ -469,7 +512,7 @@ def merge_accept(file_id, other_id):
     _trigger_indexing(stored.id)
     if request.form.get("delete_other"):
         file_service.delete_file(other)
-        flash(f'Merged — "{other.name}" was deleted.', "success")
+        flash(f'Merged — "{other.name}" was moved to the trash.', "success")
     else:
         flash("Merged — both files kept, history preserved.", "success")
     return redirect(url_for("drive.view", file_id=stored.id))
@@ -497,7 +540,10 @@ def create_folder():
 def delete_selection():
     deleted = 0
     for fid in _id_list("file_ids"):
-        stored = StoredFile.query.filter_by(id=fid, user_id=current_user.id).first()
+        stored = (StoredFile.query
+                  .filter_by(id=fid, user_id=current_user.id)
+                  .filter(StoredFile.deleted_at.is_(None))
+                  .first())
         if stored:
             file_service.delete_file(stored)
             deleted += 1
@@ -520,7 +566,10 @@ def move_selection():
     moved = 0
     skipped = 0
     for fid in _id_list("file_ids"):
-        stored = StoredFile.query.filter_by(id=fid, user_id=current_user.id).first()
+        stored = (StoredFile.query
+                  .filter_by(id=fid, user_id=current_user.id)
+                  .filter(StoredFile.deleted_at.is_(None))
+                  .first())
         if stored:
             stored.folder_id = dest.id if dest else None
             moved += 1

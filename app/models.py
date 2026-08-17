@@ -104,6 +104,7 @@ class StoredFile(db.Model):
     folder_id = db.Column(db.Integer, db.ForeignKey("folders.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     drive_id = db.Column(db.Integer, db.ForeignKey("drives.id"), nullable=True, index=True)
+    deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete (trash)
     created_at = db.Column(db.DateTime, default=utcnow)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 

@@ -5,7 +5,7 @@ from sqlalchemy import func
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
                       FileIndex, Folder, Setting, StoredFile, User)
-from ..services import ai_service
+from ..services import ai_service, file_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 
@@ -68,10 +68,12 @@ def profile():
         file_count, total_size = (db.session.query(
             func.count(StoredFile.id),
             func.coalesce(func.sum(StoredFile.size), 0))
-            .filter_by(drive_id=d.id).first())
+            .filter(StoredFile.drive_id == d.id,
+                    StoredFile.deleted_at.is_(None)).first())
         total_words = (db.session.query(func.coalesce(func.sum(FileIndex.word_count), 0))
                        .join(StoredFile, FileIndex.file_id == StoredFile.id)
-                       .filter(StoredFile.drive_id == d.id).scalar())
+                       .filter(StoredFile.drive_id == d.id,
+                               StoredFile.deleted_at.is_(None)).scalar())
         drive_stats.append({
             "drive": d,
             "file_count": file_count,
@@ -91,6 +93,7 @@ def profile():
     return render_template("settings/profile.html",
                            drive_stats=drive_stats,
                            ai_stats=ai_stats,
+                           trashed=file_service.trashed_files(current_user.id),
                            registration_enabled=Setting.get_bool("registration_enabled", True))
 
 

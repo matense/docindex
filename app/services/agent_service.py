@@ -139,7 +139,10 @@ def _tool_search_files(user, query, drive=None):
 
 
 def _tool_read_file(user, file_id, start=0, length=20_000):
-    stored = StoredFile.query.filter_by(id=file_id, user_id=user.id).first()
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
     if not stored:
         return {"error": "File not found."}
 
@@ -175,7 +178,9 @@ def _tool_read_file(user, file_id, start=0, length=20_000):
 def _tool_list_files(user, folder_id=None, drive=None):
     from ..models import Folder
 
-    query = StoredFile.query.filter_by(user_id=user.id)
+    query = (StoredFile.query
+             .filter_by(user_id=user.id)
+             .filter(StoredFile.deleted_at.is_(None)))
     folders_q = Folder.query.filter_by(user_id=user.id)
     if drive is not None:
         query = query.filter(StoredFile.drive_id == drive.id)
@@ -196,7 +201,10 @@ def _tool_list_files(user, folder_id=None, drive=None):
 
 
 def _tool_get_file_info(user, file_id):
-    stored = StoredFile.query.filter_by(id=file_id, user_id=user.id).first()
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
     if not stored:
         return {"error": "File not found."}
     return {

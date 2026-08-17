@@ -74,6 +74,10 @@ def test_rename_and_delete(auth_client, app):
         assert StoredFile.query.one().name == "after.txt"
     auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
     with app.app_context():
+        # delete is a soft-delete (trash); purge removes the row for good
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+    auth_client.post(f"/file/{fid}/purge", follow_redirects=True)
+    with app.app_context():
         assert StoredFile.query.count() == 0
 
 
@@ -192,7 +196,9 @@ def test_selection_delete_files_and_folders(auth_client, app):
     })
     assert resp.get_json()["deleted"] == 2
     with app.app_context():
-        assert StoredFile.query.count() == 0
+        # files go to the trash (soft-delete), folders are removed outright
+        stored = db.session.get(StoredFile, fid)
+        assert stored.deleted_at is not None
         assert Folder.query.count() == 0
 
 

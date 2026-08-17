@@ -172,6 +172,7 @@ Relationships: `children` (self-ref, cascade delete-orphan), `files`.
 | `folder_id` | FK -> folders.id, nullable, indexed | NULL = drive root |
 | `user_id` | FK -> users.id, indexed | |
 | `drive_id` | FK -> drives.id, nullable, indexed | |
+| `deleted_at` | DateTime, nullable, indexed | set = in the trash (soft-delete) |
 | `created_at`, `updated_at` | DateTime | `updated_at` auto-bumps |
 
 Relationship: `index` (one-to-one `FileIndex`, cascade delete-orphan) and
@@ -179,12 +180,21 @@ Relationship: `index` (one-to-one `FileIndex`, cascade delete-orphan) and
 Properties: `is_image` (png/jpg/jpeg/gif/webp/bmp), `is_editable` (extension
 in `EDITABLE_EXTENSIONS`).
 
+**Trash (soft-delete).** Deleting a file only sets `deleted_at`; the blob,
+thumbnail and version history stay on disk. Trashed files are hidden from
+drive listings, search, the AI agent, attachments and profile stats (every
+active-file query filters `deleted_at IS NULL`). Restoring clears the column;
+purging (`purge_file`) removes blobs and rows permanently. The profile page
+has a Trash section with restore / delete-forever / empty-trash actions.
+Deleting a folder trashes its files with `folder_id` reset to NULL, so a
+restore lands at the drive root.
+
 ### `file_versions` (`FileVersion`)
 
 A snapshot of a file's previous content. Snapshots are taken *before* any
 overwrite (same-name re-upload, edit, AI merge accept, restore); the live
 file is always the current version. Blobs live in `uploads/versions/`
-(`VERSIONS_FOLDER`) and are removed from disk by `delete_file`.
+(`VERSIONS_FOLDER`) and are removed from disk by `purge_file`.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -284,7 +294,9 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   `view` = grid/list/tree stored in session), `/drives/create|select|edit`,
   `/upload` (multi-file, HTML redirect or JSON when `Accept: application/json`;
   same-name same-folder upload becomes a new version),
-  `/file/<id>/download|raw|thumbnail|rename|move|delete|view|edit|reindex|info`,
+  `/file/<id>/download|raw|thumbnail|rename|move|delete|view|edit|reindex|info`
+  (delete is a soft-delete into the trash; `POST /file/<id>/restore`,
+  `POST /file/<id>/purge` and `POST /trash/empty` manage the trash),
   `/file/<id>/history/<vid>/download|diff` and `POST .../restore` (version
   history; diff/restore are text-only), `/file/<id>/merge/<other_id>` (merge
   review page; `POST .../ai` JSON proposal, `POST .../preview` JSON diff,
@@ -304,12 +316,14 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   email update (`POST /settings/profile/email`), password change
   (`POST /settings/profile/password`, requires the current password),
   per-drive stats (files, folders, space used, indexed words), AI usage
-  (conversations, messages, active connection) and, for admins only,
+  (conversations, messages, active connection), the trash bin (restore /
+  delete forever / empty trash) and, for admins only,
   `POST /settings/profile/registration` to toggle the
   `registration_enabled` setting.
 
 Ownership is enforced everywhere by filtering on `user_id` (`_get_owned`
-returns 404 for foreign objects).
+returns 404 for foreign objects; `_get_file` additionally hides trashed
+files from the normal file routes).
 
 ## Request flows
 
@@ -387,7 +401,9 @@ and `model` per message (including thinking/step rows for the history view);
   thumbnails, SHA-256 checksums + duplicate detection
   (`find_duplicates`, `duplicate_checksums`), version history
   (`snapshot_version`, `replace_with_upload`, `restore_version`,
-  `find_by_name`), `delete_file` (disk + DB + thumbnail + version blobs),
+  `find_by_name`), trash (`delete_file` soft-deletes, `restore_file`,
+  `purge_file` removes disk + DB + thumbnail + version blobs,
+  `trashed_files`),
   `update_file_content` (snapshots before overwriting), `read_text_content`.
 - **indexing_service** — extraction and indexing (see flow above).
 - **search_service** — query parsing, scoring, snippet generation.

@@ -73,7 +73,8 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
 
     q = (StoredFile.query
          .outerjoin(FileIndex, FileIndex.file_id == StoredFile.id)
-         .filter(StoredFile.user_id == user.id))
+         .filter(StoredFile.user_id == user.id,
+                 StoredFile.deleted_at.is_(None)))
     if drive is not None:
         q = q.filter(StoredFile.drive_id == drive.id)
     rows = q.filter(or_(*conditions)).all()

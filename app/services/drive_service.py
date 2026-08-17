@@ -39,7 +39,9 @@ def get_current_drive(user):
         drive = _create_drive(user, DEFAULT_DRIVE_NAME)
 
     # Files/folders that predate the drives feature belong to the first drive.
-    orphaned_files = StoredFile.query.filter_by(user_id=user.id, drive_id=None)
+    orphaned_files = (StoredFile.query
+                      .filter_by(user_id=user.id, drive_id=None)
+                      .filter(StoredFile.deleted_at.is_(None)))
     if orphaned_files.count():
         orphaned_files.update({StoredFile.drive_id: drive.id})
     orphaned_folders = Folder.query.filter_by(user_id=user.id, drive_id=None)
