@@ -25,9 +25,10 @@ questions about your files by searching and reading them step by step.
   read-only drive that mirrors it: files are indexed (text, PDF, DOCX,
   OCR/images) and searchable by the AI, but never copied or modified — they
   stay on your disk. Sync runs in the background with a floating progress
-  popup (percentage, pause/resume) and a per-drive sync summary on your
-  profile page. Note: the folder path is read with the permissions of the
-  process running DocIndex.
+  popup (percentage, pause/resume/stop) and a per-drive sync summary on your
+  profile page. Removing a synced drive clears it and its index from
+  DocIndex — the real folder is never touched. Note: the folder path is read
+  with the permissions of the process running DocIndex.
 - **Version history** — re-uploading a file with the same name into the same
   folder creates a new version instead of a duplicate. The file page has a
   history timeline with diffs and one-click restore for text files, and
@@ -96,7 +97,10 @@ python run.py                   # http://localhost:5000
 ```
 
 For OCR of images, install the Tesseract binary and set `TESSERACT_LANGS`
-(default `eng+por`) in `.env`.
+(default `eng+por`) in `.env`. This is optional: without it, images are
+simply indexed without OCR text (and via AI captions if an AI connection
+with a vision model exists) — DocIndex logs a single info note at startup
+instead of a warning per image.
 
 For development with auto-reload, add `FLASK_DEBUG=true` to your local `.env`
 (never enable this in production).

@@ -108,21 +108,7 @@
             </ul>
         </div>
         <!-- Selection toolbar -->
-        {% if drive.is_synced %}
-        <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-2">
-            <span class="badge badge-info badge-outline gap-1"><i class="fas fa-lock"></i> Synced · read-only</span>
-            <form method="POST" action="{{ url_for('drive.sync_now', drive_id=drive.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="next" value="{{ request.full_path }}">
-                <button type="submit" class="btn btn-info btn-sm gap-1.5" title="Re-scan the local folder">
-                    <i class="fas fa-arrows-rotate"></i> Sync now
-                </button>
-            </form>
-            {% if drive.last_synced_at %}
-            <span class="text-xs opacity-50">Last synced {{ drive.last_synced_at.strftime('%d %b %Y %H:%M') }}</span>
-            {% endif %}
-        </div>
-        {% else %}
+        {% if not drive.is_synced %}
         <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-1" id="drive-toolbar">
             <button type="button" class="btn btn-ghost btn-sm gap-1.5" title="New folder"
                     onclick="document.getElementById('new-folder-modal').showModal()">
@@ -170,7 +156,44 @@
     </div>
 </div>
 
-{% if drive and drive.description and not folder %}
+{% if drive.is_synced %}
+<!-- Synced drive banner -->
+<div class="glass-panel rounded-2xl px-4 py-3 mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border border-info/25 bg-info/5">
+    <span class="w-10 h-10 rounded-xl bg-info/15 text-info flex items-center justify-center text-lg flex-shrink-0">
+        <i class="fas fa-folder-tree"></i>
+    </span>
+    <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 text-sm font-bold">
+            Synced drive
+            <span class="badge badge-info badge-outline badge-sm gap-1"><i class="fas fa-lock"></i> read-only</span>
+        </div>
+        <div class="text-xs opacity-50 truncate" title="{{ drive.source_path }}">
+            {{ drive.source_path }}
+            {% if drive.last_synced_at %}· last synced {{ drive.last_synced_at.strftime('%d %b %Y %H:%M') }}{% endif %}
+        </div>
+    </div>
+    <div class="flex items-center gap-2 flex-shrink-0">
+        <form method="POST" action="{{ url_for('drive.sync_now', drive_id=drive.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            <button type="submit" class="btn btn-info btn-sm w-32 whitespace-nowrap flex-nowrap gap-1.5 justify-center" title="Re-scan the local folder">
+                <i class="fas fa-arrows-rotate"></i> Sync now
+            </button>
+        </form>
+        <form method="POST" action="{{ url_for('drive.remove_drive', drive_id=drive.id) }}"
+              data-confirm="Remove synced drive &quot;{{ drive.name }}&quot;?&#10;&#10;This stops any running sync and deletes the drive, its files and search index from DocIndex.&#10;&#10;The real folder on your disk is NOT touched."
+              data-confirm-danger>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-outline btn-error btn-sm w-32 whitespace-nowrap flex-nowrap gap-1.5 justify-center bg-base-100/60"
+                    title="Remove this synced drive from DocIndex (the folder on disk is kept)">
+                <i class="fas fa-link-slash"></i> Remove
+            </button>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+{% if drive and drive.description and not folder and not drive.is_synced %}
 <p class="text-sm opacity-60 mb-4 flex items-center gap-2">
     <i class="fas fa-circle-info text-secondary"></i> {{ drive.description }}
 </p>

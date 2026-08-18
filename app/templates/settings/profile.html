@@ -70,40 +70,95 @@
         <h2 class="font-bold text-lg mb-4"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
         <div class="flex flex-col gap-3">
             {% for s in drive_stats %}
-            <div class="rounded-xl border border-base-content/10 p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
-                <div class="min-w-0 flex-1">
-                    <div class="font-bold truncate">
-                        <i class="fas {{ 'fa-link text-info' if s.drive.is_synced else 'fa-database text-secondary' }} mr-1"></i>
-                        {{ s.drive.name }}
-                        {% if s.drive.is_synced %}
-                        <span class="badge badge-info badge-outline badge-sm gap-1 ml-1"><i class="fas fa-lock"></i> synced</span>
-                        {% endif %}
+            {% if s.drive.is_synced %}
+            <!-- Synced drive card -->
+            <div class="rounded-xl border border-info/25 bg-info/5 overflow-hidden">
+                <!-- Header: name + badge, actions on the right -->
+                <div class="flex items-center gap-3 px-4 pt-4 pb-3">
+                    <span class="w-9 h-9 rounded-lg bg-info/15 text-info flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-folder-tree"></i>
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <div class="font-bold truncate flex items-center gap-2">
+                            {{ s.drive.name }}
+                            <span class="badge badge-info badge-outline badge-sm gap-1"><i class="fas fa-lock"></i> synced · read-only</span>
+                        </div>
+                        <div class="text-xs opacity-50">
+                            {% if s.drive.last_synced_at %}
+                            <i class="fas fa-clock-rotate-left"></i> Last synced {{ s.drive.last_synced_at.strftime('%d %b %Y %H:%M') }}
+                            {% else %}
+                            Not synced yet
+                            {% endif %}
+                        </div>
                     </div>
-                    {% if s.drive.description %}
-                    <div class="text-xs opacity-50 truncate">{{ s.drive.description }}</div>
-                    {% endif %}
-                    {% if s.drive.is_synced %}
-                    <div class="text-xs opacity-60 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {% if s.drive.last_synced_at %}
-                        <span><i class="fas fa-clock-rotate-left opacity-50"></i>
-                            Last synced {{ s.drive.last_synced_at.strftime('%d %b %Y %H:%M') }}</span>
-                        {% endif %}
-                        {% if s.sync_stats %}
-                        <span class="text-success">+{{ s.sync_stats.added }} added</span>
-                        <span class="text-warning">{{ s.sync_stats.updated }} updated</span>
-                        <span class="text-error">−{{ s.sync_stats.removed }} removed</span>
-                        <span class="opacity-50">{{ s.sync_stats.skipped }} skipped</span>
-                        {% else %}
-                        <span class="opacity-50">No sync completed yet</span>
-                        {% endif %}
-                        <form method="POST" action="{{ url_for('drive.sync_now', drive_id=s.drive.id) }}" class="inline">
+                    <div class="flex gap-2 flex-shrink-0">
+                        <form method="POST" action="{{ url_for('drive.sync_now', drive_id=s.drive.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="next" value="{{ url_for('settings.profile') }}">
-                            <button type="submit" class="btn btn-info btn-outline btn-xs gap-1">
+                            <button type="submit" class="btn btn-info btn-sm w-32 whitespace-nowrap flex-nowrap gap-1.5 justify-center">
                                 <i class="fas fa-arrows-rotate"></i> Sync now
                             </button>
                         </form>
+                        <form method="POST" action="{{ url_for('drive.remove_drive', drive_id=s.drive.id) }}"
+                              data-confirm="Remove synced drive &quot;{{ s.drive.name }}&quot;? This deletes the drive and its index from DocIndex — the real folder on disk is NOT touched."
+                              data-confirm-danger>
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-outline btn-error btn-sm w-32 whitespace-nowrap flex-nowrap gap-1.5 justify-center bg-base-100/60">
+                                <i class="fas fa-link-slash"></i> Remove
+                            </button>
+                        </form>
                     </div>
+                </div>
+                <!-- Full source path -->
+                <div class="mx-4 mb-3 px-3 py-2 rounded-lg bg-base-200/60 font-mono text-xs break-all flex items-start gap-2"
+                     title="{{ s.drive.source_path }}">
+                    <i class="fas fa-folder-open opacity-40 mt-0.5"></i>
+                    <span class="flex-1">{{ s.drive.source_path }}</span>
+                </div>
+                <!-- Live sync progress (shown by JS while a sync runs) -->
+                <div class="hidden mx-4 mb-3 rounded-lg border border-info/25 bg-info/10 px-3 py-2"
+                     data-sync-progress data-drive-id="{{ s.drive.id }}">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-arrows-rotate fa-spin text-info text-xs sync-spinner"></i>
+                        <progress class="progress progress-info flex-1 h-2" value="0" max="100"></progress>
+                        <span class="text-xs font-bold w-10 text-right sync-pct">0%</span>
+                        <button type="button" class="btn btn-circle btn-xs btn-ghost" data-sync-toggle title="Pause">
+                            <i class="fas fa-pause"></i>
+                        </button>
+                        <button type="button" class="btn btn-circle btn-xs btn-ghost text-error" data-sync-stop title="Stop sync">
+                            <i class="fas fa-stop"></i>
+                        </button>
+                    </div>
+                    <div class="text-[11px] opacity-50 truncate mt-1 sync-current"></div>
+                </div>
+                <!-- Footer: drive stats + last sync result -->
+                <div class="px-4 py-2.5 border-t border-info/15 bg-base-100/40 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+                    <span><i class="fas fa-file opacity-40"></i> <strong>{{ s.file_count }}</strong> files</span>
+                    <span><i class="fas fa-folder opacity-40"></i> <strong>{{ s.folder_count }}</strong> folders</span>
+                    <span><i class="fas fa-hard-drive opacity-40"></i> <strong>{{ human_size(s.total_size) }}</strong></span>
+                    <span><i class="fas fa-align-left opacity-40"></i> <strong>{{ '{:,}'.format(s.total_words) }}</strong> words</span>
+                    <span class="flex-1"></span>
+                    {% if s.sync_stats %}
+                    <span class="flex items-center gap-x-4 whitespace-nowrap">
+                        <span class="opacity-40 uppercase tracking-wide text-[10px] font-semibold">last sync</span>
+                        <span class="text-success font-semibold">+{{ s.sync_stats.added }} added</span>
+                        <span class="text-warning font-semibold">{{ s.sync_stats.updated }} updated</span>
+                        <span class="text-error font-semibold">−{{ s.sync_stats.removed }} removed</span>
+                        <span class="opacity-50">{{ s.sync_stats.skipped }} skipped</span>
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+            {% else %}
+            <!-- Regular drive card -->
+            <div class="rounded-xl border border-base-content/10 p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+                <div class="min-w-0 flex-1">
+                    <div class="font-bold truncate">
+                        <i class="fas fa-database text-secondary mr-1"></i>
+                        {{ s.drive.name }}
+                    </div>
+                    {% if s.drive.description %}
+                    <div class="text-xs opacity-50 truncate">{{ s.drive.description }}</div>
                     {% endif %}
                 </div>
                 <div class="flex gap-6 text-sm">
@@ -125,6 +180,7 @@
                     </div>
                 </div>
             </div>
+            {% endif %}
             {% else %}
             <div class="text-center opacity-50 py-4">
                 <i class="fas fa-hard-drive text-2xl mb-2 block"></i>
@@ -228,4 +284,77 @@
     </div>
     {% endif %}
 </div>
+
+<script>
+// Live sync progress on synced drive cards: pause / resume / stop.
+(function () {
+    const sections = document.querySelectorAll('[data-sync-progress]');
+    if (!sections.length) return;
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrf = csrfMeta ? csrfMeta.getAttribute('content') : '';
+
+    async function tick() {
+        let anyVisible = false;
+        for (const sec of document.querySelectorAll('[data-sync-progress]')) {
+            if (!document.contains(sec)) return; // page swapped away
+            const id = sec.dataset.driveId;
+            try {
+                const resp = await fetch(`/drives/${id}/sync/status`);
+                if (!resp.ok) continue;
+                const s = await resp.json();
+                const active = s.state === 'running' || s.state === 'paused';
+                sec.classList.toggle('hidden', !active);
+                if (!active) continue;
+                anyVisible = true;
+                sec.querySelector('progress').value = s.percent;
+                sec.querySelector('.sync-pct').textContent = s.percent + '%';
+                sec.querySelector('.sync-current').textContent =
+                    s.current || `${s.processed}/${s.total} files`;
+                const paused = s.state === 'paused';
+                const btn = sec.querySelector('[data-sync-toggle]');
+                btn.innerHTML = `<i class="fas ${paused ? 'fa-play' : 'fa-pause'}"></i>`;
+                btn.title = paused ? 'Resume' : 'Pause';
+                btn.dataset.paused = paused ? '1' : '';
+                sec.querySelector('.sync-spinner').className =
+                    `fas ${paused ? 'fa-pause' : 'fa-arrows-rotate fa-spin'} text-info text-xs sync-spinner`;
+            } catch { /* keep quiet */ }
+        }
+        return anyVisible;
+    }
+
+    sections.forEach((sec) => {
+        const id = sec.dataset.driveId;
+        sec.querySelector('[data-sync-toggle]').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const action = btn.dataset.paused === '1' ? 'resume' : 'pause';
+            await fetch(`/drives/${id}/sync/${action}`, {
+                method: 'POST', headers: { 'X-CSRFToken': csrf } });
+            tick();
+        });
+        sec.querySelector('[data-sync-stop]').addEventListener('click', async () => {
+            const ok = await window.uiConfirm(
+                'Stop the sync now? Files already scanned stay in the drive.',
+                { title: 'Stop sync', confirmText: 'Stop' });
+            if (!ok) return;
+            await fetch(`/drives/${id}/sync/stop`, {
+                method: 'POST', headers: { 'X-CSRFToken': csrf } });
+            tick();
+        });
+    });
+
+    tick();
+    // Avoid stacking intervals across SPA navigations to this page.
+    if (window.__profileSyncTimer) clearInterval(window.__profileSyncTimer);
+    window.__profileSyncTimer = setInterval(async () => {
+        const alive = [...document.querySelectorAll('[data-sync-progress]')]
+            .some((sec) => document.contains(sec));
+        if (!alive) {
+            clearInterval(window.__profileSyncTimer);
+            window.__profileSyncTimer = null;
+            return;
+        }
+        tick();
+    }, 1500);
+})();
+</script>
 {% endblock %}

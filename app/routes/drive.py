@@ -186,6 +186,28 @@ def sync_resume(drive_id):
     return jsonify(sync_service.get_status(drive.id) or {"state": "idle"})
 
 
+@bp.route("/drives/<int:drive_id>/sync/stop", methods=["POST"])
+@login_required
+def sync_stop(drive_id):
+    drive = _get_synced_drive(drive_id)
+    sync_service.cancel_sync(drive.id)
+    return jsonify({"ok": True})
+
+
+@bp.route("/drives/<int:drive_id>/remove", methods=["POST"])
+@login_required
+def remove_drive(drive_id):
+    """Remove a synced drive: stops any running sync and clears every
+    DocIndex row (files, folders, index) — the real folder is untouched."""
+    drive = _get_synced_drive(drive_id)
+    name = drive.name
+    sync_service.remove_synced_drive(drive)
+    session.pop("drive_id", None)  # pointed at the removed drive
+    flash(f'Synced drive "{name}" removed. The folder on disk was not '
+          "touched.", "success")
+    return redirect(url_for("drive.index"))
+
+
 @bp.route("/sync/active")
 @login_required
 def sync_active():

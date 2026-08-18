@@ -32,20 +32,26 @@ from . import file_service, indexing_service
 # Background job tracking
 # --------------------------------------------------------------------------
 
+class _SyncCancelled(Exception):
+    """Raised inside a sync when the user cancels it."""
+
+
 class _SyncJob:
     """Progress/state of one sync run (in-memory only)."""
 
     def __init__(self, drive_id, drive_name):
         self.drive_id = drive_id
         self.drive_name = drive_name
-        self.state = "running"      # running | paused | done | error
+        self.state = "running"      # running | paused | done | cancelled | error
         self.total = 0              # files to scan (counted in a fast pre-pass)
         self.processed = 0          # files already scanned
         self.current = ""           # file being processed right now
         self.stats = {"added": 0, "updated": 0, "removed": 0, "skipped": 0}
         self.error = None
+        self.thread = None
         self._resume = threading.Event()
         self._resume.set()          # cleared while paused
+        self._cancelled = False
 
     @property
     def percent(self):
@@ -53,9 +59,15 @@ class _SyncJob:
             return 0
         return round(self.processed * 100 / self.total)
 
+    def cancel(self):
+        self._cancelled = True
+        self._resume.set()          # wake a paused worker so it can exit
+
     def checkpoint(self):
-        """Block here while the job is paused."""
+        """Block while paused; abort the sync when cancelled."""
         self._resume.wait()
+        if self._cancelled:
+            raise _SyncCancelled()
 
     def as_dict(self):
         return {
@@ -116,6 +128,16 @@ def resume_sync(drive_id):
     return False
 
 
+def cancel_sync(drive_id):
+    """Stop a running/paused sync. The worker exits at the next file."""
+    with _jobs_lock:
+        job = _jobs.get(drive_id)
+        if job and job.state in ("running", "paused"):
+            job.cancel()
+            return True
+    return False
+
+
 def start_sync(drive, app=None):
     """Start a sync for the drive. Returns the job.
 
@@ -133,6 +155,7 @@ def start_sync(drive, app=None):
     if app.config.get("SYNC_ASYNC", True):
         thread = threading.Thread(target=_sync_worker,
                                   args=(drive.id, job, app), daemon=True)
+        job.thread = thread
         thread.start()
     else:
         _sync_worker(drive.id, job, app)
@@ -143,13 +166,52 @@ def _sync_worker(drive_id, job, app):
     with app.app_context():
         try:
             drive = db.session.get(Drive, drive_id)
+            if drive is None:
+                job.state = "cancelled"
+                return
             sync_drive(drive, job=job)
             job.state = "done"
+        except _SyncCancelled:
+            db.session.rollback()
+            job.state = "cancelled"
         except Exception as exc:  # noqa: BLE001 - report to the widget
             db.session.rollback()
             app.logger.exception("Sync failed for drive %s", drive_id)
             job.state = "error"
             job.error = str(exc)[:500]
+
+
+def remove_synced_drive(drive):
+    """Remove a synced drive and ALL its data from DocIndex.
+
+    Stops any running sync first, then deletes the drive row (files, folders,
+    index rows and versions cascade) and any thumbnails DocIndex generated.
+    The real files on disk are NEVER touched.
+    """
+    if not drive.is_synced:
+        raise ValueError("Not a synced drive.")
+
+    job = None
+    with _jobs_lock:
+        job = _jobs.get(drive.id)
+    if job and job.state in ("running", "paused"):
+        job.cancel()
+        if job.thread is not None:
+            job.thread.join(timeout=10)
+    with _jobs_lock:
+        _jobs.pop(drive.id, None)
+
+    # Thumbnails are ours (generated under THUMBNAIL_FOLDER) — remove them.
+    for stored in StoredFile.query.filter_by(drive_id=drive.id).all():
+        thumb = file_service.thumbnail_path(stored)
+        if os.path.exists(thumb):
+            try:
+                os.remove(thumb)
+            except OSError:
+                current_app.logger.exception("Failed to remove thumbnail %s", thumb)
+
+    db.session.delete(drive)  # cascades: files -> index/versions, folders
+    db.session.commit()
 
 
 # --------------------------------------------------------------------------

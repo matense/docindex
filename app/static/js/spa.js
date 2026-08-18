@@ -209,6 +209,7 @@
             history.pushState({ spa: true }, '', url);
             await swapContent(html, url);
             form.closest('dialog')?.close();
+            document.dispatchEvent(new CustomEvent('spa:mutated', { detail: { action } }));
         } catch {
             form.submit(); // fall back to a normal submission
         } finally {

@@ -318,8 +318,9 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   against moving a folder into itself/descendants),
   `POST /drives/sync-create` (create a synced drive from a local folder path)
   and `POST /drives/<id>/sync` (background re-sync; `GET .../sync/status`,
-  `POST .../sync/pause|resume` for progress control, `GET /sync/active` for
-  the floating widget). All write routes abort
+  `POST .../sync/pause|resume|stop` for progress control, `GET /sync/active`
+  for the floating widget, `POST /drives/<id>/remove` deletes the synced
+  drive and its index — never the real folder). All write routes abort
   400 for synced drives/files (`_guard_writable`).
 - `search.py`: `GET /search` (results page; `?mode=ai` renders the full-page
   AI chat), `GET /api/search` (instant-search JSON, limit 8).
@@ -424,11 +425,14 @@ and `model` per message (including thinking/step rows for the history view);
   **background thread** (`start_sync`; disable with `SYNC_ASYNC=False` — used
   by tests): a fast pre-pass counts files for the percentage, progress is
   tracked in memory (`get_status`, `get_active_job`) and the user can
-  **pause/resume** (`pause_sync`/`resume_sync`) — a floating widget polls
-  `GET /sync/active` and drives `POST /drives/<id>/sync/pause|resume`;
+  **pause/resume/stop** (`pause_sync`/`resume_sync`/`cancel_sync` — the
+  worker aborts at the next file) — a floating widget polls
+  `GET /sync/active` and drives `POST /drives/<id>/sync/pause|resume|stop`;
   `GET /drives/<id>/sync/status` returns the JSON state. Each finished sync
   stores its stats on `Drive.last_sync_stats` (JSON, shown on the profile
-  page). Rows are committed in batches of 50 so the UI stays responsive, and
+  page). `remove_synced_drive(drive)` stops any running sync, then deletes
+  the drive row (files, folders, index and versions cascade) plus generated
+  thumbnails — the real folder on disk is never touched. Rows are committed in batches of 50 so the UI stays responsive, and
   indexing after a sync runs in ONE background worker walking the queue
   sequentially (a thread per file would exhaust the connection pool). For
   file-based SQLite the engine uses `NullPool` + a 30 s busy timeout

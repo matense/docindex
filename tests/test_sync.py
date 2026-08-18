@@ -256,3 +256,73 @@ def test_second_sync_while_running_returns_same_job(auth_client, app, local_fold
         finally:
             with sync_service._jobs_lock:
                 sync_service._jobs.pop(drive_id, None)
+
+
+# --- Stop sync and remove synced drive ---
+
+def test_cancel_sync_job(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    job = sync_service._SyncJob(drive_id, "test")
+    with sync_service._jobs_lock:
+        sync_service._jobs[drive_id] = job
+    try:
+        assert sync_service.cancel_sync(drive_id) is True
+        with pytest.raises(sync_service._SyncCancelled):
+            job.checkpoint()
+
+        resp = auth_client.post(f"/drives/{drive_id}/sync/stop")
+        assert resp.get_json() == {"ok": True}
+    finally:
+        with sync_service._jobs_lock:
+            sync_service._jobs.pop(drive_id, None)
+
+
+def test_remove_synced_drive_clears_db_but_not_disk(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+    real_file = os.path.join(local_folder, "hello.txt")
+
+    with app.app_context():
+        assert StoredFile.query.filter_by(drive_id=drive_id).count() == 3
+        assert Folder.query.filter_by(drive_id=drive_id).count() == 1
+
+    resp = auth_client.post(f"/drives/{drive_id}/remove", follow_redirects=True)
+    assert b"removed" in resp.data
+
+    with app.app_context():
+        from app.models import FileIndex
+        # the redirect recreates the default drive (and may reuse the id);
+        # what matters is the synced drive and all its rows are gone
+        assert Drive.query.filter(Drive.source_path.isnot(None)).count() == 0
+        assert StoredFile.query.filter_by(drive_id=drive_id).count() == 0
+        assert Folder.query.filter_by(drive_id=drive_id).count() == 0
+        assert FileIndex.query.count() == 0
+    # the real folder is untouched
+    assert os.path.exists(real_file)
+    assert os.path.isdir(os.path.join(local_folder, "docs"))
+
+
+def test_remove_stops_running_sync(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    job = sync_service._SyncJob(drive_id, "test")
+    with sync_service._jobs_lock:
+        sync_service._jobs[drive_id] = job
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        sync_service.remove_synced_drive(drive)
+    assert job._cancelled is True
+    assert sync_service.get_status(drive_id) is None
+    with app.app_context():
+        assert db.session.get(Drive, drive_id) is None
+
+
+def test_remove_rejects_normal_drives(auth_client, app):
+    # visiting the drive creates the default "Personal" drive
+    auth_client.get("/")
+    with app.app_context():
+        personal = Drive.query.filter_by(source_path=None).one()
+    assert auth_client.post(f"/drives/{personal.id}/remove").status_code == 404

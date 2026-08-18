@@ -3,7 +3,7 @@
 (function () {
     'use strict';
 
-    let widget, barEl, percentEl, titleEl, currentEl, pauseBtn, iconEl;
+    let widget, barEl, percentEl, titleEl, currentEl, pauseBtn, stopBtn, iconEl;
     let lastDriveId = null;
     let doneTimer = null;
 
@@ -26,6 +26,8 @@
                 '</div>' +
                 '<button type="button" class="btn btn-circle btn-xs btn-ghost sync-widget-pause" title="Pause">' +
                     '<i class="fas fa-pause"></i></button>' +
+                '<button type="button" class="btn btn-circle btn-xs btn-ghost text-error sync-widget-stop" title="Stop sync">' +
+                    '<i class="fas fa-stop"></i></button>' +
             '</div>' +
             '<div class="flex items-center gap-2">' +
                 '<progress class="progress progress-info flex-1 sync-widget-bar" value="0" max="100"></progress>' +
@@ -38,12 +40,25 @@
         titleEl = widget.querySelector('.sync-widget-title');
         currentEl = widget.querySelector('.sync-widget-current');
         pauseBtn = widget.querySelector('.sync-widget-pause');
+        stopBtn = widget.querySelector('.sync-widget-stop');
         iconEl = widget.querySelector('.sync-widget-icon');
 
         pauseBtn.addEventListener('click', async () => {
             if (!lastDriveId) return;
             const action = pauseBtn.dataset.paused === '1' ? 'resume' : 'pause';
             await fetch(`/drives/${lastDriveId}/sync/${action}`, {
+                method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
+            });
+            poll();
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            if (!lastDriveId) return;
+            const ok = await window.uiConfirm(
+                'Stop the sync now? Files already scanned stay in the drive.',
+                { title: 'Stop sync', confirmText: 'Stop' });
+            if (!ok) return;
+            await fetch(`/drives/${lastDriveId}/sync/stop`, {
                 method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
             });
             poll();
@@ -77,19 +92,29 @@
     async function showFinished(driveId) {
         try {
             const resp = await fetch(`/drives/${driveId}/sync/status`);
+            if (!resp.ok) { // drive was removed — just hide
+                widget.classList.add('hidden');
+                pauseBtn.style.display = '';
+                stopBtn.style.display = '';
+                return;
+            }
             const s = await resp.json();
             pauseBtn.style.display = 'none';
-            iconEl.innerHTML = s.state === 'error'
+            stopBtn.style.display = 'none';
+            const failed = s.state === 'error' || s.state === 'cancelled';
+            iconEl.innerHTML = failed
                 ? '<i class="fas fa-triangle-exclamation"></i>' : '<i class="fas fa-check"></i>';
-            titleEl.textContent = s.state === 'error' ? 'Sync failed' : 'Sync complete';
+            titleEl.textContent = s.state === 'error' ? 'Sync failed'
+                : s.state === 'cancelled' ? 'Sync stopped' : 'Sync complete';
             currentEl.textContent = s.state === 'error'
                 ? (s.error || '')
                 : `${s.stats.added} added · ${s.stats.updated} updated · ${s.stats.removed} removed · ${s.stats.skipped} skipped`;
-            barEl.value = 100;
-            percentEl.textContent = s.state === 'error' ? '!' : '100%';
+            barEl.value = s.state === 'done' ? 100 : s.percent || 0;
+            percentEl.textContent = s.state === 'done' ? '100%' : '!';
             doneTimer = setTimeout(() => {
                 widget.classList.add('hidden');
                 pauseBtn.style.display = '';
+                stopBtn.style.display = '';
             }, 8000);
         } catch { /* ignore */ }
     }
@@ -98,9 +123,12 @@
         try {
             const resp = await fetch('/sync/active', { headers: { 'Accept': 'application/json' } });
             if (!resp.ok) return;
+            const contentType = resp.headers.get('Content-Type') || '';
+            if (!contentType.includes('application/json')) return; // login page etc.
             const data = await resp.json();
+            if (data.job) console.debug('[sync-widget] job:', data.job);
             render(data.job);
-        } catch { /* server unreachable — keep quiet */ }
+        } catch (err) { console.debug('[sync-widget] poll failed:', err); }
     }
 
     if (document.readyState === 'loading') {
@@ -110,4 +138,7 @@
         poll();
     }
     setInterval(poll, 2000);
+    // A form was just submitted via the SPA router (e.g. "Sync now") —
+    // check immediately instead of waiting for the next interval tick.
+    document.addEventListener('spa:mutated', () => setTimeout(poll, 300));
 })();
