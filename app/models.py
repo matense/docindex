@@ -52,6 +52,7 @@ class Drive(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     source_path = db.Column(db.String(500), nullable=True)  # local folder root (synced drive)
     last_synced_at = db.Column(db.DateTime, nullable=True)
+    last_sync_stats = db.Column(db.Text, nullable=True)  # JSON stats of the last sync
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",

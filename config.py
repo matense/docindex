@@ -18,6 +18,14 @@ class Config:
         "DATABASE_URL", "sqlite:///" + os.path.join(basedir, "instance", "docindex.sqlite")
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # SQLite: background threads (indexing, folder sync) plus web requests can
+    # exceed the default QueuePool (5+10) and deadlock on "connection timed
+    # out". NullPool opens/closes connections on demand — the right choice for
+    # SQLite — and the busy timeout lets writers wait for the file lock.
+    if SQLALCHEMY_DATABASE_URI.startswith("sqlite") and ":memory:" not in SQLALCHEMY_DATABASE_URI:
+        from sqlalchemy.pool import NullPool
+        SQLALCHEMY_ENGINE_OPTIONS = {"poolclass": NullPool,
+                                     "connect_args": {"timeout": 30}}
 
     # Uploads
     UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
@@ -57,6 +65,9 @@ class Config:
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True
 
+    # Run folder syncs in a background thread (disable in tests)
+    SYNC_ASYNC = True
+
 
 class TestConfig(Config):
     SECRET_KEY = "test-secret-key"
@@ -65,6 +76,7 @@ class TestConfig(Config):
     WTF_CSRF_ENABLED = False
     AI_ENABLED = False
     INDEX_ASYNC = False
+    SYNC_ASYNC = False
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")

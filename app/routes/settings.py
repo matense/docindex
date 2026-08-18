@@ -2,6 +2,8 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
+import json
+
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
                       FileIndex, Folder, Setting, StoredFile, User)
@@ -80,6 +82,8 @@ def profile():
             "folder_count": Folder.query.filter_by(drive_id=d.id).count(),
             "total_size": total_size,
             "total_words": total_words,
+            "sync_stats": (json.loads(d.last_sync_stats)
+                           if d.last_sync_stats else None),
         })
 
     ai_stats = {

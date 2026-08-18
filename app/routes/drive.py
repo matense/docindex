@@ -119,32 +119,79 @@ def create_drive():
 @login_required
 def sync_create():
     """Create a read-only drive that mirrors a local folder."""
-    drive, stats, error = sync_service.create_synced_drive(
+    drive, job, error = sync_service.create_synced_drive(
         current_user, request.form.get("path", ""))
     if error:
         flash(error, "error")
+    elif job.state == "done":
+        s = job.stats
+        flash(f'Synced drive "{drive.name}" created — {s["added"]} file(s) '
+              f'found, {s["skipped"]} skipped. Indexing started.', "success")
     else:
-        flash(f'Synced drive "{drive.name}" created — {stats["added"]} file(s) '
-              f'found, {stats["skipped"]} skipped. Indexing started.', "success")
+        flash(f'Synced drive "{drive.name}" created — the folder is being '
+              "scanned in the background.", "success")
     return redirect(url_for("drive.index"))
 
 
 @bp.route("/drives/<int:drive_id>/sync", methods=["POST"])
 @login_required
 def sync_now(drive_id):
-    """On-demand re-sync of a synced drive."""
+    """On-demand re-sync of a synced drive (runs in the background)."""
     drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
     if not drive or not drive.is_synced:
         abort(404)
-    try:
-        stats = sync_service.sync_drive(drive)
-    except ValueError as exc:
-        flash(str(exc), "error")
+    job = sync_service.start_sync(drive)
+    if job.state == "error":
+        flash(job.error or "Sync failed.", "error")
+    elif job.state == "done":
+        s = job.stats
+        flash(f'Sync complete: {s["added"]} added, {s["updated"]} updated, '
+              f'{s["removed"]} removed, {s["skipped"]} skipped.', "success")
     else:
-        flash(f'Sync complete: {stats["added"]} added, {stats["updated"]} '
-              f'updated, {stats["removed"]} removed, {stats["skipped"]} skipped.',
-              "success")
+        flash("Sync started — progress is shown in the bottom-right corner.",
+              "info")
     return redirect(request.form.get("next") or url_for("drive.index"))
+
+
+def _get_synced_drive(drive_id):
+    drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
+    if not drive or not drive.is_synced:
+        abort(404)
+    return drive
+
+
+@bp.route("/drives/<int:drive_id>/sync/status")
+@login_required
+def sync_status(drive_id):
+    drive = _get_synced_drive(drive_id)
+    status = sync_service.get_status(drive.id)
+    if status is None:
+        return jsonify({"state": "idle", "drive_id": drive.id})
+    return jsonify(status)
+
+
+@bp.route("/drives/<int:drive_id>/sync/pause", methods=["POST"])
+@login_required
+def sync_pause(drive_id):
+    drive = _get_synced_drive(drive_id)
+    sync_service.pause_sync(drive.id)
+    return jsonify(sync_service.get_status(drive.id) or {"state": "idle"})
+
+
+@bp.route("/drives/<int:drive_id>/sync/resume", methods=["POST"])
+@login_required
+def sync_resume(drive_id):
+    drive = _get_synced_drive(drive_id)
+    sync_service.resume_sync(drive.id)
+    return jsonify(sync_service.get_status(drive.id) or {"state": "idle"})
+
+
+@bp.route("/sync/active")
+@login_required
+def sync_active():
+    """The current user's running/paused sync (for the global widget)."""
+    job = sync_service.get_active_job(current_user.id)
+    return jsonify({"active": job is not None, "job": job})
 
 
 @bp.route("/drives/<int:drive_id>/select", methods=["POST"])

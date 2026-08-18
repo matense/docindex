@@ -174,3 +174,85 @@ def test_invalid_and_duplicate_paths(auth_client, app, local_folder):
     assert b"already synced" in resp.data
     with app.app_context():
         assert Drive.query.filter(Drive.source_path.isnot(None)).count() == 1
+
+
+# --- Background job tracking (SYNC_ASYNC=False in tests => runs inline) ---
+
+def test_sync_records_stats_and_status(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        import json
+        stats = json.loads(drive.last_sync_stats)
+        assert stats["added"] == 3
+        assert stats["skipped"] == 1  # the .exe
+
+    status = sync_service.get_status(drive_id)
+    assert status["state"] == "done"
+    assert status["percent"] == 100
+
+    resp = auth_client.get(f"/drives/{drive_id}/sync/status")
+    body = resp.get_json()
+    assert body["state"] == "done"
+    assert body["stats"]["added"] == 3
+
+
+def test_pause_and_resume_job(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    # finished jobs cannot be paused
+    assert sync_service.pause_sync(drive_id) is False
+
+    # simulate a running job and drive the state machine
+    job = sync_service._SyncJob(drive_id, "test")
+    with sync_service._jobs_lock:
+        sync_service._jobs[drive_id] = job
+    try:
+        assert sync_service.pause_sync(drive_id) is True
+        assert job.state == "paused"
+        with app.app_context():
+            assert sync_service.get_active_job(1)["state"] == "paused"
+
+        assert sync_service.resume_sync(drive_id) is True
+        assert job.state == "running"
+    finally:
+        with sync_service._jobs_lock:
+            sync_service._jobs.pop(drive_id, None)
+
+
+def test_active_sync_endpoint(auth_client, app, local_folder):
+    resp = auth_client.get("/sync/active")
+    assert resp.get_json() == {"active": False, "job": None}
+
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+    job = sync_service._SyncJob(drive_id, "test")
+    with sync_service._jobs_lock:
+        sync_service._jobs[drive_id] = job
+    try:
+        resp = auth_client.get("/sync/active")
+        body = resp.get_json()
+        assert body["active"] is True
+        assert body["job"]["drive_id"] == drive_id
+    finally:
+        with sync_service._jobs_lock:
+            sync_service._jobs.pop(drive_id, None)
+
+
+def test_second_sync_while_running_returns_same_job(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        job = sync_service._SyncJob(drive_id, "test")
+        with sync_service._jobs_lock:
+            sync_service._jobs[drive_id] = job
+        try:
+            again = sync_service.start_sync(drive)
+            assert again is job  # no duplicate run
+        finally:
+            with sync_service._jobs_lock:
+                sync_service._jobs.pop(drive_id, None)

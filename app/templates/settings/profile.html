@@ -72,9 +72,38 @@
             {% for s in drive_stats %}
             <div class="rounded-xl border border-base-content/10 p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
                 <div class="min-w-0 flex-1">
-                    <div class="font-bold truncate"><i class="fas fa-database text-secondary mr-1"></i> {{ s.drive.name }}</div>
+                    <div class="font-bold truncate">
+                        <i class="fas {{ 'fa-link text-info' if s.drive.is_synced else 'fa-database text-secondary' }} mr-1"></i>
+                        {{ s.drive.name }}
+                        {% if s.drive.is_synced %}
+                        <span class="badge badge-info badge-outline badge-sm gap-1 ml-1"><i class="fas fa-lock"></i> synced</span>
+                        {% endif %}
+                    </div>
                     {% if s.drive.description %}
                     <div class="text-xs opacity-50 truncate">{{ s.drive.description }}</div>
+                    {% endif %}
+                    {% if s.drive.is_synced %}
+                    <div class="text-xs opacity-60 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {% if s.drive.last_synced_at %}
+                        <span><i class="fas fa-clock-rotate-left opacity-50"></i>
+                            Last synced {{ s.drive.last_synced_at.strftime('%d %b %Y %H:%M') }}</span>
+                        {% endif %}
+                        {% if s.sync_stats %}
+                        <span class="text-success">+{{ s.sync_stats.added }} added</span>
+                        <span class="text-warning">{{ s.sync_stats.updated }} updated</span>
+                        <span class="text-error">−{{ s.sync_stats.removed }} removed</span>
+                        <span class="opacity-50">{{ s.sync_stats.skipped }} skipped</span>
+                        {% else %}
+                        <span class="opacity-50">No sync completed yet</span>
+                        {% endif %}
+                        <form method="POST" action="{{ url_for('drive.sync_now', drive_id=s.drive.id) }}" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="next" value="{{ url_for('settings.profile') }}">
+                            <button type="submit" class="btn btn-info btn-outline btn-xs gap-1">
+                                <i class="fas fa-arrows-rotate"></i> Sync now
+                            </button>
+                        </form>
+                    </div>
                     {% endif %}
                 </div>
                 <div class="flex gap-6 text-sm">

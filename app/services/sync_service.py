@@ -4,15 +4,21 @@ A synced drive maps to a real folder on the server's disk. Files are NOT
 copied — each StoredFile keeps the absolute `source_path` of the real file
 and all reads (preview, indexing, search, AI) go straight to it. The drive
 is strictly read-only: nothing in DocIndex may modify, rename, move or
-delete the real files. Sync is on-demand (`sync_drive`), triggered by the
-user.
+delete the real files.
+
+Syncs run in a background thread with progress tracking and pause/resume
+(`start_sync`, `pause_sync`, `resume_sync`, `get_status`); `sync_drive` is
+the synchronous core (used in tests and by the worker). Job state lives in
+memory — it is progress bookkeeping, not source of truth.
 
 CRITICAL: never call file_service.purge_file/delete_file on synced files —
 that would delete the user's real data. Removals only delete DB rows.
 """
 
 import hashlib
+import json
 import os
+import threading
 import uuid
 
 from flask import current_app, session
@@ -21,6 +27,134 @@ from ..extensions import db
 from ..models import Drive, FileIndex, Folder, StoredFile, utcnow
 from . import file_service, indexing_service
 
+
+# --------------------------------------------------------------------------
+# Background job tracking
+# --------------------------------------------------------------------------
+
+class _SyncJob:
+    """Progress/state of one sync run (in-memory only)."""
+
+    def __init__(self, drive_id, drive_name):
+        self.drive_id = drive_id
+        self.drive_name = drive_name
+        self.state = "running"      # running | paused | done | error
+        self.total = 0              # files to scan (counted in a fast pre-pass)
+        self.processed = 0          # files already scanned
+        self.current = ""           # file being processed right now
+        self.stats = {"added": 0, "updated": 0, "removed": 0, "skipped": 0}
+        self.error = None
+        self._resume = threading.Event()
+        self._resume.set()          # cleared while paused
+
+    @property
+    def percent(self):
+        if not self.total:
+            return 0
+        return round(self.processed * 100 / self.total)
+
+    def checkpoint(self):
+        """Block here while the job is paused."""
+        self._resume.wait()
+
+    def as_dict(self):
+        return {
+            "drive_id": self.drive_id,
+            "drive_name": self.drive_name,
+            "state": self.state,
+            "total": self.total,
+            "processed": self.processed,
+            "percent": self.percent,
+            "current": self.current,
+            "stats": self.stats,
+            "error": self.error,
+        }
+
+
+_jobs = {}  # drive_id -> _SyncJob
+_jobs_lock = threading.Lock()
+
+
+def get_status(drive_id):
+    with _jobs_lock:
+        job = _jobs.get(drive_id)
+        return job.as_dict() if job else None
+
+
+def get_active_job(user_id):
+    """The user's currently running/paused sync job, if any (for the widget)."""
+    with _jobs_lock:
+        candidates = [j for j in _jobs.values() if j.state in ("running", "paused")]
+    if not candidates:
+        return None
+    drive_ids = [j.drive_id for j in candidates]
+    owned = {d.id for d in Drive.query.filter(Drive.id.in_(drive_ids),
+                                              Drive.user_id == user_id)}
+    for job in candidates:
+        if job.drive_id in owned:
+            return job.as_dict()
+    return None
+
+
+def pause_sync(drive_id):
+    with _jobs_lock:
+        job = _jobs.get(drive_id)
+        if job and job.state == "running":
+            job.state = "paused"
+            job._resume.clear()
+            return True
+    return False
+
+
+def resume_sync(drive_id):
+    with _jobs_lock:
+        job = _jobs.get(drive_id)
+        if job and job.state == "paused":
+            job.state = "running"
+            job._resume.set()
+            return True
+    return False
+
+
+def start_sync(drive, app=None):
+    """Start a sync for the drive. Returns the job.
+
+    Runs in a background thread unless SYNC_ASYNC is off (tests), in which
+    case it runs inline and the returned job is already finished.
+    """
+    with _jobs_lock:
+        existing = _jobs.get(drive.id)
+        if existing and existing.state in ("running", "paused"):
+            return existing
+        job = _SyncJob(drive.id, drive.name)
+        _jobs[drive.id] = job
+
+    app = app or current_app._get_current_object()
+    if app.config.get("SYNC_ASYNC", True):
+        thread = threading.Thread(target=_sync_worker,
+                                  args=(drive.id, job, app), daemon=True)
+        thread.start()
+    else:
+        _sync_worker(drive.id, job, app)
+    return job
+
+
+def _sync_worker(drive_id, job, app):
+    with app.app_context():
+        try:
+            drive = db.session.get(Drive, drive_id)
+            sync_drive(drive, job=job)
+            job.state = "done"
+        except Exception as exc:  # noqa: BLE001 - report to the widget
+            db.session.rollback()
+            app.logger.exception("Sync failed for drive %s", drive_id)
+            job.state = "error"
+            job.error = str(exc)[:500]
+
+
+# --------------------------------------------------------------------------
+# Drive creation
+# --------------------------------------------------------------------------
 
 def validate_path(path):
     """Normalize and validate a local folder path. Returns (abs_path, error)."""
@@ -38,9 +172,9 @@ def validate_path(path):
 
 
 def create_synced_drive(user, path):
-    """Create a synced drive for a local folder and run the first sync.
+    """Create a synced drive for a local folder and start the first sync.
 
-    Returns (drive, stats, error).
+    Returns (drive, job, error).
     """
     abs_path, error = validate_path(path)
     if error:
@@ -59,11 +193,15 @@ def create_synced_drive(user, path):
     drive = Drive(name=name, user_id=user.id, source_path=abs_path,
                   description=f"Synced from {abs_path}")
     db.session.add(drive)
-    db.session.flush()
+    db.session.commit()
     session["drive_id"] = drive.id
-    stats = sync_drive(drive)
-    return drive, stats, None
+    job = start_sync(drive)
+    return drive, job, None
 
+
+# --------------------------------------------------------------------------
+# Sync core
+# --------------------------------------------------------------------------
 
 def _sha256_of(path):
     checksum = hashlib.sha256()
@@ -79,25 +217,61 @@ def _allowed(name, size):
     return size <= current_app.config["MAX_FILE_SIZE"]
 
 
-def _trigger_indexing(file_id):
+def _trigger_indexing(file_ids):
+    """Index synced files: one background worker for the whole batch.
+
+    Spawning one thread per file would exhaust the connection pool on large
+    folders, so a single thread walks the list sequentially.
+    """
+    if not file_ids:
+        return
+    app = current_app._get_current_object()
     if current_app.config.get("INDEX_ASYNC", True):
-        indexing_service.index_file_async(file_id, current_app._get_current_object())
+        thread = threading.Thread(target=_index_batch, args=(file_ids, app),
+                                  daemon=True)
+        thread.start()
     else:
-        indexing_service.index_file(file_id)
+        _index_batch(file_ids, app)
 
 
-def sync_drive(drive):
+def _index_batch(file_ids, app):
+    for file_id in file_ids:
+        indexing_service.index_file(file_id, app)
+
+
+def _count_files(root):
+    """Fast pre-pass: how many files will be scanned (for the % progress)."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for filename in filenames:
+            path = os.path.join(dirpath, filename)
+            if os.path.islink(path):
+                continue
+            try:
+                if _allowed(filename, os.path.getsize(path)):
+                    total += 1
+            except OSError:
+                continue
+    return total
+
+
+def sync_drive(drive, job=None):
     """Re-scan the drive's local folder and reconcile DB rows with disk.
 
-    Returns stats: {added, updated, removed, skipped}.
+    When a `job` is given, progress is reported into it and pause/checkpoint
+    is honored between files. Returns stats: {added, updated, removed, skipped}.
     """
     if not drive.is_synced:
         raise ValueError("Not a synced drive.")
     if not os.path.isdir(drive.source_path):
         raise ValueError(f'Synced folder "{drive.source_path}" no longer exists.')
 
-    stats = {"added": 0, "updated": 0, "removed": 0, "skipped": 0}
+    stats = job.stats if job else {"added": 0, "updated": 0, "removed": 0,
+                                   "skipped": 0}
     root = drive.source_path
+
+    if job:
+        job.total = _count_files(root)
 
     # Existing state, keyed by path relative to the root.
     existing_files = {}
@@ -132,6 +306,10 @@ def sync_drive(drive):
                 continue
 
             rel = os.path.normpath(os.path.join(rel_dir, filename))
+            if job:
+                job.checkpoint()
+                job.current = rel
+
             seen_files.add(rel)
             stored = existing_files.get(rel)
             if stored is None:
@@ -167,6 +345,12 @@ def sync_drive(drive):
                         file_service._make_thumbnail(path, stored.stored_name)
                     to_index.append(stored.id)
                     stats["updated"] += 1
+            if job:
+                job.processed += 1
+                # Flush in batches so other requests see fresh rows and the
+                # write lock is not held for the whole sync.
+                if job.processed % 50 == 0:
+                    db.session.commit()
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).
@@ -187,10 +371,10 @@ def sync_drive(drive):
         db.session.delete(existing_folders[rel])
 
     drive.last_synced_at = utcnow()
+    drive.last_sync_stats = json.dumps(stats)
     db.session.commit()
 
-    for file_id in to_index:
-        _trigger_indexing(file_id)
+    _trigger_indexing(to_index)
     return stats
 
 

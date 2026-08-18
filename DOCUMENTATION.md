@@ -142,6 +142,7 @@ drive" is stored in the Flask session (`session["drive_id"]`).
 | `user_id` | FK -> users.id, indexed | |
 | `source_path` | String(500), nullable | absolute local folder root — set = synced drive |
 | `last_synced_at` | DateTime, nullable | last successful sync |
+| `last_sync_stats` | Text, nullable | JSON stats of the last sync (added/updated/removed/skipped) |
 | `created_at` | DateTime | |
 
 Relationships: `folders`, `files` (cascade delete-orphan).
@@ -316,7 +317,9 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   `/selection/delete` and `/selection/move` (bulk ops, JSON; move guards
   against moving a folder into itself/descendants),
   `POST /drives/sync-create` (create a synced drive from a local folder path)
-  and `POST /drives/<id>/sync` (on-demand re-sync). All write routes abort
+  and `POST /drives/<id>/sync` (background re-sync; `GET .../sync/status`,
+  `POST .../sync/pause|resume` for progress control, `GET /sync/active` for
+  the floating widget). All write routes abort
   400 for synced drives/files (`_guard_writable`).
 - `search.py`: `GET /search` (results page; `?mode=ai` renders the full-page
   AI chat), `GET /api/search` (instant-search JSON, limit 8).
@@ -417,7 +420,21 @@ and `model` per message (including thinking/step rows for the history view);
   folder (`os.walk`, no symlink following), upserts `Folder`/`StoredFile`
   rows keyed by relative path, checksums content (SHA-256), re-indexes new
   and changed files, and DB-row-deletes vanished ones (never touching the
-  real files). Skips disallowed extensions and oversize files.
+  real files). Skips disallowed extensions and oversize files. Syncs run in a
+  **background thread** (`start_sync`; disable with `SYNC_ASYNC=False` — used
+  by tests): a fast pre-pass counts files for the percentage, progress is
+  tracked in memory (`get_status`, `get_active_job`) and the user can
+  **pause/resume** (`pause_sync`/`resume_sync`) — a floating widget polls
+  `GET /sync/active` and drives `POST /drives/<id>/sync/pause|resume`;
+  `GET /drives/<id>/sync/status` returns the JSON state. Each finished sync
+  stores its stats on `Drive.last_sync_stats` (JSON, shown on the profile
+  page). Rows are committed in batches of 50 so the UI stays responsive, and
+  indexing after a sync runs in ONE background worker walking the queue
+  sequentially (a thread per file would exhaust the connection pool). For
+  file-based SQLite the engine uses `NullPool` + a 30 s busy timeout
+  (`config.py`), so background threads never hit the QueuePool limit;
+  in-memory test databases keep the default pool (NullPool would give each
+  connection its own empty DB).
 - **file_service** — physical storage: path helpers (`file_path` returns the
   real `source_path` for synced files), `save_upload`,
   thumbnails, SHA-256 checksums + duplicate detection
