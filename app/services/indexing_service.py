@@ -52,9 +52,29 @@ def _extract_docx(path):
     return "\n".join(parts)[:MAX_TEXT_CHARS]
 
 
+_tesseract_missing_logged = False
+
+
+def _tesseract_available():
+    """Check once whether the tesseract binary is on PATH."""
+    global _tesseract_missing_logged
+    import shutil
+    available = shutil.which("tesseract") is not None
+    if not available and not _tesseract_missing_logged:
+        _tesseract_missing_logged = True
+        current_app.logger.info(
+            "Tesseract not found on PATH — image OCR is disabled. "
+            "Images will rely on AI captions (if an AI connection exists). "
+            "Install tesseract to enable OCR.")
+    return available
+
+
 def _extract_image_ocr(path):
-    import pytesseract
     from PIL import Image
+
+    if not _tesseract_available():
+        return ""
+    import pytesseract
 
     langs = current_app.config.get("TESSERACT_LANGS", "eng")
     with Image.open(path) as img:
