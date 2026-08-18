@@ -1,5 +1,20 @@
 {% extends "base.html" %}
 {% block title %}{{ ('Search: ' + query) if query else 'Search' }} - DocIndex{% endblock %}
+
+{% macro file_icon(f) -%}
+    {%- if f.is_image -%}fa-file-image text-pink-500
+    {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
+    {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
+    {%- elif f.extension in ['csv', 'xlsx'] -%}fa-file-excel text-green-500
+    {%- else -%}fa-file-lines text-indigo-500{%- endif -%}
+{%- endmacro %}
+
+{% macro human_size(n) -%}
+    {%- if n < 1024 -%}{{ n }} B
+    {%- elif n < 1048576 -%}{{ (n / 1024) | round(1) }} KB
+    {%- else -%}{{ (n / 1048576) | round(1) }} MB{%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 {% if not query %}
 <!-- Google-style hero: search box centered until a query is submitted -->
@@ -54,33 +69,64 @@
     {% endif %}
 
     {% for r in results %}
+    {% set f = r.file %}
     <div class="glass-panel rounded-xl p-4 card-hover">
-        <div class="flex items-start gap-3">
-            <div class="flex-shrink-0 mt-1">
-                {% if r.file.is_image %}
-                    <i class="fas fa-file-image text-2xl" style="color:#ec4899"></i>
-                {% elif r.file.extension == 'pdf' %}
-                    <i class="fas fa-file-pdf text-2xl" style="color:#ef4444"></i>
-                {% elif r.file.extension == 'docx' %}
-                    <i class="fas fa-file-word text-2xl" style="color:#3b82f6"></i>
+        <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden flex items-center justify-center bg-base-200/40">
+                {% if f.is_image %}
+                    <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}"
+                         class="w-full h-full object-cover" loading="lazy"
+                         onerror="this.outerHTML='<i class=\'fas fa-file-image text-2xl text-pink-500\'></i>'">
                 {% else %}
-                    <i class="fas fa-file-lines text-2xl" style="color:#6366f1"></i>
+                    <i class="fas {{ file_icon(f) }} text-2xl"></i>
                 {% endif %}
             </div>
             <div class="flex-1 min-w-0">
-                <a href="{{ url_for('drive.view', file_id=r.file.id) }}" class="font-bold text-primary hover:underline">{{ r.file.name }}</a>
-                <div class="text-sm opacity-80 mt-1">{{ r.snippet }}</div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <a href="{{ url_for('drive.view', file_id=f.id) }}"
+                       class="font-bold text-primary hover:underline truncate">{{ r.name_html }}</a>
+                    {% for m in r.matches %}
+                        {% if m == 'name' %}
+                            <span class="badge badge-xs badge-secondary badge-outline">name</span>
+                        {% elif m == 'caption' %}
+                            <span class="badge badge-xs badge-accent badge-outline"><i class="fas fa-robot mr-1"></i>caption</span>
+                        {% else %}
+                            <span class="badge badge-xs badge-primary badge-outline">content</span>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+                {% if r.snippet %}
+                <div class="search-snippet text-sm opacity-80 mt-1 break-words">{{ r.snippet }}</div>
+                {% endif %}
                 {% if r.caption %}
                 <div class="text-xs mt-2 italic opacity-60">
                     <i class="fas fa-robot mr-1"></i>AI caption: {{ r.caption[:200] }}{% if r.caption|length > 200 %}…{% endif %}
                 </div>
                 {% endif %}
+                <div class="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs opacity-50 mt-2">
+                    <span title="Drive">
+                        <i class="fas fa-hard-drive mr-1"></i>{{ f.drive.name if f.drive else 'My Drive' }}
+                        {% if f.drive and f.drive.is_synced %}<i class="fas fa-lock ml-1" title="Synced · read-only"></i>{% endif %}
+                    </span>
+                    {% if f.folder %}
+                    <span title="Folder">
+                        <i class="fas fa-folder mr-1"></i>{{ f.folder.breadcrumb() | map(attribute='name') | join(' / ') }}
+                    </span>
+                    {% endif %}
+                    <span title="Size"><i class="fas fa-file mr-1"></i>{{ human_size(f.size) }}</span>
+                    {% if f.index and f.index.word_count %}
+                    <span title="Words indexed"><i class="fas fa-align-left mr-1"></i>{{ f.index.word_count }} words</span>
+                    {% endif %}
+                    {% if f.updated_at %}
+                    <span title="Last modified"><i class="fas fa-clock mr-1"></i>{{ f.updated_at.strftime('%d %b %Y %H:%M') }}</span>
+                    {% endif %}
+                </div>
             </div>
             <div class="flex-shrink-0 flex gap-1">
-                <a href="{{ url_for('drive.view', file_id=r.file.id) }}" class="btn btn-circle btn-xs glass-panel" title="View">
+                <a href="{{ url_for('drive.view', file_id=f.id) }}" class="btn btn-circle btn-xs glass-panel" title="View">
                     <i class="fas fa-eye"></i>
                 </a>
-                <a href="{{ url_for('drive.download', file_id=r.file.id) }}" class="btn btn-circle btn-xs glass-panel" title="Download">
+                <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs glass-panel" title="Download">
                     <i class="fas fa-download"></i>
                 </a>
             </div>

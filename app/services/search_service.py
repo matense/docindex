@@ -1,6 +1,6 @@
 import re
 
-from markupsafe import escape
+from markupsafe import Markup, escape
 from sqlalchemy import or_
 
 from ..models import FileIndex, StoredFile
@@ -29,9 +29,22 @@ def _score(stored_file, index, terms):
     return score
 
 
+def _highlight(text, terms):
+    """Escape `text` and wrap every term occurrence in <mark>. Returns Markup."""
+    highlighted = escape(text)
+    for term in terms:
+        highlighted = Markup(re.sub(
+            re.escape(escape(term)),
+            lambda m: f"<mark>{m.group(0)}</mark>",
+            highlighted,
+            flags=re.IGNORECASE,
+        ))
+    return highlighted
+
+
 def _make_snippet(text, terms):
     if not text:
-        return ""
+        return Markup("")
     text_l = text.lower()
     pos = -1
     for term in terms:
@@ -42,17 +55,9 @@ def _make_snippet(text, terms):
         return escape(text[: 2 * SNIPPET_RADIUS])
     start = max(0, pos - SNIPPET_RADIUS)
     end = min(len(text), pos + SNIPPET_RADIUS)
-    snippet = escape(text[start:end])
     prefix = "&hellip; " if start > 0 else ""
     suffix = " &hellip;" if end < len(text) else ""
-    for term in terms:
-        snippet = re.sub(
-            re.escape(escape(term)),
-            lambda m: f"<mark>{m.group(0)}</mark>",
-            snippet,
-            flags=re.IGNORECASE,
-        )
-    return prefix + snippet + suffix
+    return Markup(prefix + str(_highlight(text[start:end], terms)) + suffix)
 
 
 def search_files(query, user, limit=MAX_RESULTS, drive=None):
@@ -85,6 +90,17 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
         score = _score(stored, index, terms)
         if score == 0:
             continue
+        text_l = ((index.extracted_text if index else None) or "").lower()
+        caption_l = ((index.caption if index else None) or "").lower()
+        name_l = stored.name.lower()
+        terms_l = [t.lower() for t in terms]
+        matches = []
+        if any(t in name_l for t in terms_l):
+            matches.append("name")
+        if caption_l and any(t in caption_l for t in terms_l):
+            matches.append("caption")
+        if text_l and any(t in text_l for t in terms_l):
+            matches.append("content")
         text_source = None
         if index:
             text_source = index.caption or index.extracted_text
@@ -92,6 +108,8 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
             "file": stored,
             "score": score,
             "snippet": _make_snippet(text_source or stored.name, terms),
+            "name_html": _highlight(stored.name, terms),
+            "matches": matches,
             "caption": index.caption if index else None,
         })
 

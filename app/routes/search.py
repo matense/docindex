@@ -35,9 +35,10 @@ def api_search():
         {
             "file_id": r["file"].id,
             "name": r["file"].name,
+            "name_html": str(r["name_html"]),
             "extension": r["file"].extension,
             "is_image": r["file"].is_image,
-            "snippet": r["snippet"],
+            "snippet": str(r["snippet"]),
         }
         for r in results
     ])

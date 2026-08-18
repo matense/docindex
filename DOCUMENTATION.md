@@ -374,8 +374,13 @@ files from the normal file routes).
    `file_index.extracted_text` and `file_index.caption`, then scores matches
    in Python: name hit +10, caption hit +5, text hit +2 plus occurrence count
    (capped). Snippets are ~120 chars of context around the first hit with
-   `<mark>` highlighting. Results are scoped to the current drive and capped
-   at 50 (8 for the instant-search endpoint).
+   `<mark>` highlighting. All user text is HTML-escaped first and the result
+   is returned as a `markupsafe.Markup` object, so templates render the
+   highlight without double-escaping and without XSS risk. Each result also
+   carries `name_html` (the escaped filename with `<mark>` highlights) and
+   `matches` (which of `name`/`caption`/`content` matched, shown as badges).
+   Results are scoped to the current drive and capped at 50 (8 for the
+   instant-search endpoint, which also returns `name_html`).
 
 ### Editing
 

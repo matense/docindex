@@ -25,6 +25,12 @@
         }
     }
 
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+    }
+
     function renderResults(results) {
         if (!results.length) {
             dropdownContent.innerHTML =
@@ -35,7 +41,7 @@
             <a href="/file/${r.file_id}/view" class="pdo-search-dropdown-item" data-index="${i}">
                 <i class="fas ${fileIcon(r.extension, r.is_image)} pdo-search-dropdown-item-icon"></i>
                 <div class="pdo-search-dropdown-item-content">
-                    <div class="pdo-search-dropdown-item-title">${r.name}</div>
+                    <div class="pdo-search-dropdown-item-title">${r.name_html || escapeHtml(r.name)}</div>
                     ${r.snippet ? `<div class="pdo-search-dropdown-item-snippet">${r.snippet}</div>` : ''}
                 </div>
             </a>

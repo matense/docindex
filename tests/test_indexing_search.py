@@ -117,3 +117,38 @@ def test_search_results_keep_ai_toggle(auth_client):
     resp = auth_client.get("/search?q=anything")
     assert resp.status_code == 200
     assert b"ai-mode-switch" in resp.data
+
+
+def test_search_page_renders_mark_highlight(auth_client):
+    _upload(auth_client, "notes.txt", b"the quarterly revenue report is ready")
+    resp = auth_client.get("/search?q=revenue")
+    assert resp.status_code == 200
+    assert b"<mark>" in resp.data
+    assert b"&lt;mark&gt;" not in resp.data
+
+
+def test_search_snippet_escapes_html(auth_client):
+    _upload(auth_client, "evil.txt", b"payload <script>alert(1)</script> end")
+    resp = auth_client.get("/search?q=alert")
+    assert resp.status_code == 200
+    assert b"<script>alert(1)</script>" not in resp.data
+    assert b"&lt;script&gt;" in resp.data
+
+
+def test_search_result_matches_and_name_html(auth_client, app, user):
+    _upload(auth_client, "revenue-report.txt", b"nothing about the topic")
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        results = search_service.search_files("revenue", user_obj)
+        assert len(results) == 1
+        assert results[0]["matches"] == ["name"]
+        assert "<mark>" in results[0]["name_html"]
+        assert "revenue" in str(results[0]["name_html"]).lower()
+
+
+def test_search_result_shows_metadata(auth_client):
+    _upload(auth_client, "meta.txt", b"metadata words for the search engine")
+    resp = auth_client.get("/search?q=metadata")
+    assert resp.status_code == 200
+    assert b"badge" in resp.data  # match badge (name/content)
+    assert b"words" in resp.data  # word count in the meta row
