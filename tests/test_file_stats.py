@@ -59,11 +59,16 @@ def test_duplicate_detection_on_upload(auth_client, app):
     assert b"identical content to" in resp.data
 
 
-def test_duplicates_detected_across_drives(auth_client, app):
+def test_duplicates_not_detected_across_drives(auth_client, app):
+    # Same content in another drive is NOT a duplicate: detection is per-drive.
     _upload(auth_client, "a.txt", b"cross-drive content")
     auth_client.post("/drives/create", data={"name": "Work"}, follow_redirects=True)
     resp = _upload(auth_client, "b.txt", b"cross-drive content", accept_json=True)
-    assert resp.get_json()["files"][0]["duplicates"][0]["name"] == "a.txt"
+    assert resp.get_json()["files"][0]["duplicates"] == []
+
+    # ...but a second copy inside the same drive still is.
+    resp = _upload(auth_client, "c.txt", b"cross-drive content", accept_json=True)
+    assert resp.get_json()["files"][0]["duplicates"][0]["name"] == "b.txt"
 
 
 def test_info_endpoint_stats_checksum_duplicates(auth_client, app):

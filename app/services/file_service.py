@@ -101,12 +101,24 @@ def save_upload(file_storage, user, folder=None):
     return stored
 
 
+def _drive_condition(drive_id):
+    """Match files in the same drive (NULL-safe for legacy drive-less rows)."""
+    if drive_id is None:
+        return StoredFile.drive_id.is_(None)
+    return StoredFile.drive_id == drive_id
+
+
 def find_duplicates(stored_file):
-    """Other files of the same user with identical content (same SHA-256)."""
+    """Other files in the SAME drive with identical content (same SHA-256).
+
+    Duplicate detection is per-drive: different drives may hold the same
+    file without being flagged.
+    """
     if not stored_file.checksum:
         return []
     return (StoredFile.query
             .filter(StoredFile.user_id == stored_file.user_id,
+                    _drive_condition(stored_file.drive_id),
                     StoredFile.checksum == stored_file.checksum,
                     StoredFile.id != stored_file.id,
                     StoredFile.deleted_at.is_(None))
@@ -114,12 +126,13 @@ def find_duplicates(stored_file):
             .all())
 
 
-def duplicate_checksums(user_id):
-    """Checksums that exist on more than one of the user's files."""
+def duplicate_checksums(user_id, drive_id):
+    """Checksums that exist on more than one file within the same drive."""
     from sqlalchemy import func
 
     rows = (db.session.query(StoredFile.checksum)
             .filter(StoredFile.user_id == user_id,
+                    _drive_condition(drive_id),
                     StoredFile.checksum.isnot(None),
                     StoredFile.deleted_at.is_(None))
             .group_by(StoredFile.checksum)

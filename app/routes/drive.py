@@ -98,7 +98,7 @@ def index(folder_id=None):
         files=files,
         drive=drive,
         view_mode=view_mode,
-        dupe_checksums=file_service.duplicate_checksums(current_user.id),
+        dupe_checksums=file_service.duplicate_checksums(current_user.id, drive.id),
         editable_exts=current_app.config["EDITABLE_EXTENSIONS"],
     )
 
