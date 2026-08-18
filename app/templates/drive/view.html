@@ -19,7 +19,11 @@
             <a href="{{ url_for('drive.download', file_id=file.id) }}" class="btn btn-ghost btn-sm">
                 <i class="fas fa-download"></i> Download
             </a>
-            {% if file.is_editable %}
+            {% if file.is_synced %}
+            <span class="badge badge-info badge-outline gap-1 self-center" title="This file maps to a real file on disk and cannot be modified here">
+                <i class="fas fa-lock"></i> Synced · read-only
+            </span>
+            {% elif file.is_editable %}
             <a href="{{ url_for('drive.edit', file_id=file.id) }}" class="btn btn-primary btn-sm">
                 <i class="fas fa-pen"></i> Edit
             </a>

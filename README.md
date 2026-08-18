@@ -21,6 +21,11 @@ questions about your files by searching and reading them step by step.
 - **Trash bin** — deleting a file moves it to a trash bin on your profile
   page, where you can restore it or delete it forever (nothing is lost until
   you purge it).
+- **Folder sync** — point DocIndex at a local folder and it creates a
+  read-only drive that mirrors it: files are indexed (text, PDF, DOCX,
+  OCR/images) and searchable by the AI, but never copied or modified — they
+  stay on your disk. Re-sync on demand with the Sync button. Note: the
+  folder path is read with the permissions of the process running DocIndex.
 - **Version history** — re-uploading a file with the same name into the same
   folder creates a new version instead of a duplicate. The file page has a
   history timeline with diffs and one-click restore for text files, and

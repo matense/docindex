@@ -73,7 +73,7 @@
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="next" value="{{ request.full_path }}">
                                 <button type="submit" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors {{ 'bg-primary/10 font-bold' if d.id == current_drive.id }}">
-                                    <i class="fas fa-hard-drive opacity-60"></i>
+                                    <i class="fas {{ 'fa-link text-info' if d.is_synced else 'fa-hard-drive opacity-60' }}"></i>
                                     <span class="truncate flex-1 text-left">{{ d.name }}</span>
                                     {% if d.id == current_drive.id %}<i class="fas fa-check text-primary"></i>{% endif %}
                                 </button>
@@ -84,6 +84,11 @@
                                         onclick="document.getElementById('edit-drive-modal').showModal()">
                                     <i class="fas fa-pen opacity-60"></i>
                                     <span class="flex-1 text-left">Edit "{{ current_drive.name }}"</span>
+                                </button>
+                                <button type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors"
+                                        onclick="document.getElementById('sync-drive-modal').showModal()">
+                                    <i class="fas fa-arrows-rotate text-info"></i>
+                                    <span class="flex-1 text-left">Sync a local folder...</span>
                                 </button>
                                 <form method="POST" action="{{ url_for('drive.create_drive') }}" class="drive-create-row">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -249,6 +254,44 @@
                         <div class="modal-action">
                             <button type="button" class="btn btn-ghost" onclick="document.getElementById('edit-drive-modal').close()">Cancel</button>
                             <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> Save</button>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+
+            <!-- Sync local folder modal -->
+            <dialog id="sync-drive-modal" class="modal">
+                <div class="modal-box glass-panel max-w-lg">
+                    <div class="flex items-center gap-3 mb-2">
+                        <span class="w-11 h-11 rounded-xl bg-info/15 text-info flex items-center justify-center text-xl">
+                            <i class="fas fa-folder-tree"></i>
+                        </span>
+                        <h3 class="font-bold text-lg">Sync a local folder</h3>
+                    </div>
+                    <div class="rounded-xl bg-info/10 border border-info/20 p-3 text-sm flex flex-col gap-1.5 mb-4">
+                        <div><i class="fas fa-circle-info text-info mr-1"></i>
+                            DocIndex creates a <strong>new drive</strong> that mirrors this folder.</div>
+                        <div><i class="fas fa-magnifying-glass text-info mr-1"></i>
+                            Everything indexable is indexed — text, PDF, DOCX and images (OCR / AI captions).</div>
+                        <div><i class="fas fa-lock text-info mr-1"></i>
+                            The drive is <strong>read-only</strong>: files stay on your disk and are never
+                            modified, renamed or deleted by DocIndex. Re-sync anytime with the Sync button.</div>
+                    </div>
+                    <form method="POST" action="{{ url_for('drive.sync_create') }}" class="flex flex-col gap-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <label class="flex flex-col gap-1">
+                            <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Local folder path</span>
+                            <input type="text" name="path" required
+                                   placeholder="C:\Users\me\Documents  or  /home/me/documents"
+                                   class="input input-bordered w-full font-mono text-sm">
+                            <span class="text-xs opacity-50">Path on the machine running DocIndex. Subfolders are included.</span>
+                        </label>
+                        <div class="modal-action">
+                            <button type="button" class="btn btn-ghost" onclick="document.getElementById('sync-drive-modal').close()">Cancel</button>
+                            <button type="submit" class="btn btn-info text-info-content">
+                                <i class="fas fa-arrows-rotate"></i> Create synced drive
+                            </button>
                         </div>
                     </form>
                 </div>

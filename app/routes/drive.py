@@ -7,8 +7,9 @@ from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import FileVersion, Folder, StoredFile
+from ..models import Drive, FileVersion, Folder, StoredFile
 from ..services import ai_service, drive_service, file_service, indexing_service
+from ..services import sync_service
 
 bp = Blueprint("drive", __name__)
 
@@ -26,6 +27,12 @@ def _get_file(file_id, include_trashed=False):
     if not include_trashed and stored.deleted_at is not None:
         abort(404)
     return stored
+
+
+def _guard_writable(stored):
+    """Synced files map to real files on disk and are read-only."""
+    if stored.is_synced:
+        abort(400, "Synced drives are read-only — the file maps to a real file on disk.")
 
 
 def _trigger_indexing(file_id):
@@ -108,6 +115,38 @@ def create_drive():
     return redirect(request.form.get("next") or url_for("drive.index"))
 
 
+@bp.route("/drives/sync-create", methods=["POST"])
+@login_required
+def sync_create():
+    """Create a read-only drive that mirrors a local folder."""
+    drive, stats, error = sync_service.create_synced_drive(
+        current_user, request.form.get("path", ""))
+    if error:
+        flash(error, "error")
+    else:
+        flash(f'Synced drive "{drive.name}" created — {stats["added"]} file(s) '
+              f'found, {stats["skipped"]} skipped. Indexing started.', "success")
+    return redirect(url_for("drive.index"))
+
+
+@bp.route("/drives/<int:drive_id>/sync", methods=["POST"])
+@login_required
+def sync_now(drive_id):
+    """On-demand re-sync of a synced drive."""
+    drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
+    if not drive or not drive.is_synced:
+        abort(404)
+    try:
+        stats = sync_service.sync_drive(drive)
+    except ValueError as exc:
+        flash(str(exc), "error")
+    else:
+        flash(f'Sync complete: {stats["added"]} added, {stats["updated"]} '
+              f'updated, {stats["removed"]} removed, {stats["skipped"]} skipped.',
+              "success")
+    return redirect(request.form.get("next") or url_for("drive.index"))
+
+
 @bp.route("/drives/<int:drive_id>/select", methods=["POST"])
 @login_required
 def select_drive(drive_id):
@@ -134,6 +173,10 @@ def edit_drive(drive_id):
 @login_required
 def upload():
     drive = drive_service.get_current_drive(current_user)
+    if drive.is_synced:
+        flash("Synced drives are read-only — upload to a regular drive instead.",
+              "error")
+        return redirect(url_for("drive.index"))
     folder = None
     folder_id = request.form.get("folder_id", type=int)
     if folder_id:
@@ -232,6 +275,7 @@ def thumbnail(file_id):
 @login_required
 def rename(file_id):
     stored = _get_file(file_id)
+    _guard_writable(stored)
     new_name = request.form.get("name", "").strip()
     if not new_name:
         flash("Name cannot be empty.", "error")
@@ -248,9 +292,12 @@ def rename(file_id):
 @login_required
 def move(file_id):
     stored = _get_file(file_id)
+    _guard_writable(stored)
     folder_id = request.form.get("folder_id", type=int)
     if folder_id:
-        _get_owned(Folder, folder_id)
+        dest = _get_owned(Folder, folder_id)
+        if dest.drive and dest.drive.is_synced:
+            abort(400, "Synced drives are read-only.")
     stored.folder_id = folder_id
     db.session.commit()
     flash("File moved.", "success")
@@ -261,6 +308,7 @@ def move(file_id):
 @login_required
 def delete(file_id):
     stored = _get_file(file_id)
+    _guard_writable(stored)
     folder_id = stored.folder_id
     file_service.delete_file(stored)
     flash(f'"{stored.name}" moved to the trash — restore it from your profile.',
@@ -274,6 +322,7 @@ def delete(file_id):
 @login_required
 def restore(file_id):
     stored = _get_file(file_id, include_trashed=True)
+    _guard_writable(stored)
     file_service.restore_file(stored)
     flash(f'"{stored.name}" restored.', "success")
     return redirect(url_for("settings.profile"))
@@ -283,6 +332,7 @@ def restore(file_id):
 @login_required
 def purge(file_id):
     stored = _get_file(file_id, include_trashed=True)
+    _guard_writable(stored)
     name = stored.name
     file_service.purge_file(stored)
     flash(f'"{name}" permanently deleted.', "success")
@@ -323,6 +373,7 @@ def view(file_id):
 @login_required
 def edit(file_id):
     stored = _get_file(file_id)
+    _guard_writable(stored)
     if not stored.is_editable:
         abort(400)
     if request.method == "POST":
@@ -427,6 +478,7 @@ def version_diff(file_id, version_id):
 def version_restore(file_id, version_id):
     """Roll a text file back to a past version (current state is snapshotted)."""
     stored = _get_file(file_id)
+    _guard_writable(stored)
     if not stored.is_editable:
         abort(400)
     version = _get_version(stored, version_id)
@@ -445,6 +497,8 @@ MERGE_TEXT_LIMIT = 20_000
 def _get_merge_pair(file_id, other_id):
     stored = _get_file(file_id)
     other = _get_file(other_id)
+    _guard_writable(stored)
+    _guard_writable(other)
     if other.id == stored.id:
         abort(400)
     if not (stored.is_editable and other.is_editable):
@@ -522,6 +576,10 @@ def merge_accept(file_id, other_id):
 @login_required
 def create_folder():
     drive = drive_service.get_current_drive(current_user)
+    if drive.is_synced:
+        flash("Synced drives are read-only — folders mirror the real folder.",
+              "error")
+        return redirect(url_for("drive.index"))
     name = request.form.get("name", "").strip()
     parent_id = request.form.get("parent_id", type=int)
     parent = _get_owned(Folder, parent_id) if parent_id else None
@@ -542,14 +600,15 @@ def delete_selection():
     for fid in _id_list("file_ids"):
         stored = (StoredFile.query
                   .filter_by(id=fid, user_id=current_user.id)
-                  .filter(StoredFile.deleted_at.is_(None))
+                  .filter(StoredFile.deleted_at.is_(None),
+                          StoredFile.source_path.is_(None))  # synced = read-only
                   .first())
         if stored:
             file_service.delete_file(stored)
             deleted += 1
     for fid in _id_list("folder_ids"):
         folder = Folder.query.filter_by(id=fid, user_id=current_user.id).first()
-        if folder:
+        if folder and not (folder.drive and folder.drive.is_synced):
             _delete_folder_recursive(folder)
             deleted += 1
     db.session.commit()
@@ -563,19 +622,23 @@ def move_selection():
     dest = None
     if dest_id:
         dest = _get_owned(Folder, dest_id)
+        if dest.drive and dest.drive.is_synced:
+            return jsonify({"ok": False,
+                            "error": "Synced drives are read-only."}), 400
     moved = 0
     skipped = 0
     for fid in _id_list("file_ids"):
         stored = (StoredFile.query
                   .filter_by(id=fid, user_id=current_user.id)
-                  .filter(StoredFile.deleted_at.is_(None))
+                  .filter(StoredFile.deleted_at.is_(None),
+                          StoredFile.source_path.is_(None))  # synced = read-only
                   .first())
         if stored:
             stored.folder_id = dest.id if dest else None
             moved += 1
     for fid in _id_list("folder_ids"):
         folder = Folder.query.filter_by(id=fid, user_id=current_user.id).first()
-        if not folder:
+        if not folder or (folder.drive and folder.drive.is_synced):
             continue
         # Guard: cannot move a folder into itself or one of its descendants.
         if dest and (dest.id == folder.id or _is_descendant(dest, folder)):
@@ -591,6 +654,8 @@ def move_selection():
 @login_required
 def delete_folder(folder_id):
     folder = _get_owned(Folder, folder_id)
+    if folder.drive and folder.drive.is_synced:
+        abort(400, "Synced drives are read-only.")
     parent_id = folder.parent_id
     _delete_folder_recursive(folder)
     db.session.commit()

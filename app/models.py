@@ -50,12 +50,19 @@ class Drive(db.Model):
     name = db.Column(db.String(120), nullable=False)
     description = db.Column(db.String(500), nullable=False, default="")
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    source_path = db.Column(db.String(500), nullable=True)  # local folder root (synced drive)
+    last_synced_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",
                               cascade="all, delete-orphan")
     files = db.relationship("StoredFile", backref="drive", lazy="dynamic",
                             cascade="all, delete-orphan")
+
+    @property
+    def is_synced(self):
+        """Synced drives mirror a local folder and are read-only."""
+        return self.source_path is not None
 
     def __repr__(self):
         return f"<Drive {self.name}>"
@@ -104,6 +111,7 @@ class StoredFile(db.Model):
     folder_id = db.Column(db.Integer, db.ForeignKey("folders.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     drive_id = db.Column(db.Integer, db.ForeignKey("drives.id"), nullable=True, index=True)
+    source_path = db.Column(db.String(500), nullable=True)  # real path (synced files)
     deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete (trash)
     created_at = db.Column(db.DateTime, default=utcnow)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
@@ -117,6 +125,11 @@ class StoredFile(db.Model):
     @property
     def is_image(self):
         return self.extension in {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+
+    @property
+    def is_synced(self):
+        """Synced files map to a real file on disk and are read-only."""
+        return self.source_path is not None
 
     @property
     def is_editable(self):

@@ -23,7 +23,17 @@ def get_extension(filename):
 
 
 def file_path(stored_file):
+    # Synced files map to a real file on disk; everything else lives in the
+    # uploads folder.
+    if stored_file.source_path:
+        return stored_file.source_path
     return os.path.join(current_app.config["UPLOAD_FOLDER"], stored_file.stored_name)
+
+
+def _guard_not_synced(stored_file):
+    """Synced files are real files on disk and must never be modified."""
+    if stored_file.is_synced:
+        raise ValueError("Synced files are read-only.")
 
 
 def thumbnail_path(stored_file):
@@ -120,6 +130,7 @@ def duplicate_checksums(user_id):
 
 def delete_file(stored_file):
     """Soft-delete: move the file to the trash (blob and history are kept)."""
+    _guard_not_synced(stored_file)
     from ..models import utcnow
     stored_file.deleted_at = utcnow()
     db.session.commit()
@@ -127,12 +138,14 @@ def delete_file(stored_file):
 
 def restore_file(stored_file):
     """Bring a trashed file back to its drive."""
+    _guard_not_synced(stored_file)
     stored_file.deleted_at = None
     db.session.commit()
 
 
 def purge_file(stored_file):
     """Permanently delete: DB rows (index/versions cascade) and disk blobs."""
+    _guard_not_synced(stored_file)
     for version in stored_file.versions:
         try:
             path = version_path(version)
@@ -174,6 +187,7 @@ def _sha256_of(path):
 
 def snapshot_version(stored_file, source, note=""):
     """Snapshot the file's current content as a FileVersion before overwriting."""
+    _guard_not_synced(stored_file)
     ext = stored_file.extension
     stored_name = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
     shutil.copyfile(file_path(stored_file), os.path.join(
@@ -208,6 +222,7 @@ def replace_with_upload(stored_file, file_storage):
     Returns "replaced" (a version was snapshotted) or "identical" (same
     content — no-op, no version churn).
     """
+    _guard_not_synced(stored_file)
     ext = stored_file.extension
     tmp_name = f"tmp_{uuid.uuid4().hex}.{ext}" if ext else f"tmp_{uuid.uuid4().hex}"
     tmp_path = os.path.join(current_app.config["UPLOAD_FOLDER"], tmp_name)

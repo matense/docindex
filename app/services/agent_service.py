@@ -102,6 +102,8 @@ Rules:
   it again with start set to start + returned_chars to continue reading.
   Continue until you have the information you need.
 - Always cite the files you used by name, like [filename](file://ID).
+- Some files are marked read_only=true — they mirror a real folder on disk
+  and cannot be edited, moved or deleted. Never offer to modify them.
 - If the files don't contain the answer, say so honestly — never invent content.
 - Answer in the same language the user writes in."""
 
@@ -194,7 +196,8 @@ def _tool_list_files(user, folder_id=None, drive=None):
     return {
         "folders": [{"folder_id": f.id, "name": f.name} for f in folders_q.all()],
         "files": [
-            {"file_id": f.id, "name": f.name, "size": f.size}
+            {"file_id": f.id, "name": f.name, "size": f.size,
+             "read_only": f.is_synced}
             for f in query.limit(100).all()
         ],
     }

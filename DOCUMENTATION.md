@@ -140,9 +140,19 @@ drive" is stored in the Flask session (`session["drive_id"]`).
 | `name` | String(120) | unique per user (enforced in service layer, case-insensitive) |
 | `description` | String(500), default "" | |
 | `user_id` | FK -> users.id, indexed | |
+| `source_path` | String(500), nullable | absolute local folder root — set = synced drive |
+| `last_synced_at` | DateTime, nullable | last successful sync |
 | `created_at` | DateTime | |
 
 Relationships: `folders`, `files` (cascade delete-orphan).
+Property: `is_synced` (`source_path IS NOT NULL`). **Synced drives** mirror a
+local folder and are strictly read-only: files are not copied (`StoredFile.
+source_path` points at the real file and `file_service.file_path()` resolves
+it), upload/rename/move/delete/edit/merge/folder ops are blocked (routes
+abort 400 and `file_service` guards raise `ValueError`), no version history
+is kept, and sync is on-demand via `sync_service.sync_drive`. CRITICAL:
+never call `purge_file`/`delete_file` on a synced file — removals during
+sync only delete DB rows; the real file belongs to the user.
 
 ### `folders`
 
@@ -172,6 +182,7 @@ Relationships: `children` (self-ref, cascade delete-orphan), `files`.
 | `folder_id` | FK -> folders.id, nullable, indexed | NULL = drive root |
 | `user_id` | FK -> users.id, indexed | |
 | `drive_id` | FK -> drives.id, nullable, indexed | |
+| `source_path` | String(500), nullable | absolute path of the real file (synced files) |
 | `deleted_at` | DateTime, nullable, indexed | set = in the trash (soft-delete) |
 | `created_at`, `updated_at` | DateTime | `updated_at` auto-bumps |
 
@@ -303,7 +314,10 @@ Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, defaul
   `POST .../accept` saves the reviewed merge)
   (info is JSON), `/folder/create`, `/folder/<id>/delete` (recursive),
   `/selection/delete` and `/selection/move` (bulk ops, JSON; move guards
-  against moving a folder into itself/descendants).
+  against moving a folder into itself/descendants),
+  `POST /drives/sync-create` (create a synced drive from a local folder path)
+  and `POST /drives/<id>/sync` (on-demand re-sync). All write routes abort
+  400 for synced drives/files (`_guard_writable`).
 - `search.py`: `GET /search` (results page; `?mode=ai` renders the full-page
   AI chat), `GET /api/search` (instant-search JSON, limit 8).
 - `ai.py`: see "AI chat streaming" below.
@@ -397,7 +411,15 @@ and `model` per message (including thinking/step rows for the history view);
   drive, and migrates pre-drives files/folders (`drive_id IS NULL`) into the
   first drive. `create_drive`/`select_drive`/`update_drive` manage drives and
   the session pointer.
-- **file_service** — physical storage: path helpers, `save_upload`,
+- **sync_service** — synced (read-only) drives. `create_synced_drive(user,
+  path)` validates the local folder (exists, is dir, readable, not already
+  synced) and creates a drive named after it; `sync_drive(drive)` walks the
+  folder (`os.walk`, no symlink following), upserts `Folder`/`StoredFile`
+  rows keyed by relative path, checksums content (SHA-256), re-indexes new
+  and changed files, and DB-row-deletes vanished ones (never touching the
+  real files). Skips disallowed extensions and oversize files.
+- **file_service** — physical storage: path helpers (`file_path` returns the
+  real `source_path` for synced files), `save_upload`,
   thumbnails, SHA-256 checksums + duplicate detection
   (`find_duplicates`, `duplicate_checksums`), version history
   (`snapshot_version`, `replace_with_upload`, `restore_version`,

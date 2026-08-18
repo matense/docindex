@@ -13,6 +13,10 @@ installations compatible. Read this before making changes.
 4. **Keep the docs in sync** — if you change the architecture, update
    `DOCUMENTATION.md` and `.github/copilot-instructions.md` in the same
    commit.
+5. **Synced files are sacred** — any code that deletes or overwrites files
+   must check `StoredFile.is_synced` / `Drive.is_synced` first and never
+   touch `source_path` files on disk (no `purge_file`, no writes). Synced
+   drives mirror the user's real folders; removals only delete DB rows.
 
 ## Development setup
 

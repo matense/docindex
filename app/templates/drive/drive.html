@@ -42,19 +42,22 @@
     <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Download" onclick="event.stopPropagation()">
         <i class="fas fa-download"></i>
     </a>
-    {% if f.extension in editable_exts %}
-    <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit">
-        <i class="fas fa-pen"></i>
-    </a>
+    {% if not f.is_synced %}
+        {% if f.extension in editable_exts %}
+        <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit">
+            <i class="fas fa-pen"></i>
+        </a>
+        {% endif %}
+        <button class="btn btn-circle btn-xs btn-ghost" title="Rename"
+                onclick="event.stopPropagation(); renameFile({{ f.id }}, '{{ f.name }}')">
+            <i class="fas fa-i-cursor"></i>
+        </button>
     {% endif %}
-    <button class="btn btn-circle btn-xs btn-ghost" title="Rename"
-            onclick="event.stopPropagation(); renameFile({{ f.id }}, '{{ f.name }}')">
-        <i class="fas fa-i-cursor"></i>
-    </button>
     <button class="btn btn-circle btn-xs btn-ghost" title="Info"
             onclick="event.stopPropagation(); showFileInfo({{ f.id }})">
         <i class="fas fa-circle-info"></i>
     </button>
+    {% if not f.is_synced %}
     <form method="POST" action="{{ url_for('drive.delete', file_id=f.id) }}" class="inline"
           data-confirm="Move &quot;{{ f.name }}&quot; to the trash?" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -62,6 +65,7 @@
             <i class="fas fa-trash"></i>
         </button>
     </form>
+    {% endif %}
 {%- endmacro %}
 
 {% macro tree_file(f) -%}
@@ -104,6 +108,21 @@
             </ul>
         </div>
         <!-- Selection toolbar -->
+        {% if drive.is_synced %}
+        <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-2">
+            <span class="badge badge-info badge-outline gap-1"><i class="fas fa-lock"></i> Synced · read-only</span>
+            <form method="POST" action="{{ url_for('drive.sync_now', drive_id=drive.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="next" value="{{ request.full_path }}">
+                <button type="submit" class="btn btn-info btn-sm gap-1.5" title="Re-scan the local folder">
+                    <i class="fas fa-arrows-rotate"></i> Sync now
+                </button>
+            </form>
+            {% if drive.last_synced_at %}
+            <span class="text-xs opacity-50">Last synced {{ drive.last_synced_at.strftime('%d %b %Y %H:%M') }}</span>
+            {% endif %}
+        </div>
+        {% else %}
         <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-1" id="drive-toolbar">
             <button type="button" class="btn btn-ghost btn-sm gap-1.5" title="New folder"
                     onclick="document.getElementById('new-folder-modal').showModal()">
@@ -124,6 +143,7 @@
                 <span id="tb-sel-count" class="badge badge-xs badge-error hidden"></span>
             </button>
         </div>
+        {% endif %}
     </div>
     <div class="flex items-center gap-2">
         <div class="view-switch" title="View style">
@@ -140,7 +160,7 @@
                 <i class="fas fa-folder-tree"></i>
             </a>
         </div>
-        {% if folder %}
+        {% if folder and not drive.is_synced %}
         <form method="POST" action="{{ url_for('drive.delete_folder', folder_id=folder.id) }}"
               data-confirm="Delete this folder? Its files will be moved to the trash." data-confirm-danger>
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -158,12 +178,23 @@
 
 {% if not folders and not files %}
 <div class="glass-panel rounded-2xl p-16 text-center mt-4">
+    {% if drive.is_synced %}
+    <i class="fas fa-folder-tree text-6xl text-info/30 mb-4"></i>
+    <h2 class="text-xl font-bold mb-2">No indexable files found</h2>
+    <p class="opacity-60 mb-4">The synced folder is empty or holds no supported file types. Add files on disk, then sync again.</p>
+    <form method="POST" action="{{ url_for('drive.sync_now', drive_id=drive.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ request.full_path }}">
+        <button type="submit" class="btn btn-info text-info-content"><i class="fas fa-arrows-rotate"></i> Sync now</button>
+    </form>
+    {% else %}
     <i class="fas fa-folder-open text-6xl text-primary/30 mb-4"></i>
     <h2 class="text-xl font-bold mb-2">This folder is empty</h2>
     <p class="opacity-60 mb-4">Upload files and they'll be indexed automatically — even text inside images.</p>
     <button class="btn btn-primary" onclick="document.getElementById('upload-modal').showModal()">
         <i class="fas fa-cloud-arrow-up"></i> Upload files
     </button>
+    {% endif %}
 </div>
 
 {% elif view_mode == 'list' %}
