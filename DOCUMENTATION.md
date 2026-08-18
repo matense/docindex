@@ -143,6 +143,8 @@ drive" is stored in the Flask session (`session["drive_id"]`).
 | `source_path` | String(500), nullable | absolute local folder root — set = synced drive |
 | `last_synced_at` | DateTime, nullable | last successful sync |
 | `last_sync_stats` | Text, nullable | JSON stats of the last sync (added/updated/removed/skipped) |
+| `captions_enabled` | Boolean, default true | synced drives: AI image captions on/off |
+| `index_workers` | Integer, default 1 | synced drives: parallel indexing workers (1–8) |
 | `created_at` | DateTime | |
 
 Relationships: `folders`, `files` (cascade delete-orphan).
@@ -433,8 +435,11 @@ and `model` per message (including thinking/step rows for the history view);
   page). `remove_synced_drive(drive)` stops any running sync, then deletes
   the drive row (files, folders, index and versions cascade) plus generated
   thumbnails — the real folder on disk is never touched. Rows are committed in batches of 50 so the UI stays responsive, and
-  indexing after a sync runs in ONE background worker walking the queue
-  sequentially (a thread per file would exhaust the connection pool). For
+  indexing after a sync runs in a configurable pool of background workers
+  (`Drive.index_workers`, 1–8, default 1) sharing one queue — a thread per
+  file would exhaust the connection pool. AI image captions can be toggled
+  per synced drive (`Drive.captions_enabled`), both at creation and via
+  `POST /drives/<id>/sync-settings` on the profile page. For
   file-based SQLite the engine uses `NullPool` + a 30 s busy timeout
   (`config.py`), so background threads never hit the QueuePool limit;
   in-memory test databases keep the default pool (NullPool would give each

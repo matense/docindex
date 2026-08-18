@@ -131,6 +131,28 @@
                     </div>
                     <div class="text-[11px] opacity-50 truncate mt-1 sync-current"></div>
                 </div>
+                <!-- Sync options -->
+                <form method="POST" action="{{ url_for('drive.sync_settings', drive_id=s.drive.id) }}"
+                      class="mx-4 mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next" value="{{ url_for('settings.profile') }}">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="captions_enabled" class="toggle toggle-info toggle-xs"
+                               {{ 'checked' if s.drive.captions_enabled }}
+                               onchange="this.form.submit()">
+                        <span>AI image captions</span>
+                    </label>
+                    <label class="flex items-center gap-2">
+                        <span class="opacity-60">Indexing workers</span>
+                        <select name="index_workers" class="select select-bordered select-xs w-16"
+                                onchange="this.form.submit()">
+                            {% for n in [1, 2, 4, 8] %}
+                            <option value="{{ n }}" {{ 'selected' if s.drive.index_workers == n }}>{{ n }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <span class="opacity-40 italic">applies to the next sync</span>
+                </form>
                 <!-- Footer: drive stats + last sync result -->
                 <div class="px-4 py-2.5 border-t border-info/15 bg-base-100/40 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
                     <span><i class="fas fa-file opacity-40"></i> <strong>{{ s.file_count }}</strong> files</span>

@@ -233,7 +233,7 @@ def validate_path(path):
     return abs_path, None
 
 
-def create_synced_drive(user, path):
+def create_synced_drive(user, path, captions_enabled=True, index_workers=1):
     """Create a synced drive for a local folder and start the first sync.
 
     Returns (drive, job, error).
@@ -253,7 +253,9 @@ def create_synced_drive(user, path):
         suffix += 1
 
     drive = Drive(name=name, user_id=user.id, source_path=abs_path,
-                  description=f"Synced from {abs_path}")
+                  description=f"Synced from {abs_path}",
+                  captions_enabled=captions_enabled,
+                  index_workers=max(1, min(int(index_workers or 1), 8)))
     db.session.add(drive)
     db.session.commit()
     session["drive_id"] = drive.id
@@ -279,21 +281,39 @@ def _allowed(name, size):
     return size <= current_app.config["MAX_FILE_SIZE"]
 
 
-def _trigger_indexing(file_ids):
-    """Index synced files: one background worker for the whole batch.
+def _trigger_indexing(file_ids, workers=1):
+    """Index synced files with a small pool of background workers.
 
-    Spawning one thread per file would exhaust the connection pool on large
-    folders, so a single thread walks the list sequentially.
+    A single worker is the safe default; more workers speed up OCR/AI caption
+    calls on large folders. Workers share one queue and each opens its own DB
+    connection (NullPool), so the pool is never exhausted.
     """
     if not file_ids:
         return
     app = current_app._get_current_object()
+    workers = max(1, min(int(workers or 1), 8))
     if current_app.config.get("INDEX_ASYNC", True):
-        thread = threading.Thread(target=_index_batch, args=(file_ids, app),
-                                  daemon=True)
-        thread.start()
+        _start_index_workers(file_ids, app, workers)
     else:
+        # Tests (in-memory SQLite): same thread, sequential.
         _index_batch(file_ids, app)
+
+
+def _start_index_workers(file_ids, app, workers):
+    queue = list(file_ids)
+    lock = threading.Lock()
+
+    def worker():
+        while True:
+            with lock:
+                if not queue:
+                    return
+                file_id = queue.pop(0)
+            indexing_service.index_file(file_id, app)
+
+    count = min(workers, len(queue))
+    for _ in range(count):
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def _index_batch(file_ids, app):
@@ -436,7 +456,7 @@ def sync_drive(drive, job=None):
     drive.last_sync_stats = json.dumps(stats)
     db.session.commit()
 
-    _trigger_indexing(to_index)
+    _trigger_indexing(to_index, workers=drive.index_workers)
     return stats
 
 

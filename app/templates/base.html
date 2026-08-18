@@ -287,6 +287,23 @@
                                    class="input input-bordered w-full font-mono text-sm">
                             <span class="text-xs opacity-50">Path on the machine running DocIndex. Subfolders are included.</span>
                         </label>
+                        <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" name="captions_enabled" class="toggle toggle-info toggle-sm" checked>
+                                <span class="text-sm">AI image captions
+                                    <span class="block text-xs opacity-50">Describe images with your AI (uses the vision model)</span>
+                                </span>
+                            </label>
+                            <label class="flex items-center gap-2">
+                                <span class="text-sm">Indexing workers</span>
+                                <select name="index_workers" class="select select-bordered select-sm w-20">
+                                    <option value="1" selected>1</option>
+                                    <option value="2">2</option>
+                                    <option value="4">4</option>
+                                    <option value="8">8</option>
+                                </select>
+                            </label>
+                        </div>
                         <div class="modal-action">
                             <button type="button" class="btn btn-ghost" onclick="document.getElementById('sync-drive-modal').close()">Cancel</button>
                             <button type="submit" class="btn btn-info text-info-content">

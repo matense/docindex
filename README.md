@@ -26,7 +26,9 @@ questions about your files by searching and reading them step by step.
   OCR/images) and searchable by the AI, but never copied or modified — they
   stay on your disk. Sync runs in the background with a floating progress
   popup (percentage, pause/resume/stop) and a per-drive sync summary on your
-  profile page. Removing a synced drive clears it and its index from
+  profile page — where you can also toggle AI image captions and set the
+  number of parallel indexing workers (1–8). Removing a synced drive clears
+  it and its index from
   DocIndex — the real folder is never touched. Note: the folder path is read
   with the permissions of the process running DocIndex.
 - **Version history** — re-uploading a file with the same name into the same

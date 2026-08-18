@@ -326,3 +326,59 @@ def test_remove_rejects_normal_drives(auth_client, app):
     with app.app_context():
         personal = Drive.query.filter_by(source_path=None).one()
     assert auth_client.post(f"/drives/{personal.id}/remove").status_code == 404
+
+
+# --- Sync options: AI captions toggle and indexing workers ---
+
+def test_sync_create_accepts_options(auth_client, app, local_folder):
+    auth_client.post("/drives/sync-create", data={
+        "path": local_folder, "index_workers": "4",
+    }, follow_redirects=True)  # captions checkbox left off
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        assert drive.captions_enabled is False
+        assert drive.index_workers == 4
+
+
+def test_sync_settings_route_updates_options(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    resp = auth_client.post(f"/drives/{drive_id}/sync-settings",
+                            data={"index_workers": "8"})
+    assert resp.status_code in (200, 302)
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        assert drive.captions_enabled is False   # checkbox unchecked = off
+        assert drive.index_workers == 8
+
+    auth_client.post(f"/drives/{drive_id}/sync-settings",
+                     data={"captions_enabled": "on", "index_workers": "99"})
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        assert drive.captions_enabled is True
+        assert drive.index_workers == 8  # clamped
+
+
+def test_captions_toggle_disables_ai_captioning(auth_client, app, local_folder):
+    from unittest.mock import patch
+    from PIL import Image
+
+    img_path = os.path.join(local_folder, "pic.png")
+    Image.new("RGB", (10, 10), "red").save(img_path)
+
+    auth_client.post("/drives/sync-create", data={
+        "path": local_folder, "index_workers": "1",
+    }, follow_redirects=True)  # captions off
+
+    with app.app_context():
+        with patch("app.services.ai_service.caption_image") as caption_mock, \
+             patch("app.services.ai_service.config_for") as cfg_mock:
+            cfg_mock.return_value = {"enabled": True, "base_url": "http://x",
+                                     "api_key": "", "model": "m", "vision_model": "m"}
+            from app.services import indexing_service
+            pic = StoredFile.query.filter_by(name="pic.png").one()
+            indexing_service.index_file(pic.id)
+        caption_mock.assert_not_called()
+        db.session.refresh(pic)
+        assert pic.index.status == "ok"

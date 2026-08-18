@@ -108,7 +108,9 @@ def index_file(file_id, app=None):
 
             caption = None
             ai_cfg = ai_service.config_for(stored.owner)
-            if stored.is_image and ai_cfg["enabled"] and ai_cfg["base_url"]:
+            # Synced drives can turn AI captions off (drive setting).
+            captions_on = stored.drive.captions_enabled if stored.drive else True
+            if stored.is_image and captions_on and ai_cfg["enabled"] and ai_cfg["base_url"]:
                 caption = ai_service.caption_image(
                     file_service.file_path(stored), config=ai_cfg)
 

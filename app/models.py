@@ -53,6 +53,8 @@ class Drive(db.Model):
     source_path = db.Column(db.String(500), nullable=True)  # local folder root (synced drive)
     last_synced_at = db.Column(db.DateTime, nullable=True)
     last_sync_stats = db.Column(db.Text, nullable=True)  # JSON stats of the last sync
+    captions_enabled = db.Column(db.Boolean, nullable=False, default=True)  # AI image captions
+    index_workers = db.Column(db.Integer, nullable=False, default=1)  # parallel indexing workers
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",

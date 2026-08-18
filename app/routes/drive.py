@@ -120,7 +120,9 @@ def create_drive():
 def sync_create():
     """Create a read-only drive that mirrors a local folder."""
     drive, job, error = sync_service.create_synced_drive(
-        current_user, request.form.get("path", ""))
+        current_user, request.form.get("path", ""),
+        captions_enabled=bool(request.form.get("captions_enabled")),
+        index_workers=request.form.get("index_workers", type=int) or 1)
     if error:
         flash(error, "error")
     elif job.state == "done":
@@ -192,6 +194,23 @@ def sync_stop(drive_id):
     drive = _get_synced_drive(drive_id)
     sync_service.cancel_sync(drive.id)
     return jsonify({"ok": True})
+
+
+@bp.route("/drives/<int:drive_id>/sync-settings", methods=["POST"])
+@login_required
+def sync_settings(drive_id):
+    """Per-drive sync options: AI captions toggle and indexing workers."""
+    drive = _get_synced_drive(drive_id)
+    drive.captions_enabled = bool(request.form.get("captions_enabled"))
+    workers = request.form.get("index_workers", type=int)
+    if workers:
+        drive.index_workers = max(1, min(workers, 8))
+    db.session.commit()
+    if request.accept_mimetypes.best == "application/json":
+        return jsonify({"ok": True, "captions_enabled": drive.captions_enabled,
+                        "index_workers": drive.index_workers})
+    flash("Sync settings saved.", "success")
+    return redirect(request.form.get("next") or url_for("settings.profile"))
 
 
 @bp.route("/drives/<int:drive_id>/remove", methods=["POST"])
