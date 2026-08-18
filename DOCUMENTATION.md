@@ -181,7 +181,7 @@ Relationships: `children` (self-ref, cascade delete-orphan), `files`.
 | `extension` | String(20), default "" | lowercase, no dot |
 | `mime_type` | String(120), nullable | |
 | `size` | Integer, default 0 | bytes |
-| `checksum` | String(64), nullable | SHA-256; used for duplicate detection |
+| `checksum` | String(64), nullable | SHA-256; used for per-drive duplicate detection |
 | `folder_id` | FK -> folders.id, nullable, indexed | NULL = drive root |
 | `user_id` | FK -> users.id, indexed | |
 | `drive_id` | FK -> drives.id, nullable, indexed | |
@@ -358,7 +358,8 @@ files from the normal file routes).
    stores the file as `uploads/files/<uuid>.<ext>`, enforces `MAX_FILE_SIZE`,
    computes the SHA-256 checksum, creates the `StoredFile` row and a
    `FileIndex(status="pending")` row, generates a 256 px PNG thumbnail for
-   images, and reports duplicate content (same checksum) back to the UI.
+   images, and reports duplicate content (same checksum, within the same
+   drive) back to the UI.
 2. Indexing is triggered per file: `index_file_async()` spawns a daemon
    thread when `INDEX_ASYNC` is true, otherwise runs inline (tests).
 3. `indexing_service.index_file()` extracts text by extension: pdfplumber
@@ -451,7 +452,7 @@ and `model` per message (including thinking/step rows for the history view);
   connection its own empty DB).
 - **file_service** — physical storage: path helpers (`file_path` returns the
   real `source_path` for synced files), `save_upload`,
-  thumbnails, SHA-256 checksums + duplicate detection
+  thumbnails, SHA-256 checksums + per-drive duplicate detection
   (`find_duplicates`, `duplicate_checksums`), version history
   (`snapshot_version`, `replace_with_upload`, `restore_version`,
   `find_by_name`), trash (`delete_file` soft-deletes, `restore_file`,
