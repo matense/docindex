@@ -45,7 +45,7 @@
     <!-- Markdown rendering for AI answers -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2">
     {% block head %}{% endblock %}
 </head>
 <body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
@@ -317,7 +317,7 @@
             {% endif %}
             {% if ai_enabled %}
                 {% include 'components/ai_chat.html' %}
-                <script src="{{ url_for('static', filename='js/ai_chat.js') }}" defer></script>
+                <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=2" defer></script>
             {% endif %}
             <script src="{{ url_for('static', filename='js/sync_widget.js') }}?v=4" defer></script>
             <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>

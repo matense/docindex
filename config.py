@@ -63,6 +63,9 @@ class Config:
     AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
     # Max words per AI-generated hashtag (user-added tags are not limited).
     AI_HASHTAG_MAX_WORDS = int(os.environ.get("AI_HASHTAG_MAX_WORDS", "6"))
+    # Token-by-token streaming for chat. Set to false if your provider breaks
+    # with streamed tool calls (a non-streaming fallback is tried anyway).
+    AI_STREAMING = os.environ.get("AI_STREAMING", "true").lower() in ("1", "true", "yes")
 
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True
@@ -80,6 +83,8 @@ class TestConfig(Config):
     TESTING = True
     WTF_CSRF_ENABLED = False
     AI_ENABLED = False
+    # Tests patch the non-streaming chat_completion; streaming has its own tests.
+    AI_STREAMING = False
     INDEX_ASYNC = False
     SYNC_ASYNC = False
     HASHTAG_ASYNC = False

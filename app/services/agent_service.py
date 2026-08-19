@@ -337,16 +337,60 @@ def _summarize_result(name, result):
     return str(result)[:200]
 
 
+def _complete(messages, tools, config):
+    """One model call, streaming when enabled.
+
+    Yields ("thinking_token", text) for reasoning deltas and
+    ("answer_token", text) for content deltas; returns the assembled message
+    dict (same shape as chat_completion's). Falls back once to the
+    non-streaming chat_completion if the provider fails before sending any
+    delta (e.g. it rejects streamed tool calls).
+    """
+    if not config.get("streaming", True):
+        return ai_service.chat_completion(messages, tools=tools, config=config)
+
+    got_delta = False
+    try:
+        stream = ai_service.chat_completion_stream(
+            messages, tools=tools, config=config)
+        while True:
+            try:
+                kind, payload = next(stream)
+            except StopIteration:
+                break
+            if kind == "done":
+                return payload
+            got_delta = True
+            # Expose deltas to the caller as chat events.
+            yield ("thinking_token" if kind == "reasoning" else "answer_token",
+                   payload)
+    except ai_service.AIError:
+        if got_delta:
+            raise  # mid-stream failure: the route reports it as an error event
+        current_app.logger.warning(
+            "AI streaming failed before any delta; retrying non-streaming.")
+        return ai_service.chat_completion(messages, tools=tools, config=config)
+    raise ai_service.AIError("AI stream ended without a completed message.")
+
+
 def run_agent_events(user, history, drive=None):
     """Run the multi-step tool-calling loop, yielding events as they happen.
 
     `history` is a list of {"role": ..., "content": ...} chat messages.
     `drive` optionally scopes search/list tools to a single drive.
     Yields, in order:
+      ("thinking_token", text)               — live reasoning delta (streaming)
+      ("answer_token", text)                 — live content delta (streaming)
       ("thinking", text)                       — the model's intermediate reasoning
       ("step", {"label":..., "detail":...})    — a tool call being made
       ("tool_result", {"label":..., "summary":...}) — what the tool returned
       ("answer", text)                         — the final answer (always last)
+
+    With streaming, a ("thinking", text) event that follows answer_token
+    events carries the same text the client already rendered in a tentative
+    answer bubble — the client should move that bubble into the reasoning box
+    (the message turned out to be narration before a tool call, not the final
+    answer).
     """
     config = ai_service.config_for(user)
     max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
@@ -366,7 +410,7 @@ def run_agent_events(user, history, drive=None):
     nudges = 0
 
     for _ in range(max_steps):
-        message = ai_service.chat_completion(messages, tools=TOOLS, config=config)
+        message = yield from _complete(messages, TOOLS, config)
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -423,8 +467,9 @@ def run_agent_events(user, history, drive=None):
         "You have used all available tool steps. Write the final answer now "
         "with the information you already have. If something is still "
         "missing, say so honestly and summarize what you found.")})
+    answer = ""
     try:
-        final = ai_service.chat_completion(messages, config=config)
+        final = yield from _complete(messages, None, config)
         answer = (final.get("content") or "").strip()
     except ai_service.AIError:
         answer = ""
@@ -439,6 +484,8 @@ def run_agent(user, history, drive=None):
     for kind, payload in run_agent_events(user, history, drive=drive):
         if kind == "step":
             steps.append(payload)
-        else:
+        elif kind in ("thinking", "answer"):
             answer = payload
+        # thinking_token / answer_token deltas are ignored here — the final
+        # "answer" event always carries the complete text.
     return answer, steps

@@ -2513,6 +2513,23 @@ body.show-shortcuts #shortcut-help-panel {
     gap: 0.35rem;
 }
 
+/* Blinking cursor appended to a chat bubble while tokens stream in. */
+.ai-cursor {
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    border-radius: 2px;
+    background: currentColor;
+    opacity: 0.7;
+    animation: ai-cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes ai-cursor-blink {
+    to { visibility: hidden; }
+}
+
 /* --- Google-style search hero (/search without a query) --- */
 #search-dock-container {
     transition: opacity 0.3s ease, transform 0.3s ease;

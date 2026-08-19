@@ -99,6 +99,7 @@ app refuses to start without it.
 | `AI_MAX_STEPS`        | `16`                                           | Global agent step limit (per-connection override available) |
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
+| `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
 | `PORT`                | `5000`                                         | Dev server port (`run.py`) |
 
 Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
@@ -442,12 +443,32 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    `read_file` them directly without searching.
 4. The response is `application/x-ndjson` streamed with
    `stream_with_context`. Each agent event becomes one JSON line:
-   `{"type": "thinking"|"step"|"tool_result"|"answer"|"error", ...}`.
+   `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"answer"|"error", ...}`.
    Errors (including `AIError` and unexpected exceptions) are emitted as an
    `error` event rather than killing the stream silently.
+
+   **Token streaming.** With `AI_STREAMING=true` (default), the agent calls
+   `ai_service.chat_completion_stream()` — an SSE client (`stream=True` on
+   the provider request) that yields `("token"|"reasoning", text)` deltas and
+   a final `("done", message)` with the assembled message (tool_calls merged
+   from deltas by index). A stream that dies mid-way keeps its partial
+   content; one that fails before any delta triggers an automatic one-time
+   fallback to the non-streaming `chat_completion()` (providers that reject
+   streamed tool calls), so behaviour degrades gracefully — set
+   `AI_STREAMING=false` to skip streaming entirely.
+   The route forwards deltas as `thinking_token` / `answer_token` events.
+   Because a model can stream content and *then* emit a tool call, the full
+   `thinking` event that follows `answer_token` deltas carries
+   `migrate: true`: the client moves its tentative answer bubble into the
+   reasoning box. A `thinking` event whose text already arrived as
+   `thinking_token` deltas is persisted but not re-sent (it would
+   duplicate). The final `answer` event always carries the complete text and
+   the client replaces the tentative bubble with the full markdown render.
 5. After the stream ends, the route persists the run: each thinking chunk as
    a `role="thinking"` message, each step as `role="step"`
    (`"Label: detail → summary"`), and the final answer as `role="assistant"`.
+   Token deltas are not persisted — only the assembled blocks, so the DB
+   layout is identical with or without streaming.
 
 `GET /ai/conversations` lists conversations (each with `updated_at` and the
 `model` that wrote the latest assistant reply, for the history list);
@@ -506,7 +527,9 @@ and `model` per message (including thinking/step rows for the history view);
   `get_active_job`) mirroring the sync job pattern.
 - **ai_service** — OpenAI-compatible client: `config_for(user)` resolves the
   active configuration (see below), `chat_completion()` POSTs to
-  `/chat/completions` (raises `AIError` on any failure), `list_models()` /
+  `/chat/completions` (raises `AIError` on any failure),
+  `chat_completion_stream()` is the SSE streaming variant used by the agent
+  (see "AI chat streaming"), `list_models()` /
   `test_connection()` hit `/models`, `caption_image()` sends a base64
   data-URL image to the vision model.
 - **agent_service** — the agentic loop (next section).
@@ -516,6 +539,10 @@ and `model` per message (including thinking/step rows for the history view);
 `agent_service.run_agent_events(user, history, drive=None)` is a generator
 that runs the multi-step tool-calling loop and yields events as they happen:
 
+- `("thinking_token", text)` / `("answer_token", text)` — live token deltas
+  (only when `AI_STREAMING` is on; see "AI chat streaming"). Model calls go
+  through the internal `_complete()` helper, which streams when enabled and
+  falls back once to non-streaming if the provider fails before any delta.
 - `("thinking", text)` — the model's intermediate reasoning (message content
   alongside tool calls, or a `reasoning_content`/`reasoning` field from
   Kimi/DeepSeek-style thinking models).
@@ -526,12 +553,13 @@ that runs the multi-step tool-calling loop and yields events as they happen:
 - `("answer", text)` — always the last event.
 
 If the step budget is exhausted, the loop does not end with a dead end: it
-makes one final `chat_completion` call *without* tools, asking the model to
-write the best final answer with the information already gathered (the
-"forced finalization"). If that call fails or returns empty, the answer
-falls back to asking the user to rephrase.
+makes one final completion call *without* tools (streamed like the rest),
+asking the model to write the best final answer with the information already
+gathered (the "forced finalization"). If that call fails or returns empty,
+the answer falls back to asking the user to rephrase.
 
-`run_agent()` is the non-streaming wrapper returning `(answer, steps)`.
+`run_agent()` is the non-streaming wrapper returning `(answer, steps)`
+(token deltas are ignored; the final `answer` event carries the full text).
 
 ### Tools
 
@@ -715,16 +743,20 @@ pytest suite in `tests/`, ~45 tests across 7 modules:
   (creates "alice", yields her id), `auth_client` (logged-in client).
 - Tests mock the network: agent and AI tests patch
   `app.services.ai_service.chat_completion` with canned message dicts (tool
-  calls, reasoning fields, etc.), and settings tests patch
+  calls, reasoning fields, etc.), streaming tests patch
+  `chat_completion_stream` (or `requests.post` with fake SSE lines), and
+  settings tests patch
   `ai_service.requests.get` for `/models` responses. No real AI backend is
   needed.
 - `TestConfig` sets `INDEX_ASYNC=False`, so indexing runs inline and tests
-  can assert on `file_index` rows immediately.
+  can assert on `file_index` rows immediately. It also sets
+  `AI_STREAMING=False` so the agent tests exercise the classic path;
+  streaming has dedicated tests.
 - Coverage: auth, drive CRUD/upload/isolation, multi-drive behavior,
   indexing + search, file stats, AI settings (connection CRUD, env
   fallback, isolation), and the agent (multi-step runs, `read_file`
-  chunking, thinking/tool_result events, attachments, reasoning field, the
-  nudge mechanism).
+  chunking, thinking/tool_result events, token streaming, attachments,
+  reasoning field, the nudge mechanism).
 
 Run with `pytest`.
 

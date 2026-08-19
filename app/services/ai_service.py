@@ -59,6 +59,7 @@ def _env_config():
         "timeout": cfg.get("AI_REQUEST_TIMEOUT", 120),
         "max_steps": cfg.get("AI_MAX_STEPS", 16),
         "rate_limit_rpm": cfg.get("AI_RATE_LIMIT_RPM", 30),
+        "streaming": cfg.get("AI_STREAMING", True),
         "rate_key": "env",
     }
 
@@ -82,6 +83,7 @@ def config_for(user=None):
                 "rate_limit_rpm": (conn.rate_limit_rpm
                                    if conn.rate_limit_rpm is not None
                                    else current_app.config.get("AI_RATE_LIMIT_RPM", 30)),
+                "streaming": current_app.config.get("AI_STREAMING", True),
                 "rate_key": f"conn:{conn.id}",
             }
     return _env_config()
@@ -142,6 +144,131 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
         return data["choices"][0]["message"]
     except (ValueError, KeyError, IndexError) as exc:
         raise AIError(f"Unexpected AI response format: {exc}") from exc
+
+
+def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
+                           config=None, block=False):
+    """Streaming variant of chat_completion (SSE, OpenAI-compatible).
+
+    Yields:
+      ("token", text)     — content deltas as they arrive
+      ("reasoning", text) — reasoning_content/reasoning deltas (thinking models)
+      ("done", message)   — final assembled message, same shape as
+                            chat_completion's return value (always last)
+
+    Raises AIError on connection/HTTP errors. If the stream dies mid-way
+    without [DONE] but content was already received, the accumulated message
+    is returned as "done"; if nothing was received, AIError is raised (the
+    caller may then retry with the non-streaming chat_completion).
+    """
+    import json as _json
+
+    cfg = config or _env_config()
+    if not (cfg["enabled"] and cfg["base_url"] and cfg["model"]):
+        raise AIError("AI is not configured. Add a connection in AI Settings.")
+
+    payload = {"model": model or cfg["model"], "messages": messages,
+               "stream": True}
+    if tools:
+        payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+
+    _rate_slot(cfg, block=block)
+
+    try:
+        resp = requests.post(
+            f"{cfg['base_url']}/chat/completions",
+            json=payload,
+            headers=_headers(cfg),
+            timeout=cfg["timeout"],
+            stream=True,
+        )
+    except requests.RequestException as exc:
+        raise AIError(f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
+
+    if resp.status_code == 429:
+        resp.close()
+        retry = resp.headers.get("Retry-After")
+        raise AIError(
+            "The provider's rate limit was hit (HTTP 429)"
+            + (f" — retry in ~{retry}s." if retry else ".")
+            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.")
+    if resp.status_code != 200:
+        excerpt = resp.text[:300]
+        resp.close()
+        raise AIError(f"AI backend returned {resp.status_code}: {excerpt}")
+
+    content_parts = []
+    reasoning_parts = []
+    tool_calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
+    got_anything = False
+
+    try:
+        # Iterate raw bytes and decode as UTF-8 explicitly — SSE servers often
+        # omit the charset header and requests would otherwise decode deltas
+        # as latin-1, mangling non-ASCII text ("análise" → "anÃ¡lise").
+        for raw in resp.iter_lines():
+            if not raw:
+                continue  # keep-alive / blank separator lines
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            line = raw.strip()
+            if not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = _json.loads(data_str)
+            except ValueError:
+                continue  # tolerate junk lines from proxies
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            got_anything = True
+
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                yield ("token", piece)
+
+            think = delta.get("reasoning_content") or delta.get("reasoning")
+            if think:
+                reasoning_parts.append(think)
+                yield ("reasoning", think)
+
+            for tc in delta.get("tool_calls") or []:
+                slot = tool_calls.setdefault(
+                    tc.get("index", 0),
+                    {"id": "", "type": "function",
+                     "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+    except requests.RequestException as exc:
+        if not got_anything:
+            raise AIError(
+                f"Lost connection to AI backend at {cfg['base_url']}: {exc}") from exc
+        # Mid-stream drop with partial content: fall through and finish with
+        # what we have — better than killing the answer entirely.
+    finally:
+        resp.close()
+
+    if not got_anything:
+        raise AIError("AI backend closed the stream without any content.")
+
+    message = {"role": "assistant", "content": "".join(content_parts)}
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    yield ("done", message)
 
 
 def list_models(base_url, api_key):

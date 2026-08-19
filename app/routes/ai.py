@@ -147,21 +147,45 @@ def chat():
     drive_id = drive_service.get_current_drive(current_user).id
 
     def generate():
-        """Stream NDJSON events: thinking / step / tool_result / answer / error."""
+        """Stream NDJSON events: thinking(+_token) / step / tool_result /
+        answer(+_token) / error.
+
+        Token deltas are forwarded live. `block_tokens` tracks which kind of
+        token was streamed for the current model message, so the full
+        `thinking` event that follows isn't duplicated on the client:
+          - after thinking tokens: skip (already rendered in the reasoning box)
+          - after answer tokens:   forward with migrate=true (the client moves
+            its tentative answer bubble into the reasoning box — the text was
+            narration before a tool call, not the final answer)
+        """
         thinkings = []
         steps = []
         answer = None
+        block_tokens = None  # None | "thinking" | "answer"
         # ORM objects are detached after the earlier commit; re-fetch by id.
         user = db.session.get(User, user_id)
         drive = db.session.get(Drive, drive_id)
         model_name = ai_service.config_for(user).get("model", "")
         try:
             for kind, payload in agent_service.run_agent_events(user, history, drive=drive):
-                if kind == "thinking":
-                    thinkings.append(payload)
-                    yield json.dumps({"type": "thinking", "content": payload},
+                if kind == "thinking_token":
+                    block_tokens = "thinking"
+                    yield json.dumps({"type": "thinking_token", "content": payload},
                                      ensure_ascii=False) + "\n"
+                elif kind == "answer_token":
+                    block_tokens = "answer"
+                    yield json.dumps({"type": "answer_token", "content": payload},
+                                     ensure_ascii=False) + "\n"
+                elif kind == "thinking":
+                    thinkings.append(payload)
+                    if block_tokens != "thinking":
+                        event = {"type": "thinking", "content": payload}
+                        if block_tokens == "answer":
+                            event["migrate"] = True
+                        yield json.dumps(event, ensure_ascii=False) + "\n"
+                    block_tokens = None
                 elif kind == "step":
+                    block_tokens = None
                     steps.append(payload)
                     yield json.dumps({"type": "step", "step": payload},
                                      ensure_ascii=False) + "\n"
@@ -171,6 +195,7 @@ def chat():
                     yield json.dumps({"type": "tool_result", "result": payload},
                                      ensure_ascii=False) + "\n"
                 else:
+                    block_tokens = None
                     answer = payload
                     yield json.dumps({"type": "answer",
                                       "conversation_id": conv_id,

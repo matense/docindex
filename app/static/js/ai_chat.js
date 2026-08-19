@@ -73,6 +73,8 @@
         let attachments = []; // [{id, name}]
         let reasoningBox = null;
         let reasoningBody = null;
+        let lastThinkingSpan = null;   // thinking line tokens are appended to
+        let liveBubble = null;         // tentative answer bubble while streaming
         let mentionTimer = null;
         let mentionToken = null; // the full "#query" match, to replace on pick
 
@@ -245,6 +247,7 @@
         // block: open while the agent works, auto-collapsed on the answer.
         function ensureReasoningBox() {
             if (reasoningBox) return;
+            lastThinkingSpan = null;
             reasoningBox = document.createElement('details');
             reasoningBox.className = 'ai-reasoning rounded-xl';
             reasoningBox.open = true;
@@ -272,13 +275,68 @@
             }
             line.querySelector('span').textContent = content;
             reasoningBody.appendChild(line);
+            // Token streaming appends to the latest thinking line only.
+            lastThinkingSpan = kind === 'thinking' ? line.querySelector('span') : null;
             scrollDown();
+        }
+
+        // --- Token streaming (live thinking + tentative answer bubble) ----
+        function appendThinkingToken(text) {
+            if (!lastThinkingSpan) addReasoningLine('thinking', '');
+            lastThinkingSpan.textContent += text;
+            scrollDown();
+        }
+
+        function ensureLiveBubble() {
+            if (liveBubble) return;
+            collapseReasoningBox();
+            liveBubble = addMessage('assistant', '');
+            const bubble = liveBubble.querySelector('.chat-bubble');
+            bubble.textContent = '';
+            const cursor = document.createElement('span');
+            cursor.className = 'ai-cursor';
+            bubble.appendChild(cursor);
+        }
+
+        function appendAnswerToken(text) {
+            ensureLiveBubble();
+            const bubble = liveBubble.querySelector('.chat-bubble');
+            bubble.insertBefore(document.createTextNode(text),
+                                bubble.querySelector('.ai-cursor'));
+            scrollDown();
+        }
+
+        // The streamed text turned out to be narration before a tool call,
+        // not the final answer: move the bubble into the reasoning box.
+        function migrateLiveBubble(text) {
+            if (liveBubble) {
+                liveBubble.remove();
+                liveBubble = null;
+            }
+            addReasoningLine('thinking', text);
+        }
+
+        // Replace the tentative bubble with the final rendered markdown.
+        function finalizeLiveBubble(answer, meta) {
+            if (!liveBubble) return addMessage('assistant', answer, meta);
+            const div = liveBubble;
+            liveBubble = null;
+            div.querySelector('.chat-bubble').innerHTML = renderMarkdown(answer);
+            addMetaFooter(div, meta);
+            scrollDown();
+            return div;
+        }
+
+        function discardLiveBubble() {
+            if (liveBubble) liveBubble.querySelector('.ai-cursor')?.remove();
+            liveBubble = null;
         }
 
         function collapseReasoningBox() {
             if (reasoningBox) reasoningBox.open = false;
             reasoningBox = null;
             reasoningBody = null;
+            lastThinkingSpan = null;
         }
 
         function setBusy(busy) {
@@ -292,6 +350,8 @@
         function clearMessages() {
             reasoningBox = null;
             reasoningBody = null;
+            lastThinkingSpan = null;
+            liveBubble = null;
             messagesEl.innerHTML = '';
         }
 
@@ -539,6 +599,8 @@
             addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
                        { created_at: new Date().toISOString() });
             setBusy(true);
+            liveBubble = null;
+            lastThinkingSpan = null;
             const thinking = addMessage('assistant', '_Searching your files..._');
 
             try {
@@ -578,8 +640,16 @@
                         let event;
                         try { event = JSON.parse(line); } catch { continue; }
                         if (firstEvent) { thinking.remove(); firstEvent = false; }
-                        if (event.type === 'thinking') {
-                            addReasoningLine('thinking', event.content);
+                        if (event.type === 'thinking_token') {
+                            appendThinkingToken(event.content);
+                        } else if (event.type === 'answer_token') {
+                            appendAnswerToken(event.content);
+                        } else if (event.type === 'thinking') {
+                            // With migrate, the tentative answer bubble moves
+                            // into the reasoning box (it was narration before
+                            // a tool call, not the final answer).
+                            if (event.migrate) migrateLiveBubble(event.content);
+                            else addReasoningLine('thinking', event.content);
                         } else if (event.type === 'step') {
                             addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
                         } else if (event.type === 'tool_result') {
@@ -588,11 +658,12 @@
                             gotResult = true;
                             conversationId = event.conversation_id;
                             collapseReasoningBox();
-                            addMessage('assistant', event.answer,
-                                       { created_at: new Date().toISOString(), model: event.model });
+                            finalizeLiveBubble(event.answer,
+                                               { created_at: new Date().toISOString(), model: event.model });
                         } else if (event.type === 'error') {
                             gotResult = true;
                             collapseReasoningBox();
+                            discardLiveBubble(); // keep whatever partial text arrived
                             addMessage('assistant', '**Error:** ' + event.error,
                                        { created_at: new Date().toISOString() });
                         }
@@ -601,6 +672,7 @@
                 thinking.remove();
                 collapseReasoningBox();
                 if (!gotResult) {
+                    discardLiveBubble(); // keep any partial text that arrived
                     addMessage('assistant',
                                '**Error:** the connection was lost before the answer arrived. Please try again.',
                                { created_at: new Date().toISOString() });
@@ -608,6 +680,7 @@
             } catch {
                 thinking.remove();
                 collapseReasoningBox();
+                discardLiveBubble();
                 addMessage('assistant', '**Error:** could not reach the server.',
                            { created_at: new Date().toISOString() });
             } finally {

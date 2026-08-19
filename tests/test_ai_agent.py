@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from app.extensions import db
 from app.models import ChatConversation, StoredFile, User
 from app.services import agent_service
@@ -454,3 +456,153 @@ def test_conversations_list_includes_model(auth_client, app):
     assert len(convs) == 1
     assert convs[0]["model"] == "test-model-9000"
     assert convs[0]["updated_at"]
+
+
+# ---------------------------------------------------------------- streaming
+
+
+def _stream_script(script):
+    """Fake chat_completion_stream: each call pops the next event list."""
+    it = iter(script)
+
+    def fake(*args, **kwargs):
+        return iter(next(it))
+
+    return fake
+
+
+_SEARCH_LUNCH = {
+    "id": "call_1", "type": "function",
+    "function": {"name": "search_files", "arguments": '{"query": "lunch"}'},
+}
+
+
+def test_agent_streams_tokens(app, user):
+    _make_indexed_file(app, "menu.txt", "Today's lunch is tomato soup.")
+    app.config["AI_STREAMING"] = True
+
+    script = [
+        [("reasoning", "Looking "), ("reasoning", "for lunch."),
+         ("done", {"role": "assistant", "content": "",
+                   "reasoning_content": "Looking for lunch.",
+                   "tool_calls": [_SEARCH_LUNCH]})],
+        [("token", "Lunch "), ("token", "is soup."),
+         ("done", {"role": "assistant", "content": "Lunch is soup."})],
+    ]
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion_stream",
+                   side_effect=_stream_script(script)):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "lunch?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["thinking_token", "thinking_token", "thinking",
+                     "step", "tool_result",
+                     "answer_token", "answer_token", "answer"]
+    assert events[-1] == ("answer", "Lunch is soup.")
+
+
+def test_agent_falls_back_when_streaming_fails_before_deltas(app, user):
+    app.config["AI_STREAMING"] = True
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion_stream",
+                   side_effect=agent_service.ai_service.AIError("no stream")), \
+             patch("app.services.ai_service.chat_completion",
+                   return_value={"role": "assistant", "content": "hi"}) as plain:
+            answer, _ = agent_service.run_agent(
+                user_obj, [{"role": "user", "content": "hello"}])
+
+    assert answer == "hi"
+    assert plain.call_count == 1
+
+
+def test_agent_midstream_failure_propagates(app, user):
+    app.config["AI_STREAMING"] = True
+
+    def broken_stream(*args, **kwargs):
+        yield ("token", "partial")
+        raise agent_service.ai_service.AIError("connection reset")
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion_stream",
+                   side_effect=broken_stream), \
+             patch("app.services.ai_service.chat_completion") as plain:
+            with pytest.raises(agent_service.ai_service.AIError):
+                list(agent_service.run_agent_events(
+                    user_obj, [{"role": "user", "content": "hello"}]))
+
+    assert plain.call_count == 0  # no fallback once deltas were sent
+
+
+def test_chat_endpoint_streaming_no_duplicate_thinking(auth_client, app, user):
+    _make_indexed_file(app, "menu.txt", "Today's lunch is tomato soup.")
+    app.config["AI_ENABLED"] = True
+    app.config["AI_STREAMING"] = True
+
+    script = [
+        [("reasoning", "thinking aloud"),
+         ("done", {"role": "assistant", "content": "",
+                   "reasoning_content": "thinking aloud",
+                   "tool_calls": [_SEARCH_LUNCH]})],
+        [("token", "Lunch is tomato soup."),
+         ("done", {"role": "assistant", "content": "Lunch is tomato soup."})],
+    ]
+
+    with patch("app.services.ai_service.chat_completion_stream",
+               side_effect=_stream_script(script)):
+        resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    types = [e["type"] for e in events]
+    # Reasoning came as live tokens — the full thinking event is NOT
+    # re-sent (it would duplicate), but it is still persisted to the DB.
+    assert types == ["thinking_token", "step", "tool_result",
+                     "answer_token", "answer"]
+    assert events[0]["content"] == "thinking aloud"
+    assert events[-1]["answer"] == "Lunch is tomato soup."
+
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        roles = [m.role for m in conv.messages]
+        assert roles == ["user", "thinking", "step", "assistant"]
+
+
+def test_chat_endpoint_migrates_answer_tokens_to_thinking(auth_client, app, user):
+    # The model streamed content ("Let me search.") and then decided to call
+    # a tool: the client must move that tentative answer bubble into the
+    # reasoning box (thinking event with migrate=true).
+    _make_indexed_file(app, "menu.txt", "Today's lunch is tomato soup.")
+    app.config["AI_ENABLED"] = True
+    app.config["AI_STREAMING"] = True
+
+    script = [
+        [("token", "Let me search."),
+         ("done", {"role": "assistant", "content": "Let me search.",
+                   "tool_calls": [_SEARCH_LUNCH]})],
+        [("token", "Soup."),
+         ("done", {"role": "assistant", "content": "Soup."})],
+    ]
+
+    with patch("app.services.ai_service.chat_completion_stream",
+               side_effect=_stream_script(script)):
+        resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    types = [e["type"] for e in events]
+    assert types == ["answer_token", "thinking", "step", "tool_result",
+                     "answer_token", "answer"]
+    thinking = next(e for e in events if e["type"] == "thinking")
+    assert thinking["content"] == "Let me search."
+    assert thinking["migrate"] is True
+
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        roles = [m.role for m in conv.messages]
+        assert roles == ["user", "thinking", "step", "assistant"]
