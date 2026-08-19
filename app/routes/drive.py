@@ -1,5 +1,6 @@
 import difflib
 import os
+import re
 
 from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
                    render_template, request, send_file, session, url_for)
@@ -9,7 +10,7 @@ from werkzeug.utils import secure_filename
 from ..extensions import db
 from ..models import Drive, FileVersion, Folder, StoredFile
 from ..services import ai_service, drive_service, file_service, indexing_service
-from ..services import sync_service
+from ..services import hashtag_service, sync_service
 
 bp = Blueprint("drive", __name__)
 
@@ -220,6 +221,7 @@ def remove_drive(drive_id):
     DocIndex row (files, folders, index) — the real folder is untouched."""
     drive = _get_synced_drive(drive_id)
     name = drive.name
+    hashtag_service.cancel_job(drive.id)  # stop any tagging run on this drive
     sync_service.remove_synced_drive(drive)
     session.pop("drive_id", None)  # pointed at the removed drive
     flash(f'Synced drive "{name}" removed. The folder on disk was not '
@@ -232,6 +234,101 @@ def remove_drive(drive_id):
 def sync_active():
     """The current user's running/paused sync (for the global widget)."""
     job = sync_service.get_active_job(current_user.id)
+    return jsonify({"active": job is not None, "job": job})
+
+
+# --------------------------------------------------------------------------
+# Hashtags
+# --------------------------------------------------------------------------
+
+@bp.route("/file/<int:file_id>/hashtags")
+@login_required
+def file_hashtags(file_id):
+    stored = _get_file(file_id)
+    return jsonify({"tags": hashtag_service.get_tags(stored.index)})
+
+
+@bp.route("/file/<int:file_id>/hashtags", methods=["POST"])
+@login_required
+def file_hashtags_save(file_id):
+    """Save user-edited tags (no word limit). Accepts a JSON list or a
+    comma-separated string."""
+    stored = _get_file(file_id)
+    data = request.get_json(silent=True) or {}
+    tags = data.get("tags", request.form.get("tags", ""))
+    if isinstance(tags, str):
+        tags = re.split(r"[,\n;]+", tags)
+    saved = hashtag_service.set_tags(stored, tags, source="user")
+    return jsonify({"tags": saved})
+
+
+@bp.route("/file/<int:file_id>/hashtags/suggest", methods=["POST"])
+@login_required
+def file_hashtags_suggest(file_id):
+    """Ask the AI for hashtag suggestions WITHOUT saving them — the user
+    reviews them in the popup and accepts or discards."""
+    stored = _get_file(file_id)
+    if not ai_service.is_enabled(current_user):
+        return jsonify({"error": "AI is not configured. Add a connection in "
+                                 "AI Settings first."}), 400
+    try:
+        tags = hashtag_service.suggest_tags(
+            stored, ai_service.config_for(current_user))
+    except ai_service.AIError as exc:
+        return jsonify({"error": str(exc)[:300]}), 502
+    return jsonify({"tags": tags})
+
+
+@bp.route("/drives/<int:drive_id>/hashtags/start", methods=["POST"])
+@login_required
+def hashtags_start(drive_id):
+    """Bulk AI hashtag generation over a whole drive (background job)."""
+    drive = _get_owned(Drive, drive_id)
+    if not ai_service.is_enabled(current_user):
+        return jsonify({"error": "AI is not configured. Add a connection in "
+                                 "AI Settings first."}), 400
+    workers = request.form.get("workers", type=int) or 1
+    overwrite = bool(request.form.get("overwrite"))
+    job = hashtag_service.start_job(drive, workers=workers, overwrite=overwrite)
+    return jsonify(job.as_dict())
+
+
+@bp.route("/drives/<int:drive_id>/hashtags/status")
+@login_required
+def hashtags_status(drive_id):
+    drive = _get_owned(Drive, drive_id)
+    return jsonify(hashtag_service.get_status(drive.id) or {"state": "idle"})
+
+
+@bp.route("/drives/<int:drive_id>/hashtags/pause", methods=["POST"])
+@login_required
+def hashtags_pause(drive_id):
+    drive = _get_owned(Drive, drive_id)
+    hashtag_service.pause_job(drive.id)
+    return jsonify(hashtag_service.get_status(drive.id) or {"state": "idle"})
+
+
+@bp.route("/drives/<int:drive_id>/hashtags/resume", methods=["POST"])
+@login_required
+def hashtags_resume(drive_id):
+    drive = _get_owned(Drive, drive_id)
+    hashtag_service.resume_job(drive.id)
+    return jsonify(hashtag_service.get_status(drive.id) or {"state": "idle"})
+
+
+@bp.route("/drives/<int:drive_id>/hashtags/stop", methods=["POST"])
+@login_required
+def hashtags_stop(drive_id):
+    drive = _get_owned(Drive, drive_id)
+    hashtag_service.cancel_job(drive.id)
+    return jsonify({"ok": True})
+
+
+@bp.route("/hashtags/active")
+@login_required
+def hashtags_active():
+    """The current user's running/paused tagging job (for the widget)."""
+    job = hashtag_service.get_active_job(current_user.id)
     return jsonify({"active": job is not None, "job": job})
 
 
@@ -454,7 +551,8 @@ def view(file_id):
         # e.g. DOCX: show the extracted text
         content = stored.index.extracted_text
     return render_template("drive/view.html", file=stored,
-                           content=content, rendered=rendered)
+                           content=content, rendered=rendered,
+                           tags=hashtag_service.get_tags(stored.index))
 
 
 @bp.route("/file/<int:file_id>/edit", methods=["GET", "POST"])

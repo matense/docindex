@@ -56,6 +56,7 @@ pdo-app/
 │   │   ├── file_service.py       # storage on disk, checksums, thumbnails
 │   │   ├── indexing_service.py   # text extraction + captions -> file_index
 │   │   ├── search_service.py     # LIKE-based scoring + snippets
+│   │   ├── hashtag_service.py    # hashtags: storage, AI gen, bulk drive jobs
 │   │   ├── ai_service.py         # OpenAI-compatible HTTP client, config
 │   │   └── agent_service.py      # agentic tool-calling loop
 │   ├── templates/          # Jinja: base.html + auth/ drive/ search/
@@ -97,13 +98,14 @@ app refuses to start without it.
 | `AI_VISION_MODEL`     | empty (falls back to `AI_MODEL`)               | Vision model for image captions |
 | `AI_MAX_STEPS`        | `16`                                           | Global agent step limit (per-connection override available) |
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
+| `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `PORT`                | `5000`                                         | Dev server port (`run.py`) |
 
 Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
 `MAX_FILE_SIZE` 16 MB per file, `ALLOWED_EXTENSIONS` (documents, code,
 images incl. svg), `IMAGE_EXTENSIONS` (raster images, no svg),
-`EDITABLE_EXTENSIONS` (text/code files editable in place), `INDEX_ASYNC`
-(True in prod, False in tests).
+`EDITABLE_EXTENSIONS` (text/code files editable in place), `INDEX_ASYNC`,
+`SYNC_ASYNC` and `HASHTAG_ASYNC` (True in prod, False in tests).
 
 `TestConfig` uses in-memory SQLite, disables CSRF and AI, sets
 `INDEX_ASYNC=False` and redirects uploads to `instance/test_uploads`.
@@ -240,6 +242,7 @@ Full-text search index for a stored file (one row per file).
 | `file_id` | FK -> files.id, unique, indexed | |
 | `extracted_text` | Text, nullable | PDF/DOCX/text/OCR content (max 500k chars) |
 | `caption` | Text, nullable | AI-generated image caption |
+| `hashtags` | Text, nullable | JSON array of tags (user- or AI-generated); searchable |
 | `word_count`, `line_count`, `char_count` | Integer, nullable | content statistics |
 | `status` | String(20), default "pending" | pending / ok / error |
 | `error` | Text, nullable | extraction error message (truncated to 1000 chars) |
@@ -285,7 +288,7 @@ has `is_active=True` (enforced in the settings routes).
 | `model` | String(120) | chat model |
 | `vision_model` | String(120), default "" | empty -> falls back to `model` |
 | `max_steps` | Integer, **nullable** | per-connection agent step limit; NULL falls back to global `AI_MAX_STEPS` |
-| `rate_limit_rpm` | Integer, **nullable** | per-connection requests/minute limit; NULL falls back to global `AI_RATE_LIMIT_RPM` (default 30), 0 = unlimited. Enforced in `ai_service._check_rate_limit` (in-memory sliding window per connection); provider HTTP 429s get a friendly `AIError` with `Retry-After` |
+| `rate_limit_rpm` | Integer, **nullable** | per-connection requests/minute limit; NULL falls back to global `AI_RATE_LIMIT_RPM` (default 30), 0 = unlimited. Enforced in `ai_service._rate_slot` (in-memory sliding window per connection; background jobs pass `block=True` to wait for a slot instead of failing); provider HTTP 429s get a friendly `AIError` with `Retry-After` |
 | `is_active` | Boolean, default False | |
 | `created_at` | DateTime | |
 
@@ -372,16 +375,48 @@ files from the normal file routes).
    caption. Any failure lands in `status="error"` with the message.
 4. `search_service.search_files()` splits the query into up to 8 terms,
    builds `ILIKE %term%` conditions over `files.name`,
-   `file_index.extracted_text` and `file_index.caption`, then scores matches
-   in Python: name hit +10, caption hit +5, text hit +2 plus occurrence count
+   `file_index.extracted_text`, `file_index.caption` and
+   `file_index.hashtags`, then scores matches in Python: name hit +10,
+   hashtag hit +7, caption hit +5, text hit +2 plus occurrence count
    (capped). Snippets are ~120 chars of context around the first hit with
    `<mark>` highlighting. All user text is HTML-escaped first and the result
    is returned as a `markupsafe.Markup` object, so templates render the
    highlight without double-escaping and without XSS risk. Each result also
-   carries `name_html` (the escaped filename with `<mark>` highlights) and
-   `matches` (which of `name`/`caption`/`content` matched, shown as badges).
+   carries `name_html` (the escaped filename with `<mark>` highlights),
+   `matches` (which of `name`/`tags`/`caption`/`content` matched, shown as
+   badges) and `tags` (the file's hashtags, shown as chips).
    Results are scoped to the current drive and capped at 50 (8 for the
    instant-search endpoint, which also returns `name_html`).
+
+### Hashtags
+
+Files can carry searchable hashtags (`file_index.hashtags`, a JSON array).
+They are NEVER generated automatically at indexing time — only on explicit
+user request:
+
+- **Manual**: the file view has a chip editor (`hashtags.js`) that
+  reads/writes `GET/POST /file/<id>/hashtags`. User tags have no word limit.
+- **Per file with AI**: the "Create Hashtags" button opens a small review
+  popup next to the button — `POST /file/<id>/hashtags/suggest` asks the AI
+  (`hashtag_service.suggest_tags`, nothing is persisted), the suggestions
+  are shown as chips the user can trim, and "Add to file" merges them into
+  the file's tags (union, deduped server-side). The agent's `set_hashtags`
+  tool remains available when the user asks for tags directly in the AI
+  chat.
+- **Per drive (bulk)**: the drive view's "Hashtags" button starts a
+  background job in `hashtag_service` (`POST /drives/<id>/hashtags/start`
+  with `workers` 1–8 and `overwrite`; `.../hashtags/status`,
+  `.../pause|resume|stop`, `GET /hashtags/active` for the floating widget —
+  `sync_widget.js` renders a second panel for it). Files that already have
+  tags are skipped unless `overwrite` is set.
+
+`hashtag_service` normalizes tags (trim, strip `#`, lowercase, dedupe, max
+20 per file); AI-generated tags are limited to `AI_HASHTAG_MAX_WORDS` words
+each (default 6). Bulk workers self-throttle through the AI connection's
+per-minute rate limit (`ai_service._rate_slot` with `block=True`, sharing
+the sliding window with interactive chat) and retry provider HTTP 429s up to
+3 times per file before counting it as failed. Removing a synced drive also
+cancels any running tagging job on it.
 
 ### Editing
 
@@ -461,6 +496,10 @@ and `model` per message (including thinking/step rows for the history view);
   `update_file_content` (snapshots before overwriting), `read_text_content`.
 - **indexing_service** — extraction and indexing (see flow above).
 - **search_service** — query parsing, scoring, snippet generation.
+- **hashtag_service** — hashtags: normalization/storage (`set_tags`,
+  `get_tags`), AI generation per file (`generate_tags`) and per-drive bulk
+  background jobs (`start_job`, `pause_job`, `resume_job`, `cancel_job`,
+  `get_active_job`) mirroring the sync job pattern.
 - **ai_service** — OpenAI-compatible client: `config_for(user)` resolves the
   active configuration (see below), `chat_completion()` POSTs to
   `/chat/completions` (raises `AIError` on any failure), `list_models()` /
@@ -492,12 +531,12 @@ falls back to asking the user to rephrase.
 
 ### Tools
 
-`TOOLS` defines four OpenAI function-calling tools; `TOOL_HANDLERS` maps
+`TOOLS` defines five OpenAI function-calling tools; `TOOL_HANDLERS` maps
 names to implementations. All tools are scoped to the calling user, and
 search/list are additionally scoped to the current drive.
 
 - `search_files(query: string)` — full-text search over filenames, extracted
-  text and captions; returns up to 10 `{file_id, name, snippet}`.
+  text, hashtags and captions; returns up to 10 `{file_id, name, snippet}`.
 - `read_file(file_id: int, start: int = 0, length: int = 20000)` — chunked
   reading: `length` is clamped to 50 000, and the result carries `start`,
   `returned_chars`, `total_chars` and `has_more` so the model can page
@@ -507,7 +546,10 @@ search/list are additionally scoped to the current drive.
 - `list_files(folder_id?: int)` — folders and files (up to 100) in a folder
   or the drive root.
 - `get_file_info(file_id: int)` — metadata: name, extension, size, dates,
-  index status.
+  index status, hashtags.
+- `set_hashtags(file_id: int, hashtags: string[])` — replaces the file's
+  hashtags (AI word limit applies). Only used when the user explicitly asks
+  for hashtags.
 
 ### System prompt
 
@@ -646,7 +688,12 @@ Revision history: `068c55433ef8` baseline (users, folders, files, file_index,
 chat tables) -> `3afab4cdb2a7` ai_connections -> `b7f2c1d94e05` drives ->
 `c4e91a2b7f30` drive description -> `d8a3f5b16c42` file_index stats
 (word/line/char counts) -> `e5f1a2c38d44` nullable `max_steps` on
-ai_connections.
+ai_connections -> `f7a3b5c91e02` model on chat messages ->
+`34b417e8a07b` per-connection rate limit -> `43d0475ce6e2` settings table
+-> `cbacbe527dda` file versions -> `9f4dbb9d4221` trash (`deleted_at`)
+-> `14b7197e2390` synced drives (`source_path`) -> `1c175e28cab5` sync
+stats -> `00efe0293465` sync options (captions toggle, indexing workers)
+-> `7a1c9e4b2d55` file_index hashtags.
 
 ## Testing
 

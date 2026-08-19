@@ -88,6 +88,8 @@
                     {% for m in r.matches %}
                         {% if m == 'name' %}
                             <span class="badge badge-xs badge-secondary badge-outline">name</span>
+                        {% elif m == 'tags' %}
+                            <span class="badge badge-xs badge-warning badge-outline"><i class="fas fa-tags mr-1"></i>tags</span>
                         {% elif m == 'caption' %}
                             <span class="badge badge-xs badge-accent badge-outline"><i class="fas fa-robot mr-1"></i>caption</span>
                         {% else %}
@@ -101,6 +103,11 @@
                 {% if r.caption %}
                 <div class="text-xs mt-2 italic opacity-60">
                     <i class="fas fa-robot mr-1"></i>AI caption: {{ r.caption[:200] }}{% if r.caption|length > 200 %}…{% endif %}
+                </div>
+                {% endif %}
+                {% if r.tags %}
+                <div class="flex items-center gap-1.5 flex-wrap mt-2">
+                    {% for t in r.tags %}<span class="tag-chip">#{{ t }}</span>{% endfor %}
                 </div>
                 {% endif %}
                 <div class="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs opacity-50 mt-2">

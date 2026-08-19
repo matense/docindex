@@ -4,7 +4,7 @@ import re
 from flask import current_app
 
 from ..models import StoredFile
-from . import ai_service, file_service, search_service
+from . import ai_service, file_service, hashtag_service, search_service
 
 TOOLS = [
     {
@@ -85,6 +85,30 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_hashtags",
+            "description": (
+                "Save search hashtags for a file, replacing the current ones. "
+                "Only use this when the user explicitly asks you to create or "
+                "change a file's hashtags. Each hashtag must be short and "
+                "lowercase, with no '#' prefix."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "integer", "description": "The file id."},
+                    "hashtags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The hashtags to save (max 10).",
+                    },
+                },
+                "required": ["file_id", "hashtags"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are the assistant of DocIndex, a personal file drive.
@@ -102,6 +126,8 @@ Rules:
   it again with start set to start + returned_chars to continue reading.
   Continue until you have the information you need.
 - Always cite the files you used by name, like [filename](file://ID).
+- When the user asks you to create hashtags for a file, read the file first,
+  then call set_hashtags with up to 10 short, lowercase tags (no '#' prefix).
 - Some files are marked read_only=true — they mirror a real folder on disk
   and cannot be edited, moved or deleted. Never offer to modify them.
 - If the files don't contain the answer, say so honestly — never invent content.
@@ -218,7 +244,19 @@ def _tool_get_file_info(user, file_id):
         "created_at": stored.created_at.isoformat() if stored.created_at else None,
         "updated_at": stored.updated_at.isoformat() if stored.updated_at else None,
         "index_status": stored.index.status if stored.index else "none",
+        "hashtags": hashtag_service.get_tags(stored.index),
     }
+
+
+def _tool_set_hashtags(user, file_id, hashtags):
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return {"error": "File not found."}
+    tags = hashtag_service.set_tags(stored, hashtags, source="ai")
+    return {"file_id": stored.id, "name": stored.name, "hashtags": tags}
 
 
 TOOL_HANDLERS = {
@@ -230,6 +268,8 @@ TOOL_HANDLERS = {
         user, args.get("folder_id"), drive),
     "get_file_info": lambda user, args, drive: _tool_get_file_info(
         user, args.get("file_id")),
+    "set_hashtags": lambda user, args, drive: _tool_set_hashtags(
+        user, args.get("file_id"), args.get("hashtags") or []),
 }
 
 _STEP_LABELS = {
@@ -237,6 +277,7 @@ _STEP_LABELS = {
     "read_file": "Read file",
     "list_files": "Listed drive",
     "get_file_info": "Checked file info",
+    "set_hashtags": "Saved hashtags",
 }
 
 

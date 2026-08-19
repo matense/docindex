@@ -45,6 +45,11 @@ questions about your files by searching and reading them step by step.
   content is searchable too.
 - **Instant search** — Google-style search dock with live results (Alt+S),
   highlighted snippets and full search page.
+- **Hashtags** — every file can carry searchable hashtag chips: add them
+  yourself in the file view, or let the AI suggest them per file ("Create
+  Hashtags" opens a review popup — you approve before they're saved) or run
+  a bulk background job over a whole drive (pause/resume/stop, respects the
+  AI connection's per-minute limit). Never runs automatically.
 - **AI assistant** — agentic chat that searches, reads and cross-references
   your files in multiple steps, then answers with cited sources. Multiple AI
   connections (models) can be configured and switched per conversation.
@@ -151,6 +156,7 @@ AI can be configured in two places:
 | `AI_MAX_STEPS`      | Max tool-call steps per question (overridable per connection) | `16` |
 | `AI_RATE_LIMIT_RPM` | Max AI requests per minute (overridable per connection; `0` = unlimited) | `30` |
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
+| `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 
 Examples:
 

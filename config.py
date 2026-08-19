@@ -61,12 +61,17 @@ class Config:
     AI_MAX_STEPS = int(os.environ.get("AI_MAX_STEPS", "16"))
     AI_RATE_LIMIT_RPM = int(os.environ.get("AI_RATE_LIMIT_RPM", "30"))
     AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
+    # Max words per AI-generated hashtag (user-added tags are not limited).
+    AI_HASHTAG_MAX_WORDS = int(os.environ.get("AI_HASHTAG_MAX_WORDS", "6"))
 
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True
 
     # Run folder syncs in a background thread (disable in tests)
     SYNC_ASYNC = True
+
+    # Run bulk hashtag generation in background threads (disable in tests)
+    HASHTAG_ASYNC = True
 
 
 class TestConfig(Config):
@@ -77,6 +82,7 @@ class TestConfig(Config):
     AI_ENABLED = False
     INDEX_ASYNC = False
     SYNC_ASYNC = False
+    HASHTAG_ASYNC = False
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")

@@ -45,4 +45,7 @@ echo "-> Creating the admin user..."
 python create_admin.py "$@"
 
 echo ""
-echo "=== Done! Start the app with:  python run.py  (http://localhost:5000) ==="
+echo "=== Done! To start the app: ==="
+echo "    source venv/bin/activate"
+echo "    python run.py"
+echo "Then open http://localhost:5000"

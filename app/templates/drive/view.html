@@ -102,6 +102,65 @@
         {% if file.index %}<span>Index: {{ file.index.status }}</span>{% endif %}
     </div>
 
+    <!-- Hashtags -->
+    <div id="hashtags-section" data-file-id="{{ file.id }}"
+         data-file-name="{{ file.name }}" data-tags="{{ tags | tojson }}"
+         class="glass-panel rounded-xl px-4 py-3 flex flex-col gap-2 relative">
+        <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-semibold opacity-70 whitespace-nowrap">
+                <i class="fas fa-tags text-secondary mr-1"></i> Hashtags
+            </span>
+            <div id="hashtags-chips" class="flex items-center gap-1.5 flex-wrap"></div>
+            <input id="hashtags-input" type="text" placeholder="add tag…" autocomplete="off"
+                   class="bg-transparent border-b border-transparent focus:border-primary/50 focus:outline-none text-sm px-1 py-0.5 w-28 placeholder:text-base-content/30">
+            <div class="flex items-center gap-1 ml-auto">
+                <button type="button" id="hashtags-refresh" class="btn btn-circle btn-xs btn-ghost"
+                        title="Reload hashtags (after the AI chat saves them)">
+                    <i class="fas fa-rotate"></i>
+                </button>
+                {% if ai_enabled %}
+                <button type="button" id="hashtags-ai" class="btn btn-xs btn-secondary btn-outline gap-1">
+                    <i class="fas fa-wand-magic-sparkles"></i> Create Hashtags
+                </button>
+                {% endif %}
+            </div>
+        </div>
+        <div class="text-[11px] opacity-40">
+            Hashtags make this file easier to find in search. AI-generated tags are short;
+            you can add or remove any tag yourself.
+        </div>
+
+        {% if ai_enabled %}
+        <!-- AI suggestion popup (no input — review and accept) -->
+        <div id="hashtags-popup" class="hashtags-popup glass-panel hidden">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-6 h-6 rounded-lg bg-secondary/15 text-secondary flex items-center justify-center text-xs">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                </span>
+                <span class="text-sm font-bold flex-1">AI suggestions</span>
+                <button type="button" id="hashtags-popup-close" class="btn btn-circle btn-xs btn-ghost" title="Close">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
+            <div id="hashtags-popup-loading" class="hidden items-center justify-center gap-2 text-sm opacity-60 py-4">
+                <i class="fas fa-spinner fa-spin text-secondary"></i> Generating hashtags…
+            </div>
+            <div id="hashtags-popup-error" class="hidden text-xs text-error py-2"></div>
+            <div id="hashtags-popup-body" class="hidden">
+                <div id="hashtags-popup-chips" class="flex items-center gap-1.5 flex-wrap mb-3"></div>
+                <div class="text-[11px] opacity-40 mb-2">Click a tag to drop it before accepting.</div>
+                <div class="flex items-center justify-end gap-2">
+                    <button type="button" id="hashtags-popup-discard" class="btn btn-xs btn-ghost">Discard</button>
+                    <button type="button" id="hashtags-popup-accept" class="btn btn-xs btn-secondary gap-1">
+                        <i class="fas fa-check"></i> Add to file
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    <script src="{{ url_for('static', filename='js/hashtags.js') }}?v=5" defer></script>
+
     <!-- Content -->
     <div class="border-t border-base-content/10 pt-4">
         {% if file.is_image %}

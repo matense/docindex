@@ -4,6 +4,7 @@ from markupsafe import Markup, escape
 from sqlalchemy import or_
 
 from ..models import FileIndex, StoredFile
+from . import hashtag_service
 
 SNIPPET_RADIUS = 120
 MAX_RESULTS = 50
@@ -18,10 +19,13 @@ def _score(stored_file, index, terms):
     name_l = stored_file.name.lower()
     text_l = ((index.extracted_text if index else None) or "").lower()
     caption_l = ((index.caption if index else None) or "").lower()
+    tags_l = ((index.hashtags if index else None) or "").lower()
     for term in terms:
         t = term.lower()
         if t in name_l:
             score += 10
+        if t in tags_l:
+            score += 7
         if t in caption_l:
             score += 5
         if t in text_l:
@@ -75,6 +79,7 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
         conditions.append(StoredFile.name.ilike(like))
         conditions.append(FileIndex.extracted_text.ilike(like))
         conditions.append(FileIndex.caption.ilike(like))
+        conditions.append(FileIndex.hashtags.ilike(like))
 
     q = (StoredFile.query
          .outerjoin(FileIndex, FileIndex.file_id == StoredFile.id)
@@ -92,11 +97,14 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
             continue
         text_l = ((index.extracted_text if index else None) or "").lower()
         caption_l = ((index.caption if index else None) or "").lower()
+        tags_l = ((index.hashtags if index else None) or "").lower()
         name_l = stored.name.lower()
         terms_l = [t.lower() for t in terms]
         matches = []
         if any(t in name_l for t in terms_l):
             matches.append("name")
+        if tags_l and any(t in tags_l for t in terms_l):
+            matches.append("tags")
         if caption_l and any(t in caption_l for t in terms_l):
             matches.append("caption")
         if text_l and any(t in text_l for t in terms_l):
@@ -111,6 +119,7 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
             "name_html": _highlight(stored.name, terms),
             "matches": matches,
             "caption": index.caption if index else None,
+            "tags": hashtag_service.get_tags(index),
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)

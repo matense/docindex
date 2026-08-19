@@ -172,6 +172,7 @@ class FileIndex(db.Model):
                         unique=True, index=True)
     extracted_text = db.Column(db.Text, nullable=True)
     caption = db.Column(db.Text, nullable=True)  # AI-generated image caption
+    hashtags = db.Column(db.Text, nullable=True)  # JSON array of tags (user or AI)
     word_count = db.Column(db.Integer, nullable=True)
     line_count = db.Column(db.Integer, nullable=True)
     char_count = db.Column(db.Integer, nullable=True)

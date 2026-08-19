@@ -23,4 +23,6 @@ else
 fi
 
 echo ""
-echo "=== Done! Restart the server (python run.py) to use the new version. ==="
+echo "=== Done! Restart the server to use the new version: ==="
+echo "    source venv/bin/activate"
+echo "    python run.py"

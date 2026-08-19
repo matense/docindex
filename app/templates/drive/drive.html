@@ -132,6 +132,13 @@
         {% endif %}
     </div>
     <div class="flex items-center gap-2">
+        {% if ai_enabled %}
+        <button type="button" class="btn btn-ghost btn-sm gap-1.5"
+                title="Generate AI hashtags for the files in this drive"
+                onclick="document.getElementById('hashtags-modal').showModal()">
+            <i class="fas fa-tags text-secondary"></i><span class="hidden sm:inline">Hashtags</span>
+        </button>
+        {% endif %}
         <div class="view-switch" title="View style">
             <a href="{{ url_for('drive.index', folder_id=folder.id if folder else None, view='grid') }}"
                class="view-switch-btn {{ 'active' if view_mode == 'grid' }}" title="Grid view">
@@ -348,6 +355,82 @@
         </div>
     </div>
 </dialog>
+
+{% if ai_enabled %}
+<!-- Bulk hashtag generation modal -->
+<dialog id="hashtags-modal" class="modal">
+    <div class="modal-box glass-panel rounded-2xl">
+        <h3 class="font-bold text-lg mb-1">
+            <i class="fas fa-tags text-secondary mr-1"></i> Create Hashtags with AI
+        </h3>
+        <div class="rounded-xl bg-secondary/10 border border-secondary/20 p-3 text-sm flex flex-col gap-1.5 my-3">
+            <div><i class="fas fa-wand-magic-sparkles text-secondary mr-1"></i>
+                The AI reads every file in <strong>{{ drive.name }}</strong> and generates
+                searchable hashtags for each one.</div>
+            <div><i class="fas fa-gauge-high text-secondary mr-1"></i>
+                Runs in the background and respects your AI connection's per-minute
+                request limit — you can pause or stop it anytime from the progress popup.</div>
+            <div><i class="fas fa-hand text-secondary mr-1"></i>
+                Hashtags are never generated automatically — only when you ask, here or per file.</div>
+        </div>
+        <form id="hashtags-form" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <label class="flex items-center gap-2">
+                    <span class="text-sm">Workers</span>
+                    <select name="workers" class="select select-bordered select-sm w-20">
+                        <option value="1" selected>1</option>
+                        <option value="2">2</option>
+                        <option value="4">4</option>
+                        <option value="8">8</option>
+                    </select>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="overwrite" class="toggle toggle-secondary toggle-sm">
+                    <span class="text-sm">Re-tag everything
+                        <span class="block text-xs opacity-50">Also replace hashtags that already exist</span>
+                    </span>
+                </label>
+            </div>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost"
+                        onclick="document.getElementById('hashtags-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-secondary">
+                    <i class="fas fa-tags"></i> Start tagging
+                </button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+<script>
+(function () {
+    const form = document.getElementById('hashtags-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        document.getElementById('hashtags-modal').close();
+        try {
+            const resp = await fetch("{{ url_for('drive.hashtags_start', drive_id=drive.id) }}", {
+                method: 'POST',
+                body: new FormData(form),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                if (window.uiAlert) {
+                    window.uiAlert(data.error || 'Could not start hashtag generation.',
+                                   { title: 'Hashtags' });
+                }
+            }
+        } catch {
+            if (window.uiAlert) window.uiAlert('Could not reach the server.', { title: 'Hashtags' });
+        }
+        // The floating widget picks the job up on its next poll.
+        document.dispatchEvent(new Event('spa:mutated'));
+    });
+})();
+</script>
+{% endif %}
 
 <script src="{{ url_for('static', filename='js/drive.js') }}" defer></script>
 {% endblock %}

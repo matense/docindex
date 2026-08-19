@@ -1,4 +1,5 @@
 import base64
+import threading
 import time
 from collections import deque
 
@@ -15,24 +16,36 @@ class AIError(Exception):
 # Sliding-window rate limiter: rate_key -> deque of request timestamps.
 # In-memory is fine (single-process app); resets on restart.
 _rate_windows = {}
+_rate_lock = threading.Lock()
 
 
-def _check_rate_limit(cfg):
-    """Enforce the per-connection requests-per-minute limit (0 = unlimited)."""
+def _rate_slot(cfg, block=False):
+    """Enforce the per-connection requests-per-minute limit (0 = unlimited).
+
+    With block=True, sleep until a slot frees instead of raising — used by
+    background jobs (bulk hashtag generation) so they self-throttle instead
+    of failing. Shares the window with interactive requests, so both count
+    towards the same per-connection limit.
+    """
     limit = cfg.get("rate_limit_rpm")
     if not limit:
         return
     key = cfg.get("rate_key", "env")
-    now = time.monotonic()
-    window = _rate_windows.setdefault(key, deque())
-    while window and now - window[0] > 60:
-        window.popleft()
-    if len(window) >= limit:
-        wait = int(60 - (now - window[0])) + 1
-        raise AIError(
-            f"Rate limit reached for this connection ({limit} requests/minute). "
-            f"Wait ~{wait}s or raise the limit in AI Settings.")
-    window.append(now)
+    while True:
+        with _rate_lock:
+            window = _rate_windows.setdefault(key, deque())
+            now = time.monotonic()
+            while window and now - window[0] > 60:
+                window.popleft()
+            if len(window) < limit:
+                window.append(now)
+                return
+            wait = 60 - (now - window[0]) + 0.1
+        if not block:
+            raise AIError(
+                f"Rate limit reached for this connection ({limit} requests/minute). "
+                f"Wait ~{int(wait) + 1}s or raise the limit in AI Settings.")
+        time.sleep(wait)
 
 
 def _env_config():
@@ -86,10 +99,12 @@ def _headers(cfg):
     return headers
 
 
-def chat_completion(messages, model=None, tools=None, tool_choice=None, config=None):
+def chat_completion(messages, model=None, tools=None, tool_choice=None, config=None,
+                    block=False):
     """Call an OpenAI-compatible /chat/completions endpoint.
 
-    Returns the first choice's message dict.
+    Returns the first choice's message dict. With block=True, wait for a
+    rate-limit slot instead of raising when the per-minute limit is reached.
     """
     cfg = config or _env_config()
     if not (cfg["enabled"] and cfg["base_url"] and cfg["model"]):
@@ -101,7 +116,7 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
         if tool_choice:
             payload["tool_choice"] = tool_choice
 
-    _check_rate_limit(cfg)
+    _rate_slot(cfg, block=block)
 
     try:
         resp = requests.post(

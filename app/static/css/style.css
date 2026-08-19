@@ -2983,3 +2983,58 @@ body.search-hero-mode #search-dock-container {
     background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
     box-shadow: 0 6px 16px rgba(239, 68, 68, 0.3);
 }
+
+/* Hashtag chips (file view + search results) */
+.tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(168, 85, 247, 0.12);
+    color: #a855f7;
+    border: 1px solid rgba(168, 85, 247, 0.25);
+    white-space: nowrap;
+}
+
+.tag-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 9999px;
+    font-size: 0.6rem;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.tag-chip-remove:hover {
+    opacity: 1;
+    background: rgba(168, 85, 247, 0.25);
+}
+
+/* AI hashtag suggestion popup (file view) */
+.hashtags-popup {
+    position: absolute;
+    top: calc(100% - 0.25rem);
+    right: 1rem;
+    z-index: 40;
+    width: 19rem;
+    padding: 0.85rem 1rem;
+    border-radius: 1rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+.tag-chip-suggestion {
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.tag-chip-suggestion:hover {
+    opacity: 0.55;
+    transform: scale(0.96);
+    text-decoration: line-through;
+}

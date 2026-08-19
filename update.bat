@@ -12,11 +12,12 @@ git pull
 if errorlevel 1 exit /b 1
 
 if exist venv (
+    call venv\Scripts\activate.bat
     echo -^> Updating dependencies...
-    venv\Scripts\python.exe -m pip install -r requirements.txt
+    python -m pip install -r requirements.txt
     if errorlevel 1 exit /b 1
     echo -^> Upgrading the database...
-    venv\Scripts\python.exe -m flask --app run.py db upgrade
+    python -m flask --app run.py db upgrade
     if errorlevel 1 exit /b 1
 ) else (
     echo -^> No venv found — run install.bat first.
@@ -24,5 +25,7 @@ if exist venv (
 )
 
 echo.
-echo === Done! Restart the server (python run.py) to use the new version. ===
+echo === Done! Restart the server to use the new version: ===
+echo     venv\Scripts\activate
+echo     python run.py
 endlocal
