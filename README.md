@@ -75,7 +75,7 @@ cd docindex
 
 The script creates the virtualenv, installs dependencies, generates a `.env`
 with a random `SECRET_KEY`, creates the database and prompts for the first
-admin user. Then run `python run.py`.
+admin user. Then start the app with `run.bat` (Windows) or `python run.py`.
 
 **Manual step by step:**
 
@@ -223,6 +223,7 @@ migrations/          # Flask-Migrate (Alembic) schema versions
 create_admin.py      # CLI: create the first admin user
 install.sh / install.bat   # one-shot installer (venv, deps, .env, DB, admin)
 update.sh / update.bat     # pull + deps + migrations
+run.bat              # Windows launcher (activates venv, starts the app)
 run.py               # entry point
 DOCUMENTATION.md     # detailed internal technical documentation
 CONTRIBUTING.md      # development rules and workflow (read before contributing)
