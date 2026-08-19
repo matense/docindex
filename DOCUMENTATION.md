@@ -418,6 +418,10 @@ the sliding window with interactive chat) and retry provider HTTP 429s up to
 3 times per file before counting it as failed. Removing a synced drive also
 cancels any running tagging job on it.
 
+The AI agent is hashtag-aware: `search_files` results include each file's
+tags, and the `list_hashtags` tool (`get_all_tags`) lets the model discover
+the existing tag vocabulary and search with exact tag terms (see "Tools").
+
 ### Editing
 
 `/file/<id>/edit` rewrites editable text files on disk
@@ -531,12 +535,13 @@ falls back to asking the user to rephrase.
 
 ### Tools
 
-`TOOLS` defines five OpenAI function-calling tools; `TOOL_HANDLERS` maps
+`TOOLS` defines six OpenAI function-calling tools; `TOOL_HANDLERS` maps
 names to implementations. All tools are scoped to the calling user, and
 search/list are additionally scoped to the current drive.
 
 - `search_files(query: string)` — full-text search over filenames, extracted
-  text, hashtags and captions; returns up to 10 `{file_id, name, snippet}`.
+  text, hashtags and captions; returns up to 10 `{file_id, name, snippet,
+  hashtags}`.
 - `read_file(file_id: int, start: int = 0, length: int = 20000)` — chunked
   reading: `length` is clamped to 50 000, and the result carries `start`,
   `returned_chars`, `total_chars` and `has_more` so the model can page
@@ -550,6 +555,11 @@ search/list are additionally scoped to the current drive.
 - `set_hashtags(file_id: int, hashtags: string[])` — replaces the file's
   hashtags (AI word limit applies). Only used when the user explicitly asks
   for hashtags.
+- `list_hashtags()` — every hashtag in use across the user's files with
+  usage counts (top 50, most used first), via
+  `hashtag_service.get_all_tags()`. The system prompt steers the model to
+  call this first when the user mentions a tag/topic, then search with the
+  exact tag terms.
 
 ### System prompt
 

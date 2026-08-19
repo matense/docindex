@@ -81,6 +81,26 @@ def set_tags(stored_file, tags, source="user"):
     return clean
 
 
+def get_all_tags(user, drive=None):
+    """Every hashtag in the user's files with usage counts, most used first.
+
+    Used by the AI agent to discover the existing tag vocabulary before
+    searching. Scoped to the current drive when one is given.
+    """
+    q = (FileIndex.query
+         .join(StoredFile, StoredFile.id == FileIndex.file_id)
+         .filter(StoredFile.user_id == user.id,
+                 StoredFile.deleted_at.is_(None),
+                 FileIndex.hashtags.isnot(None)))
+    if drive is not None:
+        q = q.filter(StoredFile.drive_id == drive.id)
+    counts = {}
+    for index in q.all():
+        for tag in get_tags(index):
+            counts[tag] = counts.get(tag, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 # --------------------------------------------------------------------------
 # AI generation
 # --------------------------------------------------------------------------

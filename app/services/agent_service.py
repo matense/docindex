@@ -13,8 +13,8 @@ TOOLS = [
             "name": "search_files",
             "description": (
                 "Full-text search over the user's file drive. Searches filenames, "
-                "extracted document text and AI-generated image captions. "
-                "Returns matching files with snippets."
+                "hashtags, extracted document text and AI-generated image "
+                "captions. Returns matching files with snippets and hashtags."
             ),
             "parameters": {
                 "type": "object",
@@ -109,6 +109,22 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_hashtags",
+            "description": (
+                "List every hashtag used across the user's files, with usage "
+                "counts. Use this to discover the existing tag vocabulary, then "
+                "search_files with the exact tag terms for faster, precise "
+                "results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are the assistant of DocIndex, a personal file drive.
@@ -128,6 +144,9 @@ Rules:
 - Always cite the files you used by name, like [filename](file://ID).
 - When the user asks you to create hashtags for a file, read the file first,
   then call set_hashtags with up to 10 short, lowercase tags (no '#' prefix).
+- Files can have hashtags, and search_files matches them with a high score.
+  When the user mentions a tag or topic, call list_hashtags first to find the
+  exact tag terms in use, then search_files with those terms.
 - Some files are marked read_only=true — they mirror a real folder on disk
   and cannot be edited, moved or deleted. Never offer to modify them.
 - If the files don't contain the answer, say so honestly — never invent content.
@@ -161,6 +180,7 @@ def _tool_search_files(user, query, drive=None):
             "file_id": r["file"].id,
             "name": r["file"].name,
             "snippet": r["snippet"],
+            "hashtags": r.get("tags") or [],
         }
         for r in results
     ]
@@ -259,6 +279,11 @@ def _tool_set_hashtags(user, file_id, hashtags):
     return {"file_id": stored.id, "name": stored.name, "hashtags": tags}
 
 
+def _tool_list_hashtags(user, drive=None):
+    tags = hashtag_service.get_all_tags(user, drive)
+    return [{"tag": tag, "count": count} for tag, count in tags[:50]]
+
+
 TOOL_HANDLERS = {
     "search_files": lambda user, args, drive: _tool_search_files(
         user, args.get("query", ""), drive),
@@ -270,6 +295,7 @@ TOOL_HANDLERS = {
         user, args.get("file_id")),
     "set_hashtags": lambda user, args, drive: _tool_set_hashtags(
         user, args.get("file_id"), args.get("hashtags") or []),
+    "list_hashtags": lambda user, args, drive: _tool_list_hashtags(user, drive),
 }
 
 _STEP_LABELS = {
@@ -278,6 +304,7 @@ _STEP_LABELS = {
     "list_files": "Listed drive",
     "get_file_info": "Checked file info",
     "set_hashtags": "Saved hashtags",
+    "list_hashtags": "Listed hashtags",
 }
 
 
@@ -301,6 +328,12 @@ def _summarize_result(name, result):
     if name == "get_file_info":
         return (f"{result.get('name', '?')} — {result.get('size', 0):,} bytes, "
                 f"index: {result.get('index_status', '?')}")
+    if name == "list_hashtags":
+        if not result:
+            return "No hashtags in use yet."
+        tags = ", ".join(f"#{r['tag']} ({r['count']})" for r in result[:10])
+        more = f" (+{len(result) - 10} more)" if len(result) > 10 else ""
+        return f"{len(result)} hashtag(s): {tags}{more}"
     return str(result)[:200]
 
 

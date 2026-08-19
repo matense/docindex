@@ -223,3 +223,57 @@ def test_file_index_has_hashtags_column(auth_client, app):
         stored.index.hashtags = json.dumps(["raw"])
         db.session.commit()
         assert hashtag_service.get_tags(stored.index) == ["raw"]
+
+
+def test_get_all_tags_counts_and_orders(auth_client, app, user):
+    _upload(auth_client, "t1.txt", b"first")
+    _upload(auth_client, "t2.txt", b"second")
+    with app.app_context():
+        files = StoredFile.query.order_by(StoredFile.id).all()
+        hashtag_service.set_tags(files[0], ["common", "alpha"], source="user")
+        hashtag_service.set_tags(files[1], ["common", "beta"], source="user")
+        user_obj = db.session.get(User, user)
+        tags = hashtag_service.get_all_tags(user_obj)
+        # "common" used twice comes first; ties are alphabetical.
+        assert tags == [("common", 2), ("alpha", 1), ("beta", 1)]
+
+
+def test_get_all_tags_scoped_to_user(auth_client, app, user):
+    _upload(auth_client, "mine.txt", b"my content")
+    with app.app_context():
+        hashtag_service.set_tags(_one_file(), ["mine"], source="user")
+        other = User(username="dave", email="dave@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        assert hashtag_service.get_all_tags(other) == []
+
+
+def test_agent_tool_list_hashtags(auth_client, app, user):
+    _upload(auth_client, "agent1.txt", b"alpha")
+    _upload(auth_client, "agent2.txt", b"beta")
+    with app.app_context():
+        files = StoredFile.query.order_by(StoredFile.id).all()
+        hashtag_service.set_tags(files[0], ["shared", "one"], source="user")
+        hashtag_service.set_tags(files[1], ["shared"], source="user")
+        user_obj = db.session.get(User, user)
+        result = agent_service.TOOL_HANDLERS["list_hashtags"](user_obj, {}, None)
+        assert result == [{"tag": "shared", "count": 2},
+                          {"tag": "one", "count": 1}]
+        # Files from other users are not visible.
+        other = User(username="erin", email="erin@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        assert agent_service.TOOL_HANDLERS["list_hashtags"](other, {}, None) == []
+
+
+def test_agent_search_results_include_hashtags(auth_client, app, user):
+    _upload(auth_client, "tagged.txt", b"searchable body")
+    with app.app_context():
+        hashtag_service.set_tags(_one_file(), ["searchable"], source="user")
+        user_obj = db.session.get(User, user)
+        result = agent_service.TOOL_HANDLERS["search_files"](
+            user_obj, {"query": "searchable"}, None)
+        assert len(result) == 1
+        assert result[0]["hashtags"] == ["searchable"]
