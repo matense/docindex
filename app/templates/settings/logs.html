@@ -19,6 +19,11 @@
            class="btn btn-ghost btn-sm gap-1" title="Refresh">
             <i class="fas fa-rotate"></i> Refresh
         </a>
+        <a href="{{ url_for('settings.logs_export', level=level, source=source, q=q) }}" download
+           class="btn btn-outline btn-primary btn-sm gap-1"
+           title="Download the filtered log as CSV (all matching rows)">
+            <i class="fas fa-file-csv"></i> Export CSV
+        </a>
         <form method="POST" action="{{ url_for('settings.logs_clear') }}"
               data-confirm="Clear the whole error log? This cannot be undone." data-confirm-danger>
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

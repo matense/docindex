@@ -321,6 +321,8 @@ keep working) — and explicit `log_event()` calls for AI provider failures
 prevents recursion) and prunes to the newest `ERROR_LOG_KEEP` rows. The
 admin-only page `GET /settings/logs` (filter by level/source/text, paginated
 50/page, `POST /settings/logs/clear`) is linked from a profile card.
+`GET /settings/logs/export` downloads the filtered log as CSV (all matching
+rows, newest first — the page's filters apply).
 
 ## HTTP surface
 

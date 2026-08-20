@@ -108,6 +108,37 @@ def test_logs_page_lists_and_filters(auth_client, app):
     assert b"minor hiccup" not in resp.data
 
 
+def test_logs_export_csv(auth_client, app):
+    _make_admin(app)
+    with app.app_context():
+        log_service.log_event("error", "ai_chat", "csv, with comma",
+                              detail="line1\nline2")
+        log_service.log_event("warning", "indexing", "just a warning")
+    resp = auth_client.get("/settings/logs/export")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/csv"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    import csv as _csv
+    import io as _io
+    rows = list(_csv.reader(_io.StringIO(resp.get_data(as_text=True))))
+    assert rows[0] == ["id", "created_at", "level", "source", "path",
+                       "user_id", "message", "detail"]
+    assert len(rows) == 3  # header + 2 entries, newest first
+    assert rows[1][2] == "warning"
+    assert rows[2][2] == "error" and rows[2][6] == "csv, with comma"
+    assert rows[2][7] == "line1\nline2"  # multi-line detail survives
+
+    # Filters are honored: export only errors.
+    resp = auth_client.get("/settings/logs/export?level=error")
+    rows = list(_csv.reader(_io.StringIO(resp.get_data(as_text=True))))
+    assert len(rows) == 2
+    assert rows[1][6] == "csv, with comma"
+
+
+def test_logs_export_requires_admin(auth_client, app):
+    assert auth_client.get("/settings/logs/export").status_code == 403
+
+
 def test_logs_clear(auth_client, app):
     _make_admin(app)
     with app.app_context():

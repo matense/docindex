@@ -1,8 +1,11 @@
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
+import csv
+import io
+import json
+from datetime import datetime
+
+from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import func
-
-import json
 
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
@@ -109,17 +112,11 @@ def profile():
 LOGS_PER_PAGE = 50
 
 
-@bp.route("/logs")
-@login_required
-def logs():
-    """Central error/warning log page (admin only)."""
-    if not current_user.is_admin:
-        abort(403)
-    level = request.args.get("level", "")
-    source = request.args.get("source", "")
-    q = (request.args.get("q") or "").strip()
-    page = max(1, request.args.get("page", 1, type=int))
-
+def _filtered_logs(args):
+    """ErrorLog query (newest first) with the page's level/source/text filters."""
+    level = args.get("level", "")
+    source = args.get("source", "")
+    q = (args.get("q") or "").strip()
     query = ErrorLog.query
     if level in ("error", "warning"):
         query = query.filter_by(level=level)
@@ -127,13 +124,49 @@ def logs():
         query = query.filter_by(source=source)
     if q:
         query = query.filter(ErrorLog.message.ilike(f"%{q}%"))
-    pagination = (query.order_by(ErrorLog.id.desc())
-                  .paginate(page=page, per_page=LOGS_PER_PAGE, error_out=False))
+    return query.order_by(ErrorLog.id.desc()), level, source, q
+
+
+@bp.route("/logs")
+@login_required
+def logs():
+    """Central error/warning log page (admin only)."""
+    if not current_user.is_admin:
+        abort(403)
+    page = max(1, request.args.get("page", 1, type=int))
+    query, level, source, q = _filtered_logs(request.args)
+    pagination = query.paginate(page=page, per_page=LOGS_PER_PAGE,
+                                error_out=False)
     sources = [s for (s,) in (db.session.query(ErrorLog.source)
                               .distinct().order_by(ErrorLog.source).all())]
     return render_template("settings/logs.html", logs=pagination.items,
                            pagination=pagination, level=level, source=source,
                            q=q, sources=sources)
+
+
+@bp.route("/logs/export")
+@login_required
+def logs_export():
+    """Download the filtered log as CSV (admin only). Honors the page's
+    level/source/text filters and exports ALL matching rows (no pagination)."""
+    if not current_user.is_admin:
+        abort(403)
+    query, _level, _source, _q = _filtered_logs(request.args)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at", "level", "source", "path",
+                     "user_id", "message", "detail"])
+    for log in query.all():
+        writer.writerow([
+            log.id,
+            log.created_at.isoformat() if log.created_at else "",
+            log.level, log.source, log.path or "", log.user_id or "",
+            log.message, log.detail or "",
+        ])
+    filename = "docindex-error-logs-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".csv"
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @bp.route("/logs/clear", methods=["POST"])

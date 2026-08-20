@@ -298,7 +298,9 @@ def recover_interrupted(app):
          .delete(synchronize_session=False))
         db.session.commit()
         pending = IndexJob.query.filter_by(status="pending").count()
-    if pending:
+    if pending and app.config.get("INDEX_ASYNC", True):
+        # INDEX_ASYNC=False (tests): no real threads — pending jobs are
+        # processed inline by the callers instead.
         ensure_workers(app.config.get("INDEX_WORKERS", 2), app)
 
 
