@@ -1,4 +1,4 @@
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
@@ -6,7 +6,7 @@ import json
 
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
-                      FileIndex, Folder, Setting, StoredFile, User)
+                      ErrorLog, FileIndex, Folder, Setting, StoredFile, User)
 from ..services import ai_service, file_service, indexing_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
@@ -98,7 +98,53 @@ def profile():
                            drive_stats=drive_stats,
                            ai_stats=ai_stats,
                            trashed=file_service.trashed_files(current_user.id),
+                           error_count=ErrorLog.query.filter_by(level="error").count(),
                            registration_enabled=Setting.get_bool("registration_enabled", True))
+
+
+# --------------------------------------------------------------------------
+# Error logs (admin)
+# --------------------------------------------------------------------------
+
+LOGS_PER_PAGE = 50
+
+
+@bp.route("/logs")
+@login_required
+def logs():
+    """Central error/warning log page (admin only)."""
+    if not current_user.is_admin:
+        abort(403)
+    level = request.args.get("level", "")
+    source = request.args.get("source", "")
+    q = (request.args.get("q") or "").strip()
+    page = max(1, request.args.get("page", 1, type=int))
+
+    query = ErrorLog.query
+    if level in ("error", "warning"):
+        query = query.filter_by(level=level)
+    if source:
+        query = query.filter_by(source=source)
+    if q:
+        query = query.filter(ErrorLog.message.ilike(f"%{q}%"))
+    pagination = (query.order_by(ErrorLog.id.desc())
+                  .paginate(page=page, per_page=LOGS_PER_PAGE, error_out=False))
+    sources = [s for (s,) in (db.session.query(ErrorLog.source)
+                              .distinct().order_by(ErrorLog.source).all())]
+    return render_template("settings/logs.html", logs=pagination.items,
+                           pagination=pagination, level=level, source=source,
+                           q=q, sources=sources)
+
+
+@bp.route("/logs/clear", methods=["POST"])
+@login_required
+def logs_clear():
+    if not current_user.is_admin:
+        abort(403)
+    ErrorLog.query.delete(synchronize_session=False)
+    db.session.commit()
+    flash("Error log cleared.", "success")
+    return redirect(url_for("settings.logs"))
 
 
 @bp.route("/index-queue/status")

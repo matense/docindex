@@ -74,6 +74,10 @@ class Config:
     # Background drainers processing the persistent index queue (index_jobs).
     INDEX_WORKERS = int(os.environ.get("INDEX_WORKERS", "2"))
 
+    # Central error log (error_logs table, /settings/logs): keep the newest N
+    # rows, older ones are pruned automatically.
+    ERROR_LOG_KEEP = int(os.environ.get("ERROR_LOG_KEEP", "2000"))
+
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True
 

@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 from ..extensions import db
 from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile
 from ..services import ai_service, drive_service, file_service, indexing_service
-from ..services import hashtag_service, search_service, sync_service
+from ..services import hashtag_service, log_service, search_service, sync_service
 
 bp = Blueprint("drive", __name__)
 
@@ -276,6 +276,8 @@ def file_hashtags_suggest(file_id):
         tags = hashtag_service.suggest_tags(
             stored, ai_service.config_for(current_user))
     except ai_service.AIError as exc:
+        log_service.log_event("error", "ai_hashtags", str(exc)[:300],
+                              user_id=current_user.id)
         return jsonify({"error": str(exc)[:300]}), 502
     return jsonify({"tags": tags})
 
@@ -364,6 +366,8 @@ def file_caption_suggest(file_id):
             file_service.file_path(stored),
             config=ai_service.config_for(current_user), block=True)
     except ai_service.AIError as exc:
+        log_service.log_event("error", "ai_caption", str(exc)[:300],
+                              user_id=current_user.id)
         return jsonify({"error": str(exc)[:300]}), 502
     if not caption:
         return jsonify({"error": "The AI returned an empty caption."}), 502

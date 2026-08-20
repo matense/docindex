@@ -268,6 +268,25 @@
         </div>
     </div>
 
+    {% if current_user.is_admin %}
+    <!-- Error logs (admin) -->
+    <a href="{{ url_for('settings.logs') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-error/30 transition-colors">
+        <span class="w-11 h-11 rounded-xl bg-error/15 text-error flex items-center justify-center text-lg flex-shrink-0">
+            <i class="fas fa-triangle-exclamation"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h2 class="font-bold text-lg">Error logs</h2>
+            <p class="text-xs opacity-50">AI chat, indexing, sync, database and unexpected errors — all in one place.</p>
+        </div>
+        {% if error_count %}
+        <span class="badge badge-error gap-1"><i class="fas fa-circle-xmark"></i> {{ error_count }} error{{ 's' if error_count != 1 }}</span>
+        {% else %}
+        <span class="badge badge-success badge-outline gap-1"><i class="fas fa-circle-check"></i> clean</span>
+        {% endif %}
+        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
+    </a>
+    {% endif %}
+
     <!-- Trash -->
     <div class="glass-panel rounded-2xl p-6">
         <div class="flex items-center justify-between mb-4">

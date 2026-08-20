@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Error logs - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto w-full flex flex-col gap-4">
+
+    <!-- Header -->
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-error/15 text-error flex items-center justify-center text-lg">
+            <i class="fas fa-triangle-exclamation"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Error logs</h1>
+            <p class="text-xs opacity-50">
+                Errors and warnings from the whole app — AI chat, indexing, sync, database and
+                unexpected exceptions. Newest first.
+            </p>
+        </div>
+        <a href="{{ url_for('settings.logs', level=level, source=source, q=q) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Refresh">
+            <i class="fas fa-rotate"></i> Refresh
+        </a>
+        <form method="POST" action="{{ url_for('settings.logs_clear') }}"
+              data-confirm="Clear the whole error log? This cannot be undone." data-confirm-danger>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-outline btn-error btn-sm gap-1">
+                <i class="fas fa-trash-can"></i> Clear log
+            </button>
+        </form>
+    </div>
+
+    <!-- Filters -->
+    <form method="GET" action="{{ url_for('settings.logs') }}"
+          class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-2 flex-wrap">
+        <select name="level" class="select select-bordered select-sm w-36">
+            <option value="" {{ 'selected' if not level }}>All levels</option>
+            <option value="error" {{ 'selected' if level == 'error' }}>Errors</option>
+            <option value="warning" {{ 'selected' if level == 'warning' }}>Warnings</option>
+        </select>
+        <select name="source" class="select select-bordered select-sm w-44">
+            <option value="" {{ 'selected' if not source }}>All sources</option>
+            {% for s in sources %}
+            <option value="{{ s }}" {{ 'selected' if source == s }}>{{ s }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="q" value="{{ q }}" placeholder="Search in messages…"
+               class="input input-bordered input-sm flex-1 min-w-40">
+        <button type="submit" class="btn btn-primary btn-sm gap-1">
+            <i class="fas fa-filter"></i> Filter
+        </button>
+        {% if level or source or q %}
+        <a href="{{ url_for('settings.logs') }}" class="btn btn-ghost btn-sm">Reset</a>
+        {% endif %}
+    </form>
+
+    <!-- Log table -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        {% if logs %}
+        <div class="divide-y divide-base-content/5">
+            {% for log in logs %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors">
+                <div class="flex items-start gap-3">
+                    <span class="badge badge-sm mt-0.5 flex-shrink-0 gap-1
+                                 {{ 'badge-error' if log.level == 'error' else 'badge-warning' }}">
+                        <i class="fas {{ 'fa-circle-xmark' if log.level == 'error' else 'fa-triangle-exclamation' }}"></i>
+                        {{ log.level }}
+                    </span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm break-words">{{ log.message }}</div>
+                        <div class="text-[11px] opacity-45 flex items-center gap-3 mt-1 flex-wrap">
+                            <span><i class="fas fa-clock mr-1"></i>{{ log.created_at.strftime('%d %b %Y %H:%M:%S') if log.created_at }}</span>
+                            <span class="badge badge-ghost badge-xs">{{ log.source }}</span>
+                            {% if log.path %}<span class="font-mono">{{ log.path }}</span>{% endif %}
+                            {% if log.user_id %}<span><i class="fas fa-user mr-1"></i>user {{ log.user_id }}</span>{% endif %}
+                        </div>
+                        {% if log.detail %}
+                        <details class="mt-2 group">
+                            <summary class="text-xs text-primary cursor-pointer select-none opacity-80 hover:opacity-100">
+                                <i class="fas fa-chevron-right group-open:rotate-90 transition-transform mr-1"></i>Technical details
+                            </summary>
+                            <pre class="code-view rounded-lg p-3 mt-2 overflow-x-auto text-xs" style="background:#0d1117;color:#e6edf3;">{{ log.detail }}</pre>
+                        </details>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Pagination -->
+        {% if pagination.pages > 1 %}
+        <div class="flex items-center justify-between px-4 py-3 border-t border-base-content/10">
+            <span class="text-xs opacity-50">
+                Page {{ pagination.page }} of {{ pagination.pages }} · {{ pagination.total }} entries
+            </span>
+            <div class="join">
+                {% if pagination.has_prev %}
+                <a class="join-item btn btn-sm btn-ghost"
+                   href="{{ url_for('settings.logs', level=level, source=source, q=q, page=pagination.prev_num) }}">
+                    <i class="fas fa-chevron-left"></i>
+                </a>
+                {% endif %}
+                <span class="join-item btn btn-sm btn-ghost no-animation pointer-events-none">{{ pagination.page }}</span>
+                {% if pagination.has_next %}
+                <a class="join-item btn btn-sm btn-ghost"
+                   href="{{ url_for('settings.logs', level=level, source=source, q=q, page=pagination.next_num) }}">
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="text-center py-14 opacity-50">
+            <i class="fas fa-circle-check text-4xl mb-3 block text-success"></i>
+            <p class="font-semibold">No log entries{% if level or source or q %} match these filters{% endif %}.</p>
+            <p class="text-xs mt-1">Everything is running smoothly.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="text-center">
+        <a href="{{ url_for('settings.profile') }}" class="btn btn-ghost btn-sm">
+            <i class="fas fa-arrow-left"></i> Back to profile
+        </a>
+    </div>
+</div>
+{% endblock %}

@@ -48,6 +48,11 @@ def create_app(config_class=Config):
     app.register_blueprint(ai.bp)
     app.register_blueprint(settings.bp)
 
+    # Central error log: capture app.logger warnings and unhandled exceptions
+    # into the error_logs table (visible on /settings/logs).
+    from .services import log_service
+    log_service.install(app)
+
     # Resume any indexing work left over from a previous run (crash/restart):
     # "running" jobs go back to "pending" and drainers pick them up.
     if app.config.get("INDEX_ASYNC", True):

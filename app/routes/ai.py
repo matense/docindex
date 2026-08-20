@@ -1,11 +1,12 @@
 import json
+import traceback
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 from flask_login import current_user, login_required
 
 from ..extensions import db
 from ..models import AIConnection, ChatConversation, ChatMessage, Drive, StoredFile, User
-from ..services import agent_service, ai_service, drive_service
+from ..services import agent_service, ai_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -203,11 +204,17 @@ def chat():
                                       "answer": payload},
                                      ensure_ascii=False) + "\n"
         except ai_service.AIError as exc:
+            log_service.log_event("error", "ai_chat", str(exc),
+                                  user_id=user_id, path="/ai/chat")
             yield json.dumps({"type": "error", "error": str(exc)},
                              ensure_ascii=False) + "\n"
         except Exception as exc:
             # Never let the stream die silently — the UI would otherwise show
             # the agent "stopping mid-task" with no explanation.
+            log_service.log_event("error", "ai_chat",
+                                  f"Unexpected error: {exc}",
+                                  detail=traceback.format_exc(),
+                                  user_id=user_id, path="/ai/chat")
             yield json.dumps({"type": "error", "error": f"Unexpected error: {exc}"},
                              ensure_ascii=False) + "\n"
 

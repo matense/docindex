@@ -292,3 +292,23 @@ class ChatMessage(db.Model):
 
     def __repr__(self):
         return f"<ChatMessage {self.role} conv={self.conversation_id}>"
+
+
+class ErrorLog(db.Model):
+    """Central application log — errors and warnings from anywhere in the app
+    (unhandled request exceptions, background indexing/sync failures, AI
+    provider errors, ...), shown on the settings logs page."""
+
+    __tablename__ = "error_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    level = db.Column(db.String(10), nullable=False, default="error", index=True)   # error | warning
+    source = db.Column(db.String(40), nullable=False, default="app", index=True)    # ai_chat, indexing, sync, http, ...
+    message = db.Column(db.Text, nullable=False, default="")
+    detail = db.Column(db.Text, nullable=True)   # traceback / extra context
+    path = db.Column(db.String(255), nullable=True)  # request path, when relevant
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=utcnow, index=True)
+
+    def __repr__(self):
+        return f"<ErrorLog {self.level} {self.source}: {self.message[:40]!r}>"

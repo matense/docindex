@@ -102,6 +102,7 @@ app refuses to start without it.
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
 | `SEARCH_FTS`          | `true`                                         | FTS5 full-text search with BM25 ranking (falls back to ILIKE) |
 | `INDEX_WORKERS`       | `2`                                            | Background drainers for the persistent index queue |
+| `ERROR_LOG_KEEP`      | `2000`                                         | Newest rows kept in the error log (`/settings/logs`) |
 | `PORT`                | `5000`                                         | Dev server port (`run.py`) |
 
 Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
@@ -305,6 +306,21 @@ Instance-wide key/value store. Known keys:
 
 Helpers on the model: `Setting.get(key, default)`, `Setting.get_bool(key, default)`,
 `Setting.set(key, value)`.
+
+### `error_logs` (`ErrorLog`)
+
+Central application log (`log_service`): `level` (`error`/`warning`), `source`
+(`http`, `ai_chat`, `indexing`, `sync`, ...), `message`, optional `detail`
+(traceback), `path`, `user_id`, `created_at`. Populated by:
+`log_service.install(app)` — a `DbLogHandler` on `app.logger` (captures every
+`app.logger.warning()/exception()`, including background indexing/sync
+threads) plus an `errorhandler(Exception)` for unhandled request exceptions
+(re-raised in debug/testing so the interactive debugger and test propagation
+keep working) — and explicit `log_event()` calls for AI provider failures
+(chat, hashtags, captions). Logging never raises (a thread-local guard
+prevents recursion) and prunes to the newest `ERROR_LOG_KEEP` rows. The
+admin-only page `GET /settings/logs` (filter by level/source/text, paginated
+50/page, `POST /settings/logs/clear`) is linked from a profile card.
 
 ## HTTP surface
 
