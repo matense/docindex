@@ -75,6 +75,7 @@
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
         let liveBubble = null;         // tentative answer bubble while streaming
+        let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
         let mentionToken = null; // the full "#query" match, to replace on pick
 
@@ -340,10 +341,14 @@
         }
 
         function setBusy(busy) {
-            sendBtn.disabled = busy;
+            // While busy the send button stays enabled and becomes Stop:
+            // clicking it aborts the in-flight request (see submit handler).
+            sendBtn.disabled = false;
             input.disabled = busy;
+            sendBtn.classList.toggle('btn-error', busy);
+            sendBtn.title = busy ? 'Stop the current answer' : '';
             sendBtn.innerHTML = busy
-                ? '<i class="fas fa-spinner fa-spin"></i>'
+                ? '<i class="fas fa-stop"></i>'
                 : '<i class="fas fa-paper-plane"></i>';
         }
 
@@ -588,6 +593,11 @@
         // --- Submit (streams NDJSON agent events) ---
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
+            // While a request is in flight the send button is the Stop button.
+            if (abortCtrl) {
+                abortCtrl.abort();
+                return;
+            }
             const question = input.value.trim();
             if (!question && !attachments.length) return;
 
@@ -604,9 +614,11 @@
             const thinking = addMessage('assistant', '_Searching your files..._');
 
             try {
+                abortCtrl = new AbortController();
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: abortCtrl.signal,
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
@@ -677,13 +689,20 @@
                                '**Error:** the connection was lost before the answer arrived. Please try again.',
                                { created_at: new Date().toISOString() });
                 }
-            } catch {
+            } catch (err) {
                 thinking.remove();
                 collapseReasoningBox();
-                discardLiveBubble();
-                addMessage('assistant', '**Error:** could not reach the server.',
-                           { created_at: new Date().toISOString() });
+                if (err && err.name === 'AbortError') {
+                    discardLiveBubble(); // keep whatever partial text arrived
+                    addMessage('assistant', '_Stopped by you — the answer was cancelled._',
+                               { created_at: new Date().toISOString() });
+                } else {
+                    discardLiveBubble();
+                    addMessage('assistant', '**Error:** could not reach the server.',
+                               { created_at: new Date().toISOString() });
+                }
             } finally {
+                abortCtrl = null;
                 setBusy(false);
             }
         });
@@ -700,6 +719,7 @@
         }
 
         function destroy() {
+            if (abortCtrl) abortCtrl.abort();  // stop any in-flight answer
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();

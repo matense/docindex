@@ -501,6 +501,14 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    Token deltas are not persisted — only the assembled blocks, so the DB
    layout is identical with or without streaming.
 
+   **Stop button.** While a request is in flight, the send button (both the
+   chat widget and the AI page) becomes a red Stop button backed by an
+   `AbortController`: clicking it aborts the fetch, the client keeps any
+   partial text already rendered and adds a "Stopped by you" note. Closing
+   the connection makes the next NDJSON write fail, which closes the
+   server-side generator and ends the agent loop; nothing of the aborted
+   run is persisted.
+
 `GET /ai/conversations` lists conversations (each with `updated_at` and the
 `model` that wrote the latest assistant reply, for the history list);
 `GET /ai/conversations/<id>` returns the full message list with `created_at`
