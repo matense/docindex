@@ -78,6 +78,9 @@ def set_tags(stored_file, tags, source="user"):
         db.session.add(index)
     index.hashtags = json.dumps(clean)
     db.session.commit()
+    # Tags are part of the FTS index — keep it in sync.
+    from . import search_service
+    search_service.fts_upsert(stored_file.id)
     return clean
 
 

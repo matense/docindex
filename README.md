@@ -158,6 +158,8 @@ AI can be configured in two places:
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 | `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 | `AI_STREAMING`    | Token-by-token chat streaming (`false` if the provider breaks with streamed tool calls) | `true` |
+| `SEARCH_FTS`      | FTS5 full-text search with BM25 ranking (automatic ILIKE fallback) | `true` |
+| `INDEX_WORKERS`   | Background threads draining the persistent index queue | `2` |
 
 Examples:
 
@@ -204,6 +206,13 @@ docker compose up --build -d      # migrations run automatically on start
 The database (`instance/`), uploaded files and version history (`uploads/`)
 are never touched by `git pull` — they live outside version control (or in
 Docker volumes). Your `.env` is also preserved.
+
+If a release notes mention search index changes, rebuild the FTS index
+afterwards (safe anytime; the source of truth is `file_index`):
+
+```bash
+flask --app run.py reindex-fts
+```
 
 ## Tests
 

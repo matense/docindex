@@ -7,7 +7,7 @@ import json
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
                       FileIndex, Folder, Setting, StoredFile, User)
-from ..services import ai_service, file_service
+from ..services import ai_service, file_service, indexing_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 
@@ -99,6 +99,28 @@ def profile():
                            ai_stats=ai_stats,
                            trashed=file_service.trashed_files(current_user.id),
                            registration_enabled=Setting.get_bool("registration_enabled", True))
+
+
+@bp.route("/index-queue/status")
+@login_required
+def index_queue_status():
+    """JSON snapshot of the user's indexing queue (polled by the profile card)."""
+    return jsonify(indexing_service.get_queue_status(current_user))
+
+
+@bp.route("/index-queue/pause", methods=["POST"])
+@login_required
+def index_queue_pause():
+    """Pause the (shared) indexing queue — pending jobs stay in the DB."""
+    indexing_service.pause_queue()
+    return jsonify({"ok": True, "paused": True})
+
+
+@bp.route("/index-queue/resume", methods=["POST"])
+@login_required
+def index_queue_resume():
+    indexing_service.resume_queue()
+    return jsonify({"ok": True, "paused": False})
 
 
 @bp.route("/profile/email", methods=["POST"])

@@ -236,6 +236,38 @@
         </div>
     </div>
 
+    <!-- Indexing queue -->
+    <div class="glass-panel rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-bold text-lg"><i class="fas fa-list-check text-primary"></i> Indexing queue</h2>
+            <div class="flex gap-2">
+                <button type="button" id="iq-toggle" class="btn btn-ghost btn-sm hidden">
+                    <i class="fas fa-pause"></i> <span>Pause</span>
+                </button>
+            </div>
+        </div>
+        <div id="iq-idle" class="text-sm opacity-50 flex items-center gap-2">
+            <i class="fas fa-circle-check text-success"></i> Queue empty — everything is indexed.
+        </div>
+        <div id="iq-active" class="hidden">
+            <div class="flex items-center gap-3">
+                <i id="iq-spinner" class="fas fa-arrows-rotate fa-spin text-info text-sm"></i>
+                <progress id="iq-bar" class="progress progress-primary flex-1" value="0" max="100"></progress>
+                <span id="iq-pct" class="text-xs font-bold w-10 text-right">0%</span>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mt-2">
+                <span class="badge badge-ghost badge-sm" id="iq-pending">0 pending</span>
+                <span class="badge badge-ghost badge-sm text-info" id="iq-running">0 running</span>
+                <span class="badge badge-ghost badge-sm text-success" id="iq-done">0 done</span>
+                <span class="badge badge-ghost badge-sm text-error" id="iq-error">0 errors</span>
+            </div>
+            <div id="iq-current" class="text-[11px] opacity-50 truncate mt-1"></div>
+            <div id="iq-paused-note" class="text-[11px] text-warning mt-1 hidden">
+                <i class="fas fa-pause"></i> Paused — pending jobs are kept safely in the database and resume when you do.
+            </div>
+        </div>
+    </div>
+
     <!-- Trash -->
     <div class="glass-panel rounded-2xl p-6">
         <div class="flex items-center justify-between mb-4">
@@ -377,6 +409,63 @@
         }
         tick();
     }, 1500);
+})();
+
+// Indexing queue card: live progress + pause/resume.
+(function () {
+    const idle = document.getElementById('iq-idle');
+    if (!idle) return;
+    const active = document.getElementById('iq-active');
+    const toggle = document.getElementById('iq-toggle');
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrf = csrfMeta ? csrfMeta.getAttribute('content') : '';
+    let paused = false;
+
+    async function tickQueue() {
+        if (!document.contains(idle)) return false; // page swapped away
+        try {
+            const resp = await fetch('/settings/index-queue/status');
+            if (!resp.ok) return true;
+            const s = await resp.json();
+            paused = s.paused;
+            const isActive = s.active > 0;
+            idle.classList.toggle('hidden', isActive || (paused && s.total > 0));
+            active.classList.toggle('hidden', !isActive && !(paused && s.total > 0));
+            toggle.classList.toggle('hidden', !isActive && !paused);
+            if (isActive || paused) {
+                document.getElementById('iq-bar').value = s.percent;
+                document.getElementById('iq-pct').textContent = s.percent + '%';
+                document.getElementById('iq-pending').textContent = s.counts.pending + ' pending';
+                document.getElementById('iq-running').textContent = s.counts.running + ' running';
+                document.getElementById('iq-done').textContent = s.counts.done + ' done';
+                document.getElementById('iq-error').textContent = s.counts.error + ' errors';
+                document.getElementById('iq-current').textContent =
+                    s.running_files.length ? 'Indexing: ' + s.running_files.join(', ') : '';
+                document.getElementById('iq-paused-note').classList.toggle('hidden', !paused);
+                document.getElementById('iq-spinner').className =
+                    `fas ${paused ? 'fa-pause' : 'fa-arrows-rotate fa-spin'} text-info text-sm`;
+                toggle.innerHTML = paused
+                    ? '<i class="fas fa-play"></i> <span>Resume</span>'
+                    : '<i class="fas fa-pause"></i> <span>Pause</span>';
+            }
+        } catch { /* keep quiet */ }
+        return true;
+    }
+
+    toggle.addEventListener('click', async () => {
+        await fetch(`/settings/index-queue/${paused ? 'resume' : 'pause'}`, {
+            method: 'POST', headers: { 'X-CSRFToken': csrf } });
+        tickQueue();
+    });
+
+    tickQueue();
+    if (window.__indexQueueTimer) clearInterval(window.__indexQueueTimer);
+    window.__indexQueueTimer = setInterval(async () => {
+        if (!(await tickQueue())) {
+            clearInterval(window.__indexQueueTimer);
+            window.__indexQueueTimer = null;
+        }
+    }, 2000);
 })();
 </script>
 {% endblock %}

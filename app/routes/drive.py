@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 from ..extensions import db
 from ..models import Drive, FileVersion, Folder, StoredFile
 from ..services import ai_service, drive_service, file_service, indexing_service
-from ..services import hashtag_service, sync_service
+from ..services import hashtag_service, search_service, sync_service
 
 bp = Blueprint("drive", __name__)
 
@@ -38,7 +38,8 @@ def _guard_writable(stored):
 
 def _trigger_indexing(file_id):
     if current_app.config.get("INDEX_ASYNC", True):
-        indexing_service.index_file_async(file_id, current_app._get_current_object())
+        indexing_service.enqueue_index([file_id])
+        indexing_service.ensure_workers(1)
     else:
         indexing_service.index_file(file_id)
 
@@ -469,6 +470,7 @@ def rename(file_id):
             new_name = f"{new_name}.{stored.extension}"
         stored.name = new_name
         db.session.commit()
+        search_service.fts_upsert(stored.id)  # the name is part of the FTS index
         flash("File renamed.", "success")
     return redirect(url_for("drive.index", folder_id=stored.folder_id))
 

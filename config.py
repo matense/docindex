@@ -67,6 +67,13 @@ class Config:
     # with streamed tool calls (a non-streaming fallback is tried anyway).
     AI_STREAMING = os.environ.get("AI_STREAMING", "true").lower() in ("1", "true", "yes")
 
+    # Search / indexing
+    # FTS5 full-text search (BM25 ranking). Falls back to ILIKE when off or
+    # when the SQLite build lacks FTS5.
+    SEARCH_FTS = os.environ.get("SEARCH_FTS", "true").lower() in ("1", "true", "yes")
+    # Background drainers processing the persistent index queue (index_jobs).
+    INDEX_WORKERS = int(os.environ.get("INDEX_WORKERS", "2"))
+
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True
 

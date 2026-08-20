@@ -184,6 +184,29 @@ class FileIndex(db.Model):
         return f"<FileIndex file={self.file_id} status={self.status}>"
 
 
+class IndexJob(db.Model):
+    """Persistent indexing queue entry — survives restarts, retries on failure.
+
+    Statuses: pending → running → done | error (error after 3 attempts).
+    Finished jobs are kept as recent history (purged after 24h on startup).
+    """
+
+    __tablename__ = "index_jobs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=False,
+                        index=True)
+    status = db.Column(db.String(20), nullable=False, default="pending",
+                       index=True)  # pending/running/done/error
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self):
+        return f"<IndexJob file={self.file_id} status={self.status}>"
+
+
 class AIConnection(db.Model):
     """A user-defined OpenAI-compatible AI provider connection."""
 

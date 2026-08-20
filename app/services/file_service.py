@@ -147,6 +147,8 @@ def delete_file(stored_file):
     from ..models import utcnow
     stored_file.deleted_at = utcnow()
     db.session.commit()
+    from . import search_service
+    search_service.fts_delete(stored_file.id)  # trashed files are not searchable
 
 
 def restore_file(stored_file):
@@ -154,11 +156,15 @@ def restore_file(stored_file):
     _guard_not_synced(stored_file)
     stored_file.deleted_at = None
     db.session.commit()
+    from . import search_service
+    # file_index still holds the extracted text — just re-add the FTS row.
+    search_service.fts_upsert(stored_file.id)
 
 
 def purge_file(stored_file):
     """Permanently delete: DB rows (index/versions cascade) and disk blobs."""
     _guard_not_synced(stored_file)
+    file_id = stored_file.id
     for version in stored_file.versions:
         try:
             path = version_path(version)
@@ -173,8 +179,13 @@ def purge_file(stored_file):
                 os.remove(path)
         except OSError:
             current_app.logger.exception("Failed to remove %s", path)
+    # Any queued index jobs for the file disappear with it (FK safety).
+    from ..models import IndexJob
+    IndexJob.query.filter_by(file_id=file_id).delete()
     db.session.delete(stored_file)
     db.session.commit()
+    from . import search_service
+    search_service.fts_delete(file_id)
 
 
 def trashed_files(user_id):

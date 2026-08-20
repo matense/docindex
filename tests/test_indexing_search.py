@@ -38,6 +38,8 @@ def test_search_finds_caption(auth_client, app, user):
         stored.index.caption = "A golden retriever playing in the snow"
         stored.index.status = "ok"
         db.session.commit()
+        # Direct index mutation bypasses the service layer — refresh FTS.
+        search_service.fts_upsert(stored.id)
 
         user_obj = db.session.get(User, user)
         results = search_service.search_files("retriever", user_obj)

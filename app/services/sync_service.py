@@ -202,6 +202,7 @@ def remove_synced_drive(drive):
         _jobs.pop(drive.id, None)
 
     # Thumbnails are ours (generated under THUMBNAIL_FOLDER) — remove them.
+    file_ids = [f.id for f in StoredFile.query.filter_by(drive_id=drive.id).all()]
     for stored in StoredFile.query.filter_by(drive_id=drive.id).all():
         thumb = file_service.thumbnail_path(stored)
         if os.path.exists(thumb):
@@ -210,8 +211,20 @@ def remove_synced_drive(drive):
             except OSError:
                 current_app.logger.exception("Failed to remove thumbnail %s", thumb)
 
+    # Queued index jobs reference these files (FK) — remove them first.
+    # Batched: SQLite caps the number of bound variables per statement.
+    from ..models import IndexJob
+    for i in range(0, len(file_ids), 500):
+        chunk = file_ids[i:i + 500]
+        IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
+            synchronize_session=False)
+
     db.session.delete(drive)  # cascades: files -> index/versions, folders
     db.session.commit()
+
+    # Drop the FTS rows of the removed files (batched).
+    from . import search_service
+    search_service.fts_delete_many(file_ids)
 
 
 # --------------------------------------------------------------------------
@@ -282,38 +295,22 @@ def _allowed(name, size):
 
 
 def _trigger_indexing(file_ids, workers=1):
-    """Index synced files with a small pool of background workers.
+    """Index synced files through the persistent queue (index_jobs).
 
-    A single worker is the safe default; more workers speed up OCR/AI caption
-    calls on large folders. Workers share one queue and each opens its own DB
-    connection (NullPool), so the pool is never exhausted.
+    Jobs survive restarts and are retried; `workers` drainers run in the
+    background (the sync UI toggle). Tests (INDEX_ASYNC=False) process
+    inline, sequentially.
     """
     if not file_ids:
         return
     app = current_app._get_current_object()
     workers = max(1, min(int(workers or 1), 8))
     if current_app.config.get("INDEX_ASYNC", True):
-        _start_index_workers(file_ids, app, workers)
+        indexing_service.enqueue_index(file_ids)
+        indexing_service.ensure_workers(workers, app)
     else:
         # Tests (in-memory SQLite): same thread, sequential.
         _index_batch(file_ids, app)
-
-
-def _start_index_workers(file_ids, app, workers):
-    queue = list(file_ids)
-    lock = threading.Lock()
-
-    def worker():
-        while True:
-            with lock:
-                if not queue:
-                    return
-                file_id = queue.pop(0)
-            indexing_service.index_file(file_id, app)
-
-    count = min(workers, len(queue))
-    for _ in range(count):
-        threading.Thread(target=worker, daemon=True).start()
 
 
 def _index_batch(file_ids, app):
@@ -429,10 +426,14 @@ def sync_drive(drive, job=None):
                     stats["updated"] += 1
             if job:
                 job.processed += 1
-                # Flush in batches so other requests see fresh rows and the
-                # write lock is not held for the whole sync.
-                if job.processed % 50 == 0:
-                    db.session.commit()
+            # Flush in batches: other requests see fresh rows, the write lock
+            # is not held for the whole sync, and indexing (persistent queue)
+            # starts while the scan is still running — the queue card in the
+            # profile shows live progress instead of "empty" during a sync.
+            if len(to_index) >= 50:
+                db.session.commit()
+                _trigger_indexing(to_index, workers=drive.index_workers)
+                to_index = []
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).

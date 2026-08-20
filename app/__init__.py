@@ -48,6 +48,15 @@ def create_app(config_class=Config):
     app.register_blueprint(ai.bp)
     app.register_blueprint(settings.bp)
 
+    # Resume any indexing work left over from a previous run (crash/restart):
+    # "running" jobs go back to "pending" and drainers pick them up.
+    if app.config.get("INDEX_ASYNC", True):
+        from .services import indexing_service
+        try:
+            indexing_service.recover_interrupted(app)
+        except Exception:  # noqa: BLE001 - never block app startup on this
+            app.logger.exception("Index queue recovery failed")
+
     # AI API endpoints are JSON; the frontend attaches the CSRF token via
     # the fetch() wrapper, so no exemptions needed.
 

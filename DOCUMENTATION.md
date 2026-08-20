@@ -100,6 +100,8 @@ app refuses to start without it.
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
+| `SEARCH_FTS`          | `true`                                         | FTS5 full-text search with BM25 ranking (falls back to ILIKE) |
+| `INDEX_WORKERS`       | `2`                                            | Background drainers for the persistent index queue |
 | `PORT`                | `5000`                                         | Dev server port (`run.py`) |
 
 Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
@@ -364,8 +366,19 @@ files from the normal file routes).
    `FileIndex(status="pending")` row, generates a 256 px PNG thumbnail for
    images, and reports duplicate content (same checksum, within the same
    drive) back to the UI.
-2. Indexing is triggered per file: `index_file_async()` spawns a daemon
-   thread when `INDEX_ASYNC` is true, otherwise runs inline (tests).
+2. Indexing is triggered per file through the **persistent index queue**
+   (`index_jobs` table): `enqueue_index()` persists a `pending` job (deduped,
+   skips missing/trashed files) and `ensure_workers(n)` spawns up to n
+   drainer threads that claim jobs FIFO (process-level lock + SQLite write
+   serialization) and run `index_file()`. Failures are retried up to 3
+   attempts, then the job is `error` (and the file's index badge shows it).
+   On startup `recover_interrupted()` requeues jobs a crash left `running`,
+   purges finished jobs older than 24h and resumes draining — no indexing
+   work is ever lost. The queue can be **paused/resumed** (global in-memory
+   flag; pending jobs stay safely in the DB) from the profile's "Indexing
+   queue" card, which polls `GET /settings/index-queue/status`
+   (`POST .../pause|resume`). With `INDEX_ASYNC=False` (tests) indexing runs
+   inline as before.
 3. `indexing_service.index_file()` extracts text by extension: pdfplumber
    for PDFs (text + tables), python-docx for DOCX, raw read for editable
    text/code files, pytesseract OCR for images. All capped at
@@ -373,14 +386,22 @@ files from the normal file routes).
    caption can still be produced (and vice versa); when the owner's active AI
    connection is enabled, `ai_service.caption_image()` describes the image
    with the vision model. Word/line/char stats are computed from text or
-   caption. Any failure lands in `status="error"` with the message.
-4. `search_service.search_files()` splits the query into up to 8 terms,
-   builds `ILIKE %term%` conditions over `files.name`,
-   `file_index.extracted_text`, `file_index.caption` and
-   `file_index.hashtags`, then scores matches in Python: name hit +10,
-   hashtag hit +7, caption hit +5, text hit +2 plus occurrence count
-   (capped). Snippets are ~120 chars of context around the first hit with
-   `<mark>` highlighting. All user text is HTML-escaped first and the result
+   caption. Any failure lands in `status="error"` with the message. After
+   each successful commit, `search_service.fts_upsert()` refreshes the FTS5
+   row.
+4. `search_service.search_files()` uses the **FTS5** virtual table
+   `file_fts` (rowid = `files.id`; columns: name, text, caption, tags) when
+   available: up to 8 terms become a `"term"* AND ...` prefix MATCH, ranked
+   by `bm25(file_fts, 0.2, 1.0, 0.6, 0.4)` (name > tags > caption > text,
+   preserving the old boost order). The Python scoring still dominates the
+   final sort; BM25 breaks ties. If FTS5 is missing (`SEARCH_FTS=false` or
+   an old SQLite build) or the MATCH is invalid, it falls back to the
+   original `ILIKE %term%` scan over `files.name`, `file_index.*` with
+   Python scoring (name +10, hashtag +7, caption +5, text +2/occurrence).
+   FTS matches by token/prefix rather than arbitrary substring: `insta`
+   finds "installation", but mid-token substrings no longer match.
+   Snippets are ~120 chars of context around the first hit with `<mark>`
+   highlighting. All user text is HTML-escaped first and the result
    is returned as a `markupsafe.Markup` object, so templates render the
    highlight without double-escaping and without XSS risk. Each result also
    carries `name_html` (the escaped filename with `<mark>` highlights),
@@ -388,6 +409,11 @@ files from the normal file routes).
    badges) and `tags` (the file's hashtags, shown as chips).
    Results are scoped to the current drive and capped at 50 (8 for the
    instant-search endpoint, which also returns `name_html`).
+
+   The FTS table is derived data — the source of truth is `file_index`. It
+   is maintained by `fts_upsert`/`fts_delete` hooks (indexing, rename,
+   hashtag changes, trash/restore/purge, synced-drive removal) and can be
+   rebuilt anytime with `flask --app run.py reindex-fts`.
 
 ### Hashtags
 
@@ -501,7 +527,10 @@ and `model` per message (including thinking/step rows for the history view);
   page). `remove_synced_drive(drive)` stops any running sync, then deletes
   the drive row (files, folders, index and versions cascade) plus generated
   thumbnails — the real folder on disk is never touched. Rows are committed in batches of 50 so the UI stays responsive, and
-  indexing after a sync runs in a configurable pool of background workers
+  index jobs are enqueued in those same batches (persistent `index_jobs`
+  queue) while the scan is still running — indexing overlaps the scan and the
+  profile's "Indexing queue" card shows live progress during a sync. Workers
+  come from a configurable pool of background drainers
   (`Drive.index_workers`, 1–8, default 1) sharing one queue — a thread per
   file would exhaust the connection pool. AI image captions can be toggled
   per synced drive (`Drive.captions_enabled`), both at creation and via

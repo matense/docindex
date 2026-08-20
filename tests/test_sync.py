@@ -304,6 +304,42 @@ def test_remove_synced_drive_clears_db_but_not_disk(auth_client, app, local_fold
     assert os.path.isdir(os.path.join(local_folder, "docs"))
 
 
+def test_remove_synced_drive_with_many_files(auth_client, app, local_folder):
+    """Regression: SQLite caps bound variables per statement, so removing a
+    drive with more files than that limit must delete in batches."""
+    _sync_create(auth_client, local_folder)
+    drive_id = _synced_drive(app)
+
+    from app.models import IndexJob
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        user_id = drive.user_id
+        db.session.bulk_insert_mappings(StoredFile, [
+            {"name": f"bulk{i}.txt", "stored_name": f"bulk-{drive_id}-{i}.txt",
+             "extension": "txt", "size": 1, "user_id": user_id,
+             "drive_id": drive_id,
+             "source_path": os.path.join(local_folder, f"bulk{i}.txt")}
+            for i in range(1200)  # above SQLite's variable limit
+        ])
+        db.session.commit()
+        ids = [f.id for f in StoredFile.query.filter_by(drive_id=drive_id).all()]
+        db.session.add_all([IndexJob(file_id=fid, status="pending")
+                            for fid in ids[:600]])
+        db.session.commit()
+
+    resp = auth_client.post(f"/drives/{drive_id}/remove", follow_redirects=True)
+    assert resp.status_code == 200
+
+    with app.app_context():
+        assert StoredFile.query.filter_by(drive_id=drive_id).count() == 0
+        assert IndexJob.query.filter(IndexJob.file_id.in_(ids)).count() == 0
+        if search_service.fts_available():
+            remaining = db.session.execute(db.text(
+                "SELECT count(*) FROM file_fts WHERE rowid IN "
+                "(" + ", ".join(str(i) for i in ids) + ")")).scalar()
+            assert remaining == 0
+
+
 def test_remove_stops_running_sync(auth_client, app, local_folder):
     _sync_create(auth_client, local_folder)
     drive_id = _synced_drive(app)
