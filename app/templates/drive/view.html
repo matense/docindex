@@ -168,11 +168,57 @@
                 <img src="{{ url_for('drive.raw', file_id=file.id) }}" alt="{{ file.name }}"
                      class="max-h-[70vh] object-contain rounded-lg shadow-lg">
             </div>
-            {% if file.index and file.index.caption %}
-            <div class="mt-4 text-sm italic opacity-70">
-                <i class="fas fa-robot mr-1"></i>{{ file.index.caption }}
+            <!-- AI caption (user-reviewed) -->
+            <div id="caption-section" data-file-id="{{ file.id }}"
+                 data-caption="{{ (file.index.caption if file.index and file.index.caption else '') | tojson }}"
+                 class="glass-panel rounded-xl px-4 py-3 flex flex-col gap-2 relative mt-4">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm font-semibold opacity-70 whitespace-nowrap">
+                        <i class="fas fa-robot text-secondary mr-1"></i> AI caption
+                    </span>
+                    {% if ai_enabled %}
+                    <button type="button" id="caption-ai" class="btn btn-xs btn-secondary btn-outline gap-1 ml-auto">
+                        <i class="fas fa-wand-magic-sparkles"></i> Generate Caption
+                    </button>
+                    {% endif %}
+                </div>
+                <p id="caption-text" class="text-sm italic opacity-70"></p>
+                <div class="text-[11px] opacity-40">
+                    The caption makes this image searchable. It is only saved when you accept it —
+                    you can edit the text before saving.
+                </div>
+
+                {% if ai_enabled %}
+                <!-- AI caption popup (review, edit, then save) -->
+                <div id="caption-popup" class="caption-popup glass-panel hidden">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-6 h-6 rounded-lg bg-secondary/15 text-secondary flex items-center justify-center text-xs">
+                            <i class="fas fa-wand-magic-sparkles"></i>
+                        </span>
+                        <span class="text-sm font-bold flex-1">AI caption</span>
+                        <button type="button" id="caption-popup-close" class="btn btn-circle btn-xs btn-ghost" title="Close">
+                            <i class="fas fa-xmark"></i>
+                        </button>
+                    </div>
+                    <div id="caption-popup-loading" class="hidden items-center justify-center gap-2 text-sm opacity-60 py-4">
+                        <i class="fas fa-spinner fa-spin text-secondary"></i> Analysing the image…
+                    </div>
+                    <div id="caption-popup-error" class="hidden text-xs text-error py-2"></div>
+                    <div id="caption-popup-body" class="hidden">
+                        <textarea id="caption-popup-text" maxlength="5000"
+                                  placeholder="The AI caption appears here — edit it if you like."></textarea>
+                        <div class="text-[11px] opacity-40 my-2">Review and edit before saving — nothing is stored until you accept.</div>
+                        <div class="flex items-center justify-end gap-2">
+                            <button type="button" id="caption-popup-discard" class="btn btn-xs btn-ghost">Discard</button>
+                            <button type="button" id="caption-popup-accept" class="btn btn-xs btn-secondary gap-1">
+                                <i class="fas fa-check"></i> Save caption
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
             </div>
-            {% endif %}
+            <script src="{{ url_for('static', filename='js/caption.js') }}?v=2" defer></script>
         {% elif file.extension == 'pdf' %}
             <iframe src="{{ url_for('drive.raw', file_id=file.id) }}" class="w-full rounded-lg bg-white"
                     style="height: 72vh"></iframe>

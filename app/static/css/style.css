@@ -3033,8 +3033,9 @@ body.search-hero-mode #search-dock-container {
     background: rgba(168, 85, 247, 0.25);
 }
 
-/* AI hashtag suggestion popup (file view) */
-.hashtags-popup {
+/* AI suggestion popups (file view: hashtags, image caption) */
+.hashtags-popup,
+.caption-popup {
     position: absolute;
     top: calc(100% - 0.25rem);
     right: 1rem;
@@ -3043,6 +3044,29 @@ body.search-hero-mode #search-dock-container {
     padding: 0.85rem 1rem;
     border-radius: 1rem;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+.caption-popup {
+    width: 26rem;
+    max-width: calc(100vw - 3rem);
+}
+
+.caption-popup textarea {
+    width: 100%;
+    min-height: 7rem;
+    resize: vertical;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    padding: 0.6rem 0.7rem;
+    border-radius: 0.6rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    outline: none;
+}
+
+.caption-popup textarea:focus {
+    border-color: rgba(168, 85, 247, 0.5);
 }
 
 .tag-chip-suggestion {

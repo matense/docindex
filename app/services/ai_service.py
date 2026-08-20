@@ -298,8 +298,12 @@ def test_connection(base_url, api_key):
     return True, "Connected."
 
 
-def caption_image(path, config=None):
-    """Generate a searchable caption for an image via a vision model."""
+def caption_image(path, config=None, block=False):
+    """Generate a searchable caption for an image via a vision model.
+
+    With block=True, wait for a rate-limit slot instead of raising when the
+    connection's per-minute limit is reached (user-initiated requests).
+    """
     cfg = config or _env_config()
     with open(path, "rb") as fh:
         b64 = base64.b64encode(fh.read()).decode("ascii")
@@ -326,5 +330,6 @@ def caption_image(path, config=None):
             ],
         }
     ]
-    message = chat_completion(messages, model=cfg["vision_model"], config=cfg)
+    message = chat_completion(messages, model=cfg["vision_model"], config=cfg,
+                              block=block)
     return (message.get("content") or "").strip()

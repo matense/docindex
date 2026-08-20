@@ -385,7 +385,12 @@ files from the normal file routes).
    `MAX_TEXT_CHARS = 500_000`. For images, OCR failure is tolerated if an AI
    caption can still be produced (and vice versa); when the owner's active AI
    connection is enabled, `ai_service.caption_image()` describes the image
-   with the vision model. Word/line/char stats are computed from text or
+   with the vision model. Captions can also be (re)generated manually from
+   the file view: "Generate Caption" asks the vision model via
+   `POST /file/<id>/caption/suggest` (nothing is persisted), the user
+   reviews/edits the text in a popup, and only accepting saves it via
+   `POST /file/<id>/caption` (which refreshes the FTS row). Word/line/char
+   stats are computed from text or
    caption. Any failure lands in `status="error"` with the message. After
    each successful commit, `search_service.fts_upsert()` refreshes the FTS5
    row.

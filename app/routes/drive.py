@@ -8,7 +8,7 @@ from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Drive, FileVersion, Folder, StoredFile
+from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile
 from ..services import ai_service, drive_service, file_service, indexing_service
 from ..services import hashtag_service, search_service, sync_service
 
@@ -331,6 +331,65 @@ def hashtags_active():
     """The current user's running/paused tagging job (for the widget)."""
     job = hashtag_service.get_active_job(current_user.id)
     return jsonify({"active": job is not None, "job": job})
+
+
+# --------------------------------------------------------------------------
+# AI image captions (manual, user-reviewed)
+# --------------------------------------------------------------------------
+
+MAX_CAPTION_CHARS = 5000  # sanity cap for user-accepted captions
+
+
+@bp.route("/file/<int:file_id>/caption")
+@login_required
+def file_caption(file_id):
+    stored = _get_file(file_id)
+    index = stored.index
+    return jsonify({"caption": (index.caption or "") if index else ""})
+
+
+@bp.route("/file/<int:file_id>/caption/suggest", methods=["POST"])
+@login_required
+def file_caption_suggest(file_id):
+    """Ask the AI (vision model) for a caption WITHOUT saving it — the user
+    reviews/edits it in the popup and accepts or discards. Images only."""
+    stored = _get_file(file_id)
+    if not stored.is_image:
+        abort(400, "Captions are for image files.")
+    if not ai_service.is_enabled(current_user):
+        return jsonify({"error": "AI is not configured. Add a connection in "
+                                 "AI Settings first."}), 400
+    try:
+        caption = ai_service.caption_image(
+            file_service.file_path(stored),
+            config=ai_service.config_for(current_user), block=True)
+    except ai_service.AIError as exc:
+        return jsonify({"error": str(exc)[:300]}), 502
+    if not caption:
+        return jsonify({"error": "The AI returned an empty caption."}), 502
+    return jsonify({"caption": caption[:MAX_CAPTION_CHARS]})
+
+
+@bp.route("/file/<int:file_id>/caption", methods=["POST"])
+@login_required
+def file_caption_save(file_id):
+    """Save the reviewed caption (user-accepted, possibly edited). Only the
+    caption changes — OCR text, stats and status are left untouched."""
+    stored = _get_file(file_id)
+    if not stored.is_image:
+        abort(400, "Captions are for image files.")
+    data = request.get_json(silent=True) or {}
+    caption = (data.get("caption") or request.form.get("caption") or "").strip()
+    caption = caption[:MAX_CAPTION_CHARS]
+    index = stored.index
+    if index is None:
+        index = FileIndex(file_id=stored.id, status="pending")
+        db.session.add(index)
+    index.caption = caption or None
+    db.session.commit()
+    # Captions are part of the FTS index — keep it in sync.
+    search_service.fts_upsert(stored.id)
+    return jsonify({"caption": caption})
 
 
 @bp.route("/drives/<int:drive_id>/select", methods=["POST"])
