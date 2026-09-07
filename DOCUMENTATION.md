@@ -855,7 +855,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 262 tests across 20+ modules:
+pytest suite in `tests/`, 265 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

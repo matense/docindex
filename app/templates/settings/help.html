@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}Help - DocIndex{% endblock %}
+
+{% macro section(id, icon, title) %}
+<div class="glass-panel rounded-2xl p-6 scroll-mt-24" id="{{ id }}">
+    <h2 class="font-bold text-lg mb-3 flex items-center gap-2">
+        <i class="fas {{ icon }} text-primary"></i> {{ title }}
+    </h2>
+    <div class="text-sm opacity-80 flex flex-col gap-2 leading-relaxed">
+        {{ caller() }}
+    </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-6 pb-10">
+
+    <!-- Header -->
+    <div class="glass-panel rounded-2xl p-6">
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-circle-question text-white"></i>
+            </span>
+            DocIndex Help
+        </h1>
+        <p class="opacity-60 text-sm mt-2">
+            Your personal, searchable file drive: upload documents and images,
+            let the indexer extract their text, find anything in seconds, and
+            ask the AI assistant questions about your own files.
+        </p>
+    </div>
+
+    <!-- Table of contents -->
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold mb-3 text-sm uppercase tracking-wide opacity-60">On this page</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+            <a href="#help-drives" class="link link-hover"><i class="fas fa-hard-drive w-5 text-primary/70"></i> Drives</a>
+            <a href="#help-upload" class="link link-hover"><i class="fas fa-cloud-arrow-up w-5 text-primary/70"></i> Uploading &amp; organizing</a>
+            <a href="#help-search" class="link link-hover"><i class="fas fa-magnifying-glass w-5 text-primary/70"></i> Search</a>
+            <a href="#help-file-view" class="link link-hover"><i class="fas fa-file-lines w-5 text-primary/70"></i> The file view</a>
+            <a href="#help-versions" class="link link-hover"><i class="fas fa-clock-rotate-left w-5 text-primary/70"></i> Version history</a>
+            <a href="#help-hashtags" class="link link-hover"><i class="fas fa-hashtag w-5 text-primary/70"></i> Hashtags</a>
+            <a href="#help-duplicates" class="link link-hover"><i class="fas fa-clone w-5 text-primary/70"></i> Duplicates</a>
+            <a href="#help-trash" class="link link-hover"><i class="fas fa-trash w-5 text-primary/70"></i> Trash bin</a>
+            <a href="#help-sync" class="link link-hover"><i class="fas fa-arrows-rotate w-5 text-primary/70"></i> Synced drives</a>
+            <a href="#help-ai-chat" class="link link-hover"><i class="fas fa-robot w-5 text-primary/70"></i> AI assistant chat</a>
+            <a href="#help-ai-search" class="link link-hover"><i class="fas fa-wand-magic-sparkles w-5 text-primary/70"></i> AI search page</a>
+            <a href="#help-profile" class="link link-hover"><i class="fas fa-user w-5 text-primary/70"></i> Profile page</a>
+            <a href="#help-ai-settings" class="link link-hover"><i class="fas fa-gear w-5 text-primary/70"></i> AI settings</a>
+            <a href="#help-troubleshooting" class="link link-hover"><i class="fas fa-screwdriver-wrench w-5 text-primary/70"></i> Troubleshooting</a>
+        </div>
+    </div>
+
+    {% call section('help-drives', 'fa-hard-drive', 'Drives') %}
+        <p>Drives are separate vaults that group your files — like multiple
+        disks. Everyone starts with a <strong>Personal</strong> drive; create
+        more from the drive dropdown in the top bar (e.g. "Work", "Photos",
+        "Archive").</p>
+        <p>The dropdown switches the <em>current drive</em>: uploads, search,
+        the AI chat and the file browser all work inside it. The same file can
+        exist in different drives — duplicates are detected per drive, never
+        across drives.</p>
+    {% endcall %}
+
+    {% call section('help-upload', 'fa-cloud-arrow-up', 'Uploading & organizing') %}
+        <p>Use the upload button (or drag &amp; drop files onto the drive
+        page) to add files. Create folders to organize them. Supported
+        content: text files, PDFs, Word documents and images.</p>
+        <p>After upload, each file is <strong>indexed</strong> in the
+        background: text is extracted (OCR for images), stats are computed
+        and — if enabled — the AI writes an image caption. The badge next to
+        each file shows the state: <span class="badge badge-xs">pending</span>
+        <span class="badge badge-xs badge-success">ok</span>
+        <span class="badge badge-xs badge-error">error</span>. The profile
+        page shows the live indexing queue.</p>
+    {% endcall %}
+
+    {% call section('help-search', 'fa-magnifying-glass', 'Search') %}
+        <p>The search bar in the top bar searches the current drive: file
+        names, extracted text, AI captions and hashtags, ranked by relevance
+        (FTS5 + BM25). Words match by prefix — <code>read</code> also finds
+        <code>README.md</code>.</p>
+        <p>Results show a highlighted snippet and badges telling where the
+        match was found (name, tags, caption, content). Use the eye icon to
+        preview or the arrow to download.</p>
+    {% endcall %}
+
+    {% call section('help-file-view', 'fa-file-lines', 'The file view') %}
+        <p>Click any file to open its page: preview, download, rename, edit
+        text files in place, word/line/char counts, hashtags and — for images —
+        the AI caption. Every content change is indexed again automatically.</p>
+        <p>Deleting a file moves it to the <strong>trash</strong> (see below) —
+        nothing is lost until you purge it.</p>
+    {% endcall %}
+
+    {% call section('help-versions', 'fa-clock-rotate-left', 'Version history') %}
+        <p>Every file keeps a history: uploading a file with the same name in
+        the same folder, or editing its content, creates a new version instead
+        of destroying the old one. Open <strong>History</strong> in the file
+        view to compare versions side by side (text diff) or download an older
+        version of a binary file, and restore any version with one click.</p>
+    {% endcall %}
+
+    {% call section('help-hashtags', 'fa-hashtag', 'Hashtags') %}
+        <p>Hashtags make search faster and more precise. Add them manually in
+        the file view (the chip editor), or click <strong>Create
+        Hashtags</strong>: the AI reads the file and suggests tags in a small
+        review popup — remove the ones you dislike and only then apply them.</p>
+        <p>To tag a whole drive at once, use the bulk hashtag job on the
+        profile page (with pause/resume and its own worker limit, respecting
+        your connection's rate limit). The AI assistant also searches by
+        hashtags first (<code>tags:</code> scope), so tagged files answer
+        faster.</p>
+    {% endcall %}
+
+    {% call section('help-duplicates', 'fa-clone', 'Duplicates') %}
+        <p>Uploading content identical to an existing file (same SHA-256) in
+        the same drive is flagged: the file view shows the duplicates and lets
+        you <strong>merge</strong> them — the merged file keeps the combined
+        version history, so nothing is lost.</p>
+    {% endcall %}
+
+    {% call section('help-trash', 'fa-trash', 'Trash bin') %}
+        <p>Deleted files go to the trash (profile page → Trash). From there
+        you can <strong>restore</strong> them to their original folder or
+        <strong>purge</strong> them permanently (this also deletes versions
+        and thumbnails). A confirmation dialog always asks before anything is
+        destroyed.</p>
+    {% endcall %}
+
+    {% call section('help-sync', 'fa-arrows-rotate', 'Synced drives (local folders)') %}
+        <p>A synced drive mirrors a real folder on this computer. Create one
+        from the drive dropdown → "Sync a local folder" and paste the path.
+        Everything inside is indexed and searchable — but
+        <strong>read-only</strong>: files in it cannot be edited, renamed or
+        deleted in DocIndex, and removing the drive never touches the real
+        folder.</p>
+        <p>Syncs run on demand (Sync now on the profile page or the drive
+        view), with live progress in the bottom-right widget and on the
+        profile card — you can pause, resume or stop a running sync. Per
+        synced drive you can choose the number of indexing workers and toggle
+        AI image captions. Changed files are re-indexed, vanished files are
+        removed from the drive, and the last-sync stats (+added / updated /
+        −removed / skipped) stay on the card.</p>
+    {% endcall %}
+
+    {% call section('help-ai-chat', 'fa-robot', 'AI assistant chat') %}
+        <p>The robot button (or <code>Alt+A</code>) opens a chat window that
+        answers questions <em>about your files</em>: the assistant searches,
+        counts, reads and cross-references them step by step, and shows its
+        work — expand <strong>Reasoning</strong> to see what it is doing and
+        which tools it called. Answers cite sources as clickable file links.</p>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            <li><strong>Multiple windows</strong> — the clone button opens
+            parallel chats; drag windows by the header, resize from the
+            corner grip.</li>
+            <li><strong>Attachments</strong> — <em>Current file</em> attaches
+            the file open in the viewer; <em>Search files</em> (or typing
+            <code>#</code>) finds files to attach; you can also drop files
+            onto the window.</li>
+            <li><strong>Model selector</strong> — switch between your AI
+            connections from the header dropdown.</li>
+            <li><strong>Conversations</strong> — the clock button lists past
+            conversations; reopen or delete them there.</li>
+            <li><strong>Stop</strong> — while the assistant works, the send
+            button becomes a red stop button that cancels the answer.</li>
+            <li><strong>Summarize &amp; reset</strong> — the compress button
+            asks the AI to condense the whole conversation into a summary.
+            Old messages stay visible (grayed out, under a "History
+            compacted" divider) but leave the model's context — the summary
+            becomes the memory. Perfect for long sessions and small models.</li>
+        </ul>
+    {% endcall %}
+
+    {% call section('help-ai-search', 'fa-wand-magic-sparkles', 'AI search page') %}
+        <p>From the home/search page, switch the toggle from
+        <strong>Search</strong> to <strong>AI</strong>: your question is
+        answered in natural language with the sources it used. It is the same
+        assistant as the chat, in a full-page layout — attachments and stop
+        work the same way.</p>
+    {% endcall %}
+
+    {% call section('help-profile', 'fa-user', 'Profile page') %}
+        <p>Your profile centralizes everything about your account:</p>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            <li><strong>Account details</strong> — change email and
+            password.</li>
+            <li><strong>Drive cards</strong> — files, folders, space used and
+            indexed words per drive; synced drives also show sync controls
+            and stats.</li>
+            <li><strong>AI usage</strong> — conversation and message counts
+            and the active connection.</li>
+            <li><strong>Indexing queue</strong> — live progress of background
+            indexing, with pause/resume.</li>
+            <li><strong>Error logs</strong> — every warning and error the app
+            records (AI, database, indexing…), in a searchable table, with
+            CSV export to share with support.</li>
+            <li><strong>Trash</strong> — restore or purge deleted files.</li>
+            <li><strong>Admins</strong> can additionally enable or disable new
+            registrations on the login page.</li>
+        </ul>
+    {% endcall %}
+
+    {% call section('help-ai-settings', 'fa-gear', 'AI settings') %}
+        <p>DocIndex talks to any OpenAI-compatible provider (Ollama, LM
+        Studio, OpenAI, Anthropic, Kimi…). Add a connection with base URL,
+        model and API key — presets fill the well-known providers —
+        and use <em>Test connection</em> to validate it. The first connection
+        activates automatically; the active one is used everywhere.</p>
+        <p>Per-connection knobs (empty = global default):</p>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            <li><strong>Vision model</strong> — used for image captions.</li>
+            <li><strong>Max agent steps</strong> — how many search/read steps
+            the assistant may take per question (default 16).</li>
+            <li><strong>Requests per minute</strong> — rate limit for
+            providers that throttle (0 = unlimited).</li>
+            <li><strong>History messages</strong> — how many past chat
+            messages are sent to the model (default 20).</li>
+            <li><strong>Prompt budget</strong> — maximum estimated prompt
+            size in tokens (default 60 000). Set it below your model's
+            context window; older messages are dropped when a conversation
+            would exceed it.</li>
+        </ul>
+    {% endcall %}
+
+    {% call section('help-troubleshooting', 'fa-screwdriver-wrench', 'Troubleshooting') %}
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            <li><strong>"Conversation too large for the context window"</strong> —
+            use Summarize &amp; reset, start a new conversation, or lower the
+            prompt budget / history messages in AI Settings.</li>
+            <li><strong>OCR warnings</strong> — image text extraction needs
+            Tesseract installed on the server; without it images are still
+            searchable by name, caption and hashtags.</li>
+            <li><strong>Search finds nothing after an upgrade</strong> — run
+            <code>flask --app run.py reindex-fts</code> to rebuild the search
+            index.</li>
+            <li><strong>AI not responding</strong> — check the connection with
+            the Test button in AI Settings, and look at the error logs on the
+            profile page for the exact cause.</li>
+        </ul>
+    {% endcall %}
+
+</div>
+{% endblock %}
