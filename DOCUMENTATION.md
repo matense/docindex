@@ -504,8 +504,14 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    call the oldest conversation units are dropped — whole tool-call
    exchanges at a time, so tool messages are never orphaned — until the
    estimated prompt size fits; the user is told once via a thinking note.
-   Older tool results are additionally trimmed inside a run
-   (`_trim_tool_messages`). Provider context errors ("context length",
+   The dropper never removes system messages, the final message, or the
+   **last remaining user message** — providers reject prompts without a user
+   turn. Older tool results are additionally trimmed inside a run
+   (`_trim_tool_messages`), and every single tool result is hard-capped at
+   30 000 chars when appended (`_cap_tool_result`) so one oversized payload
+   (e.g. a recursive `list_files` over a huge synced drive — itself capped
+   at 200 files / 500 folders with `truncated` flags) can never overflow
+   the context on its own. Provider context errors ("context length",
    "context size", "exceed_context_size", …) are mapped to a friendly
    message pointing at Summarize & reset / AI Settings. If the sliced
    history would begin with an assistant message (a summary, or a
@@ -855,7 +861,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 265 tests across 20+ modules:
+pytest suite in `tests/`, 269 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

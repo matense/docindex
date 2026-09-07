@@ -829,3 +829,53 @@ def test_chat_context_size_error_gets_friendly_message(auth_client, app, user):
     assert errors
     assert "too large for the model" in errors[0]["error"]
     assert "508691" not in errors[0]["error"]
+
+
+# ------------------------------------------------------- context-window caps
+
+
+def test_cap_tool_result_truncates_oversized_payloads(app, user):
+    from app.services.agent_service import _TOOL_MSG_HARD_CAP, _cap_tool_result
+
+    small = {"results": [{"name": "a.txt"}], "total": 1}
+    assert _cap_tool_result(small) == json.dumps(small, ensure_ascii=False)
+
+    big = {"folders": [{"name": "d" * 1000} for _ in range(100)]}
+    capped = _cap_tool_result(big)
+    assert len(capped) <= _TOOL_MSG_HARD_CAP + 200
+    assert "truncated" in capped
+    assert "more specific" in capped
+
+
+def test_list_files_recursive_caps_folders(app, user):
+    # Regression: a recursive list_files over a 14k-folder synced drive
+    # produced a tool result larger than the whole context window.
+    from app.models import Folder
+    from app.services.agent_service import _tool_list_files
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        db.session.add_all(
+            Folder(name=f"folder-{i:04d}", user_id=user_obj.id)
+            for i in range(600))
+        db.session.commit()
+
+        out = _tool_list_files(user_obj, recursive=True)
+        assert len(out["folders"]) == 500
+        assert out["folders_truncated"] is True
+        assert out["truncated"] is False
+
+
+def test_list_files_recursive_small_drive_not_truncated(app, user):
+    from app.models import Folder
+    from app.services.agent_service import _tool_list_files
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        db.session.add_all(
+            Folder(name=f"folder-{i}", user_id=user_obj.id) for i in range(3))
+        db.session.commit()
+
+        out = _tool_list_files(user_obj, recursive=True)
+        assert len(out["folders"]) == 3
+        assert out["folders_truncated"] is False

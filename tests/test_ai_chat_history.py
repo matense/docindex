@@ -300,10 +300,36 @@ def test_drop_oldest_unit_keeps_tool_pairs(app, user):
         {"role": "tool", "tool_call_id": "c2", "content": "r2"},
         {"role": "assistant", "content": "final"},
     ]
-    assert _drop_oldest_unit(messages)  # drops "q"
-    assert _drop_oldest_unit(messages)  # drops assistant + BOTH tool messages
-    assert [m["role"] for m in messages] == ["system", "assistant"]
-    # Only the final message remains — it is never dropped.
+    # The assistant turn + BOTH its tool messages are dropped as one unit.
+    assert _drop_oldest_unit(messages)
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"]
+    # Nothing else is droppable: "q" is the last user message and "final"
+    # is the last message — both are protected, so the prompt always keeps
+    # a user turn (some chat templates hard-fail without one).
+    assert not _drop_oldest_unit(messages)
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"]
+
+
+def test_drop_oldest_unit_never_drops_last_user(app, user):
+    # Regression: an oversized tool result made _fit_prompt drop until the
+    # LAST user message disappeared, and the provider rejected the prompt
+    # with "No user query found in messages".
+    from app.services.agent_service import _drop_oldest_unit
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "latest question"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 50000},
+    ]
+    assert _drop_oldest_unit(messages)  # drops "first question"
+    assert _drop_oldest_unit(messages)  # drops "first answer"
+    assert _drop_oldest_unit(messages)  # drops assistant + tool (huge result)
+    # Only system + the last user message remain — both protected.
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[1]["content"] == "latest question"
     assert not _drop_oldest_unit(messages)
 
 

@@ -183,8 +183,11 @@ TOOLS = [
             "description": (
                 "List the files and folders in the user's drive, optionally "
                 "inside one folder. With recursive=true, lists every folder "
-                "(with parent ids and file counts) and every file (up to 200) "
-                "in the whole drive — a cheap map of the drive's structure."
+                "(with parent ids and file counts) and every file (up to 200 "
+                "files / 500 folders, truncated flags set beyond that) — a "
+                "cheap map of the drive's structure. On large drives prefer "
+                "search_files with specific queries instead of a full "
+                "recursive map."
             ),
             "parameters": {
                 "type": "object",
@@ -327,6 +330,11 @@ GREP_MAX_CHARS = 8000
 _TOOL_HISTORY_KEEP = 4
 _TOOL_RESULT_TRIM = 1000
 
+# Hard cap for a single tool result: no tool response may ever exceed this,
+# regardless of history trimming — one unbounded payload (e.g. a recursive
+# list_files over a 14k-folder drive) alone can overflow the context window.
+_TOOL_MSG_HARD_CAP = 30_000
+
 
 def _trim_tool_messages(messages):
     """Trim older tool results in-place so the prompt stays within the
@@ -343,6 +351,18 @@ def _trim_tool_messages(messages):
                   "context window — call the tool again if you need this data]")}
 
 
+def _cap_tool_result(result):
+    """Serialize a tool result, hard-capping it at `_TOOL_MSG_HARD_CAP` chars
+    so no single tool response can blow the context window on its own."""
+    content = json.dumps(result, ensure_ascii=False, default=str)
+    if len(content) > _TOOL_MSG_HARD_CAP:
+        content = (content[:_TOOL_MSG_HARD_CAP]
+                   + f"… [tool result truncated at {_TOOL_MSG_HARD_CAP} chars"
+                     " — too large for the context window; retry with more"
+                     " specific queries/filters]")
+    return content
+
+
 def _estimate_tokens(messages):
     """Rough prompt size in tokens (~4 chars/token), tool-call args included."""
     total = 0
@@ -356,25 +376,28 @@ def _estimate_tokens(messages):
 
 
 def _drop_oldest_unit(messages):
-    """Drop the oldest non-system message. An assistant message carrying tool
+    """Drop the oldest droppable message. An assistant message carrying tool
     calls is dropped together with its tool responses — providers reject
-    orphaned tool messages. The final message is never dropped."""
-    i = 0
-    while i < len(messages) and messages[i].get("role") == "system":
-        i += 1
-    if i >= len(messages) - 1:
-        return False
-    msg = messages[i]
-    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-        ids = {c.get("id") for c in msg["tool_calls"]}
-        j = i + 1
-        while (j < len(messages) and messages[j].get("role") == "tool"
-               and messages[j].get("tool_call_id") in ids):
-            j += 1
-        del messages[i:j]
-    else:
-        del messages[i]
-    return True
+    orphaned tool messages. Never dropped: system messages, the final
+    message, and the LAST remaining user message (the prompt must always
+    contain a user turn — some chat templates hard-fail without one)."""
+    last_user = max((i for i, m in enumerate(messages)
+                     if m.get("role") == "user"), default=None)
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role == "system" or i == last_user or i == len(messages) - 1:
+            continue
+        if role == "assistant" and msg.get("tool_calls"):
+            ids = {c.get("id") for c in msg["tool_calls"]}
+            j = i + 1
+            while (j < len(messages) and messages[j].get("role") == "tool"
+                   and messages[j].get("tool_call_id") in ids):
+                j += 1
+            del messages[i:j]
+        else:
+            del messages[i]
+        return True
+    return False
 
 
 def _fit_prompt(messages, budget):
@@ -546,11 +569,12 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
             files_q.with_entities(StoredFile.folder_id, func.count())
             .group_by(StoredFile.folder_id).all())
         files = files_q.order_by(StoredFile.name).limit(201).all()
+        folders = folders_q.order_by(Folder.name).limit(501).all()
         return {
             "folders": [
                 {"folder_id": f.id, "name": f.name, "parent_id": f.parent_id,
                  "file_count": counts.get(f.id, 0)}
-                for f in folders_q.order_by(Folder.name).all()
+                for f in folders[:500]
             ],
             "files": [
                 {"file_id": f.id, "name": f.name, "folder_id": f.folder_id,
@@ -558,6 +582,7 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
                 for f in files[:200]
             ],
             "truncated": len(files) > 200,
+            "folders_truncated": len(folders) > 500,
         }
 
     if folder_id:
@@ -839,7 +864,7 @@ def run_agent_events(user, history, drive=None):
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
-                "content": json.dumps(result, ensure_ascii=False, default=str),
+                "content": _cap_tool_result(result),
             })
 
     # Out of steps: force a final answer (no tools offered) with whatever was
