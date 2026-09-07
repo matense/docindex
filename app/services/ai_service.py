@@ -60,6 +60,7 @@ def _env_config():
         "max_steps": cfg.get("AI_MAX_STEPS", 16),
         "rate_limit_rpm": cfg.get("AI_RATE_LIMIT_RPM", 30),
         "history_messages": cfg.get("AI_HISTORY_MESSAGES", 20),
+        "max_prompt_tokens": cfg.get("AI_MAX_PROMPT_TOKENS", 60_000),
         "streaming": cfg.get("AI_STREAMING", True),
         "rate_key": "env",
     }
@@ -88,6 +89,10 @@ def config_for(user=None):
                 "history_messages": (conn.history_messages
                                      or current_app.config.get(
                                          "AI_HISTORY_MESSAGES", 20)),
+                # NULL on the connection falls back to the global default.
+                "max_prompt_tokens": (conn.max_prompt_tokens
+                                      or current_app.config.get(
+                                          "AI_MAX_PROMPT_TOKENS", 60_000)),
                 "streaming": current_app.config.get("AI_STREAMING", True),
                 "rate_key": f"conn:{conn.id}",
             }

@@ -343,6 +343,49 @@ def _trim_tool_messages(messages):
                   "context window — call the tool again if you need this data]")}
 
 
+def _estimate_tokens(messages):
+    """Rough prompt size in tokens (~4 chars/token), tool-call args included."""
+    total = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        for call in m.get("tool_calls") or []:
+            total += len(json.dumps(call, default=str))
+    return total // 4
+
+
+def _drop_oldest_unit(messages):
+    """Drop the oldest non-system message. An assistant message carrying tool
+    calls is dropped together with its tool responses — providers reject
+    orphaned tool messages. The final message is never dropped."""
+    i = 0
+    while i < len(messages) and messages[i].get("role") == "system":
+        i += 1
+    if i >= len(messages) - 1:
+        return False
+    msg = messages[i]
+    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+        ids = {c.get("id") for c in msg["tool_calls"]}
+        j = i + 1
+        while (j < len(messages) and messages[j].get("role") == "tool"
+               and messages[j].get("tool_call_id") in ids):
+            j += 1
+        del messages[i:j]
+    else:
+        del messages[i]
+    return True
+
+
+def _fit_prompt(messages, budget):
+    """Drop oldest conversation units until the estimated prompt fits the
+    budget (max_prompt_tokens). Returns how many units were dropped."""
+    dropped = 0
+    while _estimate_tokens(messages) > budget and _drop_oldest_unit(messages):
+        dropped += 1
+    return dropped
+
+
 def _tool_search_files(user, query, drive=None, **kw):
     out = search_service.search_advanced(
         user, query,
@@ -732,9 +775,21 @@ def run_agent_events(user, history, drive=None):
         system += "\n" + history.pop(0)["content"]
     messages = [{"role": "system", "content": system}] + history
     nudges = 0
+    prompt_budget = (config.get("max_prompt_tokens")
+                     or current_app.config.get("AI_MAX_PROMPT_TOKENS", 60_000))
+    fit_notified = False
 
     for _ in range(max_steps):
         _trim_tool_messages(messages)
+        # Hard prompt budget: drop the oldest conversation units (whole
+        # tool-call exchanges at a time) until the estimated size fits.
+        dropped = _fit_prompt(messages, prompt_budget)
+        if dropped and not fit_notified:
+            fit_notified = True
+            yield ("thinking",
+                   f"Older conversation messages were dropped "
+                   f"({dropped} block(s)) to fit this model's context window. "
+                   "Use Summarize & reset to compact the history instead.")
         message = yield from _complete(messages, TOOLS, config)
         messages.append(message)
 

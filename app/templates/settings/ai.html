@@ -21,7 +21,7 @@
                             <span class="badge badge-success badge-sm">active</span>
                         {% endif %}
                     </div>
-                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}{% if c.history_messages %} · history: {{ c.history_messages }}{% endif %}</div>
+                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}{% if c.history_messages %} · history: {{ c.history_messages }}{% endif %}{% if c.max_prompt_tokens %} · budget: {{ c.max_prompt_tokens }} tok{% endif %}</div>
                 </div>
                 <button type="button" class="btn btn-sm btn-ghost test-existing-btn" data-conn-id="{{ c.id }}" title="Test connection">
                     <i class="fas fa-plug-circle-check"></i>
@@ -127,6 +127,13 @@
                            value="{{ editing.history_messages if editing and editing.history_messages else '' }}"
                            placeholder="default (20)">
                     <p class="text-xs opacity-40 mt-1">How many past chat messages are sent to the model. Lower values use less context. Empty = global default (20).</p>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">Prompt budget (tokens)</label>
+                    <input type="number" name="max_prompt_tokens" min="1000" max="1000000" step="1000" class="input input-bordered w-full mt-1"
+                           value="{{ editing.max_prompt_tokens if editing and editing.max_prompt_tokens else '' }}"
+                           placeholder="default (60000)">
+                    <p class="text-xs opacity-40 mt-1">Max estimated prompt size. Set below your model's context (e.g. 60000 for an 80k model). Oldest messages are dropped beyond it. Empty = global default (60000).</p>
                 </div>
             </div>
 

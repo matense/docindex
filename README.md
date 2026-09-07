@@ -159,6 +159,7 @@ AI can be configured in two places:
 | `AI_MAX_STEPS`      | Max tool-call steps per question (overridable per connection) | `16` |
 | `AI_RATE_LIMIT_RPM` | Max AI requests per minute (overridable per connection; `0` = unlimited) | `30` |
 | `AI_HISTORY_MESSAGES` | Past chat messages sent to the model (overridable per connection) | `20` |
+| `AI_MAX_PROMPT_TOKENS` | Prompt budget in estimated tokens; oldest messages are dropped beyond it (overridable per connection) | `60000` |
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 | `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 | `AI_STREAMING`    | Token-by-token chat streaming (`false` if the provider breaks with streamed tool calls) | `true` |

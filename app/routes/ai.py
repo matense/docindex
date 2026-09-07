@@ -294,12 +294,14 @@ def chat():
                                   user_id=user_id, path="/ai/chat")
             low = msg.lower()
             if "context length" in low or "maximum context" in low \
-                    or "context window" in low:
+                    or "context window" in low or "context size" in low \
+                    or "exceed_context_size" in low:
                 # The prompt (history + tool results) exceeded the model's
                 # context — the raw provider error is cryptic for users.
-                msg = ("This conversation grew too large for the model's "
-                       "context window. Start a new conversation and try "
-                       "again — or use a model with a larger context.")
+                msg = ("This conversation is too large for the model's "
+                       "context window. Use the Summarize & reset button to "
+                       "compact it, start a new conversation, or raise the "
+                       "prompt budget in AI Settings.")
             yield json.dumps({"type": "error", "error": msg},
                              ensure_ascii=False) + "\n"
         except Exception as exc:

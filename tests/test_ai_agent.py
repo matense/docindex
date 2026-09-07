@@ -811,3 +811,21 @@ def test_chat_context_overflow_gets_friendly_error(auth_client, app, user):
     assert errors
     assert "too large for the model's context window" in errors[0]["error"]
     assert "262145" not in errors[0]["error"]
+
+
+def test_chat_context_size_error_gets_friendly_message(auth_client, app, user):
+    app.config["AI_ENABLED"] = True
+    provider_msg = ('AI backend returned 400: {"error":"Engine protocol '
+                    'predict request returned 400: request (508691 tokens) '
+                    'exceeds the available context size (80640 tokens)"}')
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=agent_service.ai_service.AIError(provider_msg)):
+        resp = auth_client.post("/ai/chat", json={"message": "hello"})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    errors = [e for e in events if e["type"] == "error"]
+    assert errors
+    assert "too large for the model" in errors[0]["error"]
+    assert "508691" not in errors[0]["error"]

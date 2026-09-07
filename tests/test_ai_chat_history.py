@@ -229,3 +229,89 @@ def test_summarized_history_does_not_start_with_assistant(auth_client, app, user
     assert all(m["role"] == "system" for m in messages[:first_user])
     assert any("SUMMARY CONTENT" in m["content"] for m in messages[:first_user])
     assert messages[first_user]["content"] == "new question"
+
+
+# ------------------------------------------------------------- prompt budget
+
+
+def _make_big_conversation(app, n_pairs=4, answer_chars=6000):
+    with app.app_context():
+        user = User.query.first()
+        conv = ChatConversation(user_id=user.id, title="big conv")
+        db.session.add(conv)
+        db.session.flush()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for i in range(n_pairs):
+            db.session.add(ChatMessage(
+                conversation_id=conv.id, role="user",
+                content=f"big question {i}",
+                created_at=base + timedelta(minutes=2 * i)))
+            db.session.add(ChatMessage(
+                conversation_id=conv.id, role="assistant",
+                content=f"big answer {i} " + ("x" * answer_chars),
+                created_at=base + timedelta(minutes=2 * i + 1)))
+        db.session.commit()
+        return conv.id
+
+
+def test_prompt_budget_drops_oldest_exchanges(auth_client, app, user):
+    _add_conn(auth_client)
+    app.config["AI_MAX_PROMPT_TOKENS"] = 4000  # ~16k chars
+    conv_id = _make_big_conversation(app)      # ~48k chars of history
+
+    events = []
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["messages"] = list(kwargs.get("messages") or args[0])
+        return {"role": "assistant", "content": "done"}
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=fake_completion):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "new question", "conversation_id": conv_id})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    # The user is told that older messages were dropped.
+    notes = [e for e in events if e["type"] == "thinking"
+             and "context window" in e.get("content", "")]
+    assert notes
+
+    from app.services.agent_service import _estimate_tokens
+    assert _estimate_tokens(captured["messages"]) <= 4000
+    # Newest messages always survive; oldest were dropped.
+    contents = [m["content"] for m in captured["messages"]]
+    assert "new question" in contents
+    assert not any("big answer 0 " in c for c in contents)
+    # No orphaned tool messages: every tool message follows its assistant.
+    roles = [m["role"] for m in captured["messages"]]
+    assert "tool" not in roles
+
+
+def test_drop_oldest_unit_keeps_tool_pairs(app, user):
+    from app.services.agent_service import _drop_oldest_unit
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "c1"}, {"id": "c2"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+        {"role": "assistant", "content": "final"},
+    ]
+    assert _drop_oldest_unit(messages)  # drops "q"
+    assert _drop_oldest_unit(messages)  # drops assistant + BOTH tool messages
+    assert [m["role"] for m in messages] == ["system", "assistant"]
+    # Only the final message remains — it is never dropped.
+    assert not _drop_oldest_unit(messages)
+
+
+def test_max_prompt_tokens_saved_on_connection(auth_client, app, user):
+    auth_client.post("/settings/ai/add", data={
+        "name": "Budget Conn", "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test", "model": "gpt-4o-mini", "vision_model": "",
+        "is_active": "on", "max_prompt_tokens": "32000",
+    }, follow_redirects=True)
+    with app.app_context():
+        assert AIConnection.query.one().max_prompt_tokens == 32000

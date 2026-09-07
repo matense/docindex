@@ -227,6 +227,10 @@ class AIConnection(db.Model):
     # Per-connection chat history size (user/assistant messages sent to the
     # model); NULL falls back to the global AI_HISTORY_MESSAGES (default 20).
     history_messages = db.Column(db.Integer, nullable=True)
+    # Per-connection prompt budget (estimated tokens); NULL falls back to the
+    # global AI_MAX_PROMPT_TOKENS (default 60000). Oldest messages are dropped
+    # to fit — protects models with small context windows.
+    max_prompt_tokens = db.Column(db.Integer, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 

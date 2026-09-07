@@ -101,6 +101,7 @@ app refuses to start without it.
 | `AI_VISION_MODEL`     | empty (falls back to `AI_MODEL`)               | Vision model for image captions |
 | `AI_MAX_STEPS`        | `16`                                           | Global agent step limit (per-connection override available) |
 | `AI_HISTORY_MESSAGES` | `20`                                           | Past user/assistant messages sent to the model (per-connection override available) |
+| `AI_MAX_PROMPT_TOKENS` | `60000`                                       | Prompt budget in estimated tokens (~chars/4); oldest conversation units are dropped beyond it (per-connection override available) |
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
@@ -297,6 +298,7 @@ has `is_active=True` (enforced in the settings routes).
 | `vision_model` | String(120), default "" | empty -> falls back to `model` |
 | `max_steps` | Integer, **nullable** | per-connection agent step limit; NULL falls back to global `AI_MAX_STEPS` |
 | `history_messages` | Integer, **nullable** | per-connection chat history size (past user/assistant messages sent to the model); NULL falls back to global `AI_HISTORY_MESSAGES` (default 20) |
+| `max_prompt_tokens` | Integer, **nullable** | per-connection prompt budget in estimated tokens; NULL falls back to global `AI_MAX_PROMPT_TOKENS` (default 60000) |
 | `rate_limit_rpm` | Integer, **nullable** | per-connection requests/minute limit; NULL falls back to global `AI_RATE_LIMIT_RPM` (default 30), 0 = unlimited. Enforced in `ai_service._rate_slot` (in-memory sliding window per connection; background jobs pass `block=True` to wait for a slot instead of failing); provider HTTP 429s get a friendly `AIError` with `Retry-After` |
 | `is_active` | Boolean, default False | |
 | `created_at` | DateTime | |
@@ -497,15 +499,20 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    `AI_HISTORY_MESSAGES`, default 20). If files are attached, a
    synthetic system message is prepended listing `[id] name` so the agent can
    `read_file` them directly without searching.
-   Independently of N, the agent trims *older tool results* inside a run
-   (`_trim_tool_messages`) — the safety net against context overflow from
-   accumulated `read_file` chunks. Provider "context length" errors are
-   mapped to a friendly message telling the user to start a new
-   conversation. If the sliced history would begin with an assistant
-   message (a summary, or a mid-exchange slice), the leading assistant
-   messages are moved into the system context — some providers' chat
-   templates (e.g. Gemma in LM Studio) reject histories that do not start
-   with a user turn ("No user query found in messages").
+   Independently of N, the agent enforces a hard **prompt budget**
+   (`max_prompt_tokens`, default 60 000 estimated tokens): before every model
+   call the oldest conversation units are dropped — whole tool-call
+   exchanges at a time, so tool messages are never orphaned — until the
+   estimated prompt size fits; the user is told once via a thinking note.
+   Older tool results are additionally trimmed inside a run
+   (`_trim_tool_messages`). Provider context errors ("context length",
+   "context size", "exceed_context_size", …) are mapped to a friendly
+   message pointing at Summarize & reset / AI Settings. If the sliced
+   history would begin with an assistant message (a summary, or a
+   mid-exchange slice), the leading assistant messages are moved into the
+   system context — some providers' chat templates (e.g. Gemma in
+   LM Studio) reject histories that do not start with a user turn ("No
+   user query found in messages").
 4. The response is `application/x-ndjson` streamed with
    `stream_with_context`. Each agent event becomes one JSON line:
    `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"answer"|"error", ...}`.
@@ -848,7 +855,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 258 tests across 20+ modules:
+pytest suite in `tests/`, 262 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
