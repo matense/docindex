@@ -7,6 +7,12 @@ from config import Config
 
 from .extensions import csrf, db, login_manager, migrate
 
+# Absolute path to the migrations folder (project root), so both
+# `flask db` and the automatic startup upgrade work no matter which
+# directory the app is launched from.
+MIGRATIONS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "migrations")
+
 
 def _sqlite_pragmas(dbapi_conn, _connection_record):
     """Avoid 'database is locked' errors under concurrent requests."""
@@ -27,7 +33,7 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     login_manager.init_app(app)
-    migrate.init_app(app, db)
+    migrate.init_app(app, db, directory=MIGRATIONS_DIR)
     csrf.init_app(app)
 
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
