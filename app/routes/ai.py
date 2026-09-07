@@ -62,6 +62,69 @@ def delete_conversation(conv_id):
     return jsonify({"ok": True})
 
 
+# Marker prepended to the summary message left behind by the
+# summarize-and-reset endpoint.
+SUMMARY_PREFIX = (
+    "📋 **Conversation summary** *(compacted memory — earlier messages "
+    "were replaced by this summary)*:\n\n")
+
+# Hard cap on the transcript sent to the model for summarization, so the
+# summarization call itself cannot overflow the context window.
+_SUMMARY_MAX_CHARS = 120_000
+
+
+@bp.route("/conversations/<int:conv_id>/summarize", methods=["POST"])
+@login_required
+def summarize_conversation(conv_id):
+    """AI-summarize the whole conversation, then replace every message with
+    a single assistant message holding the summary — a reset with memory."""
+    conv = _get_conversation(conv_id)
+    if not conv:
+        return jsonify({"error": "Not found"}), 404
+
+    msgs = [m for m in conv.messages if m.role in ("user", "assistant")]
+    if len(msgs) < 4:
+        return jsonify({"error": "Not enough history to summarize."}), 400
+
+    config = ai_service.config_for(current_user)
+    if not ai_service.is_enabled(current_user):
+        return jsonify({"error": "AI is not configured."}), 503
+
+    transcript = "\n\n".join(f"{m.role.upper()}: {m.content}" for m in msgs)
+    if len(transcript) > _SUMMARY_MAX_CHARS:
+        transcript = ("[earlier messages omitted]\n\n"
+                      + transcript[-_SUMMARY_MAX_CHARS:])
+
+    prompt = (
+        "Summarize this conversation between a user and a file-search "
+        "assistant. The summary replaces the full history, so it must keep "
+        "everything needed to continue coherently: topics covered, concrete "
+        "facts and answers found, files cited (keep their "
+        "[name](file://ID) references), decisions made, and any open "
+        "questions or pending requests. Be compact (max ~400 words), use "
+        "short bullet points, and write in the same language as the "
+        "conversation.\n\nCONVERSATION:\n" + transcript)
+    try:
+        reply = ai_service.chat_completion(
+            [{"role": "user", "content": prompt}], config=config)
+    except ai_service.AIError as exc:
+        log_service.log_event("error", "ai_chat", f"Summarize failed: {exc}",
+                              user_id=current_user.id, path="/ai/chat")
+        return jsonify({"error": str(exc)}), 502
+
+    summary = (reply.get("content") or "").strip()
+    if not summary:
+        return jsonify({"error": "The AI returned an empty summary."}), 502
+
+    for m in list(conv.messages):
+        db.session.delete(m)
+    db.session.add(ChatMessage(conversation_id=conv.id, role="assistant",
+                               content=SUMMARY_PREFIX + summary,
+                               model=config.get("model") or None))
+    db.session.commit()
+    return jsonify({"ok": True, "summary": summary})
+
+
 @bp.route("/connections")
 @login_required
 def connections():
@@ -128,11 +191,15 @@ def chat():
 
     conv_id = conv.id
 
+    # History size is configurable per connection (NULL -> global default).
+    hist_n = ai_service.config_for(current_user).get("history_messages") or 20
+    if hist_n <= 0:
+        hist_n = 20
     history = [
         {"role": m.role, "content": m.content}
         for m in conv.messages
         if m.role in ("user", "assistant")
-    ][-20:]
+    ][-hist_n:]
 
     if attached:
         listing = ", ".join(f"[id {f.id}] {f.name}" for f in attached)
@@ -204,9 +271,18 @@ def chat():
                                       "answer": payload},
                                      ensure_ascii=False) + "\n"
         except ai_service.AIError as exc:
-            log_service.log_event("error", "ai_chat", str(exc),
+            msg = str(exc)
+            log_service.log_event("error", "ai_chat", msg,
                                   user_id=user_id, path="/ai/chat")
-            yield json.dumps({"type": "error", "error": str(exc)},
+            low = msg.lower()
+            if "context length" in low or "maximum context" in low \
+                    or "context window" in low:
+                # The prompt (history + tool results) exceeded the model's
+                # context — the raw provider error is cryptic for users.
+                msg = ("This conversation grew too large for the model's "
+                       "context window. Start a new conversation and try "
+                       "again — or use a model with a larger context.")
+            yield json.dumps({"type": "error", "error": msg},
                              ensure_ascii=False) + "\n"
         except Exception as exc:
             # Never let the stream die silently — the UI would otherwise show

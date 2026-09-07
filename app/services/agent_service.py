@@ -320,6 +320,28 @@ _MAX_NUDGES = 4
 GREP_MAX_MATCHES = 40
 GREP_MAX_CHARS = 8000
 
+# Context-window budget: accumulated tool results are what blows up the
+# prompt (a handful of 50k read_file chunks already exceeds most local
+# models). Only the most recent tool results are kept intact; older ones
+# are trimmed to a head + a note telling the model to re-call the tool.
+_TOOL_HISTORY_KEEP = 4
+_TOOL_RESULT_TRIM = 1000
+
+
+def _trim_tool_messages(messages):
+    """Trim older tool results in-place so the prompt stays within the
+    model's context window. The last `_TOOL_HISTORY_KEEP` tool messages are
+    kept intact; older ones longer than `_TOOL_RESULT_TRIM` chars are cut
+    to their head (which keeps file ids/names) plus a re-call hint."""
+    tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    for i in tool_idx[:-_TOOL_HISTORY_KEEP] if len(tool_idx) > _TOOL_HISTORY_KEEP else []:
+        content = messages[i].get("content") or ""
+        if len(content) > _TOOL_RESULT_TRIM:
+            messages[i] = {**messages[i], "content": (
+                content[:_TOOL_RESULT_TRIM]
+                + f"… [trimmed {len(content) - _TOOL_RESULT_TRIM} chars to fit the "
+                  "context window — call the tool again if you need this data]")}
+
 
 def _tool_search_files(user, query, drive=None, **kw):
     out = search_service.search_advanced(
@@ -712,6 +734,7 @@ def run_agent_events(user, history, drive=None):
     nudges = 0
 
     for _ in range(max_steps):
+        _trim_tool_messages(messages)
         message = yield from _complete(messages, TOOLS, config)
         messages.append(message)
 
@@ -749,7 +772,8 @@ def run_agent_events(user, history, drive=None):
             result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
 
             detail = args.get("query") or args.get("pattern") \
-                or result.get("name") or args.get("file_id") or ""
+                or (result.get("name") if isinstance(result, dict) else "") \
+                or args.get("file_id") or ""
             if name == "read_file" and args.get("start"):
                 detail = f"{detail} (from char {args['start']})"
             label = _STEP_LABELS.get(name, name)

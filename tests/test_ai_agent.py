@@ -739,3 +739,75 @@ def test_get_file_info_includes_stats(app, user):
     assert info["folder_path"] == "/"
     assert info["has_caption"] is False
     assert isinstance(info["versions"], int)
+
+
+# ---------------------------------------------------- reported-bug fixes
+
+
+def test_agent_handles_list_valued_tool_results(app, user):
+    # list_hashtags returns a list, not a dict — building the step detail
+    # must not crash with "'list' object has no attribute 'get'".
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "list_hashtags", "arguments": "{}"},
+        }]},
+        {"role": "assistant", "content": "No hashtags yet."},
+    ])
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)):
+            answer, steps = agent_service.run_agent(
+                user_obj, [{"role": "user", "content": "which tags exist?"}])
+
+    assert [s["label"] for s in steps] == ["Listed hashtags"]
+    assert answer == "No hashtags yet."
+
+
+def test_trim_tool_messages_keeps_recent_intact(app, user):
+    from app.services.agent_service import (_TOOL_HISTORY_KEEP,
+                                            _TOOL_RESULT_TRIM,
+                                            _trim_tool_messages)
+    big = "x" * (_TOOL_RESULT_TRIM + 500)
+    messages = [{"role": "system", "content": "sys"}]
+    for i in range(_TOOL_HISTORY_KEEP + 2):
+        messages.append({"role": "tool", "tool_call_id": str(i),
+                         "content": f"result-{i} " + big})
+
+    _trim_tool_messages(messages)
+
+    tools = [m for m in messages if m["role"] == "tool"]
+    # Older results are trimmed to their head + note...
+    for m in tools[:-_TOOL_HISTORY_KEEP]:
+        assert len(m["content"]) < _TOOL_RESULT_TRIM + 200
+        assert "call the tool again" in m["content"]
+    # ...while the most recent ones stay intact.
+    for m in tools[-_TOOL_HISTORY_KEEP:]:
+        assert m["content"].endswith(big)
+
+    # Short results are never touched, even when old.
+    short = [{"role": "tool", "tool_call_id": str(i), "content": "ok"}
+             for i in range(10)]
+    _trim_tool_messages(short)
+    assert all(m["content"] == "ok" for m in short)
+
+
+def test_chat_context_overflow_gets_friendly_error(auth_client, app, user):
+    app.config["AI_ENABLED"] = True
+    provider_msg = ("AI backend returned 400: This model's maximum context "
+                    "length is 262144 tokens. However, you requested 0 output "
+                    "tokens and your prompt contains at least 262145 input "
+                    "tokens.")
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=agent_service.ai_service.AIError(provider_msg)):
+        resp = auth_client.post("/ai/chat", json={"message": "hello"})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    errors = [e for e in events if e["type"] == "error"]
+    assert errors
+    assert "too large for the model's context window" in errors[0]["error"]
+    assert "262145" not in errors[0]["error"]
