@@ -59,6 +59,7 @@ def _env_config():
         "timeout": cfg.get("AI_REQUEST_TIMEOUT", 120),
         "max_steps": cfg.get("AI_MAX_STEPS", 16),
         "rate_limit_rpm": cfg.get("AI_RATE_LIMIT_RPM", 30),
+        "history_messages": cfg.get("AI_HISTORY_MESSAGES", 20),
         "streaming": cfg.get("AI_STREAMING", True),
         "rate_key": "env",
     }
@@ -83,6 +84,10 @@ def config_for(user=None):
                 "rate_limit_rpm": (conn.rate_limit_rpm
                                    if conn.rate_limit_rpm is not None
                                    else current_app.config.get("AI_RATE_LIMIT_RPM", 30)),
+                # NULL on the connection falls back to the global default.
+                "history_messages": (conn.history_messages
+                                     or current_app.config.get(
+                                         "AI_HISTORY_MESSAGES", 20)),
                 "streaming": current_app.config.get("AI_STREAMING", True),
                 "rate_key": f"conn:{conn.id}",
             }

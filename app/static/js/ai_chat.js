@@ -725,8 +725,44 @@
             el.remove();
         }
 
+        // --- Summarize & reset: AI compacts the whole history into a single
+        // summary message that stays as memory ("reset with memory") ---
+        async function summarizeConversation() {
+            if (!conversationId) {
+                window.uiAlert('Open a conversation first — there is no history to summarize yet.',
+                               { title: 'Summarize & reset' });
+                return;
+            }
+            const ok = await window.uiConfirm(
+                'Summarize this conversation with AI and replace the whole history with the summary?\n\n' +
+                'The summary stays as memory for the next messages. This cannot be undone.',
+                { title: 'Summarize & reset history', confirmText: 'Summarize' });
+            if (!ok) return;
+
+            const btn = el.querySelector('.acw-summarize');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            try {
+                const resp = await fetch('/ai/conversations/' + conversationId + '/summarize',
+                                         { method: 'POST' });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    window.uiAlert(data.error || 'Summarization failed.',
+                                   { title: 'Summarize & reset' });
+                    return;
+                }
+                loadConversation(conversationId);  // shows the summary card
+            } catch (err) {
+                window.uiAlert('Could not reach the server.', { title: 'Summarize & reset' });
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-compress"></i>';
+            }
+        }
+
         el.querySelector('.acw-close').addEventListener('click', destroy);
         el.querySelector('.acw-new-conv').addEventListener('click', newConversation);
+        el.querySelector('.acw-summarize').addEventListener('click', summarizeConversation);
         el.querySelector('.acw-convs').addEventListener('click', () => toggleList());
         el.querySelector('.acw-new-window').addEventListener('click', () => createChatWindow());
 

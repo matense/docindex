@@ -60,6 +60,8 @@ class Config:
     AI_VISION_MODEL = os.environ.get("AI_VISION_MODEL", "")  # falls back to AI_MODEL
     AI_MAX_STEPS = int(os.environ.get("AI_MAX_STEPS", "16"))
     AI_RATE_LIMIT_RPM = int(os.environ.get("AI_RATE_LIMIT_RPM", "30"))
+    # How many past user/assistant chat messages are sent to the model.
+    AI_HISTORY_MESSAGES = int(os.environ.get("AI_HISTORY_MESSAGES", "20"))
     AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
     # Max words per AI-generated hashtag (user-added tags are not limited).
     AI_HASHTAG_MAX_WORDS = int(os.environ.get("AI_HASHTAG_MAX_WORDS", "6"))

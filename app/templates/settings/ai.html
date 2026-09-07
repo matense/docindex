@@ -21,7 +21,7 @@
                             <span class="badge badge-success badge-sm">active</span>
                         {% endif %}
                     </div>
-                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}</div>
+                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}{% if c.history_messages %} · history: {{ c.history_messages }}{% endif %}</div>
                 </div>
                 <button type="button" class="btn btn-sm btn-ghost test-existing-btn" data-conn-id="{{ c.id }}" title="Test connection">
                     <i class="fas fa-plug-circle-check"></i>
@@ -120,6 +120,13 @@
                            value="{{ editing.rate_limit_rpm if editing and editing.rate_limit_rpm is not none else '' }}"
                            placeholder="default (30)">
                     <p class="text-xs opacity-40 mt-1">Rate limit for providers that throttle (e.g. free tiers). Empty = global default (30), 0 = unlimited.</p>
+                </div>
+                <div>
+                    <label class="text-sm font-medium opacity-70">History messages</label>
+                    <input type="number" name="history_messages" min="2" max="200" class="input input-bordered w-full mt-1"
+                           value="{{ editing.history_messages if editing and editing.history_messages else '' }}"
+                           placeholder="default (20)">
+                    <p class="text-xs opacity-40 mt-1">How many past chat messages are sent to the model. Lower values use less context. Empty = global default (20).</p>
                 </div>
             </div>
 

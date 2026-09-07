@@ -97,6 +97,7 @@ app refuses to start without it.
 | `AI_MODEL`            | `llama3.1`                                     | Chat model for the assistant |
 | `AI_VISION_MODEL`     | empty (falls back to `AI_MODEL`)               | Vision model for image captions |
 | `AI_MAX_STEPS`        | `16`                                           | Global agent step limit (per-connection override available) |
+| `AI_HISTORY_MESSAGES` | `20`                                           | Past user/assistant messages sent to the model (per-connection override available) |
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
@@ -292,6 +293,7 @@ has `is_active=True` (enforced in the settings routes).
 | `model` | String(120) | chat model |
 | `vision_model` | String(120), default "" | empty -> falls back to `model` |
 | `max_steps` | Integer, **nullable** | per-connection agent step limit; NULL falls back to global `AI_MAX_STEPS` |
+| `history_messages` | Integer, **nullable** | per-connection chat history size (past user/assistant messages sent to the model); NULL falls back to global `AI_HISTORY_MESSAGES` (default 20) |
 | `rate_limit_rpm` | Integer, **nullable** | per-connection requests/minute limit; NULL falls back to global `AI_RATE_LIMIT_RPM` (default 30), 0 = unlimited. Enforced in `ai_service._rate_slot` (in-memory sliding window per connection; background jobs pass `block=True` to wait for a slot instead of failing); provider HTTP 429s get a friendly `AIError` with `Retry-After` |
 | `is_active` | Boolean, default False | |
 | `created_at` | DateTime | |
@@ -487,9 +489,16 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
 2. The conversation is fetched or created (title = first 80 chars of the
    question). A `user` `ChatMessage` is committed immediately (attached file
    names are appended as a `📎` line for display).
-3. History = last 20 `user`/`assistant` messages. If files are attached, a
+3. History = the last N `user`/`assistant` messages, where N comes from the
+   active connection's `history_messages` (NULL → global
+   `AI_HISTORY_MESSAGES`, default 20). If files are attached, a
    synthetic system message is prepended listing `[id] name` so the agent can
    `read_file` them directly without searching.
+   Independently of N, the agent trims *older tool results* inside a run
+   (`_trim_tool_messages`) — the safety net against context overflow from
+   accumulated `read_file` chunks. Provider "context length" errors are
+   mapped to a friendly message telling the user to start a new
+   conversation.
 4. The response is `application/x-ndjson` streamed with
    `stream_with_context`. Each agent event becomes one JSON line:
    `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"answer"|"error", ...}`.
@@ -532,6 +541,12 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
 `GET /ai/conversations/<id>` returns the full message list with `created_at`
 and `model` per message (including thinking/step rows for the history view);
 `POST /ai/conversations/<id>/delete` removes one.
+`POST /ai/conversations/<id>/summarize` ("Summarize & reset" button in the
+chat header): the model condenses the whole user/assistant transcript (capped
+at ~120k chars) into a compact summary, then every message is replaced by a
+single `assistant` message holding that summary (marked with a
+"📋 Conversation summary" prefix) — a reset with memory, since the summary
+joins the history of the next questions. Needs ≥ 4 user/assistant messages.
 
 ## Services
 
@@ -822,7 +837,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 244 tests across 20+ modules:
+pytest suite in `tests/`, 255 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

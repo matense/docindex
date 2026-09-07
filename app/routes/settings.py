@@ -284,6 +284,7 @@ def ai_edit(conn_id):
     conn.vision_model = request.form.get("vision_model", "").strip()
     conn.max_steps = request.form.get("max_steps", type=int) or None
     conn.rate_limit_rpm = request.form.get("rate_limit_rpm", type=int)
+    conn.history_messages = request.form.get("history_messages", type=int) or None
     # Only replace the key if a new one was entered (empty keeps the old one)
     new_key = request.form.get("api_key", "").strip()
     if new_key:
@@ -319,6 +320,7 @@ def ai_add():
         vision_model=vision_model,
         max_steps=request.form.get("max_steps", type=int) or None,
         rate_limit_rpm=request.form.get("rate_limit_rpm", type=int),
+        history_messages=request.form.get("history_messages", type=int) or None,
         is_active=is_first or bool(request.form.get("is_active")),
     )
     if conn.is_active:

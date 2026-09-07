@@ -224,6 +224,9 @@ class AIConnection(db.Model):
     # Per-connection request limit (requests/minute); NULL falls back to the
     # global AI_RATE_LIMIT_RPM (default 30). 0 = unlimited.
     rate_limit_rpm = db.Column(db.Integer, nullable=True)
+    # Per-connection chat history size (user/assistant messages sent to the
+    # model); NULL falls back to the global AI_HISTORY_MESSAGES (default 20).
+    history_messages = db.Column(db.Integer, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 
