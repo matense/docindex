@@ -68,12 +68,15 @@ def test_history_length_from_connection(auth_client, app, user):
     messages = _chat_capture(auth_client, conv_id)
     past = _past_user_assistant(messages)
 
-    # 4 = last two exchanges; the new question is part of the tail. The
-    # assistant's final reply is appended to the list during the run, so it
-    # shows up as a trailing entry — ignore it.
-    history_sent = past[:-1]
-    assert len(history_sent) == 4
-    assert history_sent[-1]["content"] == "new question"
+    # The last 4 messages are [answer 3, question 4, answer 4, new question];
+    # the slice starts mid-exchange with an assistant message, which is moved
+    # into the system context (chat templates require a user turn first) —
+    # so 3 user/assistant messages go through plus "answer 3" in the preamble.
+    history_sent = past[:-1]  # trailing entry = the reply appended mid-run
+    assert [m["content"] for m in history_sent] == [
+        "question 4", "answer 4", "new question"]
+    preamble = [m for m in messages if m["role"] == "system"]
+    assert any("answer 3" in m["content"] for m in preamble)
     assert not any(m["content"] == "question 0" for m in history_sent)
 
 
@@ -83,7 +86,9 @@ def test_history_length_falls_back_to_global(auth_client, app, user):
     conv_id = _make_conversation(app, n_pairs=5)
 
     past = _past_user_assistant(_chat_capture(auth_client, conv_id))
-    assert len(past[:-1]) == 6
+    # Slice = [answer 2, question 3, ..., new question]; "answer 2" moves to
+    # the system preamble (orphan assistant turn), 5 user/assistant remain.
+    assert len(past[:-1]) == 5
 
 
 def test_history_length_env_config_without_connection(auth_client, app, user):
@@ -92,6 +97,8 @@ def test_history_length_env_config_without_connection(auth_client, app, user):
     conv_id = _make_conversation(app, n_pairs=5)
 
     past = _past_user_assistant(_chat_capture(auth_client, conv_id))
+    # Slice = [question 4, answer 4, new question] — already starts with a
+    # user turn, so nothing is moved to the preamble.
     assert len(past[:-1]) == 3
 
 
@@ -128,11 +135,15 @@ def test_summarize_compacts_conversation(auth_client, app, user):
         assert "SUMMARY: talked about files and codes." in live[0].content
         assert live[0].model == "gpt-4o-mini"
 
-    # Only the summary (not the archived messages) is sent as memory.
-    past = _past_user_assistant(_chat_capture(auth_client, conv_id))
+    # Only the summary (not the archived messages) is sent as memory — it is
+    # an assistant message at the head of the history, so it is moved into
+    # the system context (providers require the first turn to be the user).
+    messages = _chat_capture(auth_client, conv_id)
+    past = _past_user_assistant(messages)
     assert any("SUMMARY: talked about files and codes." in m["content"]
-               for m in past)
-    assert not any(m["content"] == "question 0" for m in past)
+               for m in messages if m["role"] == "system")
+    assert not any("question 0" in m["content"] for m in messages)
+    assert past[0]["content"] == "new question"
 
 
 def test_summarize_needs_enough_history(auth_client, app, user):
@@ -198,3 +209,23 @@ def test_conversation_payload_exposes_archived_flag(auth_client, app, user):
     msgs = auth_client.get(f"/ai/conversations/{conv_id}").get_json()["messages"]
     assert all("archived" in m for m in msgs)
     assert [m["archived"] for m in msgs] == [True] * 6 + [False]
+
+
+def test_summarized_history_does_not_start_with_assistant(auth_client, app, user):
+    # Some chat templates (e.g. Gemma in LM Studio) reject a message list
+    # whose first non-system message is not a user turn ("No user query
+    # found in messages"). After a summarize, the summary is an assistant
+    # message — it must be moved into the system context.
+    _add_conn(auth_client)
+    conv_id = _make_conversation(app, n_pairs=3)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "SUMMARY CONTENT"}):
+        auth_client.post(f"/ai/conversations/{conv_id}/summarize")
+
+    messages = _chat_capture(auth_client, conv_id)
+    # Everything up to the first user message is system context.
+    first_user = next(i for i, m in enumerate(messages) if m["role"] == "user")
+    assert all(m["role"] == "system" for m in messages[:first_user])
+    assert any("SUMMARY CONTENT" in m["content"] for m in messages[:first_user])
+    assert messages[first_user]["content"] == "new question"

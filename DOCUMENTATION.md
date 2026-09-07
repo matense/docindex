@@ -77,6 +77,9 @@ pdo-app/
 - For SQLite, a `connect` event listener sets `PRAGMA journal_mode=WAL` and
   `PRAGMA busy_timeout=30000` to avoid "database is locked" errors under
   concurrent requests (indexing threads + web requests).
+- Outside of tests (`TESTING=False`), `create_app` runs Alembic
+  `upgrade()` on startup — a no-op when the schema is current — so pulling
+  new code never leaves the DB behind the models ("no such column" 500s).
 - `run.py` starts the dev server on `0.0.0.0:$PORT` (default 5000, debug on).
 - `create_admin.py [username] [email] [password]` creates an admin user
   (prompts for missing arguments).
@@ -498,7 +501,11 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    (`_trim_tool_messages`) — the safety net against context overflow from
    accumulated `read_file` chunks. Provider "context length" errors are
    mapped to a friendly message telling the user to start a new
-   conversation.
+   conversation. If the sliced history would begin with an assistant
+   message (a summary, or a mid-exchange slice), the leading assistant
+   messages are moved into the system context — some providers' chat
+   templates (e.g. Gemma in LM Studio) reject histories that do not start
+   with a user turn ("No user query found in messages").
 4. The response is `application/x-ndjson` streamed with
    `stream_with_context`. Each agent event becomes one JSON line:
    `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"answer"|"error", ...}`.
@@ -841,7 +848,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 257 tests across 20+ modules:
+pytest suite in `tests/`, 258 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

@@ -206,6 +206,19 @@ def chat():
         if m.role in ("user", "assistant") and not m.archived
     ][-hist_n:]
 
+    # A summarized conversation starts with the assistant's summary message,
+    # but some providers' chat templates (e.g. Gemma in LM Studio) reject a
+    # history that does not begin with a user turn ("No user query found in
+    # messages"). Leading assistant messages are moved into the system
+    # context instead (run_agent_events merges leading system messages into
+    # the main system prompt).
+    preamble = []
+    while history and history[0]["role"] == "assistant":
+        preamble.append(history.pop(0)["content"])
+    if preamble:
+        history.insert(0, {"role": "system", "content":
+            "Summary of the earlier conversation:\n\n" + "\n\n".join(preamble)})
+
     if attached:
         listing = ", ".join(f"[id {f.id}] {f.name}" for f in attached)
         history.insert(0, {

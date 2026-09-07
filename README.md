@@ -196,9 +196,13 @@ migrations. Restart the server afterwards.
 git pull
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt   # pick up new/updated dependencies
-flask --app run.py db upgrade     # apply database migrations (no data loss)
-python run.py
+python run.py                     # migrations are applied automatically on start
 ```
+
+> Database migrations run automatically when the app starts (Alembic
+> `upgrade` is a no-op when the schema is already current), so a plain
+> `git pull` + restart is enough. `flask --app run.py db upgrade` is still
+> available if you prefer to migrate explicitly before starting.
 
 **Docker:**
 

@@ -34,6 +34,18 @@ def create_app(config_class=Config):
         with app.app_context():
             event.listens_for(db.engine, "connect")(_sqlite_pragmas)
 
+    # Keep the schema current on startup: users who pull new code but forget
+    # `flask db upgrade` would otherwise get "no such column" 500s on every
+    # page. Alembic's upgrade is a no-op when the DB is already at head.
+    # Skipped in tests (they build the schema with db.create_all()).
+    if not app.config.get("TESTING"):
+        with app.app_context():
+            try:
+                from flask_migrate import upgrade as _upgrade_db
+                _upgrade_db()
+            except Exception:  # noqa: BLE001 - never block app startup on this
+                app.logger.exception("Database migration check failed")
+
     from .models import User
 
     @login_manager.user_loader
