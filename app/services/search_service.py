@@ -279,3 +279,231 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:limit]
+
+
+# --------------------------------------------------------------------------
+# Advanced search (agent-oriented): FTS5 syntax, metadata filters, sort and
+# pagination. Additive — the UI search above is unchanged.
+# --------------------------------------------------------------------------
+
+MAX_ADVANCED_LIMIT = 25
+
+# Quotes, prefixes, column scopes and boolean operators mark a query as raw
+# FTS5 syntax; anything else takes the safe term-prefix path used by the UI.
+_FTS5_SYNTAX_RE = re.compile(r'"|\*|:|\bAND\b|\bOR\b|\bNOT\b', re.IGNORECASE)
+
+_ADVANCED_SORTS = {
+    "relevance": "rank",
+    "name": "files.name COLLATE NOCASE",
+    "size": "files.size DESC",
+    "word_count": "fi.word_count DESC",
+    "updated_at": "files.updated_at DESC",
+}
+
+_BOOL_WORDS = {"and", "or", "not"}
+
+
+def _folder_subtree_ids(folder_id, user_id):
+    """A folder id plus all its descendant folder ids (iterative, batched)."""
+    from ..models import Folder
+    ids, frontier = [], [folder_id]
+    while frontier:
+        ids.extend(frontier)
+        frontier = [f.id for f in Folder.query.filter(
+            Folder.user_id == user_id,
+            Folder.parent_id.in_(frontier)).all()]
+    return ids
+
+
+def _advanced_clauses(user, drive=None, extensions=None, folder_id=None,
+                      recursive=False, min_words=None, max_words=None,
+                      min_size=None, max_size=None, has_tags=False,
+                      has_caption=False, indexed=False):
+    """SQL WHERE fragments + params shared by search_advanced/count_files."""
+    clauses = ["files.user_id = :uid", "files.deleted_at IS NULL"]
+    params = {"uid": user.id}
+    if drive is not None:
+        clauses.append("files.drive_id = :did")
+        params["did"] = drive.id
+    if extensions:
+        exts = [str(e).lower().lstrip(".") for e in extensions][:20]
+        if exts:
+            clauses.append("files.extension IN ("
+                           + ", ".join(f":ext{i}" for i in range(len(exts)))
+                           + ")")
+            params.update({f"ext{i}": e for i, e in enumerate(exts)})
+    if folder_id is not None:
+        ids = (_folder_subtree_ids(folder_id, user.id) if recursive
+               else [folder_id])
+        clauses.append("files.folder_id IN ("
+                       + ", ".join(f":fol{i}" for i in range(len(ids))) + ")")
+        params.update({f"fol{i}": fid for i, fid in enumerate(ids)})
+    if min_words is not None:
+        clauses.append("fi.word_count >= :min_words")
+        params["min_words"] = int(min_words)
+    if max_words is not None:
+        clauses.append("fi.word_count <= :max_words")
+        params["max_words"] = int(max_words)
+    if min_size is not None:
+        clauses.append("files.size >= :min_size")
+        params["min_size"] = int(min_size)
+    if max_size is not None:
+        clauses.append("files.size <= :max_size")
+        params["max_size"] = int(max_size)
+    if has_tags:
+        clauses.append("fi.hashtags IS NOT NULL AND fi.hashtags != ''")
+    if has_caption:
+        clauses.append("fi.caption IS NOT NULL AND fi.caption != ''")
+    if indexed:
+        clauses.append("fi.status = 'ok'")
+    return " AND ".join(f"({c})" for c in clauses), params
+
+
+def _plain_terms(query):
+    """Plain-word terms extracted from any query (drops FTS5 operators) —
+    used for snippets and for the ILIKE fallback."""
+    return [t for t in re.findall(r"[\w]+", (query or "").lower())
+            if t not in _BOOL_WORDS][:8]
+
+
+def _advanced_base(user, query, filters):
+    """(FROM..WHERE sql, params, terms, used_fts) for the advanced search.
+
+    FTS5 syntax queries go straight to MATCH; plain queries become the safe
+    term-prefix AND. Falls back to ILIKE when FTS5 is off or the MATCH is
+    rejected by SQLite (bad syntax — the caller keeps working with plain
+    terms instead of failing).
+    """
+    where, params = _advanced_clauses(user, **filters)
+    terms = _plain_terms(query)
+    if query and fts_available():
+        base = ("FROM file_fts JOIN files ON files.id = file_fts.rowid "
+                "LEFT JOIN file_index fi ON fi.file_id = files.id "
+                f"WHERE file_fts MATCH :match AND {where}")
+        # Raw FTS5 syntax first; if SQLite rejects it, retry with the safe
+        # term-prefix query built from the plain words in the query — the
+        # caller still gets useful results instead of an error.
+        candidates = []
+        if _FTS5_SYNTAX_RE.search(query):
+            candidates.append(query)
+        if terms:
+            candidates.append(_fts_query(terms))
+        for match in candidates:
+            probe = dict(params, match=match)
+            try:
+                db.session.execute(
+                    sql_text(f"SELECT 1 {base} LIMIT 1"), probe).first()
+                return base, probe, terms, True
+            except Exception:  # noqa: BLE001 - invalid MATCH syntax
+                db.session.rollback()
+    base = ("FROM files LEFT JOIN file_index fi ON fi.file_id = files.id "
+            f"WHERE {where}")
+    if query and terms:
+        likes = []
+        for i, t in enumerate(terms):
+            key = f"term{i}"
+            params[key] = f"%{t}%"
+            likes.append(f"(LOWER(files.name) LIKE LOWER(:{key}) "
+                         f"OR LOWER(fi.extracted_text) LIKE LOWER(:{key}) "
+                         f"OR LOWER(fi.caption) LIKE LOWER(:{key}) "
+                         f"OR LOWER(fi.hashtags) LIKE LOWER(:{key}))")
+        base += " AND " + " AND ".join(likes)
+    return base, params, terms, False
+
+
+def _plain_snippet(text, terms, radius=160):
+    """One-line agent snippet around the first term hit: [bracket] markers,
+    no HTML, whitespace collapsed."""
+    if not text:
+        return ""
+    flat = " ".join(text.split())
+    flat_l = flat.lower()
+    pos = -1
+    for t in terms or []:
+        pos = flat_l.find(t.lower())
+        if pos != -1:
+            break
+    if pos == -1:
+        return flat[: 2 * radius]
+    start = max(0, pos - radius // 2)
+    end = min(len(flat), pos + radius)
+    snip = flat[start:end]
+    for t in terms or []:
+        snip = re.sub(re.escape(t), lambda m: f"[{m.group(0)}]", snip,
+                      flags=re.IGNORECASE)
+    return ("… " if start else "") + snip + (" …" if end < len(flat) else "")
+
+
+def search_advanced(user, query=None, *, sort="relevance", offset=0, limit=10,
+                    **filters):
+    """Agent-oriented search: FTS5 syntax (phrases, AND/OR/NOT, column scopes
+    like name:/tags:/caption:), metadata filters (drive, extensions, folder,
+    word/size ranges, has_tags, has_caption, indexed), sort and pagination.
+
+    Returns {"results": [compact dicts], "total": <rows matching the query
+    and filters, ignoring pagination>}.
+    """
+    limit = max(1, min(int(limit or 10), MAX_ADVANCED_LIMIT))
+    offset = max(0, int(offset or 0))
+    query = (query or "").strip()
+    base, params, terms, used_fts = _advanced_base(user, query, filters)
+    order = _ADVANCED_SORTS.get(sort, "rank")
+    if order == "rank" and not used_fts:
+        order = "files.name COLLATE NOCASE"  # no BM25 without FTS
+
+    total = db.session.execute(
+        sql_text(f"SELECT COUNT(*) {base}"), params).scalar()
+    select = ("SELECT files.id AS fid, "
+              + ("bm25(file_fts, 0.2, 1.0, 0.6, 0.4) AS rank, "
+                 "snippet(file_fts, 1, '[', ']', '…', 16) AS snip "
+                 if used_fts else "NULL AS rank, NULL AS snip ")
+              + base)
+    rows = db.session.execute(
+        sql_text(f"{select} ORDER BY {order} LIMIT :lim OFFSET :off"),
+        dict(params, lim=limit, off=offset)).all()
+
+    files = {f.id: f for f in StoredFile.query.filter(
+        StoredFile.id.in_([r.fid for r in rows])).all()} if rows else {}
+    results = []
+    for r in rows:
+        stored = files.get(r.fid)
+        if stored is None:
+            continue
+        index = stored.index
+        snip = r.snip
+        if snip is None:
+            snip = _plain_snippet(
+                ((index.extracted_text if index else "")
+                 or (index.caption if index else "") or ""), terms)
+        results.append({
+            "file_id": stored.id,
+            "name": stored.name,
+            "extension": stored.extension,
+            "size": stored.size,
+            "word_count": index.word_count if index else None,
+            "score": round(min(-(r.rank or 0.0), 10.0), 3),
+            "snippet": snip,
+            "tags": hashtag_service.get_tags(index),
+        })
+    return {"results": results, "total": total}
+
+
+def count_files(user, query=None, **filters):
+    """Aggregate view of a search WITHOUT reading any content:
+    {"total": n, "by_extension": {...}, "by_drive": {...}}."""
+    query = (query or "").strip()
+    base, params, _terms_, _used_fts = _advanced_base(user, query, filters)
+    total = db.session.execute(
+        sql_text(f"SELECT COUNT(*) {base}"), params).scalar()
+    # Breakdowns aggregate over the same match set (subquery in FROM — JOINs
+    # cannot be appended after the WHERE that `base` already carries).
+    sub = f"(SELECT files.drive_id AS did, files.extension AS ext {base})"
+    by_extension = {ext or "": n for ext, n in db.session.execute(
+        sql_text(f"SELECT ext, COUNT(*) FROM {sub} GROUP BY ext"),
+        params).all()}
+    by_drive = {name: n for name, n in db.session.execute(
+        sql_text(f"SELECT d.name, COUNT(*) FROM {sub} s "
+                 "JOIN drives d ON d.id = s.did GROUP BY d.name"),
+        params).all()}
+    return {"total": total, "by_extension": by_extension,
+            "by_drive": by_drive}

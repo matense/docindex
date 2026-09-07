@@ -606,3 +606,136 @@ def test_chat_endpoint_migrates_answer_tokens_to_thinking(auth_client, app, user
         conv = ChatConversation.query.one()
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "thinking", "step", "assistant"]
+
+
+# ------------------------------------------------------------- new tools
+
+
+def test_grep_file_finds_lines_with_context(app, user):
+    text = ("line one\nline two target here\nline three\nline four\n"
+            "line five target again\nline six")
+    file_id = _make_indexed_file(app, "grepme.txt", text)
+
+    with app.app_context():
+        from app.services.agent_service import _tool_grep_file
+        user_obj = db.session.get(User, user)
+        res = _tool_grep_file(user_obj, file_id, "target", context=1)
+
+    assert res["matches"] == 2
+    assert res["truncated"] is False
+    assert "2: line two target here" in res["content"]
+    assert "1: line one" in res["content"]          # context before
+    assert "5: line five target again" in res["content"]
+    assert "4: line four" in res["content"]          # context after
+
+
+def test_grep_file_no_match_missing_and_empty(app, user):
+    file_id = _make_indexed_file(app, "plain.txt", "nothing special")
+
+    with app.app_context():
+        from app.services.agent_service import _tool_grep_file
+        user_obj = db.session.get(User, user)
+        assert _tool_grep_file(user_obj, file_id, "absent")["matches"] == 0
+        assert "error" in _tool_grep_file(user_obj, 9999, "x")
+        assert "error" in _tool_grep_file(user_obj, file_id, "")
+
+
+def test_grep_file_caps_output(app, user):
+    # 30 long matching lines (~400 chars each) exceed the 8000-char budget
+    # before the 40-match cap, so truncation must kick in.
+    text = "\n".join(f"{'x' * 390} hit row {i}" for i in range(30))
+    file_id = _make_indexed_file(app, "many.txt", text)
+
+    with app.app_context():
+        from app.services.agent_service import GREP_MAX_CHARS, _tool_grep_file
+        user_obj = db.session.get(User, user)
+        res = _tool_grep_file(user_obj, file_id, "hit", context=0)
+
+    assert res["matches"] == 30
+    assert res["truncated"] is True
+    assert len(res["content"]) <= GREP_MAX_CHARS + 200  # separators slack
+
+
+def test_agent_uses_count_and_grep_steps(app, user):
+    file_id = _make_indexed_file(
+        app, "policy.txt", "vacation is 25 days\nremote work allowed")
+
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "count_files",
+                         "arguments": '{"query": "vacation"}'},
+        }]},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "c2", "type": "function",
+            "function": {"name": "grep_file",
+                         "arguments": f'{{"file_id": {file_id}, "pattern": "vacation"}}'},
+        }]},
+        {"role": "assistant", "content": "You get 25 vacation days."},
+    ])
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)):
+            answer, steps = agent_service.run_agent(
+                user_obj, [{"role": "user", "content": "How much vacation?"}])
+
+    assert [s["label"] for s in steps] == ["Counted files", "Searched inside file"]
+    assert answer == "You get 25 vacation days."
+
+
+def test_search_files_tool_returns_results_and_total(app, user):
+    _make_indexed_file(app, "alpha.txt", "shared needle body")
+    _make_indexed_file(app, "beta.txt", "shared needle body")
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = agent_service.TOOL_HANDLERS["search_files"](
+            user_obj, {"query": "needle", "sort": "name"}, None)
+
+    assert out["total"] == 2
+    assert [r["name"] for r in out["results"]] == ["alpha.txt", "beta.txt"]
+    # Compact payload: empty fields are dropped.
+    assert all("word_count" in r for r in out["results"])
+
+
+def test_count_files_tool_shape(app, user):
+    _make_indexed_file(app, "one.txt", "shared body")
+    _make_indexed_file(app, "two.md", "shared body")
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = agent_service.TOOL_HANDLERS["count_files"](
+            user_obj, {"query": "shared"}, None)
+
+    assert out["total"] == 2
+    assert out["by_extension"] == {"txt": 1, "md": 1}
+
+
+def test_list_files_recursive(app, user):
+    _make_indexed_file(app, "a.txt", "alpha")
+    _make_indexed_file(app, "b.txt", "beta")
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        tree = agent_service._tool_list_files(user_obj, recursive=True)
+
+    assert {f["name"] for f in tree["files"]} == {"a.txt", "b.txt"}
+    assert tree["truncated"] is False
+    assert "folder_id" in tree["files"][0]
+    assert "file_count" not in tree["files"][0]
+
+
+def test_get_file_info_includes_stats(app, user):
+    file_id = _make_indexed_file(app, "info.txt", "one two three")
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        info = agent_service._tool_get_file_info(user_obj, file_id)
+
+    assert info["word_count"] == 3
+    assert info["line_count"] == 1
+    assert info["folder_path"] == "/"
+    assert info["has_caption"] is False
+    assert isinstance(info["versions"], int)

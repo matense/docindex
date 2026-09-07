@@ -55,7 +55,7 @@ pdo-app/
 │   │   ├── drive_service.py      # multi-drive support, current-drive session
 │   │   ├── file_service.py       # storage on disk, checksums, thumbnails
 │   │   ├── indexing_service.py   # text extraction + captions -> file_index
-│   │   ├── search_service.py     # LIKE-based scoring + snippets
+│   │   ├── search_service.py     # FTS5 search + advanced agent search
 │   │   ├── hashtag_service.py    # hashtags: storage, AI gen, bulk drive jobs
 │   │   ├── ai_service.py         # OpenAI-compatible HTTP client, config
 │   │   └── agent_service.py      # agentic tool-calling loop
@@ -580,7 +580,11 @@ and `model` per message (including thinking/step rows for the history view);
   `trashed_files`),
   `update_file_content` (snapshots before overwriting), `read_text_content`.
 - **indexing_service** — extraction and indexing (see flow above).
-- **search_service** — query parsing, scoring, snippet generation.
+- **search_service** — query parsing, scoring, snippet generation; FTS5
+  helpers (`fts_available`, `fts_upsert`, `fts_delete`, `fts_rebuild`) and
+  the agent-oriented `search_advanced()`/`count_files()` (FTS5 syntax,
+  metadata filters, sort, pagination, aggregate breakdowns — see
+  "The AI agent / Tools").
 - **hashtag_service** — hashtags: normalization/storage (`set_tags`,
   `get_tags`), AI generation per file (`generate_tags`) and per-drive bulk
   background jobs (`start_job`, `pause_job`, `resume_job`, `cancel_job`,
@@ -623,23 +627,43 @@ the answer falls back to asking the user to rephrase.
 
 ### Tools
 
-`TOOLS` defines six OpenAI function-calling tools; `TOOL_HANDLERS` maps
+`TOOLS` defines eight OpenAI function-calling tools; `TOOL_HANDLERS` maps
 names to implementations. All tools are scoped to the calling user, and
-search/list are additionally scoped to the current drive.
+search/list/count are additionally scoped to the current drive.
 
-- `search_files(query: string)` — full-text search over filenames, extracted
-  text, hashtags and captions; returns up to 10 `{file_id, name, snippet,
-  hashtags}`.
+- `search_files(query, filters..., sort, limit, offset)` — advanced full-text
+  search backed by `search_service.search_advanced()`: FTS5 syntax
+  (`"quoted phrases"`, `AND`/`OR`/`NOT`, column scopes `name:`/`tags:`/
+  `caption:`/`text:`, prefix stems like `budg*`), metadata filters
+  (`extensions`, `folder_id` + `recursive`, `min_words`/`max_words`,
+  `min_size`/`max_size`, `has_tags`, `has_caption`), sorting
+  (`relevance`/`name`/`size`/`word_count`/`updated_at`) and pagination.
+  Returns `{results: [{file_id, name, extension, size, word_count, score,
+  snippet, tags}], total}` with empty fields dropped to keep the JSON
+  payload small; `total` counts every match ignoring pagination.
+- `count_files(query?, filters...)` — `search_service.count_files()`: how
+  many files match a query/filter set plus `by_extension` and `by_drive`
+  breakdowns, WITHOUT reading any content. The system prompt steers the
+  model to measure with this before diving into a broad topic.
 - `read_file(file_id: int, start: int = 0, length: int = 20000)` — chunked
   reading: `length` is clamped to 50 000, and the result carries `start`,
   `returned_chars`, `total_chars` and `has_more` so the model can page
   through large files (`start + returned_chars`). Content comes from
   `extracted_text`/`caption`, falling back to reading editable text files
   from disk.
-- `list_files(folder_id?: int)` — folders and files (up to 100) in a folder
-  or the drive root.
+- `grep_file(file_id: int, pattern: string, context: int = 2)` —
+  case-insensitive literal search INSIDE one file's text; returns numbered
+  matching lines with merged context windows (no duplicate lines). Hard
+  output budgets (`GREP_MAX_MATCHES = 40`, `GREP_MAX_CHARS = 8000`) keep the
+  tool result small — it points the model at the right section instead of
+  streaming the whole file through the chat.
+- `list_files(folder_id?: int, recursive?: bool)` — folders and files (up to
+  100) in a folder or the drive root; with `recursive=true`, a cheap map of
+  the whole drive: every folder (with `parent_id` and `file_count`) and up
+  to 200 files (`truncated` flag beyond that).
 - `get_file_info(file_id: int)` — metadata: name, extension, size, dates,
-  index status, hashtags.
+  folder path, index status, word/line counts, caption presence, version
+  count, hashtags.
 - `set_hashtags(file_id: int, hashtags: string[])` — replaces the file's
   hashtags (AI word limit applies). Only used when the user explicitly asks
   for hashtags.
@@ -652,12 +676,15 @@ search/list are additionally scoped to the current drive.
 ### System prompt
 
 `SYSTEM_PROMPT` instructs the model to work step by step, state one or two
-sentences of reasoning before every tool call, start with a broad
-`search_files` then `read_file` the best results, make a single tool call per
-step, keep reading while `has_more=true`, cite sources as
-`[filename](file://ID)`, answer in the user's language, and never invent
-content. When scoped to a drive, a line is appended telling the model only
-that drive's files are visible.
+sentences of reasoning before every tool call, and search like a funnel:
+broad first, then narrow — `count_files` to measure a topic, refined
+`search_files` (FTS5 phrases/boolean/column scopes/filters) to list
+candidates, `grep_file` to pinpoint the relevant lines inside a file, and
+`read_file` only around that section. It also enforces a single tool call
+per step, continued reading while `has_more=true`, source citations as
+`[filename](file://ID)`, answering in the user's language, and never
+inventing content. When scoped to a drive, a line is appended telling the
+model only that drive's files are visible.
 
 ### The nudge mechanism
 
@@ -795,7 +822,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, ~45 tests across 7 modules:
+pytest suite in `tests/`, 244 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
@@ -813,10 +840,11 @@ pytest suite in `tests/`, ~45 tests across 7 modules:
   `AI_STREAMING=False` so the agent tests exercise the classic path;
   streaming has dedicated tests.
 - Coverage: auth, drive CRUD/upload/isolation, multi-drive behavior,
-  indexing + search, file stats, AI settings (connection CRUD, env
+  indexing + search (FTS5 + `search_advanced` syntax/filters/sort/
+  pagination), file stats, AI settings (connection CRUD, env
   fallback, isolation), and the agent (multi-step runs, `read_file`
-  chunking, thinking/tool_result events, token streaming, attachments,
-  reasoning field, the nudge mechanism).
+  chunking, `grep_file`/`count_files` tools, thinking/tool_result events,
+  token streaming, attachments, reasoning field, the nudge mechanism).
 
 Run with `pytest`.
 

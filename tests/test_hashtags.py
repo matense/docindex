@@ -275,5 +275,6 @@ def test_agent_search_results_include_hashtags(auth_client, app, user):
         user_obj = db.session.get(User, user)
         result = agent_service.TOOL_HANDLERS["search_files"](
             user_obj, {"query": "searchable"}, None)
-        assert len(result) == 1
-        assert result[0]["hashtags"] == ["searchable"]
+        assert result["total"] == 1
+        assert len(result["results"]) == 1
+        assert result["results"][0]["tags"] == ["searchable"]

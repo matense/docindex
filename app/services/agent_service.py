@@ -2,9 +2,51 @@ import json
 import re
 
 from flask import current_app
+from sqlalchemy import func
 
+from ..extensions import db
 from ..models import StoredFile
 from . import ai_service, file_service, hashtag_service, search_service
+
+_SEARCH_FILTERS_SCHEMA = {
+    "extensions": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Only these extensions, e.g. [\"pdf\", \"md\"].",
+    },
+    "folder_id": {
+        "type": "integer",
+        "description": "Restrict to this folder.",
+    },
+    "recursive": {
+        "type": "boolean",
+        "description": "With folder_id, also include subfolders (default false).",
+    },
+    "min_words": {
+        "type": "integer",
+        "description": "Only files with at least this many words.",
+    },
+    "max_words": {
+        "type": "integer",
+        "description": "Only files with at most this many words.",
+    },
+    "min_size": {
+        "type": "integer",
+        "description": "Only files at least this many bytes.",
+    },
+    "max_size": {
+        "type": "integer",
+        "description": "Only files at most this many bytes.",
+    },
+    "has_tags": {
+        "type": "boolean",
+        "description": "Only files that have hashtags.",
+    },
+    "has_caption": {
+        "type": "boolean",
+        "description": "Only files with an AI image caption.",
+    },
+}
 
 TOOLS = [
     {
@@ -12,16 +54,68 @@ TOOLS = [
         "function": {
             "name": "search_files",
             "description": (
-                "Full-text search over the user's file drive. Searches filenames, "
-                "hashtags, extracted document text and AI-generated image "
-                "captions. Returns matching files with snippets and hashtags."
+                "Full-text search over the user's files (filenames, hashtags, "
+                "extracted document text and AI image captions), powered by "
+                "FTS5. Supports \"quoted phrases\", boolean operators "
+                "(AND, OR, NOT) and column scopes (name:, tags:, caption:, "
+                "text:). Plain words are matched by prefix — append '*' to a "
+                "word stem to also match longer forms (e.g. budg* matches "
+                "budget and budgets). Returns matching files with snippets, "
+                "plus 'total' (how many files matched overall). Narrow big "
+                "result sets with the metadata filters, and use count_files "
+                "first to measure how many files a query hits."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query."},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "FTS5 query: plain terms (prefix-matched, ANDed), "
+                            "\"quoted phrases\", AND/OR/NOT, or column scopes "
+                            "like tags:finance."),
+                    },
+                    **_SEARCH_FILTERS_SCHEMA,
+                    "sort": {
+                        "type": "string",
+                        "enum": ["relevance", "name", "size", "word_count",
+                                 "updated_at"],
+                        "description": "Result order (default relevance).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10, max 25).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Skip this many results, for pagination (default 0).",
+                    },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "count_files",
+            "description": (
+                "Count how many files match a query and/or metadata filters, "
+                "with breakdowns by extension and drive — WITHOUT reading any "
+                "content. Use this to measure a search before diving in: if "
+                "the total is huge, narrow the query or filters; if zero, "
+                "broaden them. Accepts the same query and filters as "
+                "search_files (except sort/limit/offset)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Same query syntax as search_files; omit to count with filters only.",
+                    },
+                    **_SEARCH_FILTERS_SCHEMA,
+                },
             },
         },
     },
@@ -31,9 +125,11 @@ TOOLS = [
             "name": "read_file",
             "description": (
                 "Read the extracted text or caption of a file by its id. Large "
-                "files are returned in chunks: use 'start' (character offset) and "
-                "'length' to page through them, and check 'has_more' and "
-                "'total_chars' in the result to know if you should continue reading."
+                "files are returned in chunks: use 'start' (character offset) "
+                "and 'length' to page through them, and check 'has_more' and "
+                "'total_chars' in the result to know if you should continue "
+                "reading. For large files, prefer locating the relevant part "
+                "with grep_file first and then reading only that region."
             ),
             "parameters": {
                 "type": "object",
@@ -55,10 +151,40 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "grep_file",
+            "description": (
+                "Search for a word or phrase INSIDE one file's extracted text "
+                "and return only the matching lines (numbered) with "
+                "surrounding context — much cheaper than read_file for large "
+                "files. Use it to locate the exact section that matters, then "
+                "read_file around that spot only if more context is needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "integer", "description": "The file id."},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Text to find (case-insensitive literal match).",
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "Lines of context around each match (default 2, max 10).",
+                    },
+                },
+                "required": ["file_id", "pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_files",
             "description": (
-                "List the files and folders in the user's drive, optionally inside "
-                "one folder."
+                "List the files and folders in the user's drive, optionally "
+                "inside one folder. With recursive=true, lists every folder "
+                "(with parent ids and file counts) and every file (up to 200) "
+                "in the whole drive — a cheap map of the drive's structure."
             ),
             "parameters": {
                 "type": "object",
@@ -66,6 +192,10 @@ TOOLS = [
                     "folder_id": {
                         "type": "integer",
                         "description": "Folder id to list; omit for the root.",
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "List the whole drive tree instead of one level (default false).",
                     },
                 },
             },
@@ -75,7 +205,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_file_info",
-            "description": "Get metadata (name, size, type, dates) for a file by its id.",
+            "description": (
+                "Get metadata for a file by its id: name, size, type, dates, "
+                "word/line counts, folder path, hashtag list, caption "
+                "presence and number of stored versions."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -116,8 +250,8 @@ TOOLS = [
             "description": (
                 "List every hashtag used across the user's files, with usage "
                 "counts. Use this to discover the existing tag vocabulary, then "
-                "search_files with the exact tag terms for faster, precise "
-                "results."
+                "search_files with the exact tag terms (or tags:<term>) for "
+                "faster, precise results."
             ),
             "parameters": {
                 "type": "object",
@@ -135,8 +269,17 @@ Rules:
 - IMPORTANT: before every tool call, ALWAYS write one or two short sentences
   of reasoning as plain message content — explain what you are looking for and
   why. Never call a tool without stating your reasoning first.
-- First call search_files with a broad query, then read_file on the most
-  relevant results, then search again with refined terms if needed.
+- Search like a funnel: broad first, then narrow. When a topic may span many
+  files, call count_files first to measure the result set; if it is large,
+  refine with a better query or filters (extensions, min_words, folder)
+  before calling search_files.
+- search_files uses FTS5 syntax: "quoted phrases", AND/OR/NOT and column
+  scopes (name:, tags:, caption:). Plain words match by prefix, so use word
+  stems with '*' (e.g. budg* matches budget/budgets).
+- To answer a question about a specific file, call grep_file first to find
+  the exact lines that matter, then read_file only around that section if
+  you need more context. Never read a whole large file when grep_file can
+  pinpoint the relevant part.
 - Prefer a single tool call per step; wait for the result before continuing.
 - Large files are read in chunks: when read_file returns has_more=true, call
   it again with start set to start + returned_chars to continue reading.
@@ -172,18 +315,51 @@ _NUDGE = ("You described what you plan to do next but did not call any tool. "
 
 _MAX_NUDGES = 4
 
+# grep_file output budgets: the goal is to point the model at the right
+# section, not to stream the whole file through the chat.
+GREP_MAX_MATCHES = 40
+GREP_MAX_CHARS = 8000
 
-def _tool_search_files(user, query, drive=None):
-    results = search_service.search_files(query, user, limit=10, drive=drive)
-    return [
-        {
-            "file_id": r["file"].id,
-            "name": r["file"].name,
-            "snippet": r["snippet"],
-            "hashtags": r.get("tags") or [],
-        }
-        for r in results
+
+def _tool_search_files(user, query, drive=None, **kw):
+    out = search_service.search_advanced(
+        user, query,
+        sort=kw.get("sort") or "relevance",
+        offset=kw.get("offset") or 0,
+        limit=kw.get("limit") or 10,
+        drive=drive,
+        extensions=kw.get("extensions"),
+        folder_id=kw.get("folder_id"),
+        recursive=bool(kw.get("recursive")),
+        min_words=kw.get("min_words"),
+        max_words=kw.get("max_words"),
+        min_size=kw.get("min_size"),
+        max_size=kw.get("max_size"),
+        has_tags=bool(kw.get("has_tags")),
+        has_caption=bool(kw.get("has_caption")),
+    )
+    # Keep the JSON payload compact: drop empty/None fields.
+    results = [
+        {k: v for k, v in r.items() if v not in (None, "", [])}
+        for r in out["results"]
     ]
+    return {"results": results, "total": out["total"]}
+
+
+def _tool_count_files(user, query=None, drive=None, **kw):
+    return search_service.count_files(
+        user, query,
+        drive=drive,
+        extensions=kw.get("extensions"),
+        folder_id=kw.get("folder_id"),
+        recursive=bool(kw.get("recursive")),
+        min_words=kw.get("min_words"),
+        max_words=kw.get("max_words"),
+        min_size=kw.get("min_size"),
+        max_size=kw.get("max_size"),
+        has_tags=bool(kw.get("has_tags")),
+        has_caption=bool(kw.get("has_caption")),
+    )
 
 
 def _tool_read_file(user, file_id, start=0, length=20_000):
@@ -223,48 +399,152 @@ def _tool_read_file(user, file_id, start=0, length=20_000):
     }
 
 
-def _tool_list_files(user, folder_id=None, drive=None):
-    from ..models import Folder
-
-    query = (StoredFile.query
-             .filter_by(user_id=user.id)
-             .filter(StoredFile.deleted_at.is_(None)))
-    folders_q = Folder.query.filter_by(user_id=user.id)
-    if drive is not None:
-        query = query.filter(StoredFile.drive_id == drive.id)
-        folders_q = folders_q.filter(Folder.drive_id == drive.id)
-    if folder_id:
-        query = query.filter_by(folder_id=folder_id)
-        folders_q = folders_q.filter_by(parent_id=folder_id)
-    else:
-        query = query.filter(StoredFile.folder_id.is_(None))
-        folders_q = folders_q.filter(Folder.parent_id.is_(None))
-    return {
-        "folders": [{"folder_id": f.id, "name": f.name} for f in folders_q.all()],
-        "files": [
-            {"file_id": f.id, "name": f.name, "size": f.size,
-             "read_only": f.is_synced}
-            for f in query.limit(100).all()
-        ],
-    }
-
-
-def _tool_get_file_info(user, file_id):
+def _tool_grep_file(user, file_id, pattern, context=2):
     stored = (StoredFile.query
               .filter_by(id=file_id, user_id=user.id)
               .filter(StoredFile.deleted_at.is_(None))
               .first())
     if not stored:
         return {"error": "File not found."}
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return {"error": "Empty pattern."}
+
+    content = ""
+    index = stored.index
+    if index:
+        content = index.extracted_text or index.caption or ""
+    if not content and stored.is_editable:
+        try:
+            content = file_service.read_text_content(stored, max_chars=500_000)
+        except OSError:
+            pass
+    if not content:
+        return {"file_id": stored.id, "name": stored.name, "matches": 0,
+                "note": "No text content available for this file."}
+
+    lines = content.splitlines()
+    needle = pattern.lower()
+    hits = [i for i, ln in enumerate(lines) if needle in ln.lower()]
+    if not hits:
+        return {"file_id": stored.id, "name": stored.name, "matches": 0,
+                "shown": 0, "truncated": False, "content": ""}
+
+    ctx = max(0, min(int(context or 0) if context else 2, 10))
+    # Merge overlapping context windows so no line is emitted twice.
+    windows = []
+    for i in hits[:GREP_MAX_MATCHES]:
+        lo, hi = max(0, i - ctx), min(len(lines), i + ctx + 1)
+        if windows and lo <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], hi))
+        else:
+            windows.append((lo, hi))
+
+    out, used = [], 0
+    char_truncated = False
+    for lo, hi in windows:
+        if out:
+            out.append("…")
+        for n in range(lo, hi):
+            line = f"{n + 1}: {lines[n]}"
+            if used + len(line) > GREP_MAX_CHARS:
+                char_truncated = True
+                break
+            out.append(line)
+            used += len(line) + 1
+        if char_truncated:
+            break
+
+    return {
+        "file_id": stored.id,
+        "name": stored.name,
+        "matches": len(hits),
+        "shown": min(len(hits), GREP_MAX_MATCHES),
+        "truncated": len(hits) > GREP_MAX_MATCHES or char_truncated,
+        "content": "\n".join(out),
+    }
+
+
+def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
+    from ..models import Folder
+
+    files_q = (StoredFile.query
+               .filter_by(user_id=user.id)
+               .filter(StoredFile.deleted_at.is_(None)))
+    folders_q = Folder.query.filter_by(user_id=user.id)
+    if drive is not None:
+        files_q = files_q.filter(StoredFile.drive_id == drive.id)
+        folders_q = folders_q.filter(Folder.drive_id == drive.id)
+
+    if recursive:
+        counts = dict(
+            files_q.with_entities(StoredFile.folder_id, func.count())
+            .group_by(StoredFile.folder_id).all())
+        files = files_q.order_by(StoredFile.name).limit(201).all()
+        return {
+            "folders": [
+                {"folder_id": f.id, "name": f.name, "parent_id": f.parent_id,
+                 "file_count": counts.get(f.id, 0)}
+                for f in folders_q.order_by(Folder.name).all()
+            ],
+            "files": [
+                {"file_id": f.id, "name": f.name, "folder_id": f.folder_id,
+                 "size": f.size, "read_only": f.is_synced}
+                for f in files[:200]
+            ],
+            "truncated": len(files) > 200,
+        }
+
+    if folder_id:
+        files_q = files_q.filter_by(folder_id=folder_id)
+        folders_q = folders_q.filter_by(parent_id=folder_id)
+    else:
+        files_q = files_q.filter(StoredFile.folder_id.is_(None))
+        folders_q = folders_q.filter(Folder.parent_id.is_(None))
+    return {
+        "folders": [{"folder_id": f.id, "name": f.name} for f in folders_q.all()],
+        "files": [
+            {"file_id": f.id, "name": f.name, "size": f.size,
+             "read_only": f.is_synced}
+            for f in files_q.limit(100).all()
+        ],
+    }
+
+
+def _tool_get_file_info(user, file_id):
+    from ..models import Folder
+
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return {"error": "File not found."}
+
+    # Walk up the folder tree to build the full path (bounded, cycle-safe).
+    parts, folder, seen = [], stored.folder, set()
+    while folder is not None and folder.id not in seen and len(parts) < 20:
+        seen.add(folder.id)
+        parts.append(folder.name)
+        folder = (Folder.query.get(folder.parent_id)
+                  if folder.parent_id else None)
+    folder_path = "/".join(reversed(parts)) or "/"
+
+    index = stored.index
     return {
         "file_id": stored.id,
         "name": stored.name,
         "extension": stored.extension,
         "size": stored.size,
+        "folder_path": folder_path,
         "created_at": stored.created_at.isoformat() if stored.created_at else None,
         "updated_at": stored.updated_at.isoformat() if stored.updated_at else None,
-        "index_status": stored.index.status if stored.index else "none",
-        "hashtags": hashtag_service.get_tags(stored.index),
+        "index_status": index.status if index else "none",
+        "word_count": index.word_count if index else None,
+        "line_count": index.line_count if index else None,
+        "has_caption": bool(index and index.caption),
+        "versions": len(stored.versions),
+        "hashtags": hashtag_service.get_tags(index),
     }
 
 
@@ -286,11 +566,17 @@ def _tool_list_hashtags(user, drive=None):
 
 TOOL_HANDLERS = {
     "search_files": lambda user, args, drive: _tool_search_files(
-        user, args.get("query", ""), drive),
+        user, args.get("query", ""), drive,
+        **{k: v for k, v in args.items() if k != "query"}),
+    "count_files": lambda user, args, drive: _tool_count_files(
+        user, args.get("query"), drive,
+        **{k: v for k, v in args.items() if k != "query"}),
     "read_file": lambda user, args, drive: _tool_read_file(
         user, args.get("file_id"), args.get("start", 0), args.get("length", 20_000)),
+    "grep_file": lambda user, args, drive: _tool_grep_file(
+        user, args.get("file_id"), args.get("pattern"), args.get("context", 2)),
     "list_files": lambda user, args, drive: _tool_list_files(
-        user, args.get("folder_id"), drive),
+        user, args.get("folder_id"), drive, bool(args.get("recursive"))),
     "get_file_info": lambda user, args, drive: _tool_get_file_info(
         user, args.get("file_id")),
     "set_hashtags": lambda user, args, drive: _tool_set_hashtags(
@@ -300,7 +586,9 @@ TOOL_HANDLERS = {
 
 _STEP_LABELS = {
     "search_files": "Searched files",
+    "count_files": "Counted files",
     "read_file": "Read file",
+    "grep_file": "Searched inside file",
     "list_files": "Listed drive",
     "get_file_info": "Checked file info",
     "set_hashtags": "Saved hashtags",
@@ -313,15 +601,29 @@ def _summarize_result(name, result):
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
     if name == "search_files":
-        if not result:
+        found = result.get("results", [])
+        total = result.get("total", len(found))
+        if not found:
             return "No files found."
-        names = ", ".join(r["name"] for r in result[:5])
-        more = f" (+{len(result) - 5} more)" if len(result) > 5 else ""
-        return f"Found {len(result)} file(s): {names}{more}"
+        names = ", ".join(r["name"] for r in found[:5])
+        more = f" (+{total - 5} more)" if total > 5 else ""
+        return f"Found {total} file(s): {names}{more}"
+    if name == "count_files":
+        total = result.get("total", 0)
+        exts = result.get("by_extension") or {}
+        top = ", ".join(f".{e or '?'}×{n}" for e, n in
+                        sorted(exts.items(), key=lambda kv: -kv[1])[:4])
+        return f"{total} file(s)" + (f" — {top}" if top else "")
     if name == "read_file":
         base = (f"Read {result.get('returned_chars', 0):,} of "
                 f"{result.get('total_chars', 0):,} chars")
         return base + (" — more content available" if result.get("has_more") else " — end of file")
+    if name == "grep_file":
+        matches = result.get("matches", 0)
+        if not matches:
+            return "No matches inside the file."
+        extra = " (truncated)" if result.get("truncated") else ""
+        return f"{matches} matching line(s) in {result.get('name', '?')}{extra}"
     if name == "list_files":
         return (f"{len(result.get('folders', []))} folder(s), "
                 f"{len(result.get('files', []))} file(s)")
@@ -446,7 +748,8 @@ def run_agent_events(user, history, drive=None):
             handler = TOOL_HANDLERS.get(name)
             result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
 
-            detail = args.get("query") or result.get("name") or args.get("file_id") or ""
+            detail = args.get("query") or args.get("pattern") \
+                or result.get("name") or args.get("file_id") or ""
             if name == "read_file" and args.get("start"):
                 detail = f"{detail} (from char {args['start']})"
             label = _STEP_LABELS.get(name, name)
