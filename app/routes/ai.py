@@ -45,6 +45,7 @@ def conversation(conv_id):
         "title": conv.title,
         "messages": [
             {"role": m.role, "content": m.content, "model": m.model,
+             "archived": bool(m.archived),
              "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in conv.messages
         ],
@@ -76,13 +77,15 @@ _SUMMARY_MAX_CHARS = 120_000
 @bp.route("/conversations/<int:conv_id>/summarize", methods=["POST"])
 @login_required
 def summarize_conversation(conv_id):
-    """AI-summarize the whole conversation, then replace every message with
-    a single assistant message holding the summary — a reset with memory."""
+    """AI-summarize the active conversation history, then archive it: old
+    messages stay visible (grayed out in the UI) but are no longer sent to
+    the model — a reset with memory, where the summary is the memory."""
     conv = _get_conversation(conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
 
-    msgs = [m for m in conv.messages if m.role in ("user", "assistant")]
+    msgs = [m for m in conv.messages
+            if m.role in ("user", "assistant") and not m.archived]
     if len(msgs) < 4:
         return jsonify({"error": "Not enough history to summarize."}), 400
 
@@ -116,8 +119,10 @@ def summarize_conversation(conv_id):
     if not summary:
         return jsonify({"error": "The AI returned an empty summary."}), 502
 
-    for m in list(conv.messages):
-        db.session.delete(m)
+    # Archive everything (including thinking/step rows of those exchanges)
+    # instead of deleting — the user can still read the old conversation.
+    for m in conv.messages:
+        m.archived = True
     db.session.add(ChatMessage(conversation_id=conv.id, role="assistant",
                                content=SUMMARY_PREFIX + summary,
                                model=config.get("model") or None))
@@ -198,7 +203,7 @@ def chat():
     history = [
         {"role": m.role, "content": m.content}
         for m in conv.messages
-        if m.role in ("user", "assistant")
+        if m.role in ("user", "assistant") and not m.archived
     ][-hist_n:]
 
     if attached:

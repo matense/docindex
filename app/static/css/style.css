@@ -3079,3 +3079,29 @@ body.search-hero-mode #search-dock-container {
     transform: scale(0.96);
     text-decoration: line-through;
 }
+
+/* Archived chat history (compacted by Summarize & reset): still visible
+   but grayed out to show it is out of the model's context. */
+.ai-archived {
+    opacity: 0.45;
+    filter: grayscale(0.7);
+}
+
+.ai-archive-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.55;
+    padding: 0.4rem 0.5rem 0.1rem;
+}
+
+.ai-archive-divider::before,
+.ai-archive-divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed currentColor;
+}

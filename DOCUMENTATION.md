@@ -542,11 +542,15 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
 and `model` per message (including thinking/step rows for the history view);
 `POST /ai/conversations/<id>/delete` removes one.
 `POST /ai/conversations/<id>/summarize` ("Summarize & reset" button in the
-chat header): the model condenses the whole user/assistant transcript (capped
-at ~120k chars) into a compact summary, then every message is replaced by a
-single `assistant` message holding that summary (marked with a
-"📋 Conversation summary" prefix) — a reset with memory, since the summary
-joins the history of the next questions. Needs ≥ 4 user/assistant messages.
+chat header): the model condenses the active user/assistant transcript
+(capped at ~120k chars) into a compact summary, then every existing message
+is marked `archived=True` and a single `assistant` message holding the
+summary (marked with a "📋 Conversation summary" prefix) is appended.
+Archived messages stay visible in the UI — grayed out, with a "History
+compacted" divider — but are excluded from the history sent to the model:
+a reset with memory, where the summary is the memory. Re-summarizing only
+considers the active (non-archived) tail and needs ≥ 4 user/assistant
+messages.
 
 ## Services
 
@@ -837,7 +841,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 255 tests across 20+ modules:
+pytest suite in `tests/`, 257 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

@@ -291,6 +291,9 @@ class ChatMessage(db.Model):
     content = db.Column(db.Text, nullable=False, default="")
     # Model that produced the message (assistant messages only; NULL otherwise).
     model = db.Column(db.String(120), nullable=True)
+    # True once a summarize-and-reset compacted this message: it stays visible
+    # in the UI (grayed out) but is no longer sent to the model as context.
+    archived = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     def __repr__(self):

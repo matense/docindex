@@ -117,16 +117,22 @@ def test_summarize_compacts_conversation(auth_client, app, user):
 
     with app.app_context():
         msgs = ChatMessage.query.filter_by(conversation_id=conv_id).all()
-        assert len(msgs) == 1
-        assert msgs[0].role == "assistant"
-        assert "Conversation summary" in msgs[0].content
-        assert "SUMMARY: talked about files and codes." in msgs[0].content
-        assert msgs[0].model == "gpt-4o-mini"
+        # Old history is NOT deleted: it stays, archived (out of context).
+        assert len(msgs) == 7
+        archived = [m for m in msgs if m.archived]
+        live = [m for m in msgs if not m.archived]
+        assert len(archived) == 6
+        assert len(live) == 1
+        assert live[0].role == "assistant"
+        assert "Conversation summary" in live[0].content
+        assert "SUMMARY: talked about files and codes." in live[0].content
+        assert live[0].model == "gpt-4o-mini"
 
-    # The summary is sent as memory in the next question's history.
+    # Only the summary (not the archived messages) is sent as memory.
     past = _past_user_assistant(_chat_capture(auth_client, conv_id))
     assert any("SUMMARY: talked about files and codes." in m["content"]
                for m in past)
+    assert not any(m["content"] == "question 0" for m in past)
 
 
 def test_summarize_needs_enough_history(auth_client, app, user):
@@ -161,3 +167,34 @@ def test_summarize_without_ai_returns_503(auth_client, app, user):
     conv_id = _make_conversation(app, n_pairs=3)
     resp = auth_client.post(f"/ai/conversations/{conv_id}/summarize")
     assert resp.status_code == 503
+
+
+def test_summarize_twice_needs_new_history(auth_client, app, user):
+    # After a summarize, only the summary is active — a second summarize has
+    # nothing to work on until the conversation grows again.
+    _add_conn(auth_client)
+    conv_id = _make_conversation(app, n_pairs=3)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "summary one"}):
+        assert auth_client.post(f"/ai/conversations/{conv_id}/summarize").status_code == 200
+        resp = auth_client.post(f"/ai/conversations/{conv_id}/summarize")
+    assert resp.status_code == 400
+
+    with app.app_context():
+        msgs = ChatMessage.query.filter_by(conversation_id=conv_id).all()
+        assert len(msgs) == 7
+        assert sum(1 for m in msgs if m.archived) == 6
+
+
+def test_conversation_payload_exposes_archived_flag(auth_client, app, user):
+    _add_conn(auth_client)
+    conv_id = _make_conversation(app, n_pairs=3)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "summary one"}):
+        auth_client.post(f"/ai/conversations/{conv_id}/summarize")
+
+    msgs = auth_client.get(f"/ai/conversations/{conv_id}").get_json()["messages"]
+    assert all("archived" in m for m in msgs)
+    assert [m["archived"] for m in msgs] == [True] * 6 + [False]

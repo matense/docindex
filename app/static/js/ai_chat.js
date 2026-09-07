@@ -360,13 +360,34 @@
             messagesEl.innerHTML = '';
         }
 
+        // Divider shown between the archived (grayed, out-of-context)
+        // history and the live context that starts with the summary.
+        function addArchiveDivider() {
+            const div = document.createElement('div');
+            div.className = 'ai-archive-divider';
+            div.innerHTML = '<i class="fas fa-box-archive"></i>' +
+                            '<span>History compacted — messages above are out of context</span>';
+            messagesEl.appendChild(div);
+        }
+
         function loadConversation(id) {
             fetch('/ai/conversations/' + id)
                 .then(r => r.json())
                 .then(conv => {
                     conversationId = conv.id;
                     clearMessages();
-                    conv.messages.forEach(m => addMessage(m.role, m.content, m));
+                    let seenArchived = false;
+                    conv.messages.forEach(m => {
+                        if (!m.archived && seenArchived) {
+                            addArchiveDivider();
+                            seenArchived = false;
+                        }
+                        const el = addMessage(m.role, m.content, m);
+                        if (m.archived) {
+                            seenArchived = true;
+                            if (el) el.classList.add('ai-archived');
+                        }
+                    });
                     toggleList(true);
                 });
         }
