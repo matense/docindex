@@ -61,10 +61,10 @@
                     </a>
                     {% if current_drive %}
                     <div class="dropdown" id="drive-dropdown">
-                        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 glass-panel max-w-[11rem]" title="Current drive — click to switch">
-                            <i class="fas fa-database text-secondary"></i>
-                            <span class="truncate">{{ current_drive.name }}</span>
-                            <i class="fas fa-chevron-down text-[10px] opacity-50"></i>
+                        <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 glass-panel max-w-[16rem] flex-nowrap whitespace-nowrap" title="Current drive — click to switch">
+                            <i class="fas fa-database text-secondary flex-shrink-0"></i>
+                            <span class="truncate min-w-0">{{ current_drive.name }}</span>
+                            <i class="fas fa-chevron-down text-[10px] opacity-50 flex-shrink-0"></i>
                         </div>
                         <div tabindex="0" class="dropdown-content z-[60] glass-menu w-64 p-2 mt-1">
                             <div class="px-3 py-1 text-[10px] uppercase tracking-wide opacity-40">Your drives</div>
