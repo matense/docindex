@@ -243,6 +243,19 @@ def profile_password():
     return redirect(url_for("settings.profile"))
 
 
+@bp.route("/profile/theme", methods=["POST"])
+@login_required
+def profile_theme():
+    """Per-user UI theme: "light" (default) or "dark"."""
+    theme = request.form.get("theme", "light")
+    if theme not in ("light", "dark"):
+        theme = "light"
+    current_user.theme = theme
+    db.session.commit()
+    flash(f"Theme set to {theme}.", "success")
+    return redirect(url_for("settings.profile"))
+
+
 @bp.route("/profile/registration", methods=["POST"])
 @login_required
 def profile_registration():

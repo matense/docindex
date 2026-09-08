@@ -3105,3 +3105,156 @@ body.search-hero-mode #search-dock-container {
     flex: 1;
     border-top: 1px dashed currentColor;
 }
+
+/* ============================================================================
+   DARK THEME — <html data-theme="dark"> (per-user preference, set in Profile)
+   DaisyUI components adapt on their own via the data-theme attribute; the
+   rules below only cover the custom components that hardcode light colors.
+   ============================================================================ */
+
+[data-theme="dark"] {
+    --bg-color: #0b1120;
+    --card-bg: oklch(var(--b1));
+    --text-color: oklch(var(--bc));
+    --border-color: oklch(var(--bc) / 0.14);
+    --hover-color: oklch(var(--b2));
+    --sidebar-bg: oklch(var(--b1));
+    --sidebar-text: oklch(var(--bc) / 0.75);
+    color-scheme: dark;
+}
+
+[data-theme="dark"] body { background-color: var(--bg-color); }
+
+[data-theme="dark"] .animated-background {
+    background: linear-gradient(-45deg, #0b1120, #0f172a, #131c33, #0b1120);
+    background-size: 400% 400%;
+}
+
+/* Sidebar */
+[data-theme="dark"] .sidebar { box-shadow: 2px 0 5px rgba(0, 0, 0, 0.35); }
+[data-theme="dark"] .sidebar nav ul li a:hover,
+[data-theme="dark"] .sidebar nav ul li a.active { background-color: rgba(99, 102, 241, 0.15); }
+
+/* Forms */
+[data-theme="dark"] .form-control,
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="email"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+    background-color: oklch(var(--b1));
+    border-color: oklch(var(--bc) / 0.2);
+}
+[data-theme="dark"] .form-group label { color: oklch(var(--bc) / 0.7); }
+
+/* Icon buttons */
+[data-theme="dark"] .btn-icon { color: oklch(var(--bc) / 0.45); }
+[data-theme="dark"] .btn-icon:hover { background-color: oklch(var(--b2)); color: oklch(var(--bc)); }
+
+/* Kanban (legacy) */
+[data-theme="dark"] .kanban-column { background-color: oklch(var(--b2) / 0.5); }
+[data-theme="dark"] .kanban-column-header { background-color: oklch(var(--b1)); }
+[data-theme="dark"] .kanban-card { background-color: oklch(var(--b1)); border-color: oklch(var(--bc) / 0.12); }
+[data-theme="dark"] .kanban-column-body.hovered { background-color: oklch(var(--b2)); }
+
+/* Cards & modals */
+[data-theme="dark"] .card { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
+[data-theme="dark"] .modal-header,
+[data-theme="dark"] .modal-footer { background-color: oklch(var(--b2) / 0.6); }
+[data-theme="dark"] .modal-meta-grid { background-color: oklch(var(--b2) / 0.6); }
+[data-theme="dark"] .modal-desc { color: oklch(var(--bc) / 0.7); }
+[data-theme="dark"] .meta-label { color: oklch(var(--bc) / 0.5); }
+
+[data-theme="dark"] .tag-pill { background-color: rgba(99, 102, 241, 0.18); color: #a5b4fc; }
+
+/* Breadcrumbs */
+[data-theme="dark"] .breadcrumb { color: oklch(var(--bc) / 0.55); }
+[data-theme="dark"] .breadcrumb-item.active { color: oklch(var(--bc) / 0.85); }
+
+/* Glassmorphism */
+[data-theme="dark"] .glass-panel {
+    background: rgba(17, 25, 40, 0.85);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .glass-dock {
+    background: rgba(17, 25, 40, 0.55);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+}
+[data-theme="dark"] .glass-menu {
+    background: rgba(15, 23, 42, 0.94);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 40px -5px rgba(0, 0, 0, 0.5), 0 10px 20px -5px rgba(0, 0, 0, 0.4);
+}
+[data-theme="dark"] .glass-menu li a { color: oklch(var(--bc) / 0.85); }
+[data-theme="dark"] .glass-menu li a:hover,
+[data-theme="dark"] .glass-menu li a.active {
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+}
+
+/* PDO components */
+[data-theme="dark"] .pdo-input { background: oklch(var(--b1)); color: oklch(var(--bc)); }
+[data-theme="dark"] .pdo-tag-container { background: oklch(var(--b1)); }
+[data-theme="dark"] .pdo-card { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+[data-theme="dark"] .pdo-scope-toggle { background: rgba(255, 255, 255, 0.05); }
+[data-theme="dark"] .pdo-recent-item:hover { background: rgba(255, 255, 255, 0.06); }
+
+/* Search bar, dropdown & results */
+[data-theme="dark"] #search-form-container #search-input { background: oklch(var(--b1)) !important; }
+[data-theme="dark"] .pdo-search-dropdown {
+    background: rgba(15, 23, 42, 0.97);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .pdo-search-dropdown-section { border-bottom-color: rgba(255, 255, 255, 0.07); }
+[data-theme="dark"] .pdo-search-dropdown-header,
+[data-theme="dark"] .pdo-search-dropdown-footer,
+[data-theme="dark"] .pdo-search-dropdown-loading,
+[data-theme="dark"] .pdo-search-dropdown-empty { color: oklch(var(--bc) / 0.5); }
+[data-theme="dark"] .pdo-search-dropdown-footer { background: rgba(255, 255, 255, 0.03); border-top-color: rgba(255, 255, 255, 0.07); }
+[data-theme="dark"] .pdo-search-dropdown-footer kbd { background: rgba(255, 255, 255, 0.1); }
+[data-theme="dark"] .pdo-search-dropdown-item:hover,
+[data-theme="dark"] .pdo-search-dropdown-item-selected { background: rgba(99, 102, 241, 0.18); }
+[data-theme="dark"] .pdo-search-dropdown-item-snippet { color: oklch(var(--bc) / 0.55); }
+[data-theme="dark"] .pdo-search-dropdown-item-arrow,
+[data-theme="dark"] .pdo-search-dropdown-item-remove { color: oklch(var(--bc) / 0.35); }
+[data-theme="dark"] .pdo-search-dropdown-item-remove:hover { background: rgba(255, 255, 255, 0.1); }
+[data-theme="dark"] .pdo-search-result-inner { background: oklch(var(--b1)); border-color: oklch(var(--bc) / 0.12); }
+[data-theme="dark"] .pdo-search-result:hover .pdo-search-result-inner { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+
+/* AI chat */
+[data-theme="dark"] .ai-mode-switch { background: rgba(15, 23, 42, 0.6); }
+[data-theme="dark"] .ai-mode-btn { color: oklch(var(--bc) / 0.6); }
+[data-theme="dark"] .aip-suggestion { background: rgba(15, 23, 42, 0.65); }
+[data-theme="dark"] #aip-messages {
+    background: rgba(15, 23, 42, 0.55);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05),
+                0 6px 24px rgba(0, 0, 0, 0.3);
+}
+[data-theme="dark"] .ai-composer { background: rgba(15, 23, 42, 0.75); }
+[data-theme="dark"] .ai-composer:focus-within { background: rgba(15, 23, 42, 0.92); }
+[data-theme="dark"] .ai-messages .chat-start .chat-bubble {
+    background: linear-gradient(135deg, rgba(49, 46, 129, 0.55) 0%, rgba(76, 29, 149, 0.45) 100%);
+    color: oklch(var(--bc));
+}
+[data-theme="dark"] .markdown-body { color: oklch(var(--bc) / 0.92); }
+/* Composer buttons + chat input placeholder (dark-navy text is invisible
+   on the dark composer background) */
+[data-theme="dark"] .ai-attach-btn { color: oklch(var(--bc) / 0.6); }
+[data-theme="dark"] .ai-attach-btn:hover { color: #a5b4fc; }
+[data-theme="dark"] #ai-chat-input:empty::before { color: oklch(var(--bc) / 0.4); }
+
+/* Search results page */
+[data-theme="dark"] .pdo-search-result-title { color: oklch(var(--bc)); }
+[data-theme="dark"] .pdo-search-result-actions { color: oklch(var(--bc) / 0.3); }
+
+/* Drive view switcher */
+[data-theme="dark"] .view-switch { background: rgba(15, 23, 42, 0.55); }
+[data-theme="dark"] .view-switch-btn { color: oklch(var(--bc) / 0.55); }
+[data-theme="dark"] .view-switch-btn:hover { color: #a5b4fc; }
+
+/* Version history */
+[data-theme="dark"] .version-body { background: rgba(15, 23, 42, 0.55); border-color: oklch(var(--bc) / 0.1); }
+
+/* Preview modal extras */
+[data-theme="dark"] #attachment-preview-modal kbd { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.2); }

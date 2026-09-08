@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="{{ current_user.theme if current_user.is_authenticated else 'light' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -45,7 +45,7 @@
     <!-- Markdown rendering for AI answers -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=4">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=5">
     {% block head %}{% endblock %}
 </head>
 <body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
@@ -53,7 +53,7 @@
         <div class="flex flex-col h-full w-full relative" id="app-container">
 
             <!-- Top Bar (Mac Style) -->
-            <header class="fixed top-0 left-0 right-0 h-14 px-4 flex items-center z-50 shadow-sm bg-white/80 backdrop-blur-md border-b border-base-200" id="main-header">
+            <header class="fixed top-0 left-0 right-0 h-14 px-4 flex items-center z-50 shadow-sm bg-base-100/80 backdrop-blur-md border-b border-base-200" id="main-header">
                 <!-- Left: Brand + Drive selector -->
                 <div class="flex items-center gap-2 lg:gap-4 flex-shrink-0">
                     <a href="{{ url_for('search.results') }}" class="text-xl font-bold text-primary flex items-center gap-2">
@@ -145,7 +145,7 @@
             <div class="fixed top-16 left-0 right-0 z-40 flex justify-center px-4 pointer-events-none" id="search-dock-container">
                 <div class="w-full max-w-2xl pointer-events-auto">
                     <form action="{{ url_for('search.results') }}" method="GET" class="relative group" id="global-search-form">
-                        <div class="glass-dock rounded-2xl p-2 pl-4 flex items-center shadow-lg border border-white/50 backdrop-blur-xl bg-white/40 transition-all duration-300 focus-within:bg-white/60 focus-within:shadow-xl focus-within:scale-[1.02]">
+                        <div class="glass-dock rounded-2xl p-2 pl-4 flex items-center shadow-lg border border-white/50 backdrop-blur-xl bg-base-100/40 transition-all duration-300 focus-within:bg-base-100/60 focus-within:shadow-xl focus-within:scale-[1.02]">
                             <i class="fas fa-search text-primary text-xl mr-3"></i>
                             <input type="text" name="q" placeholder="Search your files... (Alt+S)"
                                    id="global-search-input"

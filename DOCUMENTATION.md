@@ -134,6 +134,7 @@ cascades to its children and files; deleting a file cascades to its index row.
 | `email` | String(120), unique, indexed | |
 | `password_hash` | String(255) | werkzeug `generate_password_hash` |
 | `is_admin` | Boolean, default False | |
+| `theme` | String(10), default `"light"` | per-user UI theme (`light`/`dark`); rendered as `<html data-theme>`, switched in Profile → Appearance (`POST /settings/profile/theme`) |
 | `created_at` | DateTime | |
 
 Relationships: `folders`, `files`, `drives`, `conversations`,
@@ -857,11 +858,12 @@ ai_connections -> `f7a3b5c91e02` model on chat messages ->
 -> `cbacbe527dda` file versions -> `9f4dbb9d4221` trash (`deleted_at`)
 -> `14b7197e2390` synced drives (`source_path`) -> `1c175e28cab5` sync
 stats -> `00efe0293465` sync options (captions toggle, indexing workers)
--> `7a1c9e4b2d55` file_index hashtags.
+-> `7a1c9e4b2d55` file_index hashtags -> ... -> `a9d3e7b15c02` user theme
+(light/dark).
 
 ## Testing
 
-pytest suite in `tests/`, 269 tests across 20+ modules:
+pytest suite in `tests/`, 274 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
