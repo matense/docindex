@@ -72,7 +72,7 @@
     {#- Compact corner indicator for grid cards: green "i" = indexed (tooltip
         on hover), spinner = indexing, red "!" = error, clone icon = dupe -#}
     {% set idx = f.index %}
-    <span class="absolute bottom-1.5 right-1.5 flex items-center gap-1">
+    <span class="absolute top-1.5 left-1.5 flex items-center gap-1">
         {%- if f.checksum in dupe_checksums -%}
         <i class="fas fa-clone text-warning text-[10px]"
            title="Another file has identical content — open Info to handle it"></i>
