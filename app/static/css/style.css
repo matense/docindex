@@ -3258,3 +3258,62 @@ body.search-hero-mode #search-dock-container {
 
 /* Preview modal extras */
 [data-theme="dark"] #attachment-preview-modal kbd { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.2); }
+
+/* ============================================================================
+   Drive view: drag & drop targets + right-click context menu
+   ============================================================================ */
+
+.drop-hover {
+    outline: 2px dashed var(--pdo-primary) !important;
+    outline-offset: -2px;
+    background: rgba(99, 102, 241, 0.10) !important;
+}
+
+.context-menu {
+    position: fixed;
+    z-index: 2000;
+    min-width: 12rem;
+    list-style: none;
+    margin: 0;
+    animation: ctx-in 0.12s ease both;
+}
+
+@keyframes ctx-in {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.45rem 0.8rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 0.6rem;
+    color: oklch(var(--bc) / 0.85);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.12s ease;
+}
+
+.context-menu-item:hover { background: rgba(99, 102, 241, 0.12); color: var(--pdo-primary); }
+.context-menu-item.text-error:hover { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+
+.context-menu-header {
+    padding: 0.35rem 0.8rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: oklch(var(--bc) / 0.45);
+}
+
+.context-menu-sep {
+    height: 1px;
+    margin: 0.3rem 0.5rem;
+    background: oklch(var(--bc) / 0.1);
+}

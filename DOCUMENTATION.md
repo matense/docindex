@@ -785,10 +785,28 @@ Alt+N new folder, Alt+A toggle AI chat; holding Alt reveals shortcut badges.
 
 ### `drive.js`
 
-Drive page interactions: Ctrl/Cmd+click multi-select, cut/paste clipboard
-(sessionStorage), bulk delete/move via `/selection/*`, file info modal
-(`/file/<id>/info`), rename, and drag of selected files into the AI chat
-using a custom `application/x-docindex-files` dataTransfer payload.
+Drive page interactions: multi-select (Ctrl/Cmd+click toggle, Shift+click
+range, Ctrl+A select all visible, Esc or background click clears), cut/paste
+clipboard (sessionStorage), bulk delete/move via `/selection/*`, file info
+modal (`/file/<id>/info`), rename, and drag & drop:
+
+- Files and folders are `draggable` in all three views. The `dragstart`
+  writes two payloads: `application/x-docindex-files` (files only — consumed
+  by the AI chat to attach) and `application/x-docindex-items` (files +
+  folders — consumed by folder drop targets). Dragging a selected item drags
+  the whole selection.
+- Every folder (`[data-folder-sel-id]`) is a drop target: dropping POSTs to
+  `/selection/move` with `dest=<folder id>` and re-renders via
+  `refreshPage()`. A `.drop-hover` outline gives visual feedback. Synced
+  drives (`data-drive-synced` on the page container) get no drop targets.
+- Right-click (`contextmenu`) opens a `position: fixed` `.context-menu`
+  (glass style, clamped to the viewport, closes on click-outside/Esc/scroll).
+  File entries: Open, Download, Edit (only with `data-editable`), Rename,
+  Info, Cut, Delete; multi-selection: Cut + Delete; folder entries: Open,
+  Paste here (when the clipboard has items), Delete folder; empty-space
+  right-click offers New folder, Upload files, Paste, Select all and Refresh
+  (OS-style). Synced items (`data-is-synced`) hide all mutating entries.
+
 `window.currentFile` tracks the file open in the viewer for `@here`.
 
 ### Chat UIs (`ai_chat.js`, `ai_page.js`)
@@ -863,7 +881,7 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 
 ## Testing
 
-pytest suite in `tests/`, 274 tests across 20+ modules:
+pytest suite in `tests/`, 276 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

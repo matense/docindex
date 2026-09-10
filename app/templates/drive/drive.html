@@ -71,7 +71,9 @@
 {% macro tree_file(f) -%}
 <div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
      data-nav="{{ url_for('drive.view', file_id=f.id) }}"
-     draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+     draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
+     {%- if f.is_synced %} data-is-synced="1"{% endif %}
+     {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
     <i class="fas {{ file_icon(f) }} w-4 text-center"></i>
     <span class="truncate flex-1">{{ f.name }}</span>
     {% if f.checksum in dupe_checksums %}<i class="fas fa-clone text-warning text-xs" title="Duplicate content"></i>{% endif %}
@@ -82,7 +84,8 @@
 {% macro tree_folder(f) -%}
 <details class="tree-node" open>
     <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
-             data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+             data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}" draggable="true"
+             {%- if drive.is_synced %} data-is-synced="1"{% endif %}>
         <i class="fas fa-folder text-warning"></i> {{ f.name }}
     </summary>
     <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col">
@@ -93,7 +96,7 @@
 {%- endmacro %}
 
 {% block content %}
-<div data-folder-id="{{ folder.id if folder else '' }}"></div>
+<div data-folder-id="{{ folder.id if folder else '' }}"{% if drive.is_synced %} data-drive-synced="1"{% endif %}></div>
 <!-- Breadcrumb + toolbar + view switcher -->
 <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
     <div class="flex items-center gap-2 flex-wrap">
@@ -244,7 +247,8 @@
         <tbody>
             {% for f in folders %}
             <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors"
-                data-nav="{{ url_for('drive.index', folder_id=f.id) }}" data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+                data-nav="{{ url_for('drive.index', folder_id=f.id) }}" data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}"
+                draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
                 <td class="px-4 py-2.5">
                     <span class="flex items-center gap-2 font-medium">
                         <i class="fas fa-folder text-warning"></i> {{ f.name }}
@@ -260,7 +264,9 @@
             {% for f in files %}
             <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors group"
                 data-nav="{{ url_for('drive.view', file_id=f.id) }}"
-                draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+                draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
+                {%- if f.is_synced %} data-is-synced="1"{% endif %}
+                {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
                 <td class="px-4 py-2.5">
                     <span class="flex items-center gap-2 font-medium min-w-0">
                         <i class="fas {{ file_icon(f) }} w-4 text-center flex-shrink-0"></i>
@@ -296,7 +302,8 @@
     {% for f in folders %}
     <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 cursor-pointer relative group"
          style="--i:{{ loop.index }}" data-nav="{{ url_for('drive.index', folder_id=f.id) }}"
-         data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}">
+         data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}"
+         draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
         <i class="fas fa-folder text-5xl text-warning"></i>
         <span class="font-medium text-sm text-center break-all line-clamp-2">{{ f.name }}</span>
     </div>
@@ -305,7 +312,9 @@
     {% for f in files %}
     <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 relative group cursor-pointer"
          style="--i:{{ loop.index + (folders | length) }}" data-nav="{{ url_for('drive.view', file_id=f.id) }}"
-         draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}">
+         draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
+         {%- if f.is_synced %} data-is-synced="1"{% endif %}
+         {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
         {% if f.is_image %}
             <div class="h-20 w-full flex items-center justify-center overflow-hidden rounded-lg bg-base-200/50">
                 <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}" class="max-h-20 object-contain"
@@ -432,5 +441,5 @@
 </script>
 {% endif %}
 
-<script src="{{ url_for('static', filename='js/drive.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/drive.js') }}?v=3" defer></script>
 {% endblock %}
