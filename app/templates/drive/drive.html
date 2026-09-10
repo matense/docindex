@@ -68,6 +68,27 @@
     {% endif %}
 {%- endmacro %}
 
+{% macro grid_status(f) -%}
+    {#- Compact corner indicator for grid cards: green "i" = indexed (tooltip
+        on hover), spinner = indexing, red "!" = error, clone icon = dupe -#}
+    {% set idx = f.index %}
+    <span class="absolute bottom-1.5 right-1.5 flex items-center gap-1">
+        {%- if f.checksum in dupe_checksums -%}
+        <i class="fas fa-clone text-warning text-[10px]"
+           title="Another file has identical content — open Info to handle it"></i>
+        {%- endif -%}
+        {%- if idx and idx.status == 'ok' -%}
+        <span class="w-4 h-4 rounded-full bg-success text-success-content text-[9px] font-bold flex items-center justify-center cursor-help"
+              title="indexed">i</span>
+        {%- elif idx and idx.status == 'pending' -%}
+        <i class="fas fa-spinner fa-spin text-warning text-[10px]" title="indexing"></i>
+        {%- elif idx and idx.status == 'error' -%}
+        <span class="w-4 h-4 rounded-full bg-error text-error-content text-[9px] font-bold flex items-center justify-center cursor-help"
+              title="{{ idx.error }}">!</span>
+        {%- endif -%}
+    </span>
+{%- endmacro %}
+
 {% macro tree_file(f) -%}
 <div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
      data-nav="{{ url_for('drive.view', file_id=f.id) }}"
@@ -298,37 +319,36 @@
 
 {% else %}
 <!-- Grid view -->
-<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 mt-4">
+<div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3 mt-4">
     {% for f in folders %}
-    <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 cursor-pointer relative group"
+    <div class="drive-card glass-panel rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 cursor-pointer relative group"
          style="--i:{{ loop.index }}" data-nav="{{ url_for('drive.index', folder_id=f.id) }}"
          data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}"
          draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
-        <i class="fas fa-folder text-5xl text-warning"></i>
+        <i class="fas fa-folder text-4xl text-warning"></i>
         <span class="font-medium text-sm text-center break-all line-clamp-2">{{ f.name }}</span>
     </div>
     {% endfor %}
 
     {% for f in files %}
-    <div class="drive-card glass-panel rounded-xl p-4 flex flex-col items-center gap-2 relative group cursor-pointer"
+    <div class="drive-card glass-panel rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 relative group cursor-pointer"
          style="--i:{{ loop.index + (folders | length) }}" data-nav="{{ url_for('drive.view', file_id=f.id) }}"
          draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
          {%- if f.is_synced %} data-is-synced="1"{% endif %}
          {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
         {% if f.is_image %}
-            <div class="h-20 w-full flex items-center justify-center overflow-hidden rounded-lg bg-base-200/50">
-                <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}" class="max-h-20 object-contain"
+            <div class="h-16 w-full flex items-center justify-center overflow-hidden rounded-lg bg-base-200/50">
+                <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}" class="max-h-16 object-contain"
                      onerror="this.outerHTML='<i class=\'fas fa-file-image text-4xl text-pink-500\'></i>'">
             </div>
         {% else %}
-            <i class="fas {{ file_icon(f) }} text-5xl"></i>
+            <i class="fas {{ file_icon(f) }} text-4xl"></i>
         {% endif %}
 
         <span class="font-medium text-sm text-center break-all line-clamp-2" title="{{ f.name }}">{{ f.name }}</span>
         <span class="text-xs opacity-50">{{ human_size(f.size) }}</span>
 
-        {{ index_badge(f) }}
-        {{ dupe_badge(f) }}
+        {{ grid_status(f) }}
 
         <!-- Hover actions -->
         <div class="absolute top-2 right-2 hidden group-hover:flex flex-col gap-1">
