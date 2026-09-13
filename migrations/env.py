@@ -37,6 +37,14 @@ def get_engine_url():
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 config.set_main_option('sqlalchemy.url', get_engine_url())
+
+# Module migrations live in modules/<name>/migrations/versions as independent
+# alembic roots (one branch per module), so removing a module from disk never
+# breaks the core migration chain. They are aggregated via version_locations
+# by `migrate.get_config` in app/__init__.py (it must be set before the
+# command's ScriptDirectory is built — doing it here would be too late).
+# Upgrade with `flask db upgrade heads`.
+
 target_db = current_app.extensions['migrate'].db
 
 # other values from the config, defined by the needs of env.py,

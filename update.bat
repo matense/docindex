@@ -24,7 +24,7 @@ echo -^> Updating dependencies...
 if errorlevel 1 exit /b 1
 
 echo -^> Upgrading the database...
-"%VENV_PY%" -m flask --app run.py db upgrade
+"%VENV_PY%" -m flask --app run.py db upgrade heads
 if errorlevel 1 exit /b 1
 
 echo.

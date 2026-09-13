@@ -56,7 +56,7 @@ if not exist .env (
 
 rem 5. Database
 echo -^> Creating/upgrading the database...
-"%VENV_PY%" -m flask --app run.py db upgrade
+"%VENV_PY%" -m flask --app run.py db upgrade heads
 if errorlevel 1 exit /b 1
 
 rem 6. First admin user (prompts; or pass args: install.bat user email password)

@@ -10,7 +10,7 @@ from sqlalchemy import func
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
                       ErrorLog, FileIndex, Folder, Setting, StoredFile, User)
-from ..services import ai_service, file_service, indexing_service
+from ..services import ai_service, file_service, indexing_service, module_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 
@@ -421,3 +421,31 @@ def ai_models():
         return jsonify({"ok": False, "message": result})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
+
+
+# --------------------------------------------------------------------------
+# Modules (admin)
+# --------------------------------------------------------------------------
+
+@bp.route("/modules")
+@login_required
+def modules():
+    """Module manager: discovered modules with enable/disable (admin only)."""
+    if not current_user.is_admin:
+        abort(403)
+    return render_template("settings/modules.html",
+                           modules=module_service.list_modules())
+
+
+@bp.route("/modules/<name>/toggle", methods=["POST"])
+@login_required
+def module_toggle(name):
+    if not current_user.is_admin:
+        abort(403)
+    enabled = request.form.get("enabled") == "1"
+    if not module_service.set_enabled(name, enabled, current_user):
+        flash("Unknown module.", "error")
+    else:
+        flash(f"Module '{name}' {'enabled' if enabled else 'disabled'}.",
+              "success")
+    return redirect(url_for("settings.modules"))

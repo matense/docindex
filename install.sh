@@ -54,7 +54,7 @@ fi
 
 # 5. Database
 echo "-> Creating/upgrading the database..."
-"$VENV_PY" -m flask --app run.py db upgrade
+"$VENV_PY" -m flask --app run.py db upgrade heads
 
 # 6. First admin user (prompts; or pass args: ./install.sh user email password)
 echo "-> Creating the admin user..."

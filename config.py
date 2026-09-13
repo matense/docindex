@@ -31,6 +31,10 @@ class Config:
     UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
     THUMBNAIL_FOLDER = os.path.join(basedir, "uploads", "thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "uploads", "versions")
+    # Extension modules: each subdirectory with a valid module.json is a
+    # discoverable module (disabled by default; admin enables them).
+    MODULES_FOLDER = os.environ.get(
+        "MODULES_FOLDER", os.path.join(basedir, "modules"))
     MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB per request batch
     MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB per file
     ALLOWED_EXTENSIONS = {
@@ -107,3 +111,5 @@ class TestConfig(Config):
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")
+    # Tests point at the bundled example module.
+    MODULES_FOLDER = os.path.join(basedir, "modules")

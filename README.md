@@ -97,7 +97,7 @@ cp .env.example .env            # Windows: copy .env.example .env
 # Edit .env and set SECRET_KEY to a long random string.
 
 # 4. Create the database
-flask --app run.py db upgrade
+flask --app run.py db upgrade heads
 
 # 5. Create the first admin user (prompts for username, email, password)
 python create_admin.py
@@ -202,7 +202,7 @@ python run.py                     # migrations are applied automatically on star
 
 > Database migrations run automatically when the app starts (Alembic
 > `upgrade` is a no-op when the schema is already current), so a plain
-> `git pull` + restart is enough. `flask --app run.py db upgrade` is still
+> `git pull` + restart is enough. `flask --app run.py db upgrade heads` is still
 > available if you prefer to migrate explicitly before starting.
 
 **Docker:**

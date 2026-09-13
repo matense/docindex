@@ -13,7 +13,7 @@
 ### Setup & Run
 - **Entry point**: `run.py` (debug/auto-reload only when `FLASK_DEBUG=true` in `.env`)
 - **Run locally**: `python run.py`
-- **Database**: `flask --app run.py db upgrade` (Flask-Migrate/Alembic migrations in `migrations/` — always use migrations for schema changes)
+- **Database**: `flask --app run.py db upgrade heads` (Flask-Migrate/Alembic migrations in `migrations/` — always use migrations for schema changes)
 - **First user**: `python create_admin.py`
 - **Docker**: `docker compose up --build -d`, then `docker compose exec docindex python create_admin.py`
 

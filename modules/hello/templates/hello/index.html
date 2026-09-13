@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Hello - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-4">
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-puzzle-piece"></i>
+        </span>
+        <div>
+            <h1 class="text-xl font-bold">Hello module</h1>
+            <p class="text-xs opacity-50">
+                Example module: this page, the <code>hello.echo</code> AI tool and the
+                <code>mod_hello_note</code> table all come from <code>modules/hello/</code>.
+            </p>
+        </div>
+    </div>
+    <div class="glass-panel rounded-2xl px-6 py-5">
+        <h2 class="font-semibold mb-2">Notes</h2>
+        {% if notes %}
+        <ul class="flex flex-col gap-1 text-sm">
+            {% for note in notes %}
+            <li class="opacity-80">{{ note.text }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm opacity-50">No notes yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

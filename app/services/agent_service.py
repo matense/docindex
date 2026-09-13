@@ -685,6 +685,49 @@ _STEP_LABELS = {
     "list_hashtags": "Listed hashtags",
 }
 
+# ---------------------------------------------------------------------------
+# Tool registry: the core tools above are registered below; modules add
+# extra tools via register_tool() (namespaced as "<module>.<tool>").
+# TOOLS / TOOL_HANDLERS / _STEP_LABELS remain the public core aliases.
+_TOOL_REGISTRY = {}
+
+
+def register_tool(name, definition, handler, label=None, module=None):
+    """Register an AI tool. Module tools must pass ``module`` and are only
+    offered to the model while that module is enabled."""
+    full = f"{module}.{name}" if module else name
+    if full in _TOOL_REGISTRY:
+        raise ValueError(f"AI tool '{full}' is already registered")
+    _TOOL_REGISTRY[full] = {
+        "definition": definition,
+        "handler": handler,
+        "label": label or full,
+        "module": module,
+    }
+
+
+for _core_name in TOOL_HANDLERS:
+    register_tool(
+        _core_name,
+        next(t for t in TOOLS if t["function"]["name"] == _core_name),
+        TOOL_HANDLERS[_core_name],
+        label=_STEP_LABELS.get(_core_name),
+    )
+
+
+def _active_tools():
+    """(definitions, handlers, labels) for core tools plus enabled modules."""
+    from . import module_service
+
+    definitions, handlers, labels = [], {}, {}
+    for full, entry in _TOOL_REGISTRY.items():
+        if entry["module"] and not module_service.is_enabled(entry["module"]):
+            continue
+        definitions.append(entry["definition"])
+        handlers[full] = entry["handler"]
+        labels[full] = entry["label"]
+    return definitions, handlers, labels
+
 
 def _summarize_result(name, result):
     """One-line human summary of a tool result, shown live in the chat UI."""
@@ -803,6 +846,7 @@ def run_agent_events(user, history, drive=None):
     prompt_budget = (config.get("max_prompt_tokens")
                      or current_app.config.get("AI_MAX_PROMPT_TOKENS", 60_000))
     fit_notified = False
+    active_tools, active_handlers, active_labels = _active_tools()
 
     for _ in range(max_steps):
         _trim_tool_messages(messages)
@@ -815,7 +859,7 @@ def run_agent_events(user, history, drive=None):
                    f"Older conversation messages were dropped "
                    f"({dropped} block(s)) to fit this model's context window. "
                    "Use Summarize & reset to compact the history instead.")
-        message = yield from _complete(messages, TOOLS, config)
+        message = yield from _complete(messages, active_tools, config)
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -848,7 +892,7 @@ def run_agent_events(user, history, drive=None):
             except json.JSONDecodeError:
                 args = {}
 
-            handler = TOOL_HANDLERS.get(name)
+            handler = active_handlers.get(name)
             result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
 
             detail = args.get("query") or args.get("pattern") \
@@ -856,7 +900,7 @@ def run_agent_events(user, history, drive=None):
                 or args.get("file_id") or ""
             if name == "read_file" and args.get("start"):
                 detail = f"{detail} (from char {args['start']})"
-            label = _STEP_LABELS.get(name, name)
+            label = active_labels.get(name, name)
             yield ("step", {"label": label, "detail": str(detail)})
             yield ("tool_result", {"label": label,
                                    "summary": _summarize_result(name, result)})

@@ -25,7 +25,7 @@ python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env            # set SECRET_KEY; add FLASK_DEBUG=true for auto-reload
-flask --app run.py db upgrade
+flask --app run.py db upgrade heads
 python create_admin.py
 python run.py
 ```
@@ -41,7 +41,7 @@ flask --app run.py db migrate -m "short description"
 # 3. REVIEW the generated file in migrations/versions/ —
 #    autogenerate can miss details (data migrations, server defaults, ...)
 # 4. Apply it locally
-flask --app run.py db upgrade
+flask --app run.py db upgrade heads
 ```
 
 Commit the migration file **together with the code that needs it**. This is

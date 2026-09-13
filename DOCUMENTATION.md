@@ -332,6 +332,13 @@ admin-only page `GET /settings/logs` (filter by level/source/text, paginated
 `GET /settings/logs/export` downloads the filtered log as CSV (all matching
 rows, newest first — the page's filters apply).
 
+### `module_states` (`ModuleState`)
+
+Admin-managed enable/disable state for extension modules (see Module system):
+`name` (PK), `enabled` (default false — modules absent from the table are
+disabled), `enabled_by` (FK `users.id`), `enabled_at`. Consulted per request
+by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
+
 ## HTTP surface
 
 - `auth.py`: `GET/POST /login`, `GET/POST /register` (blocked when the
@@ -864,7 +871,7 @@ same config drives the chat agent and image captioning at indexing time.
 Flask-Migrate/Alembic in `migrations/`. Apply with:
 
 ```bash
-flask --app run.py db upgrade
+flask --app run.py db upgrade heads
 ```
 
 Revision history: `068c55433ef8` baseline (users, folders, files, file_index,
@@ -877,11 +884,54 @@ ai_connections -> `f7a3b5c91e02` model on chat messages ->
 -> `14b7197e2390` synced drives (`source_path`) -> `1c175e28cab5` sync
 stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 -> `7a1c9e4b2d55` file_index hashtags -> ... -> `a9d3e7b15c02` user theme
-(light/dark).
+(light/dark) -> `b2e4f6a81c53` module_states.
+
+Module migrations are **independent alembic roots** living in
+`modules/<name>/migrations/versions/` (`down_revision = None`,
+`branch_labels = (name,)`, revision ids prefixed with the module name).
+`migrations/env.py` aggregates them via `version_locations`, which is why
+upgrades use `db upgrade heads` (multiple heads when modules have
+migrations).
+
+## Module system
+
+Extension points so new features can ship as self-contained modules under
+`modules/<name>/` without touching core code. See `modules/README.md` for
+the authoring guide and `modules/hello/` for a working example (page + AI
+tool + table).
+
+- **Manifest & discovery** — `module_service.discover()` scans
+  `MODULES_FOLDER` (default `<project>/modules`) for folders with a valid
+  `module.json` (`name` matching the folder and `^[a-z][a-z0-9_]*$`,
+  `capabilities` a whitelist of `routes`/`tools`/`models`, optional `nav`
+  entry). Invalid modules are skipped with a log warning and shown with
+  their error on the admin page.
+- **Loading** — every valid module is imported at startup as
+  `docindex_module_<name>` and its `register(ctx)` called with a
+  `ModuleContext` (`ctx.app`, `ctx.db`, `ctx.logger`, `ctx.blueprint`).
+  A module that raises is skipped — it never takes the app down.
+- **Routes** — module blueprints are always mounted under `/m/<name>/`
+  with a `before_request` guard that forces login and 404s while the
+  module is disabled (Flask forbids registering blueprints after serving
+  requests, so enable/disable governs exposure, not registration).
+- **Enable/disable** — persisted in the `module_states` table, toggled by
+  admins on `/settings/modules` (linked from the profile dropdown as
+  "Manage modules"). Effective immediately: route guards and tool
+  filtering consult the table per request.
+- **AI tools** — `agent_service.register_tool(name, definition, handler,
+  label=..., module=...)`. Module tools are namespaced `<module>.<tool>`,
+  rejected on name collisions, and filtered out of the model's tool list
+  while the module is disabled (`_active_tools()` per agent run). Core
+  tools stay registered under their plain names.
+- **Tables** — module tables use the `mod_<name>_` prefix and ship their
+  own independent migrations (see Migrations above).
+- **Trust model** — module code runs in-process with full access; there is
+  no sandbox. Installing a folder on disk is the privileged boundary —
+  the toggle is not.
 
 ## Testing
 
-pytest suite in `tests/`, 276 tests across 20+ modules:
+pytest suite in `tests/`, 288 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
@@ -903,14 +953,16 @@ pytest suite in `tests/`, 276 tests across 20+ modules:
   pagination), file stats, AI settings (connection CRUD, env
   fallback, isolation), and the agent (multi-step runs, `read_file`
   chunking, `grep_file`/`count_files` tools, thinking/tool_result events,
-  token streaming, attachments, reasoning field, the nudge mechanism).
+  token streaming, attachments, reasoning field, the nudge mechanism), and
+  the module system (discovery/validation, route guard, namespaced tool
+  registry, admin toggle page).
 
 Run with `pytest`.
 
 ## Docker
 
 `Dockerfile`: `python:3.11-slim` + Tesseract (eng/por), installs
-requirements, and on start runs `flask --app run.py db upgrade && python
+requirements, and on start runs `flask --app run.py db upgrade heads && python
 run.py`. `docker-compose.yml` exposes port 5000, loads `.env`, and mounts two
 named volumes: `docindex_data` (`/app/instance`, the SQLite DB) and
 `docindex_uploads` (`/app/uploads`). Start with `docker compose up --build`;

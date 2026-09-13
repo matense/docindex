@@ -1,0 +1,7 @@
+{
+  "name": "hello",
+  "version": "1.0.0",
+  "description": "Example module: one page, one AI tool, one database table.",
+  "capabilities": ["routes", "tools", "models"],
+  "nav": {"label": "Hello", "icon": "fa-puzzle-piece", "url": "/"}
+}

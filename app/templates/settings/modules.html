@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Modules - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-4">
+
+    <!-- Header -->
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-puzzle-piece"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Modules</h1>
+            <p class="text-xs opacity-50">
+                Modules extend DocIndex with extra pages, AI tools and tables. Drop a module
+                folder into <code>modules/</code> and restart — then enable it here.
+                Module code runs with full access: only install modules you trust.
+            </p>
+        </div>
+    </div>
+
+    {% if modules %}
+    <div class="flex flex-col gap-3">
+        {% for m in modules %}
+        <div class="glass-panel rounded-2xl px-6 py-4 flex items-center gap-4 flex-wrap
+                    {{ 'opacity-70' if m.error }}">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-semibold">{{ m.name }}</span>
+                    {% if m.version %}<span class="text-xs opacity-50">v{{ m.version }}</span>{% endif %}
+                    {% for cap in m.capabilities or [] %}
+                    <span class="badge badge-sm badge-ghost">{{ cap }}</span>
+                    {% endfor %}
+                </div>
+                {% if m.error %}
+                <p class="text-xs text-error mt-1">
+                    <i class="fas fa-triangle-exclamation mr-1"></i>{{ m.error }}
+                </p>
+                {% elif m.description %}
+                <p class="text-xs opacity-60 mt-1">{{ m.description }}</p>
+                {% endif %}
+                {% if m.enabled and m.enabled_at %}
+                <p class="text-xs opacity-40 mt-1">
+                    Enabled {{ m.enabled_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% if m.enabled_by %}by {{ m.enabled_by }}{% endif %}
+                </p>
+                {% endif %}
+            </div>
+            {% if not m.error %}
+            <form method="POST" action="{{ url_for('settings.module_toggle', name=m.name) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="enabled" value="{{ '0' if m.enabled else '1' }}">
+                <button type="submit"
+                        class="btn btn-sm {{ 'btn-outline btn-error' if m.enabled else 'btn-primary' }} gap-1">
+                    <i class="fas {{ 'fa-toggle-off' if m.enabled else 'fa-toggle-on' }}"></i>
+                    {{ 'Disable' if m.enabled else 'Enable' }}
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="glass-panel rounded-2xl px-6 py-10 text-center">
+        <i class="fas fa-puzzle-piece text-3xl opacity-20"></i>
+        <p class="text-sm opacity-50 mt-3">
+            No modules found. Add one under <code>modules/</code> — see
+            <code>modules/README.md</code> for the authoring guide.
+        </p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

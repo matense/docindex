@@ -15,4 +15,4 @@ COPY . .
 ENV PORT=5000
 EXPOSE 5000
 
-CMD flask --app run.py db upgrade && python run.py
+CMD flask --app run.py db upgrade heads && python run.py

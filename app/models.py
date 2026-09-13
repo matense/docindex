@@ -324,3 +324,20 @@ class ErrorLog(db.Model):
 
     def __repr__(self):
         return f"<ErrorLog {self.level} {self.source}: {self.message[:40]!r}>"
+
+
+class ModuleState(db.Model):
+    """Enable/disable state for discovered modules (admin-managed). Modules
+    not present in this table are disabled by default."""
+
+    __tablename__ = "module_states"
+
+    name = db.Column(db.String(64), primary_key=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=False)
+    enabled_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    enabled_at = db.Column(db.DateTime, nullable=True)
+
+    @staticmethod
+    def is_enabled(name):
+        s = db.session.get(ModuleState, name)
+        return bool(s and s.enabled)
