@@ -655,13 +655,23 @@
                     cell.content = area.value;
                     scheduleSave();
                 });
-                area.addEventListener("blur", () => {
-                    cell._editing = false;
-                    renderCellBody(body.closest(".nb-cell"), cell);
-                    save(false);
+                // Exit edit mode only when focus leaves the cell controls
+                // entirely. Clicking the language select opens a native
+                // popup and the focusout comes with relatedTarget = null,
+                // so defer and check where focus actually landed.
+                const wrap = el("div", "flex flex-col");
+                wrap.appendChild(lang);
+                wrap.appendChild(area);
+                wrap.addEventListener("focusout", () => {
+                    setTimeout(() => {
+                        if (!wrap.isConnected
+                                || wrap.contains(document.activeElement)) return;
+                        cell._editing = false;
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        save(false);
+                    }, 0);
                 });
-                body.appendChild(lang);
-                body.appendChild(area);
+                body.appendChild(wrap);
                 if (cell._editing) area.focus();
             } else {
                 const pre = el("pre", "rounded-lg overflow-x-auto");

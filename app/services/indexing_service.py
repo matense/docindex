@@ -1,7 +1,9 @@
 import threading
+import time
 from datetime import timedelta
 
 from flask import current_app
+from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import FileIndex, IndexJob, StoredFile, utcnow
@@ -201,31 +203,71 @@ def _claim_next_job():
         return job.id
 
 
+def _commit_quiet(app, what):
+    """Commit, tolerating transient SQLite locks; returns True on success."""
+    try:
+        db.session.commit()
+        return True
+    except OperationalError as exc:  # e.g. 'database is locked'
+        app.logger.warning("Index queue: commit of %s failed: %s", what, exc)
+        db.session.rollback()
+        return False
+
+
+def _process_job(app, job_id):
+    """Process one claimed job. A failure (extraction error or a transient
+    DB lock) never propagates: the job goes back to pending while attempts
+    remain, then to error — the drainer thread keeps working."""
+    job = db.session.get(IndexJob, job_id)
+    stored = db.session.get(StoredFile, job.file_id)
+    if not stored or stored.deleted_at is not None:
+        job.status = "done"  # file gone/trashed: nothing to do
+        db.session.commit()
+        return
+    try:
+        index_file(stored.id, app)
+    except Exception as exc:  # noqa: BLE001 - e.g. sqlite 'database is locked'
+        db.session.rollback()
+        app.logger.warning("Index job %s failed attempt %s: %s",
+                           job_id, job.attempts, exc)
+        job = db.session.get(IndexJob, job_id)
+        job.error = str(exc)[:1000]
+        job.status = ("pending" if job.attempts < MAX_JOB_ATTEMPTS
+                      else "error")
+        _commit_quiet(app, f"job {job_id} retry state")
+        time.sleep(1)  # small backoff before the retry is claimed
+        return
+    db.session.expire_all()  # index_file committed in its own context
+    index = db.session.get(StoredFile, stored.id).index
+    if index and index.status == "ok":
+        job.status = "done"
+        job.error = None
+    else:
+        job.error = (index.error if index else "indexing failed")
+        # Retry while attempts remain; final failure stays visible.
+        job.status = ("pending" if job.attempts < MAX_JOB_ATTEMPTS
+                      else "error")
+    db.session.commit()
+
+
 def _drain(app):
     with app.app_context():
         while not _queue_paused:
-            job_id = _claim_next_job()
+            try:
+                job_id = _claim_next_job()
+            except Exception:  # noqa: BLE001 - keep the drainer alive
+                app.logger.exception("Index queue: failed to claim a job")
+                db.session.rollback()
+                time.sleep(5)
+                continue
             if job_id is None:
                 return
-            job = db.session.get(IndexJob, job_id)
-            stored = db.session.get(StoredFile, job.file_id)
-            if not stored or stored.deleted_at is not None:
-                job.status = "done"  # file gone/trashed: nothing to do
-                db.session.commit()
-                continue
-            # index_file records the outcome on FileIndex and never raises.
-            index_file(stored.id, app)
-            db.session.expire_all()  # index_file committed in its own context
-            index = db.session.get(StoredFile, stored.id).index
-            if index and index.status == "ok":
-                job.status = "done"
-                job.error = None
-            else:
-                job.error = (index.error if index else "indexing failed")
-                # Retry while attempts remain; final failure stays visible.
-                job.status = ("pending" if job.attempts < MAX_JOB_ATTEMPTS
-                              else "error")
-            db.session.commit()
+            try:
+                _process_job(app, job_id)
+            except Exception:  # noqa: BLE001 - last-resort guard
+                app.logger.exception("Index job %s crashed", job_id)
+                db.session.rollback()
+                time.sleep(1)
 
 
 def _drainer_entry(app):

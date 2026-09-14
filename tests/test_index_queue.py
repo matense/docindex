@@ -74,6 +74,39 @@ def test_failed_indexing_retries_then_errors(auth_client, app):
         assert db.session.get(StoredFile, fid).index.status == "error"
 
 
+def test_drainer_survives_transient_db_lock(auth_client, app):
+    """Regression: a 'database is locked' OperationalError during a job used
+    to crash the drainer thread and stall the whole queue. Now the job goes
+    back to pending and the drainer keeps working."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    _upload(auth_client, "lock.txt", b"locked once")
+    with app.app_context():
+        fid = StoredFile.query.one().id
+        indexing_service.enqueue_index([fid])
+        calls = {"n": 0}
+        real_index_file = indexing_service.index_file
+
+        def flaky(file_id, app=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OperationalError(
+                    "UPDATE file_index ...", {},
+                    sqlite3.OperationalError("database is locked"))
+            return real_index_file(file_id, app)
+
+        with patch("app.services.indexing_service.index_file",
+                   side_effect=flaky):
+            with patch("app.services.indexing_service.time.sleep"):
+                indexing_service._drain(app)
+        job = IndexJob.query.one()
+        assert job.status == "done"       # retried successfully
+        assert calls["n"] == 2            # failed once, then re-processed
+        assert db.session.get(StoredFile, fid).index.status == "ok"
+
+
 def test_recover_interrupted_requeues_running(auth_client, app):
     _upload(auth_client, "crash.txt", b"crashed mid index")
     with app.app_context():
