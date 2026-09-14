@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Diff v{{ version.version }} - {{ file.name }}{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <a href="{{ url_for('notebooks.history', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm btn-square" title="Back to history">
+            <i class="fas fa-arrow-left"></i>
+        </a>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold truncate">
+                v{{ version.version }} → current — {{ file.name }}
+            </h1>
+            <p class="text-xs opacity-50">
+                {{ version.created_at.strftime('%Y-%m-%d %H:%M:%S') if version.created_at }}
+                · unified diff of the notebook document
+            </p>
+        </div>
+        <form method="POST"
+              action="{{ url_for('notebooks.history_restore', file_id=file.id, version_id=version.id) }}"
+              data-confirm="Restore v{{ version.version }}? The current content is saved as a new version first.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-outline btn-primary btn-sm gap-1">
+                <i class="fas fa-rotate-left"></i> Restore this version
+            </button>
+        </form>
+    </div>
+
+    <div class="glass-panel rounded-2xl p-4 overflow-x-auto">
+        {% if diff %}
+        <pre class="text-xs font-mono leading-relaxed">{% for line in diff %}<span class="block px-2 rounded{% if line.startswith('+') and not line.startswith('+++') %} bg-success/15 text-success{% elif line.startswith('-') and not line.startswith('---') %} bg-error/15 text-error{% elif line.startswith('@@') %} text-info{% else %} opacity-60{% endif %}">{{ line }}</span>{% endfor %}</pre>
+        {% else %}
+        <p class="text-sm opacity-50 text-center py-6">No differences — this version is
+        identical to the current content.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

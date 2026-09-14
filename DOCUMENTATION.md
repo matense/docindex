@@ -923,15 +923,35 @@ tool + table).
   rejected on name collisions, and filtered out of the model's tool list
   while the module is disabled (`_active_tools()` per agent run). Core
   tools stay registered under their plain names.
+- **Search & viewers** — modules can register a text extractor per file
+  extension (`indexing_service.register_extractor`, consulted by
+  `extract_text()` before the built-in dispatch, so reindex/sync just work)
+  and take over the generic file viewer per extension
+  (`module_service.register_file_viewer` — honored only while the module is
+  enabled, otherwise the generic `/file/<id>/view` page renders).
 - **Tables** — module tables use the `mod_<name>_` prefix and ship their
   own independent migrations (see Migrations above).
 - **Trust model** — module code runs in-process with full access; there is
   no sandbox. Installing a folder on disk is the privileged boundary —
   the toggle is not.
 
+### Bundled modules
+
+- `hello` — minimal example (page + echo tool + table).
+- `notebooks` — Jupyter-style notebooks. A notebook is a regular
+  `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
+  (`markdown`/`richtext`/`code`/`todo`/`table` cells), so it gets drives, trash,
+  `FileVersion` history and FTS search for free. Autosave writes through
+  with an 800 ms debounce + `beforeunload` flush (no data loss) and
+  snapshots a `FileVersion` at most every 2 minutes; Ctrl+S/Checkpoint and
+  every AI edit force a version. Own list/editor/history/diff pages under
+  `/m/notebooks/`, plus AI tools `notebooks.list/read/create/add_cell/
+  update_cell/delete_cell`. Registered as extractor (`pdocnb` → flattened
+  cell text) and viewer (`/file/<id>/view` redirects to the cell editor).
+
 ## Testing
 
-pytest suite in `tests/`, 288 tests across 20+ modules:
+pytest suite in `tests/`, 301 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

@@ -91,6 +91,27 @@ register_tool(
 Tool names collide loudly: registering a duplicate raises `ValueError` and
 the module is skipped.
 
+## Search integration and file viewers
+
+Modules can hook the indexing pipeline and the file viewer:
+
+```python
+from app.services import indexing_service, module_service
+
+indexing_service.register_extractor("pdocnb", extract_fn)
+# extract_fn(stored_file) -> plain text; consulted by extract_text() before
+# the built-in dispatch, so reindex/sync/queue all work for your file type.
+
+module_service.register_file_viewer(
+    "pdocnb", lambda stored: f"/m/mymodule/{stored.id}", module="mymodule")
+# GET /file/<id>/view redirects to your viewer while the module is enabled;
+# disabled modules fall back to the generic viewer.
+```
+
+Prefer storing module documents as regular files (see `modules/notebooks/`):
+they get ownership, drives/folders, trash, `FileVersion` history, FTS search
+and the AI agent's core tools (search/read/grep/hashtags) for free.
+
 ## Database tables
 
 - Table names must be prefixed `mod_<module>_` (e.g. `mod_hello_note`).

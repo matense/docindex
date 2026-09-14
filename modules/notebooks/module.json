@@ -1,0 +1,7 @@
+{
+  "name": "notebooks",
+  "version": "1.0.0",
+  "description": "Jupyter-style notebooks: cell-based documents saved on your drives, indexed and searchable, with version history and full AI tooling.",
+  "capabilities": ["routes", "tools"],
+  "nav": {"label": "Notebooks", "icon": "fa-book-open", "url": "/"}
+}

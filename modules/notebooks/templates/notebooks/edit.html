@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} - Notebooks{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-3" id="nb-root">
+
+    <!-- Toolbar -->
+    <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">
+        <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
+           title="All notebooks"><i class="fas fa-arrow-left"></i></a>
+        <div class="flex-1 min-w-0">
+            <h1 class="font-bold truncate">{{ doc.title }}</h1>
+            <p class="text-xs opacity-40">
+                {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
+            </p>
+        </div>
+        <span id="nb-save-status" class="text-xs opacity-50 whitespace-nowrap">
+            <i class="fas fa-check mr-1"></i>Saved
+        </span>
+        <button id="nb-checkpoint-btn" class="btn btn-ghost btn-sm gap-1"
+                title="Save a restorable checkpoint now (Ctrl+S)">
+            <i class="fas fa-bookmark"></i> Checkpoint
+        </button>
+        <a href="{{ url_for('notebooks.history', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Version history">
+            <i class="fas fa-clock-rotate-left"></i> History
+        </a>
+    </div>
+
+    <!-- Cells -->
+    <div id="nb-cells" class="flex flex-col gap-2"></div>
+
+    <!-- Add cell -->
+    <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-2">
+        <select id="nb-add-type" class="select select-bordered select-sm">
+            <option value="markdown">Markdown</option>
+            <option value="richtext">Rich text</option>
+            <option value="code">Code</option>
+            <option value="todo">To-do list</option>
+            <option value="table">Table</option>
+        </select>
+        <button id="nb-add-btn" class="btn btn-primary btn-sm gap-1">
+            <i class="fas fa-plus"></i> Add cell
+        </button>
+        <span class="text-xs opacity-40 ml-auto hidden md:inline">
+            Changes save automatically · Ctrl+S saves a checkpoint
+        </span>
+    </div>
+</div>
+
+<style>
+/* Tailwind preflight resets heading sizes — restore them inside the
+   rich-text editor so text sizes are visible. */
+.nb-rt h1 { font-size: 1.6em; font-weight: 700; margin: .3em 0; }
+.nb-rt h2 { font-size: 1.35em; font-weight: 700; margin: .3em 0; }
+.nb-rt h3 { font-size: 1.15em; font-weight: 600; margin: .3em 0; }
+.nb-rt blockquote { border-left: 3px solid oklch(var(--p)); padding-left: .75em; opacity: .8; margin: .3em 0; }
+.nb-rt ul { list-style: disc; padding-left: 1.5em; }
+.nb-rt ol { list-style: decimal; padding-left: 1.5em; }
+
+/* Insert-cell bars between cells (revealed on hover) */
+.nb-add-bar { position: relative; height: 16px; margin: -7px 0; display: flex;
+    align-items: center; justify-content: center; opacity: 0;
+    transition: opacity .15s; z-index: 5; }
+.nb-add-bar:hover, .nb-add-bar.open { opacity: 1; }
+.nb-add-line { position: absolute; left: 8px; right: 8px; top: 50%;
+    height: 2px; margin-top: -1px; background: oklch(var(--p) / .35);
+    border-radius: 2px; }
+.nb-add-btn { position: relative; }
+.nb-add-types { position: relative; gap: 2px; }
+
+/* Drag reorder feedback */
+.nb-cell { transition: box-shadow .1s; }
+
+/* Quill rich-text editor: fit the app's look (light + dark) */
+.nb-rt-edit .ql-toolbar { border-radius: .5rem .5rem 0 0;
+    border-color: rgba(128,128,128,.2); background: rgba(128,128,128,.06); }
+.nb-rt-edit .ql-container { border-radius: 0 0 .5rem .5rem;
+    border-color: rgba(128,128,128,.2); font-size: .9rem; font-family: inherit; }
+.nb-rt-edit .ql-editor { min-height: 5rem; }
+.nb-rt-edit .ql-editor.ql-blank::before { color: rgba(128,128,128,.5);
+    font-style: normal; }
+
+/* Preview each size option at its own size inside the dropdown (labels
+   themselves come from the option text — Quill 2 data-label behavior). */
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="12px"] { font-size: 12px; }
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="14px"] { font-size: 14px; }
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="20px"] { font-size: 20px; }
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="24px"] { font-size: 24px; }
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="32px"] { font-size: 32px; }
+.nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="48px"] { font-size: 48px; }
+[data-theme="dark"] .nb-rt-edit .ql-toolbar .ql-stroke { stroke: #cbd5e1; }
+[data-theme="dark"] .nb-rt-edit .ql-toolbar .ql-fill { fill: #cbd5e1; }
+[data-theme="dark"] .nb-rt-edit .ql-toolbar .ql-picker { color: #cbd5e1; }
+[data-theme="dark"] .nb-rt-edit .ql-picker-options {
+    background: #1e293b; border-color: rgba(255,255,255,.15); }
+[data-theme="dark"] .nb-rt-edit .ql-picker-item { color: #e2e8f0; }
+[data-theme="dark"] .nb-rt-edit .ql-picker-item:hover,
+[data-theme="dark"] .nb-rt-edit .ql-picker-item.ql-selected { color: #a5b4fc; }
+
+/* The glass-panel backdrop-filter makes each cell its own stacking context,
+   so a z-index on the dropdown alone can't escape it — lift the whole cell
+   while one of its pickers is open. */
+.nb-cell:has(.ql-picker.ql-expanded) { position: relative; z-index: 30; }
+.nb-rt-edit .ql-picker.ql-expanded .ql-picker-options { z-index: 31; }
+</style>
+
+<script>
+(function () {
+    const root = document.getElementById('nb-root');
+    if (!root) return;
+    const opts = {
+        fileId: {{ file.id }},
+        saveUrl: {{ url_for('notebooks.save', file_id=file.id)|tojson }},
+        doc: {{ doc|tojson }}
+    };
+    function boot() { window.NotebookEditor.mount(root, opts); }
+    // SPA page swaps don't execute external <script src> tags, so load the
+    // editor script on demand — it stays cached in window after first load.
+    if (window.NotebookEditor) return boot();
+    const s = document.createElement('script');
+    s.src = {{ url_for('notebooks.static', filename='notebook.js')|tojson }};
+    s.onload = boot;
+    document.head.appendChild(s);
+})();
+</script>
+{% endblock %}

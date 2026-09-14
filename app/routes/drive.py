@@ -604,6 +604,11 @@ def empty_trash():
 def view(file_id):
     """In-app document viewer for all file types."""
     stored = _get_file(file_id)
+    # Modules can own the viewer for their file types (e.g. notebooks).
+    from ..services import module_service
+    viewer = module_service.file_viewer_for(stored.extension)
+    if viewer:
+        return redirect(viewer(stored))
     content = None
     rendered = None
     if stored.extension == "md":

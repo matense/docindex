@@ -37,6 +37,24 @@ logger = logging.getLogger(__name__)
 # Discovered modules: name -> manifest dict (with "error" set when invalid).
 _discovered = {}
 
+# File viewers: extension -> (module, url_fn). Lets a module take over the
+# generic /file/<id>/view page for its own file types; only honored while
+# the owning module is enabled.
+_FILE_VIEWERS = {}
+
+
+def register_file_viewer(extension, url_fn, module):
+    """Register a viewer URL builder (stored_file -> URL) for an extension."""
+    _FILE_VIEWERS[extension.lower().lstrip(".")] = (module, url_fn)
+
+
+def file_viewer_for(extension):
+    """URL builder for the extension, or None (generic viewer is used)."""
+    entry = _FILE_VIEWERS.get((extension or "").lower().lstrip("."))
+    if entry and is_enabled(entry[0]):
+        return entry[1]
+    return None
+
 
 def _modules_folder(app=None):
     from flask import current_app

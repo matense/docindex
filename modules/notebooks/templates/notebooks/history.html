@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}History - {{ file.name }}{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-4">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <a href="{{ url_for('notebooks.editor', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm btn-square" title="Back to editor">
+            <i class="fas fa-arrow-left"></i>
+        </a>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold truncate">History — {{ file.name }}</h1>
+            <p class="text-xs opacity-50">
+                Every editing burst and checkpoint leaves a restorable version. The current
+                content is always snapshotted before a restore, so nothing is lost.
+            </p>
+        </div>
+    </div>
+
+    {% if versions %}
+    <div class="flex flex-col gap-2">
+        {% for v in versions %}
+        <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap">
+            <span class="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center text-sm">
+                {% if v.source == 'restore' %}<i class="fas fa-rotate-left"></i>
+                {% elif v.source == 'upload' %}<i class="fas fa-upload"></i>
+                {% else %}<i class="fas fa-pen"></i>{% endif %}
+            </span>
+            <div class="flex-1 min-w-0">
+                <div class="font-semibold text-sm">v{{ v.version }}
+                    <span class="font-normal opacity-50">· {{ v.source }}</span>
+                </div>
+                <div class="text-xs opacity-50">
+                    {{ v.created_at.strftime('%Y-%m-%d %H:%M:%S') if v.created_at }}
+                    · {{ '%.1f' % (v.size / 1024) }} KB
+                    {% if v.note %}· {{ v.note }}{% endif %}
+                </div>
+            </div>
+            <a href="{{ url_for('notebooks.history_diff', file_id=file.id, version_id=v.id) }}"
+               class="btn btn-ghost btn-xs gap-1"><i class="fas fa-code-compare"></i> Diff</a>
+            <a href="{{ url_for('drive.version_download', file_id=file.id, version_id=v.id) }}"
+               class="btn btn-ghost btn-xs gap-1"><i class="fas fa-download"></i> Download</a>
+            <form method="POST"
+                  action="{{ url_for('notebooks.history_restore', file_id=file.id, version_id=v.id) }}"
+                  data-confirm="Restore v{{ v.version }}? The current content is saved as a new version first.">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline btn-primary btn-xs gap-1">
+                    <i class="fas fa-rotate-left"></i> Restore
+                </button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="glass-panel rounded-2xl px-6 py-10 text-center">
+        <i class="fas fa-clock-rotate-left text-3xl opacity-20"></i>
+        <p class="text-sm opacity-50 mt-3">No versions yet — the first snapshot is created when
+        you edit the notebook.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

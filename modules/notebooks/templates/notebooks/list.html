@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Notebooks - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+
+    <!-- Header -->
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-book-open"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Notebooks</h1>
+            <p class="text-xs opacity-50">
+                Cell-based documents (markdown, code, to-do lists and tables) saved on your
+                drives, indexed for search and fully accessible to the AI assistant.
+            </p>
+        </div>
+        <button class="btn btn-primary btn-sm gap-1" onclick="document.getElementById('nb-new-modal').showModal()">
+            <i class="fas fa-plus"></i> New notebook
+        </button>
+    </div>
+
+    {% if notebooks %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {% for nb in notebooks %}
+        <div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-2">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-book-open text-primary"></i>
+                <a href="{{ url_for('notebooks.editor', file_id=nb.file.id) }}"
+                   class="font-semibold truncate hover:text-primary transition-colors">
+                    {{ nb.file.name[:-7] if nb.file.name.endswith('.pdocnb') else nb.file.name }}
+                </a>
+                <span class="text-xs opacity-40 ml-auto whitespace-nowrap">
+                    {{ nb.file.updated_at.strftime('%Y-%m-%d %H:%M') if nb.file.updated_at }}
+                </span>
+            </div>
+            <div class="text-xs opacity-50 flex items-center gap-3 flex-wrap">
+                <span><i class="fas fa-hard-drive mr-1"></i>{{ nb.file.drive.name if nb.file.drive else '—' }}</span>
+                {% if nb.file.folder %}<span><i class="fas fa-folder mr-1"></i>{{ nb.file.folder.name }}</span>{% endif %}
+                <span><i class="fas fa-table-cells mr-1"></i>{{ nb.cells }} cell{{ 's' if nb.cells != 1 }}</span>
+            </div>
+            {% if nb.tags %}
+            <div class="flex gap-1 flex-wrap">
+                {% for tag in nb.tags %}
+                <span class="badge badge-sm badge-ghost">#{{ tag }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <div class="flex gap-2 mt-1">
+                <a href="{{ url_for('notebooks.editor', file_id=nb.file.id) }}"
+                   class="btn btn-ghost btn-xs gap-1"><i class="fas fa-pen"></i> Open</a>
+                <a href="{{ url_for('notebooks.history', file_id=nb.file.id) }}"
+                   class="btn btn-ghost btn-xs gap-1"><i class="fas fa-clock-rotate-left"></i> History</a>
+                <button class="btn btn-ghost btn-xs gap-1"
+                        onclick="nbRename({{ nb.file.id }}, {{ nb.file.name|tojson }})">
+                    <i class="fas fa-i-cursor"></i> Rename
+                </button>
+                <form method="POST" action="{{ url_for('notebooks.delete', file_id=nb.file.id) }}"
+                      data-confirm="Move this notebook to the trash? You can restore it from your profile page."
+                      data-confirm-danger class="ml-auto">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-ghost btn-xs text-error gap-1">
+                        <i class="fas fa-trash-can"></i> Delete
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="glass-panel rounded-2xl px-6 py-12 text-center">
+        <i class="fas fa-book-open text-4xl opacity-20"></i>
+        <p class="text-sm opacity-50 mt-3">No notebooks yet. Create your first one — or ask the AI
+        assistant to create one for you.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- New notebook modal -->
+<dialog id="nb-new-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New notebook</h3>
+        <p class="text-xs opacity-50 mb-4">Saved as a file on the chosen drive — synced (read-only)
+        drives are not available. Notebooks are indexed for search and AI automatically.</p>
+        <form method="POST" action="{{ url_for('notebooks.new') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="Notebook name" required
+                   class="input input-bordered input-sm w-full">
+            <select name="location" class="select select-bordered select-sm w-full">
+                {% for value, label in locations %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+            {% if not locations %}
+            <p class="text-xs text-warning">You need a writable drive first — create one on the
+            drive page.</p>
+            {% endif %}
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('nb-new-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm" {{ 'disabled' if not locations }}>
+                    Create
+                </button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- Rename modal -->
+<dialog id="nb-rename-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-4"><i class="fas fa-i-cursor text-primary"></i> Rename notebook</h3>
+        <form method="POST" id="nb-rename-form" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" id="nb-rename-name" required
+                   class="input input-bordered input-sm w-full">
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('nb-rename-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">Rename</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+(function () {
+    window.nbRename = function (id, currentName) {
+        const form = document.getElementById('nb-rename-form');
+        form.action = '/m/notebooks/' + id + '/rename';
+        document.getElementById('nb-rename-name').value =
+            currentName.endsWith('.pdocnb') ? currentName.slice(0, -7) : currentName;
+        document.getElementById('nb-rename-modal').showModal();
+    };
+})();
+</script>
+{% endblock %}

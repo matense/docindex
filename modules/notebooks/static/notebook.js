@@ -1,0 +1,642 @@
+/* Notebooks module — cell editor with autosave.
+ *
+ * Mounted from edit.html: NotebookEditor.mount(rootEl, {fileId, saveUrl, doc}).
+ * The document state lives in memory; every change is debounce-saved (800 ms),
+ * flushed on beforeunload via keepalive fetch, and Ctrl+S / the Checkpoint
+ * button forces a restorable history version.
+ */
+(function () {
+    "use strict";
+
+    const TYPE_META = {
+        markdown: { icon: "fa-align-left", label: "Markdown" },
+        richtext: { icon: "fa-font", label: "Rich text" },
+        code: { icon: "fa-code", label: "Code" },
+        todo: { icon: "fa-list-check", label: "To-do" },
+        table: { icon: "fa-table", label: "Table" },
+    };
+
+    function el(tag, cls, text) {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    function renderMarkdown(text) {
+        if (!window.marked) return null;
+        // [name](file://ID) citations become viewer links, like the AI chat.
+        const linked = (text || "").replace(
+            /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
+            '<a href="/file/$2/view">$1</a>');
+        return window.marked.parse(linked, { breaks: true });
+    }
+
+    // Rich-text cells store HTML authored in our own editor, but content can
+    // also come from AI tools — strip active content before rendering.
+    function sanitizeHtml(html) {
+        const parsed = new DOMParser().parseFromString(html || "", "text/html");
+        parsed.querySelectorAll("script,style,iframe,object,embed,form,link,meta")
+            .forEach((n) => n.remove());
+        parsed.querySelectorAll("*").forEach((node) => {
+            Array.from(node.attributes).forEach((attr) => {
+                if (attr.name.toLowerCase().startsWith("on")
+                        || /^\s*javascript:/i.test(attr.value)) {
+                    node.removeAttribute(attr.name);
+                }
+            });
+        });
+        return parsed.body.innerHTML;
+    }
+
+    // Quill (Word-like WYSIWYG) loaded on demand from the CDN — only when a
+    // rich-text cell enters edit mode. Pixel sizes are registered as an
+    // inline style attributor so any selection can get any size.
+    let _quillCallbacks = null;
+
+    function loadQuill(cb) {
+        if (window.Quill) return cb();
+        if (_quillCallbacks) { _quillCallbacks.push(cb); return; }
+        _quillCallbacks = [cb];
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css";
+        document.head.appendChild(link);
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js";
+        script.onload = () => {
+            const Size = window.Quill.import("attributors/style/size");
+            Size.whitelist = ["12px", "14px", "20px", "24px", "32px", "48px"];
+            window.Quill.register(Size, true);
+            _quillCallbacks.forEach((fn) => fn());
+            _quillCallbacks = null;
+        };
+        document.head.appendChild(script);
+    }
+
+    function mount(root, opts) {
+        if (root.dataset.nbMounted) return;
+        root.dataset.nbMounted = "1";
+
+        const doc = opts.doc && Array.isArray(opts.doc.cells)
+            ? opts.doc : { version: 1, title: "Untitled notebook", cells: [] };
+        const cellsEl = root.querySelector("#nb-cells");
+        const statusEl = root.querySelector("#nb-save-status");
+
+        let dirty = false;
+        let saving = false;
+        let timer = null;
+
+        // ------------------------------------------------------------------
+        // Saving
+        // ------------------------------------------------------------------
+        function setStatus(state, extra) {
+            if (!statusEl) return;
+            const map = {
+                saved: ['<i class="fas fa-check mr-1"></i>Saved', ""],
+                dirty: ['<i class="fas fa-circle mr-1"></i>Unsaved changes', "text-warning"],
+                saving: ['<i class="fas fa-spinner fa-spin mr-1"></i>Saving…', ""],
+                error: ['<i class="fas fa-triangle-exclamation mr-1"></i>Save failed'
+                        + (extra ? ": " + extra : ""), "text-error"],
+            };
+            const [html, cls] = map[state] || map.saved;
+            statusEl.innerHTML = html +
+                (state === "saved" && extra
+                    ? ' <span class="opacity-40">' + extra + "</span>" : "");
+            statusEl.className = "text-xs whitespace-nowrap " +
+                (cls || "opacity-50");
+        }
+
+        function scheduleSave() {
+            dirty = true;
+            setStatus("dirty");
+            clearTimeout(timer);
+            timer = setTimeout(() => save(false), 800);
+        }
+
+        async function save(forceCheckpoint) {
+            if (saving) { dirty = true; return; }
+            saving = true;
+            setStatus("saving");
+            try {
+                const resp = await fetch(opts.saveUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        doc: doc,
+                        force_checkpoint: !!forceCheckpoint,
+                        note: forceCheckpoint ? "Manual checkpoint" : "",
+                    }),
+                });
+                const data = await resp.json();
+                if (resp.ok && data.ok) {
+                    dirty = false;
+                    const time = (data.saved_at || "").slice(11, 19);
+                    setStatus("saved", time);
+                    if (window.spaInvalidate) window.spaInvalidate();
+                } else {
+                    setStatus("error", data.error || resp.status);
+                }
+            } catch (err) {
+                setStatus("error");
+            }
+            saving = false;
+            if (dirty) scheduleSave();
+        }
+
+        function flushSync() {
+            if (!dirty) return;
+            try {
+                fetch(opts.saveUrl, {
+                    method: "POST", keepalive: true,
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ doc: doc }),
+                });
+                dirty = false;
+            } catch (err) { /* best effort */ }
+        }
+
+        function alive() { return document.body.contains(root); }
+
+        function onBeforeUnload() { if (!alive()) return detach(); flushSync(); }
+        function onKeydown(e) {
+            if (!alive()) return detach();
+            if ((e.ctrlKey || e.metaKey) && e.code === "KeyS") {
+                e.preventDefault();
+                save(true);
+            }
+        }
+        function detach() {
+            window.removeEventListener("beforeunload", onBeforeUnload);
+            document.removeEventListener("keydown", onKeydown);
+        }
+        window.addEventListener("beforeunload", onBeforeUnload);
+        document.addEventListener("keydown", onKeydown);
+
+        const checkpointBtn = root.querySelector("#nb-checkpoint-btn");
+        if (checkpointBtn) {
+            checkpointBtn.addEventListener("click", () => save(true));
+        }
+        const addBtn = root.querySelector("#nb-add-btn");
+        const addType = root.querySelector("#nb-add-type");
+        if (addBtn && addType) {
+            addBtn.addEventListener("click", () => {
+                doc.cells.push(newCell(addType.value));
+                render();
+                scheduleSave();
+            });
+        }
+
+        function newCell(type) {
+            const cell = {
+                id: Math.random().toString(16).slice(2, 14),
+                type: type, content: "", meta: {},
+            };
+            if (type === "code") cell.meta.language = "python";
+            if (type === "todo") cell.meta.items = [{ text: "", done: false }];
+            if (type === "table") {
+                cell.meta.headers = ["Column 1", "Column 2"];
+                cell.meta.rows = [["", ""]];
+            }
+            return cell;
+        }
+
+        // ------------------------------------------------------------------
+        // Cell rendering
+        // ------------------------------------------------------------------
+        function render() {
+            cellsEl.innerHTML = "";
+            cellsEl.appendChild(makeAddBar(0));
+            doc.cells.forEach((cell, i) => {
+                cellsEl.appendChild(renderCell(cell, i));
+                cellsEl.appendChild(makeAddBar(i + 1));
+            });
+        }
+
+        function insertCell(type, index) {
+            const cell = newCell(type);
+            if (type === "markdown" || type === "code" || type === "richtext") {
+                cell._editing = true;
+            }
+            doc.cells.splice(index, 0, cell);
+            render();
+            scheduleSave();
+        }
+
+        // Slim hover-revealed bar between cells: "+" expands into the cell
+        // type picker and inserts at that exact position.
+        function makeAddBar(index) {
+            const bar = el("div", "nb-add-bar");
+            bar.appendChild(el("span", "nb-add-line"));
+            const btn = el("button", "nb-add-btn btn btn-primary btn-xs btn-circle");
+            btn.innerHTML = '<i class="fas fa-plus"></i>';
+            btn.title = "Insert cell here";
+            const types = el("div", "nb-add-types glass-panel rounded-full px-2 py-1");
+            types.style.display = "none";
+            Object.entries(TYPE_META).forEach(([type, meta]) => {
+                const b = el("button", "btn btn-ghost btn-xs btn-square");
+                b.innerHTML = '<i class="fas ' + meta.icon + '"></i>';
+                b.title = meta.label;
+                b.addEventListener("click", () => insertCell(type, index));
+                types.appendChild(b);
+            });
+            const cancel = el("button", "btn btn-ghost btn-xs btn-square text-error");
+            cancel.innerHTML = '<i class="fas fa-xmark"></i>';
+            cancel.title = "Cancel";
+            types.appendChild(cancel);
+            const closePicker = () => {
+                types.style.display = "none";
+                btn.style.display = "";
+                bar.classList.remove("open");
+            };
+            cancel.addEventListener("click", closePicker);
+            btn.addEventListener("click", () => {
+                types.style.display = "flex";
+                btn.style.display = "none";
+                bar.classList.add("open");
+            });
+            bar.appendChild(btn);
+            bar.appendChild(types);
+            return bar;
+        }
+
+        function renderCell(cell, index) {
+            const meta = TYPE_META[cell.type] || TYPE_META.markdown;
+            const wrap = el("div", "glass-panel rounded-xl px-4 py-3 nb-cell");
+            wrap.dataset.cellId = cell.id;
+            wrap.draggable = false;
+
+            // Header: drag handle, type badge, actions
+            const head = el("div", "flex items-center gap-2 mb-2");
+            const grip = el("span",
+                "cursor-grab opacity-30 hover:opacity-70 transition-opacity",
+                "");
+            grip.innerHTML = '<i class="fas fa-grip-vertical"></i>';
+            grip.title = "Drag to reorder";
+            grip.draggable = true;
+            grip.addEventListener("dragstart", (e) => {
+                e.dataTransfer.setData("text/nb-cell", String(index));
+                e.dataTransfer.effectAllowed = "move";
+                // Drag image = the whole cell, not just the tiny grip.
+                e.dataTransfer.setDragImage(wrap, 24, 12);
+                wrap.classList.add("opacity-40");
+            });
+            grip.addEventListener("dragend", () => {
+                wrap.classList.remove("opacity-40");
+            });
+            head.appendChild(grip);
+            const badge = el("span", "badge badge-sm badge-ghost gap-1");
+            badge.innerHTML = '<i class="fas ' + meta.icon + '"></i> ' + meta.label;
+            head.appendChild(badge);
+
+            const actions = el("div", "ml-auto flex items-center gap-1");
+            const mkBtn = (icon, title, fn, danger) => {
+                const b = el("button",
+                    "btn btn-ghost btn-xs btn-square" + (danger ? " text-error" : ""));
+                b.innerHTML = '<i class="fas ' + icon + '"></i>';
+                b.title = title;
+                b.addEventListener("click", fn);
+                return b;
+            };
+            if (cell.type === "markdown" || cell.type === "code" || cell.type === "richtext") {
+                actions.appendChild(mkBtn("fa-pen", "Edit / preview", () => {
+                    cell._editing = !cell._editing;
+                    renderCellBody(wrap, cell, index);
+                }));
+            }
+            actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
+                if (index > 0) {
+                    doc.cells.splice(index, 1);
+                    doc.cells.splice(index - 1, 0, cell);
+                    render(); scheduleSave();
+                }
+            }));
+            actions.appendChild(mkBtn("fa-arrow-down", "Move down", () => {
+                if (index < doc.cells.length - 1) {
+                    doc.cells.splice(index, 1);
+                    doc.cells.splice(index + 1, 0, cell);
+                    render(); scheduleSave();
+                }
+            }));
+            actions.appendChild(mkBtn("fa-trash-can", "Delete cell", async () => {
+                const ok = await (window.uiConfirm
+                    ? window.uiConfirm("Delete this cell?", { danger: true })
+                    : Promise.resolve(window.confirm("Delete this cell?")));
+                if (!ok) return;
+                doc.cells.splice(index, 1);
+                render(); scheduleSave();
+            }, true));
+            head.appendChild(actions);
+            wrap.appendChild(head);
+
+            const body = el("div", "nb-cell-body");
+            wrap.appendChild(body);
+            renderCellBody(wrap, cell, index);
+
+            // Drop target: hovering the top half inserts above, bottom half
+            // below; a primary-colored line marks the landing position.
+            wrap.addEventListener("dragover", (e) => {
+                if (!e.dataTransfer.types.includes("text/nb-cell")) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                const rect = wrap.getBoundingClientRect();
+                const before = (e.clientY - rect.top) < rect.height / 2;
+                wrap.dataset.dropPos = before ? "before" : "after";
+                wrap.style.boxShadow = before
+                    ? "0 -3px 0 0 oklch(var(--p))"
+                    : "0 3px 0 0 oklch(var(--p))";
+            });
+            wrap.addEventListener("dragleave", () => {
+                wrap.style.boxShadow = "";
+            });
+            wrap.addEventListener("drop", (e) => {
+                e.preventDefault();
+                wrap.style.boxShadow = "";
+                const from = parseInt(e.dataTransfer.getData("text/nb-cell"), 10);
+                if (isNaN(from)) return;
+                let to = index + (wrap.dataset.dropPos === "after" ? 1 : 0);
+                if (to === from || to === from + 1) return;  // dropped in place
+                const moved = doc.cells.splice(from, 1)[0];
+                if (from < to) to -= 1;
+                doc.cells.splice(to, 0, moved);
+                render(); scheduleSave();
+            });
+            return wrap;
+        }
+
+        function renderCellBody(wrap, cell, index) {
+            const body = wrap.querySelector(".nb-cell-body");
+            body.innerHTML = "";
+            if (cell.type === "markdown") renderMarkdownCell(body, cell);
+            else if (cell.type === "richtext") renderRichTextCell(body, cell);
+            else if (cell.type === "code") renderCodeCell(body, cell);
+            else if (cell.type === "todo") renderTodoCell(body, cell);
+            else if (cell.type === "table") renderTableCell(body, cell);
+        }
+
+        function renderRichTextCell(body, cell) {
+            // View mode: rendered HTML, no toolbar.
+            if (!cell._editing && cell.content.trim()) {
+                const view = el("div", "nb-rt");
+                view.innerHTML = sanitizeHtml(cell.content);
+                body.appendChild(view);
+                return;
+            }
+
+            // Edit mode: a real WYSIWYG editor (Quill) with Word-like
+            // per-selection font sizes. The toolbar is an explicit HTML
+            // container because Quill 2 labels picker options from the
+            // option's textContent — array config would leave every size
+            // option reading "Normal".
+            const toolbar = el("div");
+            toolbar.innerHTML = `
+                <span class="ql-formats">
+                    <select class="ql-size">
+                        <option value="12px">12px</option>
+                        <option value="14px">14px</option>
+                        <option selected>Normal</option>
+                        <option value="20px">20px</option>
+                        <option value="24px">24px</option>
+                        <option value="32px">32px</option>
+                        <option value="48px">48px</option>
+                    </select>
+                </span>
+                <span class="ql-formats">
+                    <button class="ql-bold"></button>
+                    <button class="ql-italic"></button>
+                    <button class="ql-underline"></button>
+                    <button class="ql-strike"></button>
+                </span>
+                <span class="ql-formats">
+                    <select class="ql-color"></select>
+                    <select class="ql-background"></select>
+                </span>
+                <span class="ql-formats">
+                    <button class="ql-list" value="ordered"></button>
+                    <button class="ql-list" value="bullet"></button>
+                    <button class="ql-blockquote"></button>
+                    <button class="ql-link"></button>
+                </span>
+                <span class="ql-formats">
+                    <button class="ql-clean"></button>
+                </span>`;
+            body.appendChild(toolbar);
+            const holder = el("div");
+            // Wrapper class on BOTH toolbar and editor so the theme CSS
+            // (dark picker, borders) reaches the whole thing.
+            const wrapAll = el("div", "nb-rt-edit");
+            body.appendChild(wrapAll);
+            wrapAll.appendChild(toolbar);
+            wrapAll.appendChild(holder);
+            loadQuill(() => {
+                if (!document.body.contains(holder)) return;  // page swapped away
+                const quill = new window.Quill(holder, {
+                    theme: "snow",
+                    placeholder: "Write here — select text to style it…",
+                    modules: { toolbar: toolbar },
+                });
+                if (cell.content.trim()) {
+                    quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content));
+                }
+                quill.on("text-change", () => {
+                    cell.content = quill.root.innerHTML;
+                    scheduleSave();
+                });
+                // NOTE: don't exit edit mode on blur — Quill's pickers blur
+                // the editor root while opening, which would destroy the
+                // editor mid-click. Blur just saves; the pencil header
+                // button toggles back to view mode.
+                quill.root.addEventListener("blur", () => save(false));
+                if (cell._editing) quill.focus();
+            });
+        }
+
+        function renderMarkdownCell(body, cell) {
+            if (cell._editing || !cell.content.trim()) {
+                const area = el("textarea",
+                    "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
+                area.value = cell.content;
+                area.placeholder = "Write markdown… tables, - [ ] tasks, [file](file://ID) references";
+                area.addEventListener("input", () => {
+                    cell.content = area.value;
+                    scheduleSave();
+                });
+                area.addEventListener("blur", () => {
+                    cell._editing = false;
+                    renderCellBody(body.closest(".nb-cell"), cell);
+                    save(false);
+                });
+                body.appendChild(area);
+                if (cell._editing) area.focus();
+            } else {
+                const view = el("div", "prose prose-sm max-w-none nb-md");
+                const html = renderMarkdown(cell.content);
+                if (html === null) { view.textContent = cell.content; }
+                else { view.innerHTML = html; }
+                body.appendChild(view);
+                if (window.hljs) {
+                    view.querySelectorAll("pre code").forEach(
+                        (c) => window.hljs.highlightElement(c));
+                }
+            }
+        }
+
+        function renderCodeCell(body, cell) {
+            if (cell._editing || !cell.content.trim()) {
+                const lang = el("input", "input input-bordered input-xs w-32 mb-1 font-mono");
+                lang.value = cell.meta.language || "";
+                lang.placeholder = "language";
+                lang.addEventListener("input", () => {
+                    cell.meta.language = lang.value;
+                    scheduleSave();
+                });
+                const area = el("textarea",
+                    "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
+                area.value = cell.content;
+                area.placeholder = "Code…";
+                area.addEventListener("input", () => {
+                    cell.content = area.value;
+                    scheduleSave();
+                });
+                area.addEventListener("blur", () => {
+                    cell._editing = false;
+                    renderCellBody(body.closest(".nb-cell"), cell);
+                    save(false);
+                });
+                body.appendChild(lang);
+                body.appendChild(area);
+                if (cell._editing) area.focus();
+            } else {
+                const pre = el("pre", "rounded-lg overflow-x-auto");
+                const code = el("code", "text-sm");
+                code.textContent = cell.content;
+                if (cell.meta.language) {
+                    code.classList.add("language-" + cell.meta.language);
+                }
+                pre.appendChild(code);
+                body.appendChild(pre);
+                if (window.hljs) {
+                    try { window.hljs.highlightElement(code); } catch (e) { /* unknown lang */ }
+                }
+            }
+        }
+
+        function renderTodoCell(body, cell) {
+            const items = cell.meta.items || (cell.meta.items = []);
+            const list = el("div", "flex flex-col gap-1");
+            items.forEach((item, i) => {
+                const row = el("div", "flex items-center gap-2");
+                const box = el("input", "checkbox checkbox-sm checkbox-primary");
+                box.type = "checkbox";
+                box.checked = !!item.done;
+                box.addEventListener("change", () => {
+                    item.done = box.checked;
+                    text.classList.toggle("line-through", item.done);
+                    text.classList.toggle("opacity-50", item.done);
+                    scheduleSave();
+                });
+                const text = el("input",
+                    "input input-ghost input-sm flex-1" +
+                    (item.done ? " line-through opacity-50" : ""));
+                text.value = item.text;
+                text.placeholder = "Task…";
+                text.addEventListener("input", () => {
+                    item.text = text.value;
+                    scheduleSave();
+                });
+                const del = el("button", "btn btn-ghost btn-xs btn-square text-error");
+                del.innerHTML = '<i class="fas fa-xmark"></i>';
+                del.addEventListener("click", () => {
+                    items.splice(i, 1);
+                    renderCellBody(body.closest(".nb-cell"), cell);
+                    scheduleSave();
+                });
+                row.appendChild(box); row.appendChild(text); row.appendChild(del);
+                list.appendChild(row);
+            });
+            const add = el("button", "btn btn-ghost btn-xs gap-1 self-start mt-1");
+            add.innerHTML = '<i class="fas fa-plus"></i> Add task';
+            add.addEventListener("click", () => {
+                items.push({ text: "", done: false });
+                renderCellBody(body.closest(".nb-cell"), cell);
+                scheduleSave();
+            });
+            body.appendChild(list);
+            body.appendChild(add);
+        }
+
+        function renderTableCell(body, cell) {
+            const meta = cell.meta;
+            const table = el("table", "table table-xs");
+            const thead = el("thead");
+            const hrow = el("tr");
+            meta.headers.forEach((h, ci) => {
+                const th = el("th");
+                const input = el("input", "input input-ghost input-xs w-full font-semibold");
+                input.value = h;
+                input.addEventListener("input", () => {
+                    meta.headers[ci] = input.value;
+                    scheduleSave();
+                });
+                th.appendChild(input);
+                hrow.appendChild(th);
+            });
+            thead.appendChild(hrow);
+            table.appendChild(thead);
+            const tbody = el("tbody");
+            meta.rows.forEach((row, ri) => {
+                const tr = el("tr");
+                meta.headers.forEach((_, ci) => {
+                    const td = el("td");
+                    const input = el("input", "input input-ghost input-xs w-full");
+                    input.value = row[ci] || "";
+                    input.addEventListener("input", () => {
+                        row[ci] = input.value;
+                        scheduleSave();
+                    });
+                    td.appendChild(input);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            body.appendChild(table);
+
+            const bar = el("div", "flex gap-1 mt-1");
+            const mkBar = (label, fn) => {
+                const b = el("button", "btn btn-ghost btn-xs", label);
+                b.addEventListener("click", fn);
+                return b;
+            };
+            bar.appendChild(mkBar("+ Row", () => {
+                meta.rows.push(meta.headers.map(() => ""));
+                renderCellBody(body.closest(".nb-cell"), cell);
+                scheduleSave();
+            }));
+            bar.appendChild(mkBar("+ Column", () => {
+                meta.headers.push("Column " + (meta.headers.length + 1));
+                meta.rows.forEach((r) => r.push(""));
+                renderCellBody(body.closest(".nb-cell"), cell);
+                scheduleSave();
+            }));
+            bar.appendChild(mkBar("− Row", () => {
+                if (meta.rows.length) meta.rows.pop();
+                renderCellBody(body.closest(".nb-cell"), cell);
+                scheduleSave();
+            }));
+            bar.appendChild(mkBar("− Column", () => {
+                if (meta.headers.length > 1) {
+                    meta.headers.pop();
+                    meta.rows.forEach((r) => r.pop());
+                    renderCellBody(body.closest(".nb-cell"), cell);
+                    scheduleSave();
+                }
+            }));
+            body.appendChild(bar);
+        }
+
+        render();
+    }
+
+    window.NotebookEditor = { mount: mount };
+})();

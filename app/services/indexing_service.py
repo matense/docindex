@@ -10,12 +10,24 @@ from . import ai_service, file_service, search_service
 MAX_TEXT_CHARS = 500_000
 MAX_JOB_ATTEMPTS = 3
 
+# Module-registered text extractors: extension -> fn(stored_file) -> str.
+# Consulted before the built-in dispatch, so modules can make their own
+# file types (e.g. notebooks) searchable through the normal pipeline.
+_EXTRACTORS = {}
+
+
+def register_extractor(extension, fn):
+    """Register a text extractor for a file extension (used by modules)."""
+    _EXTRACTORS[extension.lower().lstrip(".")] = fn
+
 
 def extract_text(stored_file):
     """Extract searchable text from a file based on its extension."""
     ext = stored_file.extension
     path = file_service.file_path(stored_file)
 
+    if ext in _EXTRACTORS:
+        return _EXTRACTORS[ext](stored_file)[:MAX_TEXT_CHARS]
     if ext == "pdf":
         return _extract_pdf(path)
     if ext == "docx":
