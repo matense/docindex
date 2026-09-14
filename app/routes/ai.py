@@ -179,6 +179,21 @@ def chat():
                             StoredFile.deleted_at.is_(None))
                     .all())
 
+    # Implicit context: the file/notebook the user currently has open, so
+    # "improve this notebook" works without an explicit @here mention.
+    context_file = None
+    try:
+        context_file_id = int(data.get("context_file_id") or 0)
+    except (TypeError, ValueError):
+        context_file_id = 0
+    if context_file_id and context_file_id not in [
+            int(i) for i in attachment_ids if str(i).isdigit()]:
+        context_file = (StoredFile.query
+                        .filter_by(id=context_file_id,
+                                   user_id=current_user.id)
+                        .filter(StoredFile.deleted_at.is_(None))
+                        .first())
+
     conv = _get_conversation(data.get("conversation_id"))
     if not conv:
         conv = ChatConversation(user_id=current_user.id,
@@ -229,8 +244,34 @@ def chat():
             ),
         })
 
+    if context_file:
+        kind = "notebook" if context_file.extension == "pdocnb" else "file"
+        history.insert(0, {
+            "role": "system",
+            "content": (
+                f"The user currently has the {kind} "
+                f"[id {context_file.id}] {context_file.name} open on screen. "
+                "When they say things like \"this notebook\", \"this file\" or "
+                "\"here\" without naming a target, they mean that one — you "
+                "can read or edit it directly by id, no need to search first."
+            ),
+        })
+
     user_id = current_user.id
-    drive_id = drive_service.get_current_drive(current_user).id
+    # The chat is scoped to the drive the user is browsing; the scope chip in
+    # the chat lets them remove it and search across all drives instead.
+    scope_all_drives = bool(data.get("scope_all_drives"))
+    drive_id = None if scope_all_drives else \
+        drive_service.get_current_drive(current_user).id
+    if scope_all_drives:
+        history.insert(0, {
+            "role": "system",
+            "content": (
+                "The user removed the drive scope: you can see files from ALL "
+                "their drives, not just the one they are browsing. Use "
+                "list_drives to discover what drives exist."
+            ),
+        })
 
     def generate():
         """Stream NDJSON events: thinking(+_token) / step / tool_result /

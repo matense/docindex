@@ -1,7 +1,8 @@
 """AI tools contributed by the notebooks module (namespaced notebooks.*).
 
-Every mutation goes through doc.save_document with force_checkpoint=True, so
-AI edits always leave a restorable version in the notebook's history.
+Mutations go through doc.save_document_ai: all edits an agent makes while
+answering a single message share one snapshot of the pre-edit state, so a
+whole AI answer is a single restorable block in the notebook's history.
 """
 
 from app.extensions import db
@@ -99,15 +100,14 @@ def _tool_create(user, args, drive):
     return {"created": _notebook_summary(stored)}
 
 
-def _save_and_report(user, file_id, mutate, note):
+def _save_and_report(user, file_id, mutate):
     stored, error = _get_owned(user, file_id)
     if error:
         return error
     try:
         document = doc_service.load(stored)
         cell = mutate(document)
-        doc_service.save_document(stored, document, force_checkpoint=True,
-                                  note=note)
+        doc_service.save_document_ai(stored, document)
     except ValueError as exc:
         return {"error": str(exc)}
     return {"ok": True, "file_id": stored.id, "cell": cell,
@@ -120,8 +120,7 @@ def _tool_add_cell(user, args, drive):
         lambda document: doc_service.add_cell(
             document, args.get("cell_type", "markdown"),
             args.get("content", ""), args.get("meta"),
-            index=args.get("index")),
-        "AI added a cell")
+            index=args.get("index")))
 
 
 def _tool_update_cell(user, args, drive):
@@ -129,16 +128,14 @@ def _tool_update_cell(user, args, drive):
         user, args.get("file_id"),
         lambda document: doc_service.update_cell(
             document, args.get("cell_id", ""),
-            content=args.get("content"), meta=args.get("meta")),
-        "AI updated a cell")
+            content=args.get("content"), meta=args.get("meta")))
 
 
 def _tool_delete_cell(user, args, drive):
     return _save_and_report(
         user, args.get("file_id"),
         lambda document: doc_service.delete_cell(
-            document, args.get("cell_id", "")),
-        "AI deleted a cell")
+            document, args.get("cell_id", "")))
 
 
 _FILE_ID = {"type": "integer", "description": "Notebook file id."}
@@ -181,7 +178,8 @@ register_tool(
     "add_cell",
     _schema("notebooks.add_cell",
             "Append or insert a cell (markdown/code/todo/table) in a "
-            "notebook. Creates a restorable history version.",
+            "notebook. All edits made while answering one message share a "
+            "single restorable history version.",
             {"file_id": _FILE_ID,
              "cell_type": {"type": "string",
                            "enum": list(doc_service.CELL_TYPES)},
@@ -199,8 +197,9 @@ register_tool(
 register_tool(
     "update_cell",
     _schema("notebooks.update_cell",
-            "Update a cell's content and/or meta by cell id. Creates a "
-            "restorable history version.",
+            "Update a cell's content and/or meta by cell id. All edits made "
+            "while answering one message share a single restorable history "
+            "version.",
             {"file_id": _FILE_ID,
              "cell_id": {"type": "string"},
              "content": {"type": "string"},
@@ -211,7 +210,8 @@ register_tool(
 register_tool(
     "delete_cell",
     _schema("notebooks.delete_cell",
-            "Delete a cell by id. Creates a restorable history version.",
+            "Delete a cell by id. All edits made while answering one "
+            "message share a single restorable history version.",
             {"file_id": _FILE_ID, "cell_id": {"type": "string"}},
             required=["file_id", "cell_id"]),
     _tool_delete_cell, label="Deleted cell", module="notebooks")

@@ -71,6 +71,8 @@
         // --- Per-window state ---
         let conversationId = null;
         let attachments = []; // [{id, name}]
+        let contextDismissedId = null; // currentFile.id the user hid
+        let driveScopeDismissedId = null; // currentDrive.id the user unscoped
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
@@ -166,6 +168,47 @@
 
         function renderChips() {
             chipsEl.innerHTML = '';
+            // Removable chip: the AI is scoped to the drive being browsed.
+            if (window.currentDrive
+                    && window.currentDrive.id !== driveScopeDismissedId) {
+                const drv = document.createElement('span');
+                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
+                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
+                drv.appendChild(document.createTextNode(window.currentDrive.name));
+                drv.title = 'Answers are narrowed to this drive — remove to search all drives';
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                rm.title = 'Search across all drives';
+                rm.onclick = () => {
+                    driveScopeDismissedId = window.currentDrive.id;
+                    renderChips();
+                };
+                drv.appendChild(rm);
+                chipsEl.appendChild(drv);
+            }
+            // Removable chip showing the open file shared as context.
+            if (window.currentFile
+                    && window.currentFile.id !== contextDismissedId
+                    && !attachments.some(a => a.id === window.currentFile.id)) {
+                const ctx = document.createElement('span');
+                ctx.className = 'badge badge-secondary badge-outline gap-1 text-xs';
+                ctx.innerHTML = '<i class="fas fa-eye"></i>';
+                ctx.appendChild(document.createTextNode(window.currentFile.name));
+                ctx.title = 'Open on screen — the AI knows this is your current context';
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                rm.title = 'Stop sharing this file as context';
+                rm.onclick = () => {
+                    contextDismissedId = window.currentFile.id;
+                    renderChips();
+                };
+                ctx.appendChild(rm);
+                chipsEl.appendChild(ctx);
+            }
             attachments.forEach((a) => {
                 const chip = document.createElement('span');
                 chip.className = 'badge badge-primary badge-outline gap-1 text-xs';
@@ -182,8 +225,9 @@
                 chip.appendChild(rm);
                 chipsEl.appendChild(chip);
             });
-            chipsEl.classList.toggle('hidden', attachments.length === 0);
-            chipsEl.classList.toggle('flex', attachments.length > 0);
+            const hasChips = chipsEl.childNodes.length > 0;
+            chipsEl.classList.toggle('hidden', !hasChips);
+            chipsEl.classList.toggle('flex', hasChips);
         }
 
         function addMetaFooter(div, meta) {
@@ -644,6 +688,14 @@
                         message: question,
                         conversation_id: conversationId,
                         attachments: sentAttachments.map(a => a.id),
+                        // Implicit context: the file/notebook open on screen.
+                        context_file_id: (window.currentFile
+                            && window.currentFile.id !== contextDismissedId
+                            && !sentAttachments.some(a => a.id === window.currentFile.id))
+                            ? window.currentFile.id : null,
+                        // Drive scope removed via the chip -> search all drives.
+                        scope_all_drives: !!(window.currentDrive
+                            && window.currentDrive.id === driveScopeDismissedId),
                     }),
                 });
 
@@ -796,6 +848,7 @@
             toggleList,
         };
         windows.push(api);
+        renderChips();  // show the current-context chip if a file is open
         loadConnections();
         api.focus();
         return api;

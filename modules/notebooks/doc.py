@@ -13,6 +13,9 @@ Cell payloads:
 - code:     content = source, meta.language = highlight.js language.
 - todo:     meta.items = [{"text": str, "done": bool}].
 - table:    meta.headers = [str], meta.rows = [[str, ...]].
+- heading:   content = heading text, meta.level = 1|2 (legacy title/subtitle
+             cells are migrated to heading on load).
+- separator: visual divider cell, no content.
 
 Because notebooks are StoredFiles they get ownership, drives/folders, trash,
 FileVersion history, FTS search and the AI agent's core tools for free.
@@ -27,6 +30,7 @@ from datetime import timedelta, timezone
 from io import BytesIO
 
 from werkzeug.datastructures import FileStorage
+from flask import g, has_app_context
 
 from app.extensions import db
 from app.models import StoredFile, utcnow
@@ -35,7 +39,8 @@ from app.services import file_service, indexing_service
 EXTENSION = "pdocnb"
 MIME_TYPE = "application/json"
 SNAPSHOT_INTERVAL = timedelta(minutes=2)
-CELL_TYPES = ("markdown", "richtext", "code", "todo", "table")
+CELL_TYPES = ("markdown", "richtext", "code", "todo", "table",
+              "heading", "separator")
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -60,11 +65,20 @@ def _validate_cell(cell):
     if not isinstance(cell, dict):
         raise ValueError("Each cell must be an object.")
     cell.setdefault("id", uuid.uuid4().hex[:12])
+    # Legacy cell types from the first notebooks release.
+    if cell.get("type") in ("title", "subtitle"):
+        legacy_level = 1 if cell["type"] == "title" else 2
+        cell["type"] = "heading"
+        if not isinstance(cell.get("meta"), dict):
+            cell["meta"] = {}
+        cell["meta"]["level"] = legacy_level
     if cell.get("type") not in CELL_TYPES:
         raise ValueError(f"Unknown cell type '{cell.get('type')}'.")
     cell["content"] = str(cell.get("content") or "")
     meta = cell.get("meta")
     cell["meta"] = meta if isinstance(meta, dict) else {}
+    if cell["type"] == "heading":
+        cell["meta"]["level"] = 2 if cell["meta"].get("level") == 2 else 1
     if cell["type"] == "todo":
         items = cell["meta"].get("items") or []
         cell["meta"]["items"] = [
@@ -118,7 +132,9 @@ def extract(stored_file):
     parts = [doc.get("title", "")]
     for cell in doc.get("cells", []):
         ctype = cell.get("type")
-        if ctype in ("markdown", "code"):
+        if ctype == "separator":
+            continue
+        if ctype in ("markdown", "code", "heading"):
             parts.append(cell.get("content", ""))
         elif ctype == "richtext":
             stripped = _TAG_RE.sub(" ", cell.get("content", ""))
@@ -192,14 +208,16 @@ def _guard_writable_drive(drive):
                          "created there.")
 
 
-def save_document(stored, doc, force_checkpoint=False, note="", source="edit"):
+def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
+                  skip_snapshot=False):
     """Persist a document: throttled version snapshot + blob write + re-index.
 
     Autosaves write through immediately (no data loss) but only snapshot a
     FileVersion when the latest one is older than SNAPSHOT_INTERVAL, so a
     burst of edits collapses into one history entry. force_checkpoint=True
-    always snapshots (Ctrl+S / AI edits). Returns True when a version was
-    snapshotted.
+    always snapshots (Ctrl+S); skip_snapshot=True never does (used by AI
+    transactional saves after the first mutation of a run). Returns True
+    when a version was snapshotted.
     """
     _guard_writable(stored)
     validate(doc)
@@ -209,8 +227,9 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit"):
     if last_snapshot_at is not None and last_snapshot_at.tzinfo is None:
         # SQLite returns naive datetimes; utcnow() is timezone-aware.
         last_snapshot_at = last_snapshot_at.replace(tzinfo=timezone.utc)
-    if (force_checkpoint or last_snapshot_at is None
-            or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL):
+    if (not skip_snapshot
+            and (force_checkpoint or last_snapshot_at is None
+                 or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL)):
         file_service.snapshot_version(stored, source, note=note)
         snapshotted = True
 
@@ -224,6 +243,26 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit"):
     db.session.commit()
     indexing_service.enqueue_index([stored.id])
     return snapshotted
+
+
+def save_document_ai(stored, doc, note="AI edits"):
+    """Save from an AI agent run, transactionally: the first mutation of a
+    notebook within the current request snapshots the pre-edit state, and
+    every later mutation in the same run just writes through. One AI answer
+    therefore leaves a single restorable history block instead of one
+    version per tool call."""
+    first_in_run = True
+    if has_app_context():
+        # g is request/app-context scoped: one chat message = one run.
+        snapped = getattr(g, "_nb_ai_snapshotted", None)
+        if snapped is None:
+            snapped = set()
+            g._nb_ai_snapshotted = snapped
+        first_in_run = stored.id not in snapped
+        snapped.add(stored.id)
+    return save_document(stored, doc, force_checkpoint=True,
+                         skip_snapshot=not first_in_run,
+                         note=note, source="ai")
 
 
 def add_cell(doc, cell_type="markdown", content="", meta=None, index=None):

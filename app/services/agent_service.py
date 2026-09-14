@@ -5,7 +5,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from ..extensions import db
-from ..models import StoredFile
+from ..models import Drive, StoredFile
 from . import ai_service, file_service, hashtag_service, search_service
 
 _SEARCH_FILTERS_SCHEMA = {
@@ -255,6 +255,23 @@ TOOLS = [
                 "counts. Use this to discover the existing tag vocabulary, then "
                 "search_files with the exact tag terms (or tags:<term>) for "
                 "faster, precise results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_drives",
+            "description": (
+                "List the user's drives with file counts, total size and "
+                "whether each is read-only (synced from disk). Use this to "
+                "discover what drives exist; when the chat is scoped to one "
+                "drive, suggest switching drives if the answer may live in "
+                "another one."
             ),
             "parameters": {
                 "type": "object",
@@ -654,6 +671,31 @@ def _tool_list_hashtags(user, drive=None):
     return [{"tag": tag, "count": count} for tag, count in tags[:50]]
 
 
+def _tool_list_drives(user, drive=None):
+    """Every drive the user owns, with file counts and sizes."""
+    drives = (Drive.query.filter_by(user_id=user.id)
+              .order_by(Drive.name).all())
+    stats = dict(
+        (row.drive_id, (row.n, row.bytes))
+        for row in db.session.query(
+            StoredFile.drive_id,
+            func.count(StoredFile.id).label("n"),
+            func.coalesce(func.sum(StoredFile.size), 0).label("bytes"))
+        .filter(StoredFile.user_id == user.id,
+                StoredFile.deleted_at.is_(None))
+        .group_by(StoredFile.drive_id).all())
+    return {
+        "total": len(drives),
+        "scoped_to": drive.name if drive is not None else None,
+        "drives": [{
+            "id": d.id, "name": d.name,
+            "read_only": bool(d.is_synced),
+            "files": stats.get(d.id, (0, 0))[0],
+            "bytes": stats.get(d.id, (0, 0))[1],
+        } for d in drives],
+    }
+
+
 TOOL_HANDLERS = {
     "search_files": lambda user, args, drive: _tool_search_files(
         user, args.get("query", ""), drive,
@@ -672,6 +714,7 @@ TOOL_HANDLERS = {
     "set_hashtags": lambda user, args, drive: _tool_set_hashtags(
         user, args.get("file_id"), args.get("hashtags") or []),
     "list_hashtags": lambda user, args, drive: _tool_list_hashtags(user, drive),
+    "list_drives": lambda user, args, drive: _tool_list_drives(user, drive),
 }
 
 _STEP_LABELS = {
@@ -683,6 +726,7 @@ _STEP_LABELS = {
     "get_file_info": "Checked file info",
     "set_hashtags": "Saved hashtags",
     "list_hashtags": "Listed hashtags",
+    "list_drives": "Listed drives",
 }
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Diff v{{ version.version }} - {{ file.name }}{% endblock %}
 {% block content %}
-<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+<div class="max-w-6xl mx-auto w-full flex flex-col gap-4">
 
     <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
         <a href="{{ url_for('notebooks.history', file_id=file.id) }}"
@@ -9,12 +9,10 @@
             <i class="fas fa-arrow-left"></i>
         </a>
         <div class="flex-1 min-w-0">
-            <h1 class="text-xl font-bold truncate">
-                v{{ version.version }} → current — {{ file.name }}
-            </h1>
+            <h1 class="text-xl font-bold truncate">{{ file.name }}</h1>
             <p class="text-xs opacity-50">
                 {{ version.created_at.strftime('%Y-%m-%d %H:%M:%S') if version.created_at }}
-                · unified diff of the notebook document
+                · side-by-side cell diff
             </p>
         </div>
         <form method="POST"
@@ -27,13 +25,79 @@
         </form>
     </div>
 
-    <div class="glass-panel rounded-2xl p-4 overflow-x-auto">
-        {% if diff %}
-        <pre class="text-xs font-mono leading-relaxed">{% for line in diff %}<span class="block px-2 rounded{% if line.startswith('+') and not line.startswith('+++') %} bg-success/15 text-success{% elif line.startswith('-') and not line.startswith('---') %} bg-error/15 text-error{% elif line.startswith('@@') %} text-info{% else %} opacity-60{% endif %}">{{ line }}</span>{% endfor %}</pre>
-        {% else %}
-        <p class="text-sm opacity-50 text-center py-6">No differences — this version is
-        identical to the current content.</p>
+    <!-- Summary -->
+    <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-2 flex-wrap text-xs">
+        {% if summary.title_changed %}
+        <span class="badge badge-warning badge-outline gap-1">
+            <i class="fas fa-pen"></i> renamed: {{ summary.old_title }} → {{ summary.new_title }}
+        </span>
         {% endif %}
+        <span class="badge badge-success badge-outline gap-1">
+            <i class="fas fa-plus"></i> {{ summary.added }} added
+        </span>
+        <span class="badge badge-warning badge-outline gap-1">
+            <i class="fas fa-pen"></i> {{ summary.changed }} changed
+        </span>
+        <span class="badge badge-error badge-outline gap-1">
+            <i class="fas fa-minus"></i> {{ summary.removed }} removed
+        </span>
+        <span class="badge badge-ghost gap-1 opacity-60">
+            {{ summary.unchanged }} unchanged
+        </span>
     </div>
+
+    {% if entries %}
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <!-- Column headers -->
+        <div class="grid grid-cols-2 text-xs font-semibold uppercase tracking-wide opacity-60 border-b border-base-content/10">
+            <div class="px-4 py-2 border-r border-base-content/10">
+                v{{ version.version }} (before)
+            </div>
+            <div class="px-4 py-2">current</div>
+        </div>
+
+        {% for e in entries %}
+        <!-- Cell banner -->
+        <div class="px-4 py-2 flex items-center gap-2 text-xs font-semibold border-y border-base-content/10
+                    {% if e.kind == 'added' %}bg-success/10 text-success
+                    {% elif e.kind == 'changed' %}bg-warning/10 text-warning
+                    {% else %}bg-error/10 text-error{% endif %}">
+            {% if e.kind == 'added' %}<i class="fas fa-plus"></i> Added
+            {% elif e.kind == 'changed' %}<i class="fas fa-pen"></i> Changed
+            {% else %}<i class="fas fa-minus"></i> Removed{% endif %}
+            <span class="font-normal opacity-70">· {{ e.label }}</span>
+        </div>
+
+        {% if e.rows %}
+        <div class="overflow-x-auto">
+            <table class="w-full table-fixed text-xs font-mono leading-relaxed">
+                {% for r in e.rows %}
+                {% if r.collapse %}
+                <tr>
+                    <td colspan="2" class="px-4 py-1 text-center opacity-40 select-none border-b border-base-content/5">
+                        <i class="fas fa-ellipsis"></i> {{ r.collapse }} unchanged line{{ 's' if r.collapse != 1 }}
+                    </td>
+                </tr>
+                {% else %}
+                <tr class="align-top">
+                    <td class="w-1/2 px-4 py-0.5 whitespace-pre-wrap break-words border-r border-base-content/10
+                               {% if r.cls == 'del' %}bg-error/15 text-error{% else %}opacity-70{% endif %}">{{ r.left if r.left is not none else '' }}</td>
+                    <td class="w-1/2 px-4 py-0.5 whitespace-pre-wrap break-words
+                               {% if r.cls == 'add' %}bg-success/15 text-success{% else %}opacity-70{% endif %}">{{ r.right if r.right is not none else '' }}</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="glass-panel rounded-2xl px-6 py-10 text-center">
+        <i class="fas fa-equals text-3xl opacity-20"></i>
+        <p class="text-sm opacity-50 mt-3">No differences — this version is identical
+        to the current content.</p>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}

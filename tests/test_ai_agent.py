@@ -94,6 +94,31 @@ def test_chat_endpoint_disabled_ai(auth_client):
     assert resp.status_code == 503
 
 
+def test_list_drives_tool(app, user):
+    from app.models import Drive
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user)
+        db.session.add(drive)
+        db.session.commit()
+        fid = _make_indexed_file(app, "drivefile.txt", "some content")
+        stored = db.session.get(StoredFile, fid)
+        stored.drive_id = drive.id
+        db.session.commit()
+        u = db.session.get(User, user)
+        result = agent_service._tool_list_drives(u)
+    assert result["total"] == 1
+    entry = result["drives"][0]
+    assert entry["name"] == "Personal" and entry["files"] == 1
+    assert entry["read_only"] is False
+    assert result["scoped_to"] is None  # no drive passed -> not scoped
+
+    with app.app_context():
+        u = db.session.get(User, user)
+        drive = Drive.query.filter_by(user_id=user).one()
+        scoped = agent_service._tool_list_drives(u, drive)
+        assert scoped["scoped_to"] == "Personal"
+
+
 def test_conversations_isolated_between_users(auth_client, app, user):
     _make_indexed_file(app, "x.txt", "hello")
 

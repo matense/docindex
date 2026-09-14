@@ -341,3 +341,94 @@ def test_max_prompt_tokens_saved_on_connection(auth_client, app, user):
     }, follow_redirects=True)
     with app.app_context():
         assert AIConnection.query.one().max_prompt_tokens == 32000
+
+
+def test_context_file_id_tells_agent_which_file_is_open(auth_client, app, user):
+    """The chat sends the currently open file as implicit context; the agent
+    must see a system note identifying it (no explicit @here needed)."""
+    _add_conn(auth_client)
+    from app.services import file_service
+
+    class FakeStorage:
+        filename = "notes.txt"
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                fh.write(b"hello")
+
+    with app.app_context():
+        fid = file_service.save_upload(FakeStorage(),
+                                       db.session.get(User, user)).id
+
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages") or args[0]
+        return {"role": "assistant", "content": "done"}
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=fake_completion):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "improve this file", "context_file_id": fid})
+        resp.data  # consume the stream inside the patch
+    assert resp.status_code == 200
+    notes = [m for m in captured["messages"]
+             if m["role"] == "system" and "currently has" in m["content"]]
+    assert notes
+    assert f"[id {fid}]" in notes[0]["content"]
+    assert "notes.txt" in notes[0]["content"]
+
+
+def test_context_file_id_ignores_foreign_or_missing_files(auth_client, app, user):
+    """A context id that isn't the user's file (or doesn't exist) adds no
+    system note."""
+    _add_conn(auth_client)
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages") or args[0]
+        return {"role": "assistant", "content": "done"}
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=fake_completion):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "hello", "context_file_id": 999999})
+        resp.data
+    assert resp.status_code == 200
+    assert not [m for m in captured["messages"]
+                if m["role"] == "system" and "currently has" in m["content"]]
+
+
+def _chat_capture_payload(auth_client, payload):
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages") or args[0]
+        return {"role": "assistant", "content": "done"}
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=fake_completion):
+        resp = auth_client.post("/ai/chat", json=payload)
+        resp.data  # consume the stream inside the patch
+    assert resp.status_code == 200
+    return captured["messages"]
+
+
+def test_chat_scoped_to_current_drive_by_default(auth_client, app, user):
+    _add_conn(auth_client)
+    messages = _chat_capture_payload(auth_client, {"message": "hello"})
+    system = messages[0]["content"]
+    assert messages[0]["role"] == "system"
+    assert "only files from that drive are visible" in system
+
+
+def test_scope_all_drives_widens_the_search(auth_client, app, user):
+    """The chat's drive-scope chip removed -> scope_all_drives -> the agent
+    sees every drive and is told so."""
+    _add_conn(auth_client)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "scope_all_drives": True})
+    system = messages[0]["content"]
+    assert "only files from that drive are visible" not in system
+    assert "ALL" in system and "list_drives" in system

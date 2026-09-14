@@ -14,6 +14,8 @@
         code: { icon: "fa-code", label: "Code" },
         todo: { icon: "fa-list-check", label: "To-do" },
         table: { icon: "fa-table", label: "Table" },
+        heading: { icon: "fa-heading", label: "Heading" },
+        separator: { icon: "fa-minus", label: "Separator" },
     };
 
     function el(tag, cls, text) {
@@ -82,10 +84,16 @@
             ? opts.doc : { version: 1, title: "Untitled notebook", cells: [] };
         const cellsEl = root.querySelector("#nb-cells");
         const statusEl = root.querySelector("#nb-save-status");
+        const tocEl = root.querySelector("#nb-toc");
+        const tocListEl = root.querySelector("#nb-toc-list");
 
         let dirty = false;
         let saving = false;
         let timer = null;
+        let readMode = false;
+        // Content checksum — compared against the server to detect external
+        // (AI tool) edits while the notebook is open.
+        let lastChecksum = opts.checksum || "";
 
         // ------------------------------------------------------------------
         // Saving
@@ -131,6 +139,7 @@
                 const data = await resp.json();
                 if (resp.ok && data.ok) {
                     dirty = false;
+                    if (data.checksum) lastChecksum = data.checksum;
                     const time = (data.saved_at || "").slice(11, 19);
                     setStatus("saved", time);
                     if (window.spaInvalidate) window.spaInvalidate();
@@ -177,6 +186,47 @@
         if (checkpointBtn) {
             checkpointBtn.addEventListener("click", () => save(true));
         }
+        const indexBtn = root.querySelector("#nb-index-btn");
+        if (indexBtn && tocEl) {
+            indexBtn.addEventListener("click", () => {
+                tocEl.classList.toggle("hidden");
+                indexBtn.classList.toggle("btn-active");
+            });
+        }
+        const readBtn = root.querySelector("#nb-read-btn");
+        if (readBtn) {
+            readBtn.addEventListener("click", () => {
+                readMode = !readMode;
+                root.classList.toggle("nb-reading", readMode);
+                readBtn.classList.toggle("btn-active", readMode);
+                readBtn.innerHTML = readMode
+                    ? '<i class="fas fa-pen"></i> Edit'
+                    : '<i class="fas fa-book-open-reader"></i> Read';
+                doc.cells.forEach((c) => { c._editing = false; });
+                render();
+            });
+        }
+
+        // External-change watch: when the AI (or another tab) edits this
+        // notebook, refresh the view in place — unsaved local edits win.
+        async function pollRemote() {
+            if (!alive()) { clearInterval(pollTimer); return; }
+            try {
+                const resp = await fetch(opts.docUrl);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (!data.ok || !data.checksum) return;
+                if (data.checksum === lastChecksum) return;
+                if (dirty || saving) return;  // local edits take precedence
+                doc.cells = data.doc.cells;
+                doc.title = data.doc.title;
+                lastChecksum = data.checksum;
+                doc.cells.forEach((c) => { c._editing = false; });
+                render();
+                setStatus("saved", "updated remotely");
+            } catch (err) { /* offline hiccup — try again next tick */ }
+        }
+        const pollTimer = setInterval(pollRemote, 5000);
         const addBtn = root.querySelector("#nb-add-btn");
         const addType = root.querySelector("#nb-add-type");
         if (addBtn && addType) {
@@ -206,16 +256,48 @@
         // ------------------------------------------------------------------
         function render() {
             cellsEl.innerHTML = "";
-            cellsEl.appendChild(makeAddBar(0));
+            if (!readMode) cellsEl.appendChild(makeAddBar(0));
             doc.cells.forEach((cell, i) => {
                 cellsEl.appendChild(renderCell(cell, i));
-                cellsEl.appendChild(makeAddBar(i + 1));
+                if (!readMode) cellsEl.appendChild(makeAddBar(i + 1));
+            });
+            renderToc();
+        }
+
+        // Document index: titles and subtitles with scroll-to links.
+        function renderToc() {
+            if (!tocListEl) return;
+            tocListEl.innerHTML = "";
+            const entries = doc.cells.filter(
+                (c) => c.type === "heading" && c.content.trim());
+            if (!entries.length) {
+                tocListEl.appendChild(el("span", "text-xs opacity-40",
+                    "No headings yet — add a Heading cell to structure the notebook."));
+                return;
+            }
+            entries.forEach((cell) => {
+                const a = el("a",
+                    (cell.meta && cell.meta.level === 2)
+                        ? "nb-toc-subtitle" : "nb-toc-title",
+                    cell.content);
+                a.href = "#";
+                a.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    const target = document.getElementById("nb-cell-" + cell.id);
+                    if (target) {
+                        target.scrollIntoView({ behavior: "smooth", block: "start" });
+                        target.classList.add("ring", "ring-primary/40");
+                        setTimeout(() => target.classList.remove("ring", "ring-primary/40"), 1200);
+                    }
+                });
+                tocListEl.appendChild(a);
             });
         }
 
         function insertCell(type, index) {
             const cell = newCell(type);
-            if (type === "markdown" || type === "code" || type === "richtext") {
+            if (["markdown", "code", "richtext", "heading"]
+                    .includes(type)) {
                 cell._editing = true;
             }
             doc.cells.splice(index, 0, cell);
@@ -264,10 +346,11 @@
             const meta = TYPE_META[cell.type] || TYPE_META.markdown;
             const wrap = el("div", "glass-panel rounded-xl px-4 py-3 nb-cell");
             wrap.dataset.cellId = cell.id;
+            wrap.id = "nb-cell-" + cell.id;
             wrap.draggable = false;
 
             // Header: drag handle, type badge, actions
-            const head = el("div", "flex items-center gap-2 mb-2");
+            const head = el("div", "nb-cell-head flex items-center gap-2 mb-2");
             const grip = el("span",
                 "cursor-grab opacity-30 hover:opacity-70 transition-opacity",
                 "");
@@ -298,7 +381,8 @@
                 b.addEventListener("click", fn);
                 return b;
             };
-            if (cell.type === "markdown" || cell.type === "code" || cell.type === "richtext") {
+            const editable = ["markdown", "code", "richtext", "heading"];
+            if (editable.includes(cell.type)) {
                 actions.appendChild(mkBtn("fa-pen", "Edit / preview", () => {
                     cell._editing = !cell._editing;
                     renderCellBody(wrap, cell, index);
@@ -327,7 +411,7 @@
                 render(); scheduleSave();
             }, true));
             head.appendChild(actions);
-            wrap.appendChild(head);
+            if (!readMode) wrap.appendChild(head);
 
             const body = el("div", "nb-cell-body");
             wrap.appendChild(body);
@@ -336,6 +420,7 @@
             // Drop target: hovering the top half inserts above, bottom half
             // below; a primary-colored line marks the landing position.
             wrap.addEventListener("dragover", (e) => {
+                if (readMode) return;
                 if (!e.dataTransfer.types.includes("text/nb-cell")) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
@@ -372,11 +457,70 @@
             else if (cell.type === "code") renderCodeCell(body, cell);
             else if (cell.type === "todo") renderTodoCell(body, cell);
             else if (cell.type === "table") renderTableCell(body, cell);
+            else if (cell.type === "heading") {
+                renderHeadingCell(body, cell);
+            } else if (cell.type === "separator") renderSeparatorCell(body, cell);
+        }
+
+        function renderHeadingCell(body, cell) {
+            const meta = cell.meta || (cell.meta = {});
+            const level = meta.level === 2 ? 2 : 1;
+            if (!readMode && (cell._editing || !cell.content.trim())) {
+                const row = el("div", "flex items-center gap-2");
+                // H1/H2 toggle — chosen by the user while editing.
+                const toggle = el("div", "nb-heading-toggle join");
+                [1, 2].forEach((lvl) => {
+                    const b = el("button",
+                        "btn btn-xs join-item"
+                        + (lvl === level ? " btn-primary" : " btn-ghost"),
+                        "H" + lvl);
+                    b.type = "button";
+                    b.title = lvl === 1 ? "Title" : "Subtitle";
+                    // Prevent the input blur (which would exit edit mode).
+                    b.addEventListener("mousedown", (e) => e.preventDefault());
+                    b.addEventListener("click", () => {
+                        meta.level = lvl;
+                        scheduleSave();
+                        renderToc();
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                    });
+                    toggle.appendChild(b);
+                });
+                row.appendChild(toggle);
+                const input = el("input",
+                    "input input-ghost w-full "
+                    + (level === 1 ? "nb-title-input" : "nb-subtitle-input"));
+                input.value = cell.content;
+                input.placeholder = level === 1 ? "Title…" : "Subtitle…";
+                input.addEventListener("input", () => {
+                    cell.content = input.value;
+                    scheduleSave();
+                    renderToc();
+                });
+                input.addEventListener("blur", () => {
+                    cell._editing = false;
+                    renderCellBody(body.closest(".nb-cell"), cell);
+                    save(false);
+                });
+                row.appendChild(input);
+                body.appendChild(row);
+                if (cell._editing) input.focus();
+            } else {
+                body.appendChild(el("div",
+                    level === 1 ? "nb-cell-title" : "nb-cell-subtitle",
+                    cell.content));
+            }
+        }
+
+        function renderSeparatorCell(body, cell) {
+            const div = el("div", "nb-separator");
+            div.innerHTML = '<i class="fas fa-ellipsis"></i>';
+            body.appendChild(div);
         }
 
         function renderRichTextCell(body, cell) {
-            // View mode: rendered HTML, no toolbar.
-            if (!cell._editing && cell.content.trim()) {
+            // View mode (and read mode): rendered HTML, no toolbar.
+            if (readMode || (!cell._editing && cell.content.trim())) {
                 const view = el("div", "nb-rt");
                 view.innerHTML = sanitizeHtml(cell.content);
                 body.appendChild(view);
@@ -452,7 +596,7 @@
         }
 
         function renderMarkdownCell(body, cell) {
-            if (cell._editing || !cell.content.trim()) {
+            if (!readMode && (cell._editing || !cell.content.trim())) {
                 const area = el("textarea",
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
@@ -481,12 +625,25 @@
             }
         }
 
+        const CODE_LANGUAGES = [
+            "plaintext", "python", "javascript", "typescript", "html", "css",
+            "json", "bash", "sql", "java", "c", "cpp", "csharp", "go", "rust",
+            "php", "ruby", "yaml", "xml", "markdown", "dockerfile", "ini",
+        ];
+
         function renderCodeCell(body, cell) {
-            if (cell._editing || !cell.content.trim()) {
-                const lang = el("input", "input input-bordered input-xs w-32 mb-1 font-mono");
-                lang.value = cell.meta.language || "";
-                lang.placeholder = "language";
-                lang.addEventListener("input", () => {
+            if (!readMode && (cell._editing || !cell.content.trim())) {
+                const lang = el("select",
+                    "select select-bordered select-xs w-36 mb-1 font-mono");
+                CODE_LANGUAGES.forEach((l) => {
+                    const opt = el("option", "", l);
+                    opt.value = l;
+                    lang.appendChild(opt);
+                });
+                lang.value = CODE_LANGUAGES.includes(cell.meta.language)
+                    ? cell.meta.language : "plaintext";
+                cell.meta.language = lang.value;
+                lang.addEventListener("change", () => {
                     cell.meta.language = lang.value;
                     scheduleSave();
                 });
@@ -523,6 +680,20 @@
 
         function renderTodoCell(body, cell) {
             const items = cell.meta.items || (cell.meta.items = []);
+            if (readMode) {
+                const list = el("ul", "flex flex-col gap-1");
+                items.forEach((item) => {
+                    const li = el("li", "flex items-center gap-2 text-sm");
+                    li.innerHTML = '<i class="fas '
+                        + (item.done ? "fa-square-check text-success" : "fa-square opacity-40")
+                        + '"></i>';
+                    li.appendChild(el("span",
+                        item.done ? "line-through opacity-50" : "", item.text));
+                    list.appendChild(li);
+                });
+                body.appendChild(list);
+                return;
+            }
             const list = el("div", "flex flex-col gap-1");
             items.forEach((item, i) => {
                 const row = el("div", "flex items-center gap-2");
@@ -567,6 +738,24 @@
 
         function renderTableCell(body, cell) {
             const meta = cell.meta;
+            if (readMode) {
+                const table = el("table", "table table-xs");
+                const thead = el("thead");
+                const hrow = el("tr");
+                meta.headers.forEach((h) => hrow.appendChild(el("th", "", h)));
+                thead.appendChild(hrow);
+                table.appendChild(thead);
+                const tbody = el("tbody");
+                meta.rows.forEach((row) => {
+                    const tr = el("tr");
+                    meta.headers.forEach((_, ci) =>
+                        tr.appendChild(el("td", "", row[ci] || "")));
+                    tbody.appendChild(tr);
+                });
+                table.appendChild(tbody);
+                body.appendChild(table);
+                return;
+            }
             const table = el("table", "table table-xs");
             const thead = el("thead");
             const hrow = el("tr");

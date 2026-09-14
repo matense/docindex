@@ -11,8 +11,9 @@
         <div class="flex-1 min-w-0">
             <h1 class="text-xl font-bold truncate">History — {{ file.name }}</h1>
             <p class="text-xs opacity-50">
-                Every editing burst and checkpoint leaves a restorable version. The current
-                content is always snapshotted before a restore, so nothing is lost.
+                Every editing burst and checkpoint leaves a restorable version. All edits
+                the AI makes while answering one message are grouped into a single block.
+                The current content is always snapshotted before a restore, so nothing is lost.
             </p>
         </div>
     </div>
@@ -21,14 +22,15 @@
     <div class="flex flex-col gap-2">
         {% for v in versions %}
         <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap">
-            <span class="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center text-sm">
+            <span class="w-8 h-8 rounded-lg {% if v.source == 'ai' %}bg-secondary/15 text-secondary{% else %}bg-primary/15 text-primary{% endif %} flex items-center justify-center text-sm">
                 {% if v.source == 'restore' %}<i class="fas fa-rotate-left"></i>
                 {% elif v.source == 'upload' %}<i class="fas fa-upload"></i>
+                {% elif v.source == 'ai' %}<i class="fas fa-robot"></i>
                 {% else %}<i class="fas fa-pen"></i>{% endif %}
             </span>
             <div class="flex-1 min-w-0">
                 <div class="font-semibold text-sm">v{{ v.version }}
-                    <span class="font-normal opacity-50">· {{ v.source }}</span>
+                    <span class="font-normal opacity-50">· {{ 'AI answer' if v.source == 'ai' else v.source }}</span>
                 </div>
                 <div class="text-xs opacity-50">
                     {{ v.created_at.strftime('%Y-%m-%d %H:%M:%S') if v.created_at }}

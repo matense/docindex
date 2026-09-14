@@ -97,9 +97,12 @@ def test_save_throttles_snapshots_and_forces_checkpoints(app, user):
 def test_extractor_flattens_all_cell_types(app, user):
     drive_id = _drive(app, user)
     cells = [
+        nb_doc.new_cell("heading", "Quarterly plan", {"level": 1}),
+        nb_doc.new_cell("heading", "Q3 goals", {"level": 2}),
         nb_doc.new_cell("markdown", "# Title\nsome prose"),
         nb_doc.new_cell("richtext", "<h1>Bold claim</h1><p>rich <b>text</b></p>"),
         nb_doc.new_cell("code", "print('hello')", {"language": "python"}),
+        nb_doc.new_cell("separator"),
         nb_doc.new_cell("todo", meta={"items": [{"text": "call mom",
                                                  "done": False}]}),
         nb_doc.new_cell("table", meta={"headers": ["A", "B"],
@@ -108,12 +111,24 @@ def test_extractor_flattens_all_cell_types(app, user):
     fid = _create(app, user, drive_id, "Mixed", cells=cells)
     with app.app_context():
         text = nb_doc.extract(db.session.get(StoredFile, fid))
+    assert "Quarterly plan" in text and "Q3 goals" in text
     assert "some prose" in text
     assert "Bold claim" in text and "rich text" in text
     assert "<b>" not in text  # HTML is stripped for the index
     assert "print('hello')" in text
     assert "call mom" in text
     assert "A | B" in text and "1 | 2" in text
+
+
+def test_legacy_title_subtitle_cells_migrate_to_heading(app):
+    doc = nb_doc.validate({"cells": [
+        {"type": "title", "content": "Old title"},
+        {"type": "subtitle", "content": "Old subtitle"},
+    ]})
+    assert doc["cells"][0]["type"] == "heading"
+    assert doc["cells"][0]["meta"]["level"] == 1
+    assert doc["cells"][1]["type"] == "heading"
+    assert doc["cells"][1]["meta"]["level"] == 2
 
 
 def test_editor_routes_require_enabled_module(app, auth_client, user):
@@ -215,9 +230,61 @@ def test_ai_tools_create_and_edit(app, user, enabled):
             user_obj, {"file_id": fid, "cell_id": cell_id}, None)
         assert deleted["ok"] is True
 
-        # Every AI mutation forced a checkpoint.
+        # Transactional: all three AI mutations in this run share ONE
+        # snapshot of the pre-edit state, labelled as an AI answer.
         stored = db.session.get(StoredFile, fid)
-        assert len(stored.versions) >= 3
+        assert len(stored.versions) == 1
+        assert stored.versions[0].source == "ai"
+        assert stored.versions[0].note == "AI edits"
+
+
+def test_ai_edits_in_a_new_run_create_a_new_block(app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    # First "AI answer": two mutations, one app/request context.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        nb_tools._tool_add_cell(user_obj, {"file_id": fid,
+                                           "cell_type": "markdown",
+                                           "content": "one"}, None)
+        nb_tools._tool_add_cell(user_obj, {"file_id": fid,
+                                           "cell_type": "markdown",
+                                           "content": "two"}, None)
+        assert len(db.session.get(StoredFile, fid).versions) == 1
+    # Second "AI answer": a fresh request context starts a new block.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        nb_tools._tool_add_cell(user_obj, {"file_id": fid,
+                                           "cell_type": "markdown",
+                                           "content": "three"}, None)
+        versions = db.session.get(StoredFile, fid).versions
+        assert len(versions) == 2
+        assert all(v.source == "ai" for v in versions)
+
+
+def test_history_diff_is_cell_level(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Diff me",
+                  cells=[nb_doc.new_cell("markdown", "original text"),
+                         nb_doc.new_cell("todo", meta={
+                             "items": [{"text": "old task", "done": False}]})])
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        document = nb_doc.load(stored)
+        nb_doc.update_cell(document, document["cells"][0]["id"],
+                           content="rewritten text")
+        nb_doc.delete_cell(document, document["cells"][1]["id"])
+        nb_doc.add_cell(document, "markdown", "brand new cell")
+        nb_doc.save_document(stored, document, force_checkpoint=True)
+        version_id = stored.versions[0].id
+    resp = auth_client.get(f"/m/notebooks/{fid}/history/{version_id}/diff")
+    assert resp.status_code == 200
+    body = resp.data
+    assert b"1 added" in body and b"1 changed" in body and b"1 removed" in body
+    assert b"rewritten text" in body   # changed cell, new side
+    assert b"original text" in body    # changed cell, old side
+    assert b"old task" in body         # removed todo cell rendered as text
+    assert b"brand new cell" in body   # added cell
 
 
 def test_ai_tools_refuse_synced_drive(app, user, enabled):
@@ -238,3 +305,24 @@ def test_tools_hidden_when_module_disabled(app, user):
         db.session.commit()
         _defs, handlers, _labels = agent_service._active_tools()
         assert "notebooks.create" in handlers
+
+
+def test_doc_json_endpoint_tracks_changes(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    resp = auth_client.get(f"/m/notebooks/{fid}/doc")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True and data["checksum"]
+
+    # An external edit (e.g. an AI tool) changes the checksum the editor polls.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        cell = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "heading",
+                       "content": "Added by AI"}, None)
+        assert cell["ok"] is True
+    data2 = auth_client.get(f"/m/notebooks/{fid}/doc").get_json()
+    assert data2["checksum"] != data["checksum"]
+    assert any(c["content"] == "Added by AI" and c["type"] == "heading"
+               for c in data2["doc"]["cells"])

@@ -16,6 +16,14 @@
         <span id="nb-save-status" class="text-xs opacity-50 whitespace-nowrap">
             <i class="fas fa-check mr-1"></i>Saved
         </span>
+        <button id="nb-index-btn" class="btn btn-ghost btn-sm gap-1"
+                title="Document index (headings)">
+            <i class="fas fa-list"></i> Index
+        </button>
+        <button id="nb-read-btn" class="btn btn-ghost btn-sm gap-1"
+                title="Read mode — full-page, distraction-free">
+            <i class="fas fa-book-open-reader"></i> Read
+        </button>
         <button id="nb-checkpoint-btn" class="btn btn-ghost btn-sm gap-1"
                 title="Save a restorable checkpoint now (Ctrl+S)">
             <i class="fas fa-bookmark"></i> Checkpoint
@@ -26,17 +34,27 @@
         </a>
     </div>
 
+    <!-- Document index (headings) — toggled by the Index button -->
+    <div id="nb-toc" class="glass-panel rounded-2xl px-5 py-4 hidden">
+        <div class="text-xs font-semibold opacity-50 uppercase tracking-wide mb-2">
+            <i class="fas fa-list mr-1"></i> Index
+        </div>
+        <div id="nb-toc-list" class="flex flex-col gap-1"></div>
+    </div>
+
     <!-- Cells -->
     <div id="nb-cells" class="flex flex-col gap-2"></div>
 
     <!-- Add cell -->
-    <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-2">
+    <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-2 nb-add-toolbar">
         <select id="nb-add-type" class="select select-bordered select-sm">
             <option value="markdown">Markdown</option>
             <option value="richtext">Rich text</option>
             <option value="code">Code</option>
             <option value="todo">To-do list</option>
             <option value="table">Table</option>
+            <option value="heading">Heading</option>
+            <option value="separator">Separator</option>
         </select>
         <button id="nb-add-btn" class="btn btn-primary btn-sm gap-1">
             <i class="fas fa-plus"></i> Add cell
@@ -102,6 +120,41 @@
    while one of its pickers is open. */
 .nb-cell:has(.ql-picker.ql-expanded) { position: relative; z-index: 30; }
 .nb-rt-edit .ql-picker.ql-expanded .ql-picker-options { z-index: 31; }
+
+/* Heading cells (level 1 = title, level 2 = subtitle) */
+.nb-cell-title { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
+.nb-cell-subtitle { font-size: 1.25rem; font-weight: 600; opacity: .85; }
+.nb-title-input { font-size: 1.4rem; font-weight: 700; }
+.nb-subtitle-input { font-size: 1.1rem; font-weight: 600; }
+.nb-heading-toggle { flex-shrink: 0; }
+.nb-heading-toggle .btn { padding-inline: .55rem; }
+
+/* Separator cell */
+.nb-separator { display: flex; align-items: center; gap: 12px; padding: 2px 0; }
+.nb-separator::before, .nb-separator::after { content: ""; flex: 1; height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(to right, transparent, oklch(var(--p) / .45)); }
+.nb-separator::after {
+    background: linear-gradient(to left, transparent, oklch(var(--p) / .45)); }
+.nb-separator i { color: oklch(var(--p) / .6); font-size: .7rem; }
+
+/* Document index */
+#nb-toc-list a { display: block; border-radius: .5rem; padding: .2rem .5rem;
+    transition: background .15s; }
+#nb-toc-list a:hover { background: oklch(var(--p) / .12); }
+.nb-toc-title { font-weight: 600; font-size: .9rem; }
+.nb-toc-subtitle { font-size: .82rem; opacity: .65; padding-left: 1.25rem; }
+
+/* Read mode: clean full-page document look */
+#nb-root.nb-reading .nb-add-bar,
+#nb-root.nb-reading .nb-cell-head,
+#nb-root.nb-reading #nb-checkpoint-btn,
+#nb-root.nb-reading #nb-save-status,
+#nb-root.nb-reading .nb-add-toolbar { display: none; }
+#nb-root.nb-reading .nb-cell { background: transparent; border: none;
+    box-shadow: none; backdrop-filter: none; padding-left: 0; padding-right: 0; }
+#nb-root.nb-reading #nb-cells { gap: 0; }
+#nb-root.nb-reading .nb-cell { padding-top: .35rem; padding-bottom: .35rem; }
 </style>
 
 <script>
@@ -111,8 +164,12 @@
     const opts = {
         fileId: {{ file.id }},
         saveUrl: {{ url_for('notebooks.save', file_id=file.id)|tojson }},
+        docUrl: {{ url_for('notebooks.document_json', file_id=file.id)|tojson }},
+        checksum: {{ (file.checksum or '')|tojson }},
         doc: {{ doc|tojson }}
     };
+    // Lets the AI chat's @here attach this notebook (mirrors drive/view.html).
+    window.currentFile = { id: {{ file.id }}, name: {{ file.name|tojson }} };
     function boot() { window.NotebookEditor.mount(root, opts); }
     // SPA page swaps don't execute external <script src> tags, so load the
     // editor script on demand — it stays cached in window after first load.
