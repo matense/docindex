@@ -434,12 +434,13 @@ def test_scope_all_drives_widens_the_search(auth_client, app, user):
     assert "ALL" in system and "list_drives" in system
 
 
-def _make_notebook(app, user, cells, hidden=False):
+def _make_notebook(app, user, cells, hidden=False, locked=False):
     """Persist a .pdocnb file directly (bypasses the module's routes)."""
     from app.models import ModuleState
     from app.services import file_service
 
-    doc = {"title": "NB", "version": 1, "ai_hidden": hidden, "cells": cells}
+    doc = {"title": "NB", "version": 1, "ai_hidden": hidden,
+           "ai_lock": locked, "cells": cells}
     payload = json.dumps(doc).encode()
 
     class FakeStorage:
@@ -486,3 +487,37 @@ def test_context_cell_hidden_notebook_adds_no_note(auth_client, app, user):
         "context_cell": {"file_id": fid, "cell_id": "cell-1"}})
     assert not [m for m in messages
                 if m["role"] == "system" and "dragged a cell" in m["content"]]
+
+
+def test_context_cell_locked_notebook_tells_agent_not_to_edit(
+        auth_client, app, user):
+    """A cell dragged from a locked notebook: the agent is told up front to
+    ask for an unlock instead of generating content."""
+    _add_conn(auth_client)
+    fid = _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "cell body text",
+         "meta": {}}], locked=True)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "improve this cell",
+        "context_cell": {"file_id": fid, "cell_id": "cell-1"}})
+    notes = [m for m in messages
+             if m["role"] == "system" and "dragged a cell" in m["content"]]
+    assert notes
+    assert "LOCKED" in notes[0]["content"]
+    assert "unlock" in notes[0]["content"]
+
+
+def test_open_locked_notebook_context_warns_agent(auth_client, app, user):
+    """Opening a locked notebook and chatting: the open-file system note
+    tells the agent to ask for a manual unlock, not to generate edits."""
+    _add_conn(auth_client)
+    fid = _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "body",
+         "meta": {}}], locked=True)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "add a summary to this notebook", "context_file_id": fid})
+    notes = [m for m in messages
+             if m["role"] == "system" and "currently has" in m["content"]]
+    assert notes
+    assert "LOCKED" in notes[0]["content"]
+    assert "unlock" in notes[0]["content"]

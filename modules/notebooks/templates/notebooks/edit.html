@@ -110,6 +110,24 @@
 .nb-rt-edit .ql-editor.ql-blank::before { color: rgba(128,128,128,.5);
     font-style: normal; }
 
+/* Custom toolbar buttons hold a FontAwesome <i> instead of Quill's svg —
+   give it the svg's box (18px, floated) so it lines up with the rest. */
+.nb-rt-edit .ql-toolbar button .fas {
+    display: block;
+    float: left;
+    width: 18px;
+    height: 100%;
+    font-size: 13px;
+    line-height: 18px;
+    text-align: center;
+}
+.nb-rt-edit .ql-toolbar button:hover .fas,
+.nb-rt-edit .ql-toolbar button.ql-active .fas { color: var(--accent-color); }
+[data-theme="dark"] .nb-rt-edit .ql-toolbar button .fas { color: #cbd5e1; }
+[data-theme="dark"] .nb-rt-edit .ql-toolbar button:hover .fas,
+[data-theme="dark"] .nb-rt-edit .ql-toolbar button.ql-active .fas {
+    color: #a5b4fc; }
+
 /* Preview each size option at its own size inside the dropdown (labels
    themselves come from the option text — Quill 2 data-label behavior). */
 .nb-rt-edit .ql-picker.ql-size .ql-picker-item[data-value="12px"] { font-size: 12px; }
@@ -192,6 +210,7 @@
 /* Print: document only — no app chrome, no editing affordances */
 @media print {
     #main-header, #bottom-dock, .ai-chat-window, #flash-messages-toast,
+    #search-dock-container, #sync-widget,
     .nb-add-toolbar, .nb-add-bar, .nb-cell-head, #nb-toc,
     #nb-root > .glass-panel:first-child { display: none !important; }
     body, #app-container, #main-content-area, #main-content-area > div {

@@ -184,13 +184,16 @@ h1 {
     font-size: 1rem;
 }
 
-.btn-primary {
+/* Legacy solid primary — must not touch DaisyUI outline buttons, otherwise
+   they get a solid accent background with the outline's light primary text
+   on top (illegible in dark mode). */
+.btn-primary:not(.btn-outline) {
     background-color: var(--accent-color);
     color: white;
     box-shadow: 0 2px 5px rgba(0, 123, 255, 0.3);
 }
 
-.btn-primary:hover {
+.btn-primary:not(.btn-outline):hover {
     background-color: #0056b3;
     transform: translateY(-1px);
 }

@@ -264,8 +264,9 @@ def _cell_diff(old_doc, new_doc):
             continue
         changed += 1
         rows = _side_by_side_rows(old_text, new_text)
-        if not any(r["cls"] != "same" for r in rows):
-            # Only meta changed (language, heading level, ...).
+        if not any(r.get("cls", "same") != "same" for r in rows):
+            # Only meta changed (language, heading level, ...). Collapse
+            # markers have no "cls" — they stand for unchanged lines.
             rows = [{"left": "~ cell settings changed",
                      "right": "~ cell settings changed", "cls": "same"}]
         entries.append({"kind": "changed", "label": label, "rows": rows})

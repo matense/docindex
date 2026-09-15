@@ -52,13 +52,48 @@ def _resolve_context_cell(ref):
     if doc.get("ai_hidden"):
         return None  # hidden notebooks stay invisible to the AI
     preview = (cell.get("content") or "")[:200]
-    return (
+    note = (
         f"The user dragged a cell from the notebook [id {stored.id}] "
         f"{stored.name} into the chat: cell id '{cell_id}' (type "
         f"'{cell.get('type')}'). When they say \"this cell\", they mean that "
         f"one — read it with notebooks.read and change it with "
         f"notebooks.update_cell using that cell_id. Cell content preview: "
         f"{preview!r}")
+    if doc.get("ai_lock"):
+        note += (" NOTE: this notebook is currently LOCKED against AI edits "
+                 "by the user — do not generate or propose changes to it. "
+                 "If they ask for changes, tell them the notebook is locked "
+                 "and ask them to unlock it with the lock button in the "
+                 "notebook toolbar, then repeat the request.")
+    return note
+
+
+def _notebook_access_note(stored):
+    """Extra instruction appended to the open-file context note when the
+    open notebook is locked or hidden for the AI (pdocnb only)."""
+    if stored.extension != "pdocnb":
+        return ""
+    from ..services import file_service, module_service
+    if not module_service.is_enabled("notebooks"):
+        return ""
+    try:
+        doc = json.loads(file_service.read_text_content(stored,
+                                                        max_chars=500_000))
+    except (OSError, ValueError):
+        return ""
+    if doc.get("ai_hidden"):
+        return (" This notebook is HIDDEN from the AI by the user: do not "
+                "read or mention its content — if they ask about it, tell "
+                "them it is hidden and can be unhidden with the eye button "
+                "in the notebook toolbar.")
+    if doc.get("ai_lock"):
+        return (" This notebook is LOCKED against AI edits by the user: do "
+                "not generate or propose edits to it. If they ask for "
+                "changes, tell them the notebook is locked and ask them to "
+                "unlock it with the lock button in the notebook toolbar, "
+                "then repeat the request. Reading it and answering "
+                "questions about it is fine.")
+    return ""
 
 
 @bp.route("/conversations")
@@ -300,6 +335,7 @@ def chat():
                 "When they say things like \"this notebook\", \"this file\" or "
                 "\"here\" without naming a target, they mean that one — you "
                 "can read or edit it directly by id, no need to search first."
+                + _notebook_access_note(context_file)
             ),
         })
 

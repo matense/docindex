@@ -33,12 +33,16 @@ def _get_owned(user, file_id):
 
 def _notebook_summary(stored):
     tags = hashtag_service.get_tags(stored.index)
+    ai_lock, _ai_hidden = doc_service.access_flags(stored)
     return {
         "id": stored.id, "name": stored.name,
         "drive": stored.drive.name if stored.drive else None,
         "folder": stored.folder.name if stored.folder else None,
         "cells": doc_service.cell_count(stored),
         "size": stored.size, "hashtags": tags,
+        # The AI must see the lock up front so it asks the user to unlock
+        # instead of generating content that cannot be saved.
+        "ai_lock": ai_lock,
         "updated_at": stored.updated_at.isoformat() if stored.updated_at else None,
     }
 
@@ -68,10 +72,17 @@ def _tool_read(user, args, drive):
     cells = document["cells"]
     start = max(0, int(args.get("start", 0)))
     count = min(100, int(args.get("count", 50)))
-    return {"id": stored.id, "title": document["title"],
-            "total_cells": len(cells),
-            "cells": [{"index": start + i, **c}
-                      for i, c in enumerate(cells[start:start + count])]}
+    result = {"id": stored.id, "title": document["title"],
+              "total_cells": len(cells),
+              "ai_lock": bool(document.get("ai_lock")),
+              "cells": [{"index": start + i, **c}
+                        for i, c in enumerate(cells[start:start + count])]}
+    if result["ai_lock"]:
+        result["note"] = ("This notebook is LOCKED against AI edits by the "
+                          "user — do not generate or propose changes; ask "
+                          "them to unlock it with the lock button in the "
+                          "notebook toolbar first.")
+    return result
 
 
 def _tool_create(user, args, drive):
@@ -154,14 +165,20 @@ register_tool(
     "list",
     _schema("notebooks.list",
             "List the user's notebooks (Jupyter-style .pdocnb cell documents) "
-            "with drive, folder, cell count and hashtags.", {}),
+            "with drive, folder, cell count and hashtags. Each entry has an "
+            "'ai_lock' flag: when true the notebook is locked against AI "
+            "edits — do not generate or propose changes; ask the user to "
+            "unlock it (lock button in the notebook toolbar) first.", {}),
     _tool_list, label="Listed notebooks", module="notebooks")
 
 register_tool(
     "read",
     _schema("notebooks.read",
             "Read a notebook's cells (markdown/code/todo/table), paginated by "
-            "cell index.",
+            "cell index. The response includes 'ai_lock': when true the "
+            "notebook is locked against AI edits — do not generate or "
+            "propose changes; ask the user to unlock it (lock button in the "
+            "notebook toolbar) first.",
             {"file_id": _FILE_ID,
              "start": {"type": "integer", "description": "First cell index."},
              "count": {"type": "integer",

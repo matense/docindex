@@ -666,27 +666,27 @@
                     </select>
                 </span>
                 <span class="ql-formats">
-                    <button class="ql-bold"></button>
-                    <button class="ql-italic"></button>
-                    <button class="ql-underline"></button>
-                    <button class="ql-strike"></button>
+                    <button class="ql-bold" title="Bold (Ctrl+B)"></button>
+                    <button class="ql-italic" title="Italic (Ctrl+I)"></button>
+                    <button class="ql-underline" title="Underline (Ctrl+U)"></button>
+                    <button class="ql-strike" title="Strikethrough"></button>
                 </span>
                 <span class="ql-formats">
                     <select class="ql-color"></select>
                     <select class="ql-background"></select>
                 </span>
                 <span class="ql-formats">
-                    <button class="ql-list" value="ordered"></button>
-                    <button class="ql-list" value="bullet"></button>
-                    <button class="ql-blockquote"></button>
-                    <button class="ql-link"></button>
+                    <button class="ql-list" value="ordered" title="Numbered list"></button>
+                    <button class="ql-list" value="bullet" title="Bullet list"></button>
+                    <button class="ql-blockquote" title="Quote"></button>
+                    <button class="ql-link" title="Insert link"></button>
                 </span>
                 <span class="ql-formats">
                     <button class="ql-image" title="Insert an image (saved as a file on the drive)"></button>
-                    <button class="ql-fileref" title="Link a file from your drive"><i class="fas fa-file-arrow-down" style="font-size:.8em"></i></button>
+                    <button class="ql-fileref" title="Link a file from your drive"><i class="fas fa-file-arrow-down"></i></button>
                 </span>
                 <span class="ql-formats">
-                    <button class="ql-clean"></button>
+                    <button class="ql-clean" title="Clear formatting"></button>
                 </span>`;
             body.appendChild(toolbar);
             const holder = el("div");
@@ -741,6 +741,15 @@
                     placeholder: "Write here — select text to style it…",
                     modules: { toolbar: { container: toolbar, handlers: handlers } },
                 });
+                // Quill swaps <select>s for custom pickers — the title must
+                // go on the generated widget for the tooltip to show.
+                const pickerTitles = { ".ql-picker.ql-size": "Text size",
+                                       ".ql-picker.ql-color": "Text color",
+                                       ".ql-picker.ql-background": "Highlight color" };
+                for (const [sel, tip] of Object.entries(pickerTitles)) {
+                    const p = toolbar.querySelector(sel);
+                    if (p) p.setAttribute("title", tip);
+                }
                 if (cell.content.trim()) {
                     quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content));
                 }

@@ -195,10 +195,22 @@ def ai_error(stored, write=False):
                 "read or mention its content. Tell the user they can unhide "
                 "it with the eye button in the notebook toolbar.")
     if write and doc.get("ai_lock"):
-        return ("This notebook is locked against AI edits by the user. Tell "
-                "the user to unlock it with the lock button in the notebook "
-                "toolbar, then ask again.")
+        return ("This notebook is LOCKED against AI edits by the user. Do "
+                "not generate or propose the content in chat — just tell "
+                "the user the notebook is locked and ask them to unlock it "
+                "with the lock button in the notebook toolbar, then repeat "
+                "the request.")
     return None
+
+
+def access_flags(stored):
+    """(ai_lock, ai_hidden) booleans, for AI tool listings. Unreadable
+    notebooks report no flags."""
+    try:
+        document = load(stored)
+    except (ValueError, OSError):
+        return False, False
+    return bool(document.get("ai_lock")), bool(document.get("ai_hidden"))
 
 
 def ai_file_guard(_user, stored):

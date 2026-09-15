@@ -422,3 +422,46 @@ def test_upload_asset_accepts_images_only(app, auth_client, user, enabled):
                        "text/plain")},
         content_type="multipart/form-data")
     assert resp.status_code == 400
+
+
+def test_history_diff_with_collapsed_unchanged_stretch(app, auth_client, user,
+                                                       enabled):
+    """Changed cells with >6 unchanged lines emit collapse markers (no 'cls'
+    key) — the settings-change check must not KeyError on them."""
+    drive_id = _drive(app, user)
+    old_text = "\n".join(f"line {i}" for i in range(20))
+    fid = _create(app, user, drive_id, "Long",
+                  cells=[nb_doc.new_cell("markdown", old_text)])
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        document = nb_doc.load(stored)
+        nb_doc.update_cell(document, document["cells"][0]["id"],
+                           content=old_text.replace("line 10", "LINE TEN"))
+        nb_doc.save_document(stored, document, force_checkpoint=True)
+        version_id = stored.versions[0].id
+    resp = auth_client.get(f"/m/notebooks/{fid}/history/{version_id}/diff")
+    assert resp.status_code == 200
+    assert b"LINE TEN" in resp.data and b"line 10" in resp.data
+    assert b"unchanged line" in resp.data  # collapse marker rendered
+
+
+def test_lock_state_visible_in_read_and_list(app, user, enabled):
+    """The AI sees the lock up front in read/list responses, so it asks for
+    an unlock instead of generating content it cannot save."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Flags",
+                  cells=[nb_doc.new_cell("markdown", "body")])
+    _set_flags(app, fid, ai_lock=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert read["ai_lock"] is True
+        assert "unlock" in read["note"]
+        listing = nb_tools._tool_list(user_obj, {}, None)
+        entry = next(n for n in listing["notebooks"] if n["id"] == fid)
+        assert entry["ai_lock"] is True
+        # The refusal tells the AI not to generate content in chat.
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "nope"}, None)
+        assert "Do not generate" in added["error"]
