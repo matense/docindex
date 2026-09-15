@@ -47,6 +47,9 @@ def _tool_list(user, args, drive):
     notebooks = doc_service.list_notebooks(user.id)
     if drive is not None:
         notebooks = [n for n in notebooks if n.drive_id == drive.id]
+    # AI-hidden notebooks are invisible to the assistant entirely.
+    notebooks = [n for n in notebooks
+                 if not doc_service.ai_error(n)]
     return {"total": len(notebooks),
             "notebooks": [_notebook_summary(n) for n in notebooks[:100]]}
 
@@ -55,6 +58,9 @@ def _tool_read(user, args, drive):
     stored = doc_service.get_notebook(args.get("file_id"), user.id)
     if stored is None:
         return {"error": f"Notebook {args.get('file_id')} not found."}
+    guarded = doc_service.ai_error(stored)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
@@ -104,6 +110,10 @@ def _save_and_report(user, file_id, mutate):
     stored, error = _get_owned(user, file_id)
     if error:
         return error
+    # AI-hidden notebooks refuse all access; AI-locked ones refuse edits.
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
         cell = mutate(document)

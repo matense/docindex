@@ -32,11 +32,13 @@ def _guard_writable(stored):
 
 def _locations():
     """(value, label) choices for the create form: roots + folders of every
-    non-synced drive owned by the user."""
+    non-synced drive owned by the user. The dedicated notebooks drive comes
+    first so it is the default pick."""
     choices = []
     drives = (Drive.query
               .filter_by(user_id=current_user.id)
               .order_by(Drive.name).all())
+    drives.sort(key=lambda d: 0 if d.name == "My Notebooks" else 1)
     for drive in drives:
         if drive.is_synced:
             continue
@@ -152,6 +154,26 @@ def delete(file_id):
     stored = _get_notebook(file_id)
     file_service.delete_file(stored)  # trash — restorable from the profile page
     return redirect(url_for("notebooks.index"))
+
+
+@bp.post("/<int:file_id>/assets")
+def upload_asset(file_id):
+    """Store an image pasted into a rich-text cell as a real file next to
+    the notebook (same drive + folder), so it is indexed and reusable."""
+    stored = _get_notebook(file_id)
+    _guard_writable(stored)
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"ok": False, "error": "Missing file."}), 400
+    if not (upload.mimetype or "").startswith("image/"):
+        return jsonify({"ok": False, "error": "Only images are allowed."}), 400
+    asset = file_service.save_upload(upload, current_user,
+                                     folder=stored.folder)
+    asset.drive_id = stored.drive_id
+    db.session.commit()
+    indexing_service.enqueue_index([asset.id])
+    return jsonify({"ok": True, "id": asset.id, "name": asset.name,
+                    "url": url_for("drive.raw", file_id=asset.id)})
 
 
 @bp.get("/<int:file_id>/history")

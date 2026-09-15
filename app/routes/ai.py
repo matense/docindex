@@ -18,6 +18,49 @@ def _get_conversation(conv_id):
     return None
 
 
+def _resolve_context_cell(ref):
+    """Build a system note for a notebook cell dragged into the chat
+    ({"file_id", "cell_id"}), or None when invalid/not applicable."""
+    if not isinstance(ref, dict):
+        return None
+    try:
+        file_id = int(ref.get("file_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    cell_id = str(ref.get("cell_id") or "")
+    if not file_id or not cell_id:
+        return None
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=current_user.id,
+                         extension="pdocnb")
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return None
+    from ..services import file_service, module_service
+    if not module_service.is_enabled("notebooks"):
+        return None
+    try:
+        doc = json.loads(file_service.read_text_content(stored,
+                                                        max_chars=500_000))
+    except (OSError, ValueError):
+        return None
+    cell = next((c for c in doc.get("cells", [])
+                 if c.get("id") == cell_id), None)
+    if cell is None:
+        return None
+    if doc.get("ai_hidden"):
+        return None  # hidden notebooks stay invisible to the AI
+    preview = (cell.get("content") or "")[:200]
+    return (
+        f"The user dragged a cell from the notebook [id {stored.id}] "
+        f"{stored.name} into the chat: cell id '{cell_id}' (type "
+        f"'{cell.get('type')}'). When they say \"this cell\", they mean that "
+        f"one — read it with notebooks.read and change it with "
+        f"notebooks.update_cell using that cell_id. Cell content preview: "
+        f"{preview!r}")
+
+
 @bp.route("/conversations")
 @login_required
 def conversations():
@@ -194,6 +237,9 @@ def chat():
                         .filter(StoredFile.deleted_at.is_(None))
                         .first())
 
+    # Cell context: a notebook cell the user dragged into the chat.
+    context_cell_note = _resolve_context_cell(data.get("context_cell"))
+
     conv = _get_conversation(data.get("conversation_id"))
     if not conv:
         conv = ChatConversation(user_id=current_user.id,
@@ -256,6 +302,9 @@ def chat():
                 "can read or edit it directly by id, no need to search first."
             ),
         })
+
+    if context_cell_note:
+        history.insert(0, {"role": "system", "content": context_cell_note})
 
     user_id = current_user.id
     # The chat is scoped to the drive the user is browsing; the scope chip in

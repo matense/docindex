@@ -917,12 +917,19 @@ tool + table).
 - **Enable/disable** — persisted in the `module_states` table, toggled by
   admins on `/settings/modules` (linked from the profile dropdown as
   "Manage modules"). Effective immediately: route guards and tool
-  filtering consult the table per request.
+  filtering consult the table per request. Enabling also calls the
+  module's optional `on_enable(user)` hook (default content creation —
+  e.g. notebooks creates the "My Notebooks" drive); hook failures are
+  logged and never break the toggle.
 - **AI tools** — `agent_service.register_tool(name, definition, handler,
   label=..., module=...)`. Module tools are namespaced `<module>.<tool>`,
   rejected on name collisions, and filtered out of the model's tool list
   while the module is disabled (`_active_tools()` per agent run). Core
   tools stay registered under their plain names.
+- **AI file guards** — `agent_service.register_file_guard(fn, module=...)`:
+  `fn(user, stored) -> error str | None`. Guarded files are refused by the
+  core read/grep/info tools and dropped from search/list results; module
+  guards apply only while the module is enabled.
 - **Search & viewers** — modules can register a text extractor per file
   extension (`indexing_service.register_extractor`, consulted by
   `extract_text()` before the built-in dispatch, so reindex/sync just work)
@@ -940,18 +947,29 @@ tool + table).
 - `hello` — minimal example (page + echo tool + table).
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
-  (`markdown`/`richtext`/`code`/`todo`/`table` cells), so it gets drives, trash,
-  `FileVersion` history and FTS search for free. Autosave writes through
-  with an 800 ms debounce + `beforeunload` flush (no data loss) and
-  snapshots a `FileVersion` at most every 2 minutes; Ctrl+S/Checkpoint and
-  every AI edit force a version. Own list/editor/history/diff pages under
-  `/m/notebooks/`, plus AI tools `notebooks.list/read/create/add_cell/
-  update_cell/delete_cell`. Registered as extractor (`pdocnb` → flattened
-  cell text) and viewer (`/file/<id>/view` redirects to the cell editor).
+  (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`
+  cells), so it gets drives, trash, `FileVersion` history and FTS search
+  for free. Autosave writes through with an 800 ms debounce +
+  `beforeunload` flush (no data loss) and snapshots a `FileVersion` at
+  most every 2 minutes; Ctrl+S/Checkpoint forces a version, and all AI
+  edits within one answer share a single snapshot. Own list/editor/
+  history/diff pages under `/m/notebooks/`, plus AI tools
+  `notebooks.list/read/create/add_cell/update_cell/delete_cell`.
+  Registered as extractor (`pdocnb` → flattened cell text), viewer
+  (`/file/<id>/view` redirects to the cell editor) and file guard.
+  Toolbar flags: **AI lock** (the AI can read but not edit — its tools get
+  an error telling it to ask the user to unlock) and **hide from AI**
+  (invisible to every core tool via the guard and to the module tools).
+  First enable creates a "My Notebooks" drive via `on_enable`. Rich-text
+  cells embed images uploaded through `/m/notebooks/<id>/assets` (stored
+  as real, indexed files next to the notebook), and rich-text/markdown
+  cells can reference drive files. Cells can be dragged into the AI chat
+  as a context chip (`context_cell` on `/ai/chat` → system note naming
+  the notebook and cell id).
 
 ## Testing
 
-pytest suite in `tests/`, 301 tests across 20+ modules:
+pytest suite in `tests/`, 318 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
@@ -975,7 +993,9 @@ pytest suite in `tests/`, 301 tests across 20+ modules:
   chunking, `grep_file`/`count_files` tools, thinking/tool_result events,
   token streaming, attachments, reasoning field, the nudge mechanism), and
   the module system (discovery/validation, route guard, namespaced tool
-  registry, admin toggle page).
+  registry, file guards, admin toggle page), and the notebooks module
+  (document service, AI lock/hide flags, assets upload, history/diff,
+  chat `context_cell`).
 
 Run with `pytest`.
 

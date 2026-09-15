@@ -60,6 +60,11 @@ def register(ctx):
 instance), `ctx.logger` and `ctx.blueprint`. Return the blueprint (or assign
 `ctx.blueprint`) to expose routes.
 
+Optionally define `on_enable(user)`: called every time an admin enables the
+module, with the user who toggled it. Use it to create default content —
+e.g. the notebooks module creates a "My Notebooks" drive. Keep it
+idempotent; exceptions are logged and never break the toggle.
+
 ## Routes
 
 Define a normal Flask blueprint. All routes are mounted under
@@ -111,6 +116,23 @@ module_service.register_file_viewer(
 Prefer storing module documents as regular files (see `modules/notebooks/`):
 they get ownership, drives/folders, trash, `FileVersion` history, FTS search
 and the AI agent's core tools (search/read/grep/hashtags) for free.
+
+## AI file guards
+
+Modules can make files invisible (or read-only) to the AI agent:
+
+```python
+from app.services import agent_service
+
+agent_service.register_file_guard(guard_fn, module="mymodule")
+# guard_fn(user, stored_file) -> error message str, or None to allow access.
+```
+
+A guarded file is refused by the core `read_file` / `grep_file` /
+`get_file_info` tools and dropped from `search_files` / `list_files`
+results. Module guards apply only while the module is enabled. The
+notebooks module uses this for its "hide from AI" flag; its own tools
+additionally check a write-mode flag for the "lock AI edits" toggle.
 
 ## Database tables
 

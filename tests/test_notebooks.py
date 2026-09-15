@@ -326,3 +326,99 @@ def test_doc_json_endpoint_tracks_changes(app, auth_client, user, enabled):
     assert data2["checksum"] != data["checksum"]
     assert any(c["content"] == "Added by AI" and c["type"] == "heading"
                for c in data2["doc"]["cells"])
+
+
+def _set_flags(app, fid, **flags):
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        document = nb_doc.load(stored)
+        document.update(flags)
+        nb_doc.save_document(stored, document, force_checkpoint=True)
+
+
+def test_ai_lock_blocks_edits_but_allows_reads(app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Locked",
+                  cells=[nb_doc.new_cell("markdown", "keep me")])
+    _set_flags(app, fid, ai_lock=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert "error" not in read
+        assert "keep me" in [c["content"] for c in read["cells"]]
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "nope"}, None)
+        assert "locked" in added["error"]
+        # Locked notebooks are still listed and readable.
+        listing = nb_tools._tool_list(user_obj, {}, None)
+        assert any(n["id"] == fid for n in listing["notebooks"])
+
+
+def test_ai_hidden_blocks_everything(app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Secret",
+                  cells=[nb_doc.new_cell("markdown", "hidden text")])
+    _set_flags(app, fid, ai_hidden=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert "hidden" in read["error"]
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "nope"}, None)
+        assert "hidden" in added["error"]
+        listing = nb_tools._tool_list(user_obj, {}, None)
+        assert not any(n["id"] == fid for n in listing["notebooks"])
+
+
+def test_hidden_notebook_invisible_to_core_agent_tools(app, user, enabled):
+    from app.services import agent_service
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Invisible",
+                  cells=[nb_doc.new_cell("markdown", "zebra puzzle clue")])
+    _set_flags(app, fid, ai_hidden=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = agent_service._tool_read_file(user_obj, fid)
+        assert "hidden" in result["error"]
+        grep = agent_service._tool_grep_file(user_obj, fid, "zebra")
+        assert "hidden" in grep["error"]
+        found = agent_service._tool_search_files(user_obj, "zebra puzzle")
+        assert all(r["file_id"] != fid for r in found["results"])
+
+
+def test_on_enable_creates_default_drive_once(app, user):
+    from app.services import module_service
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert module_service.set_enabled("notebooks", True, user_obj)
+        assert module_service.set_enabled("notebooks", True, user_obj)
+        drives = Drive.query.filter_by(
+            user_id=user, name=_nb.DEFAULT_DRIVE_NAME).all()
+        assert len(drives) == 1
+
+
+def test_upload_asset_accepts_images_only(app, auth_client, user, enabled):
+    import io
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/assets",
+        data={"file": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "pic.png",
+                       "image/png")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["ok"] is True
+    assert payload["url"].endswith(f"/file/{payload['id']}/raw")
+    with app.app_context():
+        asset = db.session.get(StoredFile, payload["id"])
+        assert asset.drive_id == drive_id
+
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/assets",
+        data={"file": (io.BytesIO(b"plain text"), "notes.txt",
+                       "text/plain")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 400

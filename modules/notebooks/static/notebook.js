@@ -51,6 +51,76 @@
         return parsed.body.innerHTML;
     }
 
+    // --- File reference picker: search the drive, pick a file --------------
+    // Shared modal (created once). onPick receives {file_id, name}.
+    let pickerEl = null;
+
+    function pickFile(onPick) {
+        if (!pickerEl) {
+            pickerEl = document.createElement("div");
+            pickerEl.className = "nb-picker-backdrop";
+            pickerEl.style.display = "none";
+            pickerEl.innerHTML =
+                '<div class="nb-picker glass-panel rounded-2xl p-3 flex flex-col gap-2">'
+                + '<input type="text" class="input input-bordered input-sm w-full" '
+                + 'placeholder="Search your files…">'
+                + '<div class="nb-picker-results flex flex-col max-h-64 overflow-y-auto"></div>'
+                + '<div class="flex justify-end"><button type="button" '
+                + 'class="btn btn-ghost btn-xs nb-picker-cancel">Cancel</button></div>'
+                + '</div>';
+            document.body.appendChild(pickerEl);
+            const input = pickerEl.querySelector("input");
+            const results = pickerEl.querySelector(".nb-picker-results");
+            const close = () => {
+                pickerEl.style.display = "none";
+                pickerEl._cb = null;
+            };
+            pickerEl.addEventListener("mousedown", (e) => {
+                if (e.target === pickerEl) close();
+            });
+            pickerEl.querySelector(".nb-picker-cancel")
+                .addEventListener("click", close);
+            let debounce = null;
+            input.addEventListener("input", () => {
+                clearTimeout(debounce);
+                const q = input.value.trim();
+                debounce = setTimeout(() => {
+                    fetch("/api/search?q=" + encodeURIComponent(q))
+                        .then((r) => r.json())
+                        .then((files) => {
+                            results.innerHTML = "";
+                            if (!files.length) {
+                                results.innerHTML = '<div class="text-xs opacity-50'
+                                    + ' px-2 py-1">No files found.</div>';
+                                return;
+                            }
+                            files.forEach((f) => {
+                                const b = document.createElement("button");
+                                b.type = "button";
+                                b.className = "nb-picker-item";
+                                b.innerHTML = '<i class="fas fa-file opacity-50"></i>';
+                                b.appendChild(document.createTextNode(f.name));
+                                b.addEventListener("click", () => {
+                                    const cb = pickerEl._cb;
+                                    close();
+                                    if (cb) cb(f);
+                                });
+                                results.appendChild(b);
+                            });
+                        })
+                        .catch(() => {});
+                }, 200);
+            });
+        }
+        pickerEl._cb = onPick;
+        pickerEl.style.display = "flex";
+        const input = pickerEl.querySelector("input");
+        input.value = "";
+        pickerEl.querySelector(".nb-picker-results").innerHTML =
+            '<div class="text-xs opacity-50 px-2 py-1">Type to search…</div>';
+        input.focus();
+    }
+
     // Quill (Word-like WYSIWYG) loaded on demand from the CDN — only when a
     // rich-text cell enters edit mode. Pixel sizes are registered as an
     // inline style attributor so any selection can get any size.
@@ -207,6 +277,44 @@
             });
         }
 
+        // --- AI access flags (lock edits / hide entirely) + print ---------
+        const lockBtn = root.querySelector("#nb-lock-btn");
+        const hideBtn = root.querySelector("#nb-hide-btn");
+        const printBtn = root.querySelector("#nb-print-btn");
+
+        function renderAccessButtons() {
+            if (lockBtn) {
+                const locked = !!doc.ai_lock;
+                lockBtn.innerHTML = '<i class="fas '
+                    + (locked ? "fa-lock" : "fa-lock-open") + '"></i>';
+                lockBtn.classList.toggle("nb-on", locked);
+                lockBtn.title = locked
+                    ? "AI edits locked — click to unlock"
+                    : "The AI can edit this notebook — click to lock";
+            }
+            if (hideBtn) {
+                const hidden = !!doc.ai_hidden;
+                hideBtn.innerHTML = '<i class="fas '
+                    + (hidden ? "fa-eye-slash" : "fa-eye") + '"></i>';
+                hideBtn.classList.toggle("nb-on", hidden);
+                hideBtn.title = hidden
+                    ? "Hidden from the AI — click to make visible"
+                    : "Visible to the AI — click to hide";
+            }
+        }
+        if (lockBtn) lockBtn.addEventListener("click", () => {
+            doc.ai_lock = !doc.ai_lock;
+            renderAccessButtons();
+            scheduleSave();
+        });
+        if (hideBtn) hideBtn.addEventListener("click", () => {
+            doc.ai_hidden = !doc.ai_hidden;
+            renderAccessButtons();
+            scheduleSave();
+        });
+        if (printBtn) printBtn.addEventListener("click", () => window.print());
+        renderAccessButtons();
+
         // External-change watch: when the AI (or another tab) edits this
         // notebook, refresh the view in place — unsaved local edits win.
         async function pollRemote() {
@@ -220,6 +328,9 @@
                 if (dirty || saving) return;  // local edits take precedence
                 doc.cells = data.doc.cells;
                 doc.title = data.doc.title;
+                doc.ai_lock = !!data.doc.ai_lock;
+                doc.ai_hidden = !!data.doc.ai_hidden;
+                renderAccessButtons();
                 lastChecksum = data.checksum;
                 doc.cells.forEach((c) => { c._editing = false; });
                 render();
@@ -359,6 +470,15 @@
             grip.draggable = true;
             grip.addEventListener("dragstart", (e) => {
                 e.dataTransfer.setData("text/nb-cell", String(index));
+                // Payload for the AI chat: dropping a cell there references it.
+                e.dataTransfer.setData("application/x-docindex-cell",
+                    JSON.stringify({
+                        file_id: opts.fileId,
+                        file_name: doc.title || "notebook",
+                        cell_id: cell.id,
+                        type: cell.type,
+                        preview: (cell.content || "").slice(0, 80),
+                    }));
                 e.dataTransfer.effectAllowed = "move";
                 // Drag image = the whole cell, not just the tiny grip.
                 e.dataTransfer.setDragImage(wrap, 24, 12);
@@ -562,6 +682,10 @@
                     <button class="ql-link"></button>
                 </span>
                 <span class="ql-formats">
+                    <button class="ql-image" title="Insert an image (saved as a file on the drive)"></button>
+                    <button class="ql-fileref" title="Link a file from your drive"><i class="fas fa-file-arrow-down" style="font-size:.8em"></i></button>
+                </span>
+                <span class="ql-formats">
                     <button class="ql-clean"></button>
                 </span>`;
             body.appendChild(toolbar);
@@ -574,10 +698,48 @@
             wrapAll.appendChild(holder);
             loadQuill(() => {
                 if (!document.body.contains(holder)) return;  // page swapped away
-                const quill = new window.Quill(holder, {
+                let quill;
+                const handlers = {
+                    // Images are uploaded as real files next to the notebook
+                    // (same drive/folder) and embedded by URL.
+                    image: () => {
+                        const input = document.createElement("input");
+                        input.type = "file";
+                        input.accept = "image/*";
+                        input.onchange = () => {
+                            const file = input.files && input.files[0];
+                            if (!file) return;
+                            const fd = new FormData();
+                            fd.append("file", file);
+                            fetch(opts.assetsUrl, { method: "POST", body: fd })
+                                .then((r) => r.json())
+                                .then((d) => {
+                                    if (d && d.ok) {
+                                        const range = quill.getSelection(true);
+                                        quill.insertEmbed(range.index, "image",
+                                            d.url, "user");
+                                    } else {
+                                        setStatus("error",
+                                            (d && d.error) || "image upload failed");
+                                    }
+                                })
+                                .catch(() => setStatus("error", "image upload failed"));
+                        };
+                        input.click();
+                    },
+                    // Link a file from the drive: <a href="/file/<id>/view">.
+                    fileref: () => {
+                        pickFile((f) => {
+                            const range = quill.getSelection(true);
+                            quill.insertText(range.index, f.name,
+                                { link: "/file/" + f.file_id + "/view" }, "user");
+                        });
+                    },
+                };
+                quill = new window.Quill(holder, {
                     theme: "snow",
                     placeholder: "Write here — select text to style it…",
-                    modules: { toolbar: toolbar },
+                    modules: { toolbar: { container: toolbar, handlers: handlers } },
                 });
                 if (cell.content.trim()) {
                     quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content));
@@ -597,6 +759,27 @@
 
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
+                const wrap = el("div", "flex flex-col");
+                const toolsRow = el("div", "flex items-center gap-1 mb-1");
+                const refBtn = el("button", "btn btn-ghost btn-xs gap-1");
+                refBtn.type = "button";
+                refBtn.innerHTML = '<i class="fas fa-file-arrow-down"></i> File ref';
+                refBtn.title = "Insert a reference to a file in your drive";
+                // Keep the textarea focus/selection when opening the picker.
+                refBtn.addEventListener("mousedown", (e) => e.preventDefault());
+                refBtn.addEventListener("click", () => {
+                    const area = wrap.querySelector("textarea");
+                    const pos = area ? area.selectionStart : cell.content.length;
+                    pickFile((f) => {
+                        const link = "[" + f.name + "](file://" + f.file_id + ")";
+                        cell.content = cell.content.slice(0, pos) + link
+                            + cell.content.slice(pos);
+                        scheduleSave();
+                        renderCellBody(wrap.closest(".nb-cell"), cell);
+                    });
+                });
+                toolsRow.appendChild(refBtn);
+                wrap.appendChild(toolsRow);
                 const area = el("textarea",
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
@@ -605,12 +788,20 @@
                     cell.content = area.value;
                     scheduleSave();
                 });
-                area.addEventListener("blur", () => {
-                    cell._editing = false;
-                    renderCellBody(body.closest(".nb-cell"), cell);
-                    save(false);
+                // Exit edit mode only when focus truly leaves the cell — the
+                // file picker lives outside the cell but must not close it.
+                wrap.addEventListener("focusout", () => {
+                    setTimeout(() => {
+                        const active = document.activeElement;
+                        if (!wrap.isConnected || wrap.contains(active)) return;
+                        if (pickerEl && pickerEl.contains(active)) return;
+                        cell._editing = false;
+                        renderCellBody(wrap.closest(".nb-cell"), cell);
+                        save(false);
+                    }, 0);
                 });
-                body.appendChild(area);
+                wrap.appendChild(area);
+                body.appendChild(wrap);
                 if (cell._editing) area.focus();
             } else {
                 const view = el("div", "prose prose-sm max-w-none nb-md");

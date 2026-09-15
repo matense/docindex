@@ -247,4 +247,14 @@ def set_enabled(name, enabled, user):
         state.enabled_at = datetime.now(timezone.utc)
         state.enabled_by = user.id
     db.session.commit()
+    if enabled:
+        # First-enable hook: modules can create default content (e.g. the
+        # notebooks module creates the "My Notebooks" drive).
+        module = sys.modules.get(f"docindex_module_{name}")
+        hook = getattr(module, "on_enable", None) if module else None
+        if callable(hook):
+            try:
+                hook(user)
+            except Exception:  # noqa: BLE001 - never break the toggle
+                logger.exception("Module %r on_enable hook failed", name)
     return True

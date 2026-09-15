@@ -53,6 +53,15 @@ questions about your files by searching and reading them step by step.
 - **AI assistant** — agentic chat that searches, reads and cross-references
   your files in multiple steps, then answers with cited sources. Multiple AI
   connections (models) can be configured and switched per conversation.
+- **Notebooks (module)** — Jupyter-style notebooks stored as regular files on
+  your drives: markdown, rich text (images + file references), code, todo,
+  table, heading and separator cells. Autosave with version history and
+  side-by-side diffs, read/print mode, full AI editing tools with lock and
+  hide-from-AI toggles, and drag-a-cell-into-the-chat context.
+- **Extensible module system** — new features can ship as self-contained
+  modules under `modules/` (pages, AI tools, database tables, file viewers,
+  AI file guards) with an admin enable/disable toggle. See
+  [`modules/README.md`](modules/README.md) for the authoring guide.
 
 ## Tech
 

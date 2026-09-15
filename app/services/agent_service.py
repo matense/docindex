@@ -448,7 +448,26 @@ def _tool_search_files(user, query, drive=None, **kw):
         {k: v for k, v in r.items() if v not in (None, "", [])}
         for r in out["results"]
     ]
-    return {"results": results, "total": out["total"]}
+    hidden = _drop_guarded(user, results)
+    return {"results": results, "total": out["total"] - hidden}
+
+
+def _drop_guarded(user, results):
+    """Remove module-guarded files (e.g. AI-hidden notebooks) from a search
+    result list, in place. Returns how many were dropped."""
+    if not _FILE_GUARDS or not results:
+        return 0
+    files = {f.id: f for f in StoredFile.query.filter(
+        StoredFile.id.in_([r["file_id"] for r in results])).all()}
+    kept, dropped = [], 0
+    for r in results:
+        stored = files.get(r["file_id"])
+        if stored is not None and _file_guard_error(user, stored):
+            dropped += 1
+            continue
+        kept.append(r)
+    results[:] = kept
+    return dropped
 
 
 def _tool_count_files(user, query=None, drive=None, **kw):
@@ -467,6 +486,30 @@ def _tool_count_files(user, query=None, drive=None, **kw):
     )
 
 
+# File guards (registered by modules): fn(user, stored) -> error str|None.
+# A guarded file is invisible to the AI: read/grep/info tools refuse it and
+# search/list results drop it.
+_FILE_GUARDS = []
+
+
+def register_file_guard(fn, module=None):
+    """Register an AI file guard. Module guards apply only while the owning
+    module is enabled."""
+    _FILE_GUARDS.append((module, fn))
+
+
+def _file_guard_error(user, stored):
+    from . import module_service
+
+    for module, fn in _FILE_GUARDS:
+        if module and not module_service.is_enabled(module):
+            continue
+        err = fn(user, stored)
+        if err:
+            return err
+    return None
+
+
 def _tool_read_file(user, file_id, start=0, length=20_000):
     stored = (StoredFile.query
               .filter_by(id=file_id, user_id=user.id)
@@ -474,6 +517,9 @@ def _tool_read_file(user, file_id, start=0, length=20_000):
               .first())
     if not stored:
         return {"error": "File not found."}
+    guarded = _file_guard_error(user, stored)
+    if guarded:
+        return {"error": guarded}
 
     content = ""
     index = stored.index
@@ -511,6 +557,9 @@ def _tool_grep_file(user, file_id, pattern, context=2):
               .first())
     if not stored:
         return {"error": "File not found."}
+    guarded = _file_guard_error(user, stored)
+    if guarded:
+        return {"error": guarded}
     pattern = (pattern or "").strip()
     if not pattern:
         return {"error": "Empty pattern."}
@@ -570,6 +619,14 @@ def _tool_grep_file(user, file_id, pattern, context=2):
     }
 
 
+def _guard_visible(user, files):
+    """Drop module-guarded files (e.g. AI-hidden notebooks) from a list of
+    StoredFile objects."""
+    if not _FILE_GUARDS:
+        return files
+    return [f for f in files if not _file_guard_error(user, f)]
+
+
 def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
     from ..models import Folder
 
@@ -585,7 +642,8 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
         counts = dict(
             files_q.with_entities(StoredFile.folder_id, func.count())
             .group_by(StoredFile.folder_id).all())
-        files = files_q.order_by(StoredFile.name).limit(201).all()
+        files = _guard_visible(
+            user, files_q.order_by(StoredFile.name).limit(201).all())
         folders = folders_q.order_by(Folder.name).limit(501).all()
         return {
             "folders": [
@@ -613,7 +671,7 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
         "files": [
             {"file_id": f.id, "name": f.name, "size": f.size,
              "read_only": f.is_synced}
-            for f in files_q.limit(100).all()
+            for f in _guard_visible(user, files_q.limit(100).all())
         ],
     }
 
@@ -627,6 +685,9 @@ def _tool_get_file_info(user, file_id):
               .first())
     if not stored:
         return {"error": "File not found."}
+    guarded = _file_guard_error(user, stored)
+    if guarded:
+        return {"error": guarded}
 
     # Walk up the folder tree to build the full path (bounded, cycle-safe).
     parts, folder, seen = [], stored.folder, set()

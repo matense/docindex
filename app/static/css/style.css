@@ -168,14 +168,20 @@ h1 {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 10px 20px;
     border-radius: 8px;
     text-decoration: none;
     cursor: pointer;
     border: none;
-    font-size: 1rem;
     font-weight: 600;
     transition: all 0.2s;
+}
+
+/* Legacy sizing only for unsized buttons — DaisyUI's btn-xs/btn-sm/btn-lg
+   set their own padding+height and the fixed padding below misaligns their
+   content against the button's shadow/background box. */
+.btn:not(.btn-xs):not(.btn-sm):not(.btn-lg):not(.btn-square):not(.btn-circle) {
+    padding: 10px 20px;
+    font-size: 1rem;
 }
 
 .btn-primary {

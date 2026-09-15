@@ -104,6 +104,10 @@ def validate(doc):
     doc["cells"] = [_validate_cell(c) for c in cells[:1000]]
     doc["title"] = str(doc.get("title") or "Untitled notebook")[:255]
     doc["version"] = 1
+    # AI access flags: ai_lock blocks AI edits, ai_hidden blocks all AI
+    # access (read, search and listing) to this notebook.
+    doc["ai_lock"] = bool(doc.get("ai_lock"))
+    doc["ai_hidden"] = bool(doc.get("ai_hidden"))
     return doc
 
 
@@ -173,6 +177,36 @@ def cell_count(stored):
         return len(load(stored).get("cells", []))
     except (ValueError, OSError):
         return 0
+
+
+def ai_error(stored, write=False):
+    """Error message when the AI may not touch this notebook, else None.
+
+    ai_hidden blocks every access (the notebook is invisible to the AI);
+    ai_lock blocks only mutations. Corrupt/unreadable notebooks are treated
+    as accessible — the normal read errors apply.
+    """
+    try:
+        doc = load(stored)
+    except (ValueError, OSError):
+        return None
+    if doc.get("ai_hidden"):
+        return ("This notebook is hidden from the AI by the user — do not "
+                "read or mention its content. Tell the user they can unhide "
+                "it with the eye button in the notebook toolbar.")
+    if write and doc.get("ai_lock"):
+        return ("This notebook is locked against AI edits by the user. Tell "
+                "the user to unlock it with the lock button in the notebook "
+                "toolbar, then ask again.")
+    return None
+
+
+def ai_file_guard(_user, stored):
+    """Core guard hook (registered with agent_service): hides hidden
+    notebooks from every core AI tool (read, grep, search, list)."""
+    if stored.extension != EXTENSION:
+        return None
+    return ai_error(stored)
 
 
 # ---------------------------------------------------------------------------

@@ -432,3 +432,57 @@ def test_scope_all_drives_widens_the_search(auth_client, app, user):
     system = messages[0]["content"]
     assert "only files from that drive are visible" not in system
     assert "ALL" in system and "list_drives" in system
+
+
+def _make_notebook(app, user, cells, hidden=False):
+    """Persist a .pdocnb file directly (bypasses the module's routes)."""
+    from app.models import ModuleState
+    from app.services import file_service
+
+    doc = {"title": "NB", "version": 1, "ai_hidden": hidden, "cells": cells}
+    payload = json.dumps(doc).encode()
+
+    class FakeStorage:
+        filename = "nb.pdocnb"
+        mimetype = "application/json"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                fh.write(payload)
+
+    with app.app_context():
+        stored = file_service.save_upload(FakeStorage(),
+                                          db.session.get(User, user))
+        db.session.add(ModuleState(name="notebooks", enabled=True))
+        db.session.commit()
+        return stored.id
+
+
+def test_context_cell_gives_agent_cell_reference(auth_client, app, user):
+    """A cell dragged into the chat becomes a system note identifying the
+    notebook and cell so 'improve this cell' just works."""
+    _add_conn(auth_client)
+    fid = _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "cell body text",
+         "meta": {}}])
+    messages = _chat_capture_payload(auth_client, {
+        "message": "improve this cell",
+        "context_cell": {"file_id": fid, "cell_id": "cell-1"}})
+    notes = [m for m in messages
+             if m["role"] == "system" and "dragged a cell" in m["content"]]
+    assert notes
+    assert "cell-1" in notes[0]["content"]
+    assert "cell body text" in notes[0]["content"]
+
+
+def test_context_cell_hidden_notebook_adds_no_note(auth_client, app, user):
+    """AI-hidden notebooks stay invisible even when a cell ref is sent."""
+    _add_conn(auth_client)
+    fid = _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "secret",
+         "meta": {}}], hidden=True)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hi",
+        "context_cell": {"file_id": fid, "cell_id": "cell-1"}})
+    assert not [m for m in messages
+                if m["role"] == "system" and "dragged a cell" in m["content"]]

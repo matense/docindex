@@ -32,6 +32,18 @@
            class="btn btn-ghost btn-sm gap-1" title="Version history">
             <i class="fas fa-clock-rotate-left"></i> History
         </a>
+        <button id="nb-lock-btn" class="btn btn-ghost btn-sm btn-square"
+                title="AI can edit this notebook — click to lock">
+            <i class="fas fa-lock-open"></i>
+        </button>
+        <button id="nb-hide-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Visible to the AI — click to hide">
+            <i class="fas fa-eye"></i>
+        </button>
+        <button id="nb-print-btn" class="btn btn-ghost btn-sm gap-1"
+                title="Print this notebook">
+            <i class="fas fa-print"></i> Print
+        </button>
     </div>
 
     <!-- Document index (headings) — toggled by the Index button -->
@@ -155,6 +167,42 @@
     box-shadow: none; backdrop-filter: none; padding-left: 0; padding-right: 0; }
 #nb-root.nb-reading #nb-cells { gap: 0; }
 #nb-root.nb-reading .nb-cell { padding-top: .35rem; padding-bottom: .35rem; }
+
+/* Print button only makes sense in read mode */
+#nb-print-btn { display: none; }
+#nb-root.nb-reading #nb-print-btn { display: inline-flex; }
+
+/* Rich-text images */
+.nb-rt img { max-width: 100%; border-radius: .5rem; margin: .25rem 0; }
+
+/* AI access flags: tinted when active */
+#nb-lock-btn.nb-on { color: oklch(var(--wa)); }
+#nb-hide-btn.nb-on { color: oklch(var(--in)); }
+
+/* File reference picker modal (created by notebook.js) */
+.nb-picker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 18vh; z-index: 90; }
+.nb-picker { width: min(28rem, 92vw); }
+.nb-picker-item { display: flex; align-items: center; gap: .5rem; width: 100%;
+    text-align: left; padding: .45rem .6rem; border-radius: .5rem;
+    font-size: .85rem; }
+.nb-picker-item:hover { background: oklch(var(--p) / .12); }
+
+/* Print: document only — no app chrome, no editing affordances */
+@media print {
+    #main-header, #bottom-dock, .ai-chat-window, #flash-messages-toast,
+    .nb-add-toolbar, .nb-add-bar, .nb-cell-head, #nb-toc,
+    #nb-root > .glass-panel:first-child { display: none !important; }
+    body, #app-container, #main-content-area, #main-content-area > div {
+        height: auto !important; overflow: visible !important;
+        padding-top: 0 !important; }
+    #page-content-container { padding: 0 !important; min-height: 0 !important;
+        max-width: 100% !important; }
+    #nb-root .glass-panel { box-shadow: none !important; border: none !important;
+        background: transparent !important; backdrop-filter: none !important; }
+    .nb-cell { break-inside: avoid; }
+}
 </style>
 
 <script>
@@ -165,6 +213,7 @@
         fileId: {{ file.id }},
         saveUrl: {{ url_for('notebooks.save', file_id=file.id)|tojson }},
         docUrl: {{ url_for('notebooks.document_json', file_id=file.id)|tojson }},
+        assetsUrl: {{ url_for('notebooks.upload_asset', file_id=file.id)|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
         doc: {{ doc|tojson }}
     };

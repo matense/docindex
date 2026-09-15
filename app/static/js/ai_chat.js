@@ -73,6 +73,7 @@
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
         let driveScopeDismissedId = null; // currentDrive.id the user unscoped
+        let cellRef = null; // notebook cell dropped into the chat
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
@@ -168,6 +169,23 @@
 
         function renderChips() {
             chipsEl.innerHTML = '';
+            // Removable chip: a notebook cell dropped into the chat.
+            if (cellRef) {
+                const cr = document.createElement('span');
+                cr.className = 'badge badge-info badge-outline gap-1 text-xs';
+                cr.innerHTML = '<i class="fas fa-table-cells"></i>';
+                cr.appendChild(document.createTextNode(
+                    cellRef.file_name + ' › cell'));
+                cr.title = (cellRef.preview || 'Notebook cell')
+                    + ' — the AI will focus on this cell';
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                rm.onclick = () => { cellRef = null; renderChips(); };
+                cr.appendChild(rm);
+                chipsEl.appendChild(cr);
+            }
             // Removable chip: the AI is scoped to the drive being browsed.
             if (window.currentDrive
                     && window.currentDrive.id !== driveScopeDismissedId) {
@@ -503,7 +521,8 @@
         el.addEventListener('dragover', (e) => {
             if (!e.dataTransfer) return;
             const types = e.dataTransfer.types;
-            if (types.includes('Files') || types.includes('application/x-docindex-files')) {
+            if (types.includes('Files') || types.includes('application/x-docindex-files')
+                    || types.includes('application/x-docindex-cell')) {
                 e.preventDefault();
                 showDropOverlay(true);
             }
@@ -513,6 +532,20 @@
         });
         el.addEventListener('drop', (e) => {
             if (!e.dataTransfer) return;
+
+            // A notebook cell dragged from the editor: reference it.
+            const cellPayload = e.dataTransfer.getData('application/x-docindex-cell');
+            if (cellPayload) {
+                e.preventDefault();
+                showDropOverlay(false);
+                try {
+                    cellRef = JSON.parse(cellPayload);
+                    renderChips();
+                    addMessage('step', 'Cell reference attached from "'
+                        + cellRef.file_name + '".');
+                } catch { /* malformed payload: ignore */ }
+                return;
+            }
 
             // Files dragged from the drive grid: reference them, no upload.
             const drivePayload = e.dataTransfer.getData('application/x-docindex-files');
@@ -696,6 +729,10 @@
                         // Drive scope removed via the chip -> search all drives.
                         scope_all_drives: !!(window.currentDrive
                             && window.currentDrive.id === driveScopeDismissedId),
+                        // Notebook cell dropped into the chat.
+                        context_cell: cellRef
+                            ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
+                            : null,
                     }),
                 });
 
@@ -784,6 +821,7 @@
         function newConversation() {
             conversationId = null;
             attachments = [];
+            cellRef = null;
             renderChips();
             hideMentions();
             clearMessages();
