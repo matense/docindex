@@ -61,6 +61,49 @@ def test_connection_isolation(auth_client, app):
         assert AIConnection.query.count() == 1  # untouched
 
 
+def test_add_connection_without_name_defaults_to_model(auth_client, app):
+    auth_client.post("/settings/ai/add", data={
+        "name": "", "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test", "model": "gpt-4o-mini",
+    }, follow_redirects=True)
+    with app.app_context():
+        assert AIConnection.query.one().name == "gpt-4o-mini"
+
+
+def test_clone_connection(auth_client, app):
+    _add_conn(auth_client, name="Original")
+    with app.app_context():
+        cid = AIConnection.query.one().id
+    resp = auth_client.post(f"/settings/ai/{cid}/clone", follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        conns = AIConnection.query.order_by(AIConnection.id).all()
+        assert len(conns) == 2
+        original, copy = conns
+        assert copy.name == "Original (copy)"
+        assert copy.base_url == original.base_url
+        assert copy.api_key == original.api_key  # key is cloned too
+        assert copy.model == original.model
+        assert not copy.is_active              # clone never steals active
+        assert original.is_active
+    # Lands on the edit form so the copy can be renamed right away
+    assert b'Edit "Original (copy)"' in resp.data
+
+
+def test_cannot_clone_other_users_connection(auth_client, app):
+    _add_conn(auth_client, name="Mine")
+    with app.app_context():
+        cid = AIConnection.query.one().id
+    other = app.test_client()
+    other.post("/register", data={
+        "username": "erin", "email": "erin@example.com",
+        "password": "pw123456", "confirm": "pw123456",
+    })
+    other.post(f"/settings/ai/{cid}/clone", follow_redirects=True)
+    with app.app_context():
+        assert AIConnection.query.count() == 1  # untouched
+
+
 def test_user_connection_overrides_env(auth_client, app, user):
     _add_conn(auth_client, name="Custom", base_url="http://my-llm.local/v1",
               model="my-model")

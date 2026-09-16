@@ -29,6 +29,12 @@
                 <a href="{{ url_for('settings.ai_settings', edit=c.id) }}" class="btn btn-sm btn-ghost" title="Edit">
                     <i class="fas fa-pen"></i>
                 </a>
+                <form method="POST" action="{{ url_for('settings.ai_clone', conn_id=c.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-sm btn-ghost" title="Clone connection">
+                        <i class="fas fa-clone"></i>
+                    </button>
+                </form>
                 {% if not c.is_active %}
                 <form method="POST" action="{{ url_for('settings.ai_activate', conn_id=c.id) }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -76,9 +82,10 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="text-sm font-medium opacity-70">Name *</label>
+                    <label class="text-sm font-medium opacity-70">Name (optional)</label>
                     <input type="text" name="name" id="conn-name" class="input input-bordered w-full mt-1"
-                           value="{{ editing.name if editing else '' }}" placeholder="My OpenAI" required>
+                           value="{{ editing.name if editing else '' }}" placeholder="My OpenAI">
+                    <p class="text-xs opacity-40 mt-1">Empty = uses the model name.</p>
                 </div>
                 <div>
                     <label class="text-sm font-medium opacity-70">API key</label>

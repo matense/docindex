@@ -295,9 +295,11 @@ def ai_edit(conn_id):
     name = request.form.get("name", "").strip()
     base_url = request.form.get("base_url", "").strip()
     model = request.form.get("model", "").strip()
-    if not name or not base_url or not model:
-        flash("Name, base URL and model are required.", "error")
+    if not base_url or not model:
+        flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
+    if not name:
+        name = model  # name is optional: fall back to the model name
 
     conn.name = name
     conn.base_url = base_url
@@ -328,10 +330,11 @@ def ai_add():
     vision_model = request.form.get("vision_model", "").strip()
     api_key = request.form.get("api_key", "").strip()
 
-    if not name or not base_url or not model:
-        flash("Name, base URL and model are required.", "error")
+    if not base_url or not model:
+        flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings"))
 
+    name = name or model  # name is optional: fall back to the model name
     is_first = AIConnection.query.filter_by(user_id=current_user.id).count() == 0
     conn = AIConnection(
         user_id=current_user.id,
@@ -352,6 +355,33 @@ def ai_add():
     db.session.commit()
     flash(f"Connection '{name}' saved.", "success")
     return redirect(url_for("settings.ai_settings"))
+
+
+@bp.route("/ai/<int:conn_id>/clone", methods=["POST"])
+@login_required
+def ai_clone(conn_id):
+    """Duplicate a connection (including its key) and open the copy for edit."""
+    conn = _get_owned(conn_id)
+    if not conn:
+        flash("Connection not found.", "error")
+        return redirect(url_for("settings.ai_settings"))
+    copy = AIConnection(
+        user_id=current_user.id,
+        name=f"{conn.name} (copy)",
+        base_url=conn.base_url,
+        api_key=conn.api_key,
+        model=conn.model,
+        vision_model=conn.vision_model,
+        max_steps=conn.max_steps,
+        rate_limit_rpm=conn.rate_limit_rpm,
+        history_messages=conn.history_messages,
+        max_prompt_tokens=conn.max_prompt_tokens,
+        is_active=False,  # never steal the active flag
+    )
+    db.session.add(copy)
+    db.session.commit()
+    flash(f"Connection cloned as '{copy.name}'.", "success")
+    return redirect(url_for("settings.ai_settings", edit=copy.id))
 
 
 @bp.route("/ai/<int:conn_id>/activate", methods=["POST"])
