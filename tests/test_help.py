@@ -18,3 +18,20 @@ def test_help_page_requires_login(client):
 def test_help_link_in_profile_dropdown(auth_client):
     resp = auth_client.get("/settings/profile")
     assert b"/settings/help" in resp.data
+
+
+def test_help_lists_enabled_modules(app, auth_client):
+    from app.extensions import db
+    from app.models import ModuleState
+
+    resp = auth_client.get("/settings/help")
+    assert b'id="help-modules"' not in resp.data
+
+    with app.app_context():
+        db.session.add(ModuleState(name="hello", enabled=True))
+        db.session.commit()
+
+    resp = auth_client.get("/settings/help")
+    html = resp.data.decode()
+    assert 'id="help-modules"' in html
+    assert "Hello" in html

@@ -43,6 +43,8 @@ modules/
   Unknown capabilities make the module be skipped (with a log warning).
 - `nav` is optional: when the module is enabled, the entry shows up in the
   profile dropdown under "Modules". `url` is relative to `/m/<name>`.
+- `help` is optional: a list of paragraphs shown on the app's help page
+  (Settings → Help) while the module is enabled, under its `description`.
 
 ## Entry point
 

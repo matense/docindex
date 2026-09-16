@@ -66,7 +66,8 @@ def _get_owned(conn_id):
 @login_required
 def help_page():
     """User guide: every feature of the app, in one page."""
-    return render_template("settings/help.html")
+    return render_template("settings/help.html",
+                           enabled_modules=module_service.help_entries())
 
 
 @bp.route("/profile")

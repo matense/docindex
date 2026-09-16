@@ -3,5 +3,11 @@
   "version": "1.0.0",
   "description": "Jupyter-style notebooks: cell-based documents saved on your drives, indexed and searchable, with version history and full AI tooling.",
   "capabilities": ["routes", "tools"],
-  "nav": {"label": "Notebooks", "icon": "fa-book-open", "url": "/"}
+  "nav": {"label": "Notebooks", "icon": "fa-book-open", "url": "/"},
+  "help": [
+    "Notebooks are documents made of cells — markdown, rich text or checklists — that live on your drives like files: they are indexed, searchable and keep a full version history with diff and restore.",
+    "Rich text cells can embed images and reference files from your drives; markdown cells support the same file references. Drag a cell onto the AI chat to attach it as context.",
+    "When the module is first enabled a 'My Notebooks' drive is created, but you can create notebooks in any drive that is not read-only.",
+    "The lock icon blocks the AI from editing a notebook (the assistant warns you and asks to unlock first); the eye-slash icon hides the notebook from the AI entirely. Read mode can print the page."
+  ]
 }

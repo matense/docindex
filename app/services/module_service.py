@@ -215,6 +215,24 @@ def list_modules():
     return modules
 
 
+def help_entries():
+    """Enabled modules with help metadata, for the help page."""
+    entries = []
+    for name, manifest in sorted(_discovered.items()):
+        if manifest.get("error") or not is_enabled(name):
+            continue
+        nav = manifest.get("nav") or {}
+        entries.append({
+            "name": name,
+            "label": nav.get("label", name),
+            "icon": nav.get("icon", "fa-puzzle-piece"),
+            "version": manifest.get("version", ""),
+            "description": manifest.get("description", ""),
+            "help": manifest.get("help") or [],
+        })
+    return entries
+
+
 def nav_items():
     """Nav entries contributed by enabled modules, for base.html."""
     items = []
