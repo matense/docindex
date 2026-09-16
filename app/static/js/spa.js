@@ -144,6 +144,7 @@
             }
             if (token !== navToken) return; // superseded by a newer navigation
             if (push) history.pushState({ spa: true }, '', url);
+            currentUrl = url;
             await swapContent(html, url);
         } catch {
             window.location.href = url; // network trouble: fall back to reload
@@ -155,8 +156,14 @@
     window.spaNavigate = navigate;
     window.spaInvalidate = () => cache.clear();
 
+    // Track the URL the SPA has rendered so popstate can ignore hash-only
+    // changes (anchor clicks) instead of re-fetching the same page.
+    let currentUrl = window.location.pathname + window.location.search;
+
     window.addEventListener('popstate', () => {
-        navigate(window.location.pathname + window.location.search, { push: false });
+        const url = window.location.pathname + window.location.search;
+        if (url === currentUrl) return; // only the fragment changed
+        navigate(url, { push: false });
     });
 
     // --- link interception ----------------------------------------------------
@@ -167,6 +174,18 @@
         if (a) {
             if (a.target || a.hasAttribute('download') || a.dataset.noSpa !== undefined) return;
             const href = a.getAttribute('href');
+            // Same-page anchors: native fragment scrolling does not reach our
+            // nested overflow container, so scroll it ourselves.
+            if (href && href.startsWith('#')) {
+                const target = href.length > 1 &&
+                    document.getElementById(decodeURIComponent(href.slice(1)));
+                if (target) {
+                    e.preventDefault();
+                    history.pushState(null, '', href);
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+                return;
+            }
             if (!href || !href.startsWith('/') || href.startsWith('//')) return;
             if (href.startsWith('/logout')) return;
             if (/\/(download|raw|thumbnail)$/.test(href)) return; // binary endpoints
@@ -207,6 +226,7 @@
             const url = resp.url || action;
             cache.clear(); // mutations invalidate cached pages
             history.pushState({ spa: true }, '', url);
+            currentUrl = url;
             await swapContent(html, url);
             form.closest('dialog')?.close();
             document.dispatchEvent(new CustomEvent('spa:mutated', { detail: { action } }));
@@ -216,4 +236,12 @@
             hideProgress();
         }
     });
+
+    // Deep link opened with a fragment (e.g. /settings/help#help-search):
+    // scroll to the section once the page is painted.
+    if (window.location.hash.length > 1) {
+        const target = document.getElementById(
+            decodeURIComponent(window.location.hash.slice(1)));
+        if (target) setTimeout(() => target.scrollIntoView(), 50);
+    }
 })();
