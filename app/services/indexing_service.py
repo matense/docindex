@@ -34,6 +34,10 @@ def extract_text(stored_file):
         return _extract_pdf(path)
     if ext == "docx":
         return _extract_docx(path)
+    if ext in ("xlsx", "xlsm"):
+        return _extract_xlsx(path)
+    if ext == "xls":
+        return _extract_xls(path)
     if ext in current_app.config["EDITABLE_EXTENSIONS"]:
         return file_service.read_text_content(stored_file, max_chars=MAX_TEXT_CHARS)
     if stored_file.is_image:
@@ -66,6 +70,48 @@ def _extract_docx(path):
         for row in table.rows:
             parts.append(" | ".join(cell.text for cell in row.cells))
     return "\n".join(parts)[:MAX_TEXT_CHARS]
+
+
+def _stringify_cell(value):
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _flatten_sheet_rows(name, rows):
+    """One text block per sheet: 'Sheet: <name>' header, rows joined with
+    ' | ', empty rows skipped. `rows` is an iterable of cell-value rows."""
+    parts = [f"Sheet: {name}"]
+    for row in rows:
+        line = " | ".join(_stringify_cell(c) for c in row).strip(" |")
+        if line:
+            parts.append(line)
+        if sum(len(p) for p in parts) > MAX_TEXT_CHARS:
+            break
+    return "\n".join(parts)
+
+
+def _extract_xlsx(path):
+    import openpyxl
+
+    # read_only: streams rows (low memory); data_only: cached values instead
+    # of formulas.
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        parts = [_flatten_sheet_rows(ws.title, ws.iter_rows(values_only=True))
+                 for ws in wb.worksheets]
+    finally:
+        wb.close()
+    return "\n\n".join(parts)[:MAX_TEXT_CHARS]
+
+
+def _extract_xls(path):
+    import xlrd
+
+    wb = xlrd.open_workbook(path)
+    parts = [_flatten_sheet_rows(sheet.name, sheet.get_rows())
+             for sheet in wb.sheets()]
+    return "\n\n".join(parts)[:MAX_TEXT_CHARS]
 
 
 _tesseract_missing_logged = False

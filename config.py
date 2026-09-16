@@ -39,7 +39,8 @@ class Config:
     MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB per file
     ALLOWED_EXTENSIONS = {
         # documents
-        "pdf", "docx", "txt", "md", "csv", "json", "xml", "html", "log",
+        "pdf", "docx", "xlsx", "xlsm", "xls", "txt", "md", "csv", "json",
+        "xml", "html", "log",
         # code
         "py", "js", "ts", "java", "c", "cpp", "h", "cs", "go", "rs", "rb",
         "php", "sql", "sh", "css", "yaml", "yml", "toml", "ini",

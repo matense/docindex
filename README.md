@@ -39,8 +39,9 @@ questions about your files by searching and reading them step by step.
   after you review the proposed diff; the previous content is always kept in
   the history.
 - **Full-text indexing** — text is extracted from PDFs (pdfplumber, incl.
-  tables), DOCX (python-docx), text/code files, and images (OCR via
-  Tesseract). Everything lands in a searchable database index.
+  tables), DOCX (python-docx), Excel workbooks (openpyxl/xlrd — every sheet
+  flattened to text), text/code files, and images (OCR via Tesseract).
+  Everything lands in a searchable database index.
 - **AI image captioning** — images are described by a vision model so their
   content is searchable too.
 - **Instant search** — Google-style search dock with live results (Alt+S),

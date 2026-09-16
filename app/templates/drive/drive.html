@@ -5,7 +5,7 @@
     {%- if f.is_image -%}fa-file-image text-pink-500
     {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
     {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
-    {%- elif f.extension in ['csv', 'xlsx'] -%}fa-file-excel text-green-500
+    {%- elif f.extension in ['csv', 'xlsx', 'xlsm', 'xls'] -%}fa-file-excel text-green-500
     {%- elif f.extension in editable_exts -%}fa-file-code text-violet-500
     {%- else -%}fa-file text-gray-400{%- endif -%}
 {%- endmacro %}

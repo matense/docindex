@@ -154,3 +154,73 @@ def test_search_result_shows_metadata(auth_client):
     assert resp.status_code == 200
     assert b"badge" in resp.data  # match badge (name/content)
     assert b"words" in resp.data  # word count in the meta row
+
+
+def _xlsx_bytes():
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sales"
+    ws.append(["Region", "Quarter"])
+    ws.append(["North", "Q1"])
+    ws.append([None, None])  # fully empty rows are skipped
+    ws2 = wb.create_sheet("Costs")
+    ws2.append(["Item", "Amount"])
+    ws2.append(["zebra printer", 340])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_index_xlsx_flattens_all_sheets(auth_client, app):
+    _upload(auth_client, "book.xlsx", _xlsx_bytes())
+    with app.app_context():
+        stored = StoredFile.query.one()
+        assert stored.index.status == "ok"
+        text = stored.index.extracted_text
+        assert "Sheet: Sales" in text and "Sheet: Costs" in text
+        assert "Region | Quarter" in text
+        assert "North | Q1" in text
+        assert "zebra printer | 340" in text
+
+
+def test_search_and_ai_read_xlsx(auth_client, app, user):
+    """Indexed Excel content is searchable and reachable by the AI agent's
+    read tool (extracted text path — no dedicated AI tool needed)."""
+    from app.services import agent_service
+    _upload(auth_client, "book.xlsx", _xlsx_bytes())
+    with app.app_context():
+        stored = StoredFile.query.one()
+        user_obj = db.session.get(User, user)
+        results = search_service.search_files("zebra printer", user_obj)
+        assert len(results) == 1
+        assert results[0]["file"].id == stored.id
+        read = agent_service._tool_read_file(user_obj, stored.id)
+        assert "Sheet: Sales" in read["content"]
+        assert "zebra printer" in read["content"]
+
+
+def test_extract_xls_uses_xlrd(app):
+    """Legacy .xls: xlrd can't write files for a fixture, so mock it and
+    verify the dispatch and flattening."""
+    import sys
+    from unittest.mock import MagicMock
+    sheet = MagicMock()
+    sheet.name = "Old"
+    sheet.get_rows.return_value = iter([["alpha", 1], ["beta", 2]])
+    wb = MagicMock()
+    wb.sheets.return_value = [sheet]
+    fake_xlrd = MagicMock()
+    fake_xlrd.open_workbook.return_value = wb
+    with patch.dict(sys.modules, {"xlrd": fake_xlrd}):
+        text = indexing_service._extract_xls("dummy.xls")
+    fake_xlrd.open_workbook.assert_called_once_with("dummy.xls")
+    assert "Sheet: Old" in text
+    assert "alpha | 1" in text and "beta | 2" in text
+
+
+def test_corrupt_xlsx_marks_index_error(auth_client, app):
+    _upload(auth_client, "broken.xlsx", b"not a zip at all")
+    with app.app_context():
+        stored = StoredFile.query.one()
+        assert stored.index.status == "error"

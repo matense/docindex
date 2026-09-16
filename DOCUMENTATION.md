@@ -23,6 +23,7 @@ streamed to the browser as NDJSON.
 - **Database**: SQLite by default (`instance/docindex.sqlite`), WAL journal
   mode with a 30 s busy timeout. `DATABASE_URL` allows any SQLAlchemy URI.
 - **Indexing**: pdfplumber (PDF, incl. tables), python-docx (DOCX),
+  openpyxl/xlrd (Excel: XLSX/XLSM/XLS — every sheet flattened to text),
   pytesseract + Pillow (image OCR), `markdown` (MD preview).
 - **AI**: any OpenAI-compatible HTTP endpoint (Ollama, LM Studio, OpenAI,
   Anthropic, Moonshot, ...) via plain `requests`.
@@ -250,7 +251,7 @@ Full-text search index for a stored file (one row per file).
 |--------|------|-------|
 | `id` | Integer PK | |
 | `file_id` | FK -> files.id, unique, indexed | |
-| `extracted_text` | Text, nullable | PDF/DOCX/text/OCR content (max 500k chars) |
+| `extracted_text` | Text, nullable | PDF/DOCX/Excel/text/OCR content (max 500k chars) |
 | `caption` | Text, nullable | AI-generated image caption |
 | `hashtags` | Text, nullable | JSON array of tags (user- or AI-generated); searchable |
 | `word_count`, `line_count`, `char_count` | Integer, nullable | content statistics |
@@ -413,8 +414,10 @@ files from the normal file routes).
    (`POST .../pause|resume`). With `INDEX_ASYNC=False` (tests) indexing runs
    inline as before.
 3. `indexing_service.index_file()` extracts text by extension: pdfplumber
-   for PDFs (text + tables), python-docx for DOCX, raw read for editable
-   text/code files, pytesseract OCR for images. All capped at
+   for PDFs (text + tables), python-docx for DOCX, openpyxl for
+   XLSX/XLSM and xlrd for legacy XLS (each sheet becomes a `Sheet: <name>`
+   block with rows joined by ` | `, empty rows skipped), raw read for
+   editable text/code files, pytesseract OCR for images. All capped at
    `MAX_TEXT_CHARS = 500_000`. For images, OCR failure is tolerated if an AI
    caption can still be produced (and vice versa); when the owner's active AI
    connection is enabled, `ai_service.caption_image()` describes the image
@@ -969,7 +972,7 @@ tool + table).
 
 ## Testing
 
-pytest suite in `tests/`, 318 tests across 20+ modules:
+pytest suite in `tests/`, 326 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
