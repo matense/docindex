@@ -145,7 +145,16 @@ h1 {
     color: #555;
 }
 
-.form-control, input[type="text"], input[type="email"], input[type="password"], textarea, select {
+/* Legacy raw-input styling — must not touch DaisyUI-managed fields
+   (.input/.textarea/.select elements or inputs inside a label.input
+   wrapper), otherwise they get a second border/background on top of the
+   wrapper's own chrome. */
+.form-control,
+input[type="text"]:not(.input):not(.input *),
+input[type="email"]:not(.input):not(.input *),
+input[type="password"]:not(.input):not(.input *),
+textarea:not(.textarea):not(.input *),
+select:not(.select) {
     width: 100%;
     padding: 12px;
     background-color: #fff;
@@ -3144,6 +3153,15 @@ body.search-hero-mode #search-dock-container {
     border-top: 1px dashed currentColor;
 }
 
+/* Profile: hide the native disclosure triangle on the collapsible
+   account card (we render our own chevron instead). */
+.account-details > summary::-webkit-details-marker {
+    display: none;
+}
+.account-details > summary {
+    list-style: none;
+}
+
 /* ============================================================================
    DARK THEME — <html data-theme="dark"> (per-user preference, set in Profile)
    DaisyUI components adapt on their own via the data-theme attribute; the
@@ -3175,11 +3193,11 @@ body.search-hero-mode #search-dock-container {
 
 /* Forms */
 [data-theme="dark"] .form-control,
-[data-theme="dark"] input[type="text"],
-[data-theme="dark"] input[type="email"],
-[data-theme="dark"] input[type="password"],
-[data-theme="dark"] textarea,
-[data-theme="dark"] select {
+[data-theme="dark"] input[type="text"]:not(.input):not(.input *),
+[data-theme="dark"] input[type="email"]:not(.input):not(.input *),
+[data-theme="dark"] input[type="password"]:not(.input):not(.input *),
+[data-theme="dark"] textarea:not(.textarea):not(.input *),
+[data-theme="dark"] select:not(.select) {
     background-color: oklch(var(--b1));
     border-color: oklch(var(--bc) / 0.2);
 }

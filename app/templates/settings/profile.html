@@ -10,60 +10,60 @@
 {%- endmacro %}
 
 {% block content %}
-<div class="max-w-3xl mx-auto w-full flex flex-col gap-6">
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-4">
 
-    <!-- Account card -->
-    <div class="glass-panel rounded-2xl p-6 flex items-center gap-5">
-        <div class="avatar">
-            <div class="w-20 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 shadow-md">
-                <img src="https://ui-avatars.com/api/?name={{ current_user.username }}&background=random&size=128" />
+    <!-- Account card: identity header + collapsible settings -->
+    <details class="glass-panel rounded-2xl group account-details" id="account-card">
+        <summary class="px-5 py-4 flex items-center gap-4 cursor-pointer select-none list-none">
+            <div class="avatar">
+                <div class="w-12 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 shadow-md">
+                    <img src="https://ui-avatars.com/api/?name={{ current_user.username }}&background=random&size=128" />
+                </div>
             </div>
-        </div>
-        <div class="flex-1 min-w-0">
-            <h1 class="text-2xl font-bold flex items-center gap-2">
-                {{ current_user.username }}
-                {% if current_user.is_admin %}<span class="badge badge-primary badge-sm">admin</span>{% endif %}
-            </h1>
-            <div class="opacity-60 text-sm truncate">{{ current_user.email }}</div>
-            <div class="opacity-40 text-xs mt-1">
+            <div class="flex-1 min-w-0">
+                <h1 class="text-lg font-bold flex items-center gap-2 leading-tight">
+                    {{ current_user.username }}
+                    {% if current_user.is_admin %}<span class="badge badge-primary badge-sm">admin</span>{% endif %}
+                </h1>
+                <div class="opacity-60 text-sm truncate">{{ current_user.email }}</div>
+            </div>
+            <div class="opacity-40 text-xs flex-shrink-0 hidden sm:block">
                 Member since {{ current_user.created_at.strftime('%d %b %Y') if current_user.created_at }}
             </div>
-        </div>
-    </div>
-
-    <!-- Account details -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="glass-panel rounded-2xl p-6">
-            <h2 class="font-bold text-lg mb-4"><i class="fas fa-envelope text-primary"></i> Account details</h2>
-            <form method="POST" action="{{ url_for('settings.profile_email') }}" class="flex flex-col gap-3">
+            <span class="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center flex-shrink-0 transition-transform duration-200 group-open:rotate-180"
+                  title="Account settings">
+                <i class="fas fa-chevron-down text-xs"></i>
+            </span>
+        </summary>
+        <div class="px-5 pb-5 pt-4 border-t border-base-300/40 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            <form method="POST" action="{{ url_for('settings.profile_email') }}" class="flex flex-col gap-2.5">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <h2 class="text-xs font-semibold uppercase tracking-wide opacity-60"><i class="fas fa-envelope text-primary"></i> Account details</h2>
                 <label class="flex flex-col gap-1">
                     <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Email</span>
                     <input type="email" name="email" value="{{ current_user.email }}"
-                           class="input input-bordered w-full" required>
+                           class="input input-bordered input-sm w-full" required>
                 </label>
                 <button type="submit" class="btn btn-primary btn-sm self-end">
                     <i class="fas fa-floppy-disk"></i> Save email
                 </button>
             </form>
-        </div>
 
-        <div class="glass-panel rounded-2xl p-6">
-            <h2 class="font-bold text-lg mb-4"><i class="fas fa-lock text-primary"></i> Change password</h2>
-            <form method="POST" action="{{ url_for('settings.profile_password') }}" class="flex flex-col gap-3">
+            <form method="POST" action="{{ url_for('settings.profile_password') }}" class="flex flex-col gap-2.5">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <h2 class="text-xs font-semibold uppercase tracking-wide opacity-60"><i class="fas fa-lock text-primary"></i> Change password</h2>
                 <input type="password" name="current_password" placeholder="Current password"
-                       class="input input-bordered w-full" required>
+                       class="input input-bordered input-sm w-full" required>
                 <input type="password" name="new_password" placeholder="New password"
-                       class="input input-bordered w-full" required>
+                       class="input input-bordered input-sm w-full" required>
                 <input type="password" name="confirm_password" placeholder="Confirm new password"
-                       class="input input-bordered w-full" required>
+                       class="input input-bordered input-sm w-full" required>
                 <button type="submit" class="btn btn-primary btn-sm self-end">
                     <i class="fas fa-key"></i> Change password
                 </button>
             </form>
         </div>
-    </div>
+    </details>
 
     <!-- Appearance -->
     <div class="glass-panel rounded-2xl px-5 py-4 flex items-center gap-4 flex-wrap">
