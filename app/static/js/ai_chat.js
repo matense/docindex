@@ -67,6 +67,24 @@
         const dropOverlay = el.querySelector('.acw-drop-overlay');
         const modelSelect = el.querySelector('.acw-model-select');
         const resizeGrip = el.querySelector('.acw-resize');
+        const autoScrollBtn = el.querySelector('.acw-autoscroll');
+
+        // Auto-scroll while the AI writes; shared with the AI page via
+        // localStorage so the preference sticks across windows/sessions.
+        let autoScroll = localStorage.getItem('docindex.aiAutoScroll') !== '0';
+        function renderAutoScroll() {
+            autoScrollBtn.classList.toggle('ai-toggle-on', autoScroll);
+            autoScrollBtn.title = autoScroll
+                ? 'Auto-scroll is ON — the view follows the AI while it writes. Click to pause.'
+                : 'Auto-scroll is OFF — the view stays put while the AI writes. Click to follow.';
+        }
+        autoScrollBtn.addEventListener('click', () => {
+            autoScroll = !autoScroll;
+            localStorage.setItem('docindex.aiAutoScroll', autoScroll ? '1' : '0');
+            renderAutoScroll();
+            if (autoScroll) scrollDown(true);
+        });
+        renderAutoScroll();
 
         // --- Per-window state ---
         let conversationId = null;
@@ -74,6 +92,8 @@
         let contextDismissedId = null; // currentFile.id the user hid
         let driveScopeDismissedId = null; // currentDrive.id the user unscoped
         let cellRef = null; // notebook cell dropped into the chat
+        let driveRef = null; // drive picked with a $ mention {id, name}
+        let driveListCache = null; // /api/drives, fetched on first $ use
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
@@ -83,8 +103,8 @@
         let mentionToken = null; // the full "#query" match, to replace on pick
 
         // --- Initial position (cascade from the bottom-right) ---
-        const W = Math.min(430, window.innerWidth * 0.95);
-        const H = Math.min(620, window.innerHeight * 0.8);
+        const W = Math.min(520, window.innerWidth * 0.95);
+        const H = Math.min(680, window.innerHeight * 0.8);
         const offset = (spawnCount++ % 5) * 36;
         el.style.width = W + 'px';
         el.style.height = H + 'px';
@@ -186,8 +206,23 @@
                 cr.appendChild(rm);
                 chipsEl.appendChild(cr);
             }
-            // Removable chip: the AI is scoped to the drive being browsed.
-            if (window.currentDrive
+            // Removable chip: a drive picked with a $ mention (wins over
+            // the drive being browsed).
+            if (driveRef) {
+                const drv = document.createElement('span');
+                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
+                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
+                drv.appendChild(document.createTextNode(driveRef.name));
+                drv.title = 'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing';
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                rm.title = 'Remove this drive scope';
+                rm.onclick = () => { driveRef = null; renderChips(); };
+                drv.appendChild(rm);
+                chipsEl.appendChild(drv);
+            } else if (window.currentDrive
                     && window.currentDrive.id !== driveScopeDismissedId) {
                 const drv = document.createElement('span');
                 drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
@@ -258,7 +293,8 @@
             div.appendChild(footer);
         }
 
-        function scrollDown() {
+        function scrollDown(force = false) {
+            if (!force && !autoScroll) return;
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
@@ -301,7 +337,7 @@
                 addMetaFooter(div, meta);
             }
             messagesEl.appendChild(div);
-            scrollDown();
+            scrollDown(role === 'user');  // always follow your own message
             return div;
         }
 
@@ -451,6 +487,7 @@
                         }
                     });
                     toggleList(true);
+                    scrollDown(true);  // opening a conversation lands at the end
                 });
         }
 
@@ -654,6 +691,15 @@
             input.dispatchEvent(new Event('input', { bubbles: true }));
         });
 
+        el.querySelector('.acw-attach-drive').addEventListener('click', () => {
+            // Insert a $ token so the drive picker dropdown opens.
+            if (!/\$\S*$/.test(input.value)) {
+                input.value = (input.value ? input.value.replace(/\s*$/, '') + ' ' : '') + '$';
+            }
+            input.focus();
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+
         input.addEventListener('input', () => {
             const val = input.value;
             // @here — attach the file currently open in the viewer
@@ -661,6 +707,13 @@
                 attachCurrentFile();
                 input.value = val.replace(/@here\b/, '');
                 hideMentions();
+                return;
+            }
+            // $query — drive mention autocomplete (scopes the answer)
+            const dm = val.match(/\$(\S*)$/);
+            if (dm) {
+                mentionToken = dm[0];
+                showDriveMentions(dm[1]);
                 return;
             }
             // #query — quick search autocomplete
@@ -674,6 +727,64 @@
             }
         });
 
+        // --- $ drive mention: scope the answer to a chosen drive ----------
+        function loadDrives() {
+            if (!driveListCache) {
+                driveListCache = fetch('/api/drives')
+                    .then(r => r.json())
+                    .catch(() => []);
+            }
+            return driveListCache;
+        }
+
+        function pickDrive(d) {
+            driveRef = { id: d.id, name: d.name };
+            if (mentionToken) {
+                input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
+            }
+            hideMentions();
+            renderChips();
+            input.focus();
+        }
+
+        function showDriveMentions(q) {
+            loadDrives().then(drives => {
+                if (!mentionToken) return; // user moved on meanwhile
+                const query = q.toLowerCase();
+                const matches = drives.filter(d => d.name.toLowerCase().includes(query));
+                mentionEl.innerHTML = '';
+                if (!matches.length) {
+                    mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No drives found</div>';
+                } else {
+                    matches.forEach(d => {
+                        const row = document.createElement('div');
+                        row.className = 'flex items-center gap-2 px-3 py-2 hover:bg-primary/10 cursor-pointer text-sm';
+                        row.innerHTML = '<i class="fas fa-hard-drive w-4 text-center text-accent"></i>';
+                        row.appendChild(document.createTextNode(d.name));
+                        if (d.is_synced) {
+                            const tag = document.createElement('span');
+                            tag.className = 'text-[10px] opacity-40 ml-auto';
+                            tag.textContent = 'synced';
+                            row.appendChild(tag);
+                        }
+                        row.addEventListener('mousedown', (e) => {
+                            e.preventDefault(); // keep input focus
+                            pickDrive(d);
+                        });
+                        mentionEl.appendChild(row);
+                    });
+                }
+                mentionEl.classList.remove('hidden');
+            });
+        }
+
+        // Growing textarea: wraps and grows without a cap (per request).
+        function growInput() {
+            input.style.height = 'auto';
+            input.style.height = input.scrollHeight + 'px';
+        }
+        input.addEventListener('input', growInput);
+
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && !mentionEl.classList.contains('hidden')) {
                 hideMentions();
@@ -684,6 +795,10 @@
                     e.preventDefault();
                     first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
                 }
+            } else if (e.key === 'Enter' && !e.shiftKey) {
+                // Enter sends; Shift+Enter inserts a newline.
+                e.preventDefault();
+                form.requestSubmit();
             }
         });
         input.addEventListener('blur', () => setTimeout(hideMentions, 150));
@@ -700,6 +815,7 @@
             if (!question && !attachments.length) return;
 
             input.value = '';
+            growInput();
             hideMentions();
             const sentAttachments = attachments;
             attachments = [];
@@ -729,6 +845,8 @@
                         // Drive scope removed via the chip -> search all drives.
                         scope_all_drives: !!(window.currentDrive
                             && window.currentDrive.id === driveScopeDismissedId),
+                        // Drive picked with a $ mention (wins over the above).
+                        scope_drive_id: driveRef ? driveRef.id : null,
                         // Notebook cell dropped into the chat.
                         context_cell: cellRef
                             ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
@@ -822,6 +940,7 @@
             conversationId = null;
             attachments = [];
             cellRef = null;
+            driveRef = null;
             renderChips();
             hideMentions();
             clearMessages();

@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
 
+from ..models import Drive
 from ..services import drive_service, search_service
 
 bp = Blueprint("search", __name__)
@@ -42,3 +43,15 @@ def api_search():
         }
         for r in results
     ])
+
+
+@bp.route("/api/drives")
+@login_required
+def api_drives():
+    """Drive list for the AI chat's $ mention picker."""
+    drives = (Drive.query
+              .filter_by(user_id=current_user.id)
+              .order_by(Drive.name)
+              .all())
+    return jsonify([{"id": d.id, "name": d.name, "is_synced": d.is_synced}
+                    for d in drives])

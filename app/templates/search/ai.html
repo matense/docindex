@@ -15,6 +15,9 @@
         <div class="flex items-center gap-1">
             <select id="aip-model-select" title="Active model — switch between your configured AI connections"
                     class="select select-bordered select-xs font-mono max-w-52 hidden"></select>
+            <button id="aip-autoscroll" class="btn btn-ghost btn-sm btn-circle" title="Auto-scroll">
+                <i class="fas fa-arrow-down-long"></i>
+            </button>
             <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.toggleList()" title="Conversations">
                 <i class="fas fa-clock-rotate-left"></i><span class="hidden sm:inline">History</span>
             </button>
@@ -54,8 +57,8 @@
         <div id="aip-mention-dropdown" class="hidden absolute bottom-full left-2 right-2 mb-1 glass-menu max-h-48 overflow-y-auto z-10"></div>
         <div id="aip-attachments" class="hidden flex-wrap gap-1 px-2 pb-2"></div>
         <form id="aip-form" data-no-spa class="ai-composer !m-0 shadow-lg">
-            <input type="text" id="aip-input" placeholder="Ask anything about your files…"
-                   class="w-full bg-transparent focus:outline-none px-4 pt-3.5 pb-2" autocomplete="off">
+            <textarea rows="1" id="aip-input" placeholder="Ask anything about your files… (Shift+Enter for a new line)"
+                      class="ai-input w-full bg-transparent focus:outline-none px-4 pt-3.5 pb-2" autocomplete="off"></textarea>
             <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
                 <button type="button" id="aip-attach-here" class="ai-attach-btn"
                         title="Attach the file open in the viewer (@here)">
@@ -64,6 +67,10 @@
                 <button type="button" id="aip-attach-search" class="ai-attach-btn"
                         title="Search files to attach (#)">
                     <i class="fas fa-hashtag"></i><span>Search files</span>
+                </button>
+                <button type="button" id="aip-attach-drive" class="ai-attach-btn"
+                        title="Scope the answer to a drive ($)">
+                    <i class="fas fa-hard-drive"></i><span>Drive</span>
                 </button>
                 <span class="text-xs opacity-30 hidden md:inline">drop files here to attach</span>
                 <span class="flex-1"></span>

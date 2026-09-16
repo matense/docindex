@@ -343,12 +343,24 @@ def chat():
         history.insert(0, {"role": "system", "content": context_cell_note})
 
     user_id = current_user.id
-    # The chat is scoped to the drive the user is browsing; the scope chip in
-    # the chat lets them remove it and search across all drives instead.
+    # Drive scope: an explicit $ mention wins; otherwise the chip state
+    # decides between the drive being browsed and all drives.
     scope_all_drives = bool(data.get("scope_all_drives"))
-    drive_id = None if scope_all_drives else \
-        drive_service.get_current_drive(current_user).id
-    if scope_all_drives:
+    try:
+        scope_drive_id = int(data.get("scope_drive_id") or 0)
+    except (TypeError, ValueError):
+        scope_drive_id = 0
+    scoped_drive = None
+    if scope_drive_id:
+        scoped_drive = (Drive.query
+                        .filter_by(id=scope_drive_id, user_id=current_user.id)
+                        .first())
+    if scoped_drive is not None:
+        drive_id = scoped_drive.id
+    else:
+        drive_id = None if scope_all_drives else \
+            drive_service.get_current_drive(current_user).id
+    if scoped_drive is None and scope_all_drives:
         history.insert(0, {
             "role": "system",
             "content": (

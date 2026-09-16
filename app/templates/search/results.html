@@ -70,7 +70,9 @@
 
     {% for r in results %}
     {% set f = r.file %}
-    <div class="glass-panel rounded-xl p-4 card-hover">
+    <div class="glass-panel rounded-xl p-4 card-hover cursor-grab active:cursor-grabbing"
+         draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
+         title="Drag me onto the AI chat to attach this file">
         <div class="flex items-start gap-4">
             <div class="flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden flex items-center justify-center bg-base-200/40">
                 {% if f.is_image %}
@@ -141,5 +143,19 @@
     </div>
     {% endfor %}
 </div>
+<script>
+// Search result cards are draggable: dropping one on the AI chat (page or
+// floating window) attaches the file — same payload the drive grid uses.
+document.querySelectorAll('[data-file-id]').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+        const file = { id: parseInt(card.dataset.fileId, 10),
+                       name: card.dataset.fileName };
+        e.dataTransfer.setData('application/x-docindex-files',
+                               JSON.stringify([file]));
+        e.dataTransfer.setData('text/plain', file.name);
+        e.dataTransfer.effectAllowed = 'copy';
+    });
+});
+</script>
 {% endif %}
 {% endblock %}

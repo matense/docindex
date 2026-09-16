@@ -521,3 +521,56 @@ def test_open_locked_notebook_context_warns_agent(auth_client, app, user):
     assert notes
     assert "LOCKED" in notes[0]["content"]
     assert "unlock" in notes[0]["content"]
+
+
+def test_scope_drive_id_selects_that_drive(auth_client, app, user):
+    """A $ drive mention scopes the agent to the chosen drive — and wins
+    over scope_all_drives."""
+    _add_conn(auth_client)
+    from app.models import Drive
+    with app.app_context():
+        db.session.add(Drive(name="Archive", user_id=user))
+        db.session.commit()
+        did = Drive.query.filter_by(name="Archive").one().id
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "scope_all_drives": True,
+        "scope_drive_id": did})
+    system = messages[0]["content"]
+    assert '"Archive" drive' in system
+    assert "only files from that drive are visible" in system
+
+
+def test_scope_drive_id_ignores_foreign_drives(auth_client, app, user):
+    """A drive id owned by someone else is ignored (falls back to the
+    default scope)."""
+    _add_conn(auth_client)
+    from app.models import Drive
+    with app.app_context():
+        other = User(username="bob", email="bob@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        db.session.add(Drive(name="BobDrive", user_id=other.id))
+        db.session.commit()
+        did = Drive.query.filter_by(name="BobDrive").one().id
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "scope_drive_id": did})
+    system = messages[0]["content"]
+    assert "BobDrive" not in system
+
+
+def test_api_drives_lists_only_own(auth_client, app, user):
+    from app.models import Drive
+    with app.app_context():
+        db.session.add(Drive(name="Archive", user_id=user))
+        other = User(username="bob2", email="bob2@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        db.session.add(Drive(name="BobDrive", user_id=other.id))
+        db.session.commit()
+    resp = auth_client.get("/api/drives")
+    assert resp.status_code == 200
+    names = [d["name"] for d in resp.get_json()]
+    assert "Archive" in names
+    assert "BobDrive" not in names

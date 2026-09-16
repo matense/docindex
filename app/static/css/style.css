@@ -2423,6 +2423,7 @@ body.show-shortcuts #shortcut-help-panel {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    align-self: center;
     flex-shrink: 0;
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #d946ef 100%);
     color: white;
@@ -2432,7 +2433,33 @@ body.show-shortcuts #shortcut-help-panel {
 }
 
 .ai-send-btn i {
+    line-height: 1;  /* kill the FA glyph's baseline offset (vertical center) */
+}
+
+.ai-send-btn i.fa-paper-plane {
     transform: translateX(1px); /* optical centering of the paper plane */
+}
+
+/* Stop state (button turns red while the AI is generating) */
+.ai-send-btn.btn-error {
+    background: linear-gradient(135deg, #f43f5e 0%, #ef4444 100%);
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.45);
+}
+
+/* Growing composer textarea: wraps, no manual resize, no height cap */
+.ai-composer textarea.ai-input {
+    display: block;
+    resize: none;
+    line-height: 1.45;
+    min-height: 1.6rem;
+    max-height: none;
+    overflow-y: auto;
+}
+
+/* Header toggles in the "on" state (auto-scroll) */
+.ai-toggle-on {
+    color: oklch(var(--p)) !important;
+    background: oklch(var(--p) / 0.12) !important;
 }
 
 .ai-send-btn:hover {
