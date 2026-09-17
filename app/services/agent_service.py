@@ -877,22 +877,28 @@ def _summarize_result(name, result):
     return str(result)[:200]
 
 
-def _complete(messages, tools, config):
+def _complete(messages, tools, config, block=False):
     """One model call, streaming when enabled.
 
     Yields ("thinking_token", text) for reasoning deltas and
     ("answer_token", text) for content deltas; returns the assembled message
     dict (same shape as chat_completion's). Falls back once to the
     non-streaming chat_completion if the provider fails before sending any
-    delta (e.g. it rejects streamed tool calls).
+    delta (e.g. it rejects streamed tool calls). With block=True, rate-limit
+    waits sleep for a slot instead of raising (background tasks).
+
+    `block` is only forwarded when True: several tests mock chat_completion
+    with plain functions that don't accept the keyword.
     """
+    block_kw = {"block": True} if block else {}
     if not config.get("streaming", True):
-        return ai_service.chat_completion(messages, tools=tools, config=config)
+        return ai_service.chat_completion(messages, tools=tools, config=config,
+                                          **block_kw)
 
     got_delta = False
     try:
         stream = ai_service.chat_completion_stream(
-            messages, tools=tools, config=config)
+            messages, tools=tools, config=config, **block_kw)
         while True:
             try:
                 kind, payload = next(stream)
@@ -909,21 +915,30 @@ def _complete(messages, tools, config):
             raise  # mid-stream failure: the route reports it as an error event
         current_app.logger.warning(
             "AI streaming failed before any delta; retrying non-streaming.")
-        return ai_service.chat_completion(messages, tools=tools, config=config)
+        return ai_service.chat_completion(messages, tools=tools, config=config,
+                                          **block_kw)
     raise ai_service.AIError("AI stream ended without a completed message.")
 
 
-def run_agent_events(user, history, drive=None):
+def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=None,
+                     block=False):
     """Run the multi-step tool-calling loop, yielding events as they happen.
 
     `history` is a list of {"role": ..., "content": ...} chat messages.
     `drive` optionally scopes search/list tools to a single drive.
+    `max_steps` overrides the per-connection/global step limit (used by
+    long-horizon background tasks, which get a much larger budget).
+    `should_stop` is an optional zero-arg callable checked before every step;
+    when it returns True the loop stops early with a ("stopped", ...) event.
+    `block=True` makes rate-limit waits sleep for a slot instead of raising —
+    background tasks throttle themselves instead of failing.
     Yields, in order:
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
       ("thinking", text)                       — the model's intermediate reasoning
       ("step", {"label":..., "detail":...})    — a tool call being made
       ("tool_result", {"label":..., "summary":...}) — what the tool returned
+      ("stopped", text)                        — cancelled via `should_stop`
       ("answer", text)                         — the final answer (always last)
 
     With streaming, a ("thinking", text) event that follows answer_token
@@ -933,7 +948,8 @@ def run_agent_events(user, history, drive=None):
     answer).
     """
     config = ai_service.config_for(user)
-    max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
+    if max_steps is None:
+        max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
     system = SYSTEM_PROMPT
     if drive is not None:
         system += (f"\n- You are currently working inside the user's "
@@ -954,6 +970,9 @@ def run_agent_events(user, history, drive=None):
     active_tools, active_handlers, active_labels = _active_tools()
 
     for _ in range(max_steps):
+        if should_stop is not None and should_stop():
+            yield ("stopped", "Task stopped by the user.")
+            return
         _trim_tool_messages(messages)
         # Hard prompt budget: drop the oldest conversation units (whole
         # tool-call exchanges at a time) until the estimated size fits.
@@ -964,7 +983,7 @@ def run_agent_events(user, history, drive=None):
                    f"Older conversation messages were dropped "
                    f"({dropped} block(s)) to fit this model's context window. "
                    "Use Summarize & reset to compact the history instead.")
-        message = yield from _complete(messages, active_tools, config)
+        message = yield from _complete(messages, active_tools, config, block=block)
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -1025,7 +1044,7 @@ def run_agent_events(user, history, drive=None):
         "missing, say so honestly and summarize what you found.")})
     answer = ""
     try:
-        final = yield from _complete(messages, None, config)
+        final = yield from _complete(messages, None, config, block=block)
         answer = (final.get("content") or "").strip()
     except ai_service.AIError:
         answer = ""

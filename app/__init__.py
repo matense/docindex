@@ -110,6 +110,15 @@ def create_app(config_class=Config):
         except Exception:  # noqa: BLE001 - never block app startup on this
             app.logger.exception("Index queue recovery failed")
 
+    # Long-horizon AI tasks left queued/running by a previous process are
+    # marked "interrupted" (their threads died with it).
+    if not app.config.get("TESTING"):
+        from .services import ai_task_service
+        try:
+            ai_task_service.recover_interrupted(app)
+        except Exception:  # noqa: BLE001 - never block app startup on this
+            app.logger.exception("AI task recovery failed")
+
     # AI API endpoints are JSON; the frontend attaches the CSRF token via
     # the fetch() wrapper, so no exemptions needed.
 

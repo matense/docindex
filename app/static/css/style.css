@@ -2294,6 +2294,62 @@ body.show-shortcuts #shortcut-help-panel {
     opacity: 1;
 }
 
+/* --- AI background tasks in the bottom dock --- */
+.dock-separator {
+    width: 1px;
+    align-self: stretch;
+    margin: 8px 0;
+    background: oklch(var(--bc) / .15);
+}
+
+.dock-tile-task { background: linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%); }
+
+/* Running spinner / finished notification badge — top-right of the tile. */
+.dock-task-spin,
+.dock-task-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 20px;
+    height: 20px;
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: white;
+    border: 2px solid oklch(var(--b1));
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .3);
+    pointer-events: none;
+}
+
+.dock-task-spin { background: oklch(var(--p)); }
+.dock-task-badge-done { background: #22c55e; }
+.dock-task-badge-stopped { background: #9ca3af; }
+.dock-task-badge-error { background: #ef4444; }
+
+/* Stop (running) / dismiss (finished) — top-left, visible on hover. */
+.dock-task-close {
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 9999px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    cursor: pointer;
+    background: oklch(var(--b1));
+    color: oklch(var(--bc));
+    border: 1px solid oklch(var(--bc) / .25);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
+    z-index: 2;
+}
+
+.dock-task:hover .dock-task-close { display: flex; }
+
 /* --- Seamless page transitions (spa.js) --- */
 @keyframes page-enter {
     from { opacity: 0; transform: translateY(12px); }

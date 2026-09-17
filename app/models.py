@@ -306,6 +306,40 @@ class ChatMessage(db.Model):
         return f"<ChatMessage {self.role} conv={self.conversation_id}>"
 
 
+class AITask(db.Model):
+    """A long-horizon background AI task: an agent run decoupled from the HTTP
+    request, with every event persisted as chat messages so the user can open
+    the transcript at any time. Status lifecycle:
+    queued -> running -> done | error | stopped | interrupted."""
+
+    __tablename__ = "ai_tasks"
+
+    STATUSES = ("queued", "running", "done", "error", "stopped", "interrupted")
+    FINAL_STATUSES = ("done", "error", "stopped", "interrupted")
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("chat_conversations.id"),
+                                nullable=False, unique=True)
+    title = db.Column(db.String(255), nullable=False, default="Background task")
+    status = db.Column(db.String(20), nullable=False, default="queued", index=True)
+    error = db.Column(db.Text, nullable=True)
+    # True once the user dismissed the finished task from the bottom dock.
+    notified = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    started_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+    conversation = db.relationship("ChatConversation", backref=db.backref("task", uselist=False))
+
+    @property
+    def is_active(self):
+        return self.status in ("queued", "running")
+
+    def __repr__(self):
+        return f"<AITask {self.id} {self.status} '{self.title[:30]}'>"
+
+
 class ErrorLog(db.Model):
     """Central application log — errors and warnings from anywhere in the app
     (unhandled request exceptions, background indexing/sync failures, AI

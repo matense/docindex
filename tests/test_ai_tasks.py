@@ -1,0 +1,232 @@
+"""Long-horizon background AI tasks: lifecycle, routes, isolation, recovery.
+
+Tasks run inline here (TestConfig.AI_TASKS_ASYNC = False), so start_task()
+returns with the task already finished.
+"""
+
+from unittest.mock import patch
+
+from app.extensions import db
+from app.models import AITask, ChatConversation, ChatMessage, User
+from app.services import agent_service, ai_task_service
+
+
+def _enable_ai(app):
+    app.config["AI_ENABLED"] = True
+
+
+def _answers(*texts):
+    """chat_completion side_effect: one plain answer per call."""
+    responses = iter([{"role": "assistant", "content": t} for t in texts])
+    return lambda *a, **k: next(responses)
+
+
+def test_start_task_runs_to_done_and_persists_transcript(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("All drives summarized.")):
+        resp = auth_client.post("/ai/tasks", json={"message": "Summarize my drives"})
+
+    assert resp.status_code == 200
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        task = db.session.get(AITask, task_id)
+        assert task.status == "done"
+        assert task.started_at and task.finished_at
+        conv = db.session.get(ChatConversation, task.conversation_id)
+        roles = [m.role for m in conv.messages]
+        assert roles[0] == "user"
+        assert roles[-1] == "assistant"
+        assert conv.messages[-1].content == "All drives summarized."
+
+
+def test_start_task_requires_message(auth_client, app, user):
+    _enable_ai(app)
+    resp = auth_client.post("/ai/tasks", json={"message": "  "})
+    assert resp.status_code == 400
+
+
+def test_start_task_requires_ai(auth_client, app, user):
+    app.config["AI_ENABLED"] = False
+    resp = auth_client.post("/ai/tasks", json={"message": "hello"})
+    assert resp.status_code == 503
+
+
+def test_task_steps_are_persisted_as_messages(auth_client, app, user):
+    _enable_ai(app)
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "list_drives", "arguments": "{}"},
+        }]},
+        {"role": "assistant", "content": "You have one drive."},
+    ])
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=lambda *a, **k: next(responses)):
+        resp = auth_client.post("/ai/tasks", json={"message": "Count my drives"})
+
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        conv = db.session.get(AITask, task_id).conversation
+        step_msgs = [m for m in conv.messages if m.role == "step"]
+        assert step_msgs and "→" in step_msgs[0].content
+        assert conv.messages[-1].content == "You have one drive."
+
+
+def test_task_error_is_captured(auth_client, app, user):
+    _enable_ai(app)
+    from app.services import ai_service
+
+    def boom(*a, **k):
+        raise ai_service.AIError("provider exploded")
+
+    with patch("app.services.ai_service.chat_completion", side_effect=boom):
+        resp = auth_client.post("/ai/tasks", json={"message": "do things"})
+
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        task = db.session.get(AITask, task_id)
+        assert task.status == "error"
+        assert "provider exploded" in task.error
+        # The transcript shows the failure too.
+        assert "provider exploded" in task.conversation.messages[-1].content
+
+
+def test_should_stop_breaks_the_agent_loop(auth_client, app, user):
+    _enable_ai(app)
+    calls = {"n": 0}
+
+    def looping(*a, **k):
+        calls["n"] += 1
+        return {"role": "assistant", "content": None, "tool_calls": [{
+            "id": f"call_{calls['n']}", "type": "function",
+            "function": {"name": "list_drives", "arguments": "{}"},
+        }]}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=looping):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "loop forever"}],
+                should_stop=lambda: calls["n"] >= 2))
+
+    kinds = [k for k, _ in events]
+    assert kinds[-1] == "stopped"
+    assert calls["n"] == 2  # stopped before the third model call
+
+
+def test_stop_route_marks_task_stopped(auth_client, app, user):
+    _enable_ai(app)
+    # Create a queued task without letting the worker run it.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        conv = ChatConversation(user_id=user_obj.id, title="t")
+        db.session.add(conv)
+        db.session.flush()
+        task = AITask(user_id=user_obj.id, conversation_id=conv.id,
+                      title="t", status="queued")
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    resp = auth_client.post(f"/ai/tasks/{task_id}/stop")
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(AITask, task_id).status == "stopped"
+
+
+def test_active_lists_running_and_unnotified_finished(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        auth_client.post("/ai/tasks", json={"message": "task one"})
+
+    resp = auth_client.get("/ai/tasks/active")
+    tasks = resp.get_json()["tasks"]
+    assert len(tasks) == 1  # finished but not dismissed: still listed
+    assert tasks[0]["status"] == "done"
+
+    # Dismiss it — it leaves the dock.
+    resp = auth_client.post(f"/ai/tasks/{tasks[0]['id']}/ack")
+    assert resp.status_code == 200
+    assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
+
+
+def test_ack_running_task_rejected(auth_client, app, user):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        conv = ChatConversation(user_id=user_obj.id, title="t")
+        db.session.add(conv)
+        db.session.flush()
+        task = AITask(user_id=user_obj.id, conversation_id=conv.id,
+                      title="t", status="running")
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+    assert auth_client.post(f"/ai/tasks/{task_id}/ack").status_code == 404
+
+
+def test_tasks_are_isolated_per_user(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("hi")):
+        auth_client.post("/ai/tasks", json={"message": "alice's task"})
+
+    with app.app_context():
+        task_id = AITask.query.first().id
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+
+    client2 = app.test_client()
+    client2.post("/login", data={"username": "bob", "password": "password123"})
+    assert client2.get("/ai/tasks/active").get_json()["tasks"] == []
+    assert client2.get(f"/ai/tasks/{task_id}").status_code == 404
+    assert client2.post(f"/ai/tasks/{task_id}/stop").status_code == 404
+    assert client2.post(f"/ai/tasks/{task_id}/ack").status_code == 404
+
+
+def test_recover_interrupted_marks_stale_tasks(app, user):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        conv = ChatConversation(user_id=user_obj.id, title="t")
+        db.session.add(conv)
+        db.session.flush()
+        task = AITask(user_id=user_obj.id, conversation_id=conv.id,
+                      title="t", status="running")
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    ai_task_service.recover_interrupted(app)
+
+    with app.app_context():
+        task = db.session.get(AITask, task_id)
+        assert task.status == "interrupted"
+        assert task.error
+        assert task.finished_at
+
+
+def test_task_uses_extended_step_budget(auth_client, app, user):
+    _enable_ai(app)
+    seen = {}
+
+    def answer(*a, **k):
+        return {"role": "assistant", "content": "ok"}
+
+    real_events = agent_service.run_agent_events
+
+    def spy(user, history, drive=None, **kwargs):
+        seen["max_steps"] = kwargs.get("max_steps")
+        seen["block"] = kwargs.get("block")
+        seen["note"] = history[0]["content"] if history[0]["role"] == "system" else ""
+        return real_events(user, history, drive=drive, **kwargs)
+
+    with patch("app.services.ai_service.chat_completion", side_effect=answer), \
+         patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
+        auth_client.post("/ai/tasks", json={"message": "big job"})
+
+    assert seen["max_steps"] == app.config["AI_TASK_MAX_STEPS"]
+    assert seen["block"] is True
+    assert "long-horizon" in seen["note"]

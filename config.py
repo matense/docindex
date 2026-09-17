@@ -76,6 +76,10 @@ class Config:
     # Token-by-token streaming for chat. Set to false if your provider breaks
     # with streamed tool calls (a non-streaming fallback is tried anyway).
     AI_STREAMING = os.environ.get("AI_STREAMING", "true").lower() in ("1", "true", "yes")
+    # Long-horizon background tasks: much larger step budget than interactive
+    # chat, and the dock widget poll interval for their status.
+    AI_TASK_MAX_STEPS = int(os.environ.get("AI_TASK_MAX_STEPS", "64"))
+    AI_TASK_WIDGET_POLL_MS = int(os.environ.get("AI_TASK_WIDGET_POLL_MS", "3000"))
 
     # Search / indexing
     # FTS5 full-text search (BM25 ranking). Falls back to ILIKE when off or
@@ -97,6 +101,9 @@ class Config:
     # Run bulk hashtag generation in background threads (disable in tests)
     HASHTAG_ASYNC = True
 
+    # Run long-horizon AI tasks in background threads (disable in tests)
+    AI_TASKS_ASYNC = True
+
 
 class TestConfig(Config):
     SECRET_KEY = "test-secret-key"
@@ -109,6 +116,7 @@ class TestConfig(Config):
     INDEX_ASYNC = False
     SYNC_ASYNC = False
     HASHTAG_ASYNC = False
+    AI_TASKS_ASYNC = False
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")

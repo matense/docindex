@@ -1,12 +1,13 @@
 import json
 import traceback
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import (Blueprint, Response, current_app, jsonify, request,
+                   stream_with_context)
 from flask_login import current_user, login_required
 
 from ..extensions import db
 from ..models import AIConnection, ChatConversation, ChatMessage, Drive, StoredFile, User
-from ..services import agent_service, ai_service, drive_service, log_service
+from ..services import agent_service, ai_service, ai_task_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -469,3 +470,86 @@ def chat():
 
     return Response(stream_with_context(generate()),
                     mimetype="application/x-ndjson")
+
+
+# --- Long-horizon background tasks -----------------------------------------
+
+
+def _task_json(task):
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "error": task.error,
+        "conversation_id": task.conversation_id,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+    }
+
+
+@bp.route("/tasks", methods=["POST"])
+@login_required
+def start_task():
+    """Launch a long-horizon background task: the agent runs in a server
+    thread with an extended step budget, persisting every event to its own
+    conversation so the user can open the transcript at any time."""
+    if not ai_service.is_enabled(current_user):
+        return jsonify({
+            "error": "AI is not configured. Add a connection in AI Settings."
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Empty message."}), 400
+
+    try:
+        drive_id = int(data.get("drive_id") or 0) or None
+    except (TypeError, ValueError):
+        drive_id = None
+    if drive_id is not None:
+        drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
+        if drive is None:
+            return jsonify({"error": "Drive not found."}), 404
+
+    task = ai_task_service.start_task(current_user, message, drive_id=drive_id)
+    return jsonify({"ok": True, "task": _task_json(task)})
+
+
+@bp.route("/tasks/active")
+@login_required
+def active_tasks():
+    """Tasks for the dock widget: running/queued plus finished ones the user
+    has not dismissed yet (those carry the notification badge)."""
+    return jsonify({
+        "tasks": [_task_json(t) for t in ai_task_service.active_tasks(current_user)],
+        "poll_ms": current_app.config.get("AI_TASK_WIDGET_POLL_MS", 3000),
+    })
+
+
+@bp.route("/tasks/<int:task_id>")
+@login_required
+def task_detail(task_id):
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_task_json(task))
+
+
+@bp.route("/tasks/<int:task_id>/stop", methods=["POST"])
+@login_required
+def stop_task(task_id):
+    task = ai_task_service.stop_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found or already finished"}), 404
+    return jsonify({"ok": True, "task": _task_json(task)})
+
+
+@bp.route("/tasks/<int:task_id>/ack", methods=["POST"])
+@login_required
+def ack_task(task_id):
+    """Dismiss a finished task from the dock — ends its long horizon."""
+    task = ai_task_service.ack_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found or still running"}), 404
+    return jsonify({"ok": True})

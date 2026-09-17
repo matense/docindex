@@ -100,4 +100,20 @@
     window.uiConfirm = uiConfirm;
     window.uiAlert = (message, opts = {}) =>
         uiConfirm(message, Object.assign({ hideCancel: true, confirmText: 'OK' }, opts));
+
+    // Transient toast (bottom-center, auto-dismiss) — same look as the flash
+    // toasts the SPA router shows after page swaps. kind: info|success|error.
+    window.uiToast = function (message, kind = 'info') {
+        const box = document.createElement('div');
+        box.className = 'toast toast-bottom toast-center z-[60] mb-24';
+        const alert = document.createElement('div');
+        alert.className = 'alert alert-' + kind + ' glass-panel shadow-lg text-sm py-2';
+        alert.textContent = message;
+        box.appendChild(alert);
+        document.body.appendChild(box);
+        setTimeout(() => {
+            box.classList.add('spa-toast-out');
+            setTimeout(() => box.remove(), 300);
+        }, 3000);
+    };
 })();

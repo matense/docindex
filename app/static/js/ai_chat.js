@@ -111,6 +111,19 @@
         });
         renderAutoScroll();
 
+        // Long-horizon mode: send the message as a background task instead of
+        // a live chat answer — the agent runs on the server and reports to the
+        // bottom dock when done.
+        const bgToggle = el.querySelector('.acw-bg-toggle');
+        bgToggle.addEventListener('click', () => {
+            backgroundMode = !backgroundMode;
+            bgToggle.classList.toggle('ai-toggle-on', backgroundMode);
+            bgToggle.title = backgroundMode
+                ? 'Background mode ON — the next message starts a long-horizon task on the server'
+                : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
+            input.focus();
+        });
+
         // --- Per-window state ---
         let conversationId = null;
         let attachments = []; // [{id, name}]
@@ -119,6 +132,7 @@
         let cellRef = null; // notebook cell dropped into the chat
         let driveRef = null; // drive picked with a $ mention {id, name}
         let driveListCache = null; // /api/drives, fetched on first $ use
+        let backgroundMode = false; // send as a long-horizon background task
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
@@ -854,6 +868,43 @@
             const question = input.value.trim();
             if (!question && !attachments.length) return;
 
+            // Background mode: launch a long-horizon task on the server and
+            // leave this chat untouched — the dock widget tracks it.
+            if (backgroundMode) {
+                if (attachments.length) {
+                    window.uiAlert('Background tasks work on your drives directly — attachments are not needed. Remove them and try again.',
+                                   { title: 'Run in background' });
+                    return;
+                }
+                input.value = '';
+                growInput();
+                hideMentions();
+                backgroundMode = false;
+                bgToggle.classList.remove('ai-toggle-on');
+                try {
+                    const resp = await fetch('/ai/tasks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            message: question,
+                            drive_id: driveRef ? driveRef.id
+                                : (window.currentDrive && window.currentDrive.id !== driveScopeDismissedId
+                                    ? window.currentDrive.id : null),
+                        }),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        window.uiAlert(data.error || 'Could not start the background task.',
+                                       { title: 'Run in background' });
+                        return;
+                    }
+                    window.uiToast('Background task started — follow it in the dock below.', 'info');
+                } catch (err) {
+                    window.uiAlert('Could not reach the server.', { title: 'Run in background' });
+                }
+                return;
+            }
+
             input.value = '';
             growInput();
             hideMentions();
@@ -1039,6 +1090,7 @@
         const api = {
             el,
             attachFile,
+            loadConversation,
             focus() { focusWindow(); input.focus(); },
             setMessage(msg) { input.value = msg || ''; },
             newConversation,
@@ -1070,6 +1122,12 @@
             const w = createChatWindow();
             (files || []).forEach(f => w.attachFile(f.id, f.name));
             w.setMessage(message || '');
+        },
+        // Open a window on an existing conversation (e.g. a background
+        // task's transcript from the dock widget).
+        openConversation(convId) {
+            const w = createChatWindow();
+            w.loadConversation(convId);
         },
     };
 })();

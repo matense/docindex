@@ -335,6 +335,7 @@
             {% if ai_enabled %}
                 {% include 'components/ai_chat.html' %}
                 <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=5" defer></script>
+                <script src="{{ url_for('static', filename='js/ai_tasks_widget.js') }}?v=1" defer></script>
             {% endif %}
             <script src="{{ url_for('static', filename='js/sync_widget.js') }}?v=4" defer></script>
             <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>
