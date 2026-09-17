@@ -34,6 +34,64 @@
         return window.marked.parse(linked, { breaks: true });
     }
 
+    // --- Read-mode document polish ---------------------------------------
+
+    // Wrap every <pre> in an editor-style panel: header with language label
+    // and a copy button. Safe to re-run — skips already wrapped blocks.
+    function wrapCodeBlocks(rootEl) {
+        rootEl.querySelectorAll("pre").forEach((pre) => {
+            if (pre.closest(".nb-codeblock")) return;
+            const code = pre.querySelector("code");
+            const m = code && code.className.match(/language-([\w-]+)/);
+            const lang = m ? m[1] : "code";
+            const box = el("div", "nb-codeblock");
+            const head = el("div", "cb-head");
+            head.innerHTML = '<span class="cb-dots"><i></i><i></i><i></i></span>';
+            head.appendChild(el("span", "", lang));
+            const copy = el("button", "cb-copy");
+            copy.type = "button";
+            copy.innerHTML = '<i class="fas fa-copy"></i> Copy';
+            copy.addEventListener("click", () => {
+                const text = (code || pre).textContent;
+                if (navigator.clipboard) navigator.clipboard.writeText(text);
+                copy.innerHTML = '<i class="fas fa-check"></i> Copied';
+                setTimeout(() => {
+                    copy.innerHTML = '<i class="fas fa-copy"></i> Copy';
+                }, 1500);
+            });
+            head.appendChild(copy);
+            pre.replaceWith(box);
+            box.appendChild(head);
+            box.appendChild(pre);
+        });
+    }
+
+    // Wrap tables in a scrollable card container. Safe to re-run.
+    function wrapTables(rootEl) {
+        rootEl.querySelectorAll("table").forEach((table) => {
+            if (table.closest(".nb-tablewrap")) return;
+            const wrap = el("div", "nb-tablewrap");
+            table.replaceWith(wrap);
+            wrap.appendChild(table);
+        });
+    }
+
+    // Links to drive files become pill chips with an icon. Safe to re-run.
+    function styleFileRefs(rootEl) {
+        rootEl.querySelectorAll('a[href^="/file/"]').forEach((a) => {
+            if (a.classList.contains("nb-fileref")) return;
+            a.classList.add("nb-fileref");
+            a.insertAdjacentHTML("afterbegin",
+                '<i class="fas fa-file-lines"></i>');
+        });
+    }
+
+    function polishView(rootEl) {
+        wrapCodeBlocks(rootEl);
+        wrapTables(rootEl);
+        styleFileRefs(rootEl);
+    }
+
     // Rich-text cells store HTML authored in our own editor, but content can
     // also come from AI tools — strip active content before rendering.
     function sanitizeHtml(html) {
@@ -367,12 +425,34 @@
         // ------------------------------------------------------------------
         function render() {
             cellsEl.innerHTML = "";
+            if (readMode) cellsEl.appendChild(makeDocHead());
             if (!readMode) cellsEl.appendChild(makeAddBar(0));
             doc.cells.forEach((cell, i) => {
                 cellsEl.appendChild(renderCell(cell, i));
                 if (!readMode) cellsEl.appendChild(makeAddBar(i + 1));
             });
             renderToc();
+        }
+
+        // Document header shown at the top of the sheet in read mode.
+        function makeDocHead() {
+            const head = el("header", "nb-doc-head");
+            const kicker = el("span", "nb-doc-kicker");
+            kicker.innerHTML = '<i class="fas fa-book-open"></i> Notebook';
+            head.appendChild(kicker);
+            head.appendChild(el("h1", "nb-doc-title", doc.title || "Untitled"));
+            const meta = el("div", "nb-doc-meta");
+            const loc = el("span");
+            loc.innerHTML = '<i class="fas fa-hard-drive"></i>';
+            loc.appendChild(document.createTextNode(opts.location || ""));
+            meta.appendChild(loc);
+            const count = el("span");
+            count.innerHTML = '<i class="fas fa-table-cells"></i>';
+            count.appendChild(document.createTextNode(
+                doc.cells.length + (doc.cells.length === 1 ? " cell" : " cells")));
+            meta.appendChild(count);
+            head.appendChild(meta);
+            return head;
         }
 
         // Document index: titles and subtitles with scroll-to links.
@@ -643,6 +723,7 @@
             if (readMode || (!cell._editing && cell.content.trim())) {
                 const view = el("div", "nb-rt");
                 view.innerHTML = sanitizeHtml(cell.content);
+                polishView(view);
                 body.appendChild(view);
                 return;
             }
@@ -817,6 +898,7 @@
                 const html = renderMarkdown(cell.content);
                 if (html === null) { view.textContent = cell.content; }
                 else { view.innerHTML = html; }
+                polishView(view);
                 body.appendChild(view);
                 if (window.hljs) {
                     view.querySelectorAll("pre code").forEach(
@@ -874,7 +956,7 @@
                 body.appendChild(wrap);
                 if (cell._editing) area.focus();
             } else {
-                const pre = el("pre", "rounded-lg overflow-x-auto");
+                const pre = el("pre");
                 const code = el("code", "text-sm");
                 code.textContent = cell.content;
                 if (cell.meta.language) {
@@ -882,6 +964,7 @@
                 }
                 pre.appendChild(code);
                 body.appendChild(pre);
+                wrapCodeBlocks(body);
                 if (window.hljs) {
                     try { window.hljs.highlightElement(code); } catch (e) { /* unknown lang */ }
                 }
@@ -891,14 +974,13 @@
         function renderTodoCell(body, cell) {
             const items = cell.meta.items || (cell.meta.items = []);
             if (readMode) {
-                const list = el("ul", "flex flex-col gap-1");
+                const list = el("ul", "nb-todo");
                 items.forEach((item) => {
-                    const li = el("li", "flex items-center gap-2 text-sm");
-                    li.innerHTML = '<i class="fas '
-                        + (item.done ? "fa-square-check text-success" : "fa-square opacity-40")
-                        + '"></i>';
-                    li.appendChild(el("span",
-                        item.done ? "line-through opacity-50" : "", item.text));
+                    const li = el("li", item.done ? "done" : "");
+                    const box = el("span", "box");
+                    if (item.done) box.innerHTML = '<i class="fas fa-check"></i>';
+                    li.appendChild(box);
+                    li.appendChild(el("span", "", item.text));
                     list.appendChild(li);
                 });
                 body.appendChild(list);
@@ -963,7 +1045,9 @@
                     tbody.appendChild(tr);
                 });
                 table.appendChild(tbody);
-                body.appendChild(table);
+                const wrap = el("div", "nb-tablewrap");
+                wrap.appendChild(table);
+                body.appendChild(wrap);
                 return;
             }
             const table = el("table", "table table-xs");

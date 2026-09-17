@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Notebooks{% endblock %}
 {% block content %}
-<div class="max-w-4xl mx-auto w-full flex flex-col gap-3" id="nb-root">
+<div class="mx-auto w-full flex flex-col gap-3" id="nb-root">
 
     <!-- Toolbar -->
     <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">
         <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
            title="All notebooks"><i class="fas fa-arrow-left"></i></a>
-        <div class="flex-1 min-w-0">
+        <div class="flex-1 min-w-0 nb-toolbar-doc">
             <h1 class="font-bold truncate">{{ doc.title }}</h1>
             <p class="text-xs opacity-40">
                 {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
@@ -175,7 +175,121 @@
 .nb-toc-title { font-weight: 600; font-size: .9rem; }
 .nb-toc-subtitle { font-size: .82rem; opacity: .65; padding-left: 1.25rem; }
 
-/* Read mode: clean full-page document look */
+/* ---------- Markdown typography (read mode + edit-mode preview) ---------- */
+.nb-md { line-height: 1.75; font-size: .93rem; }
+.nb-md p { margin: .55em 0; }
+.nb-md h1, .nb-md h2, .nb-md h3, .nb-md h4 {
+    line-height: 1.3; letter-spacing: -.01em; font-weight: 700;
+    margin: 1.3em 0 .45em;
+}
+.nb-md h1 { font-size: 1.55rem; }
+.nb-md h2 { font-size: 1.28rem; display: flex; align-items: center; gap: 10px; }
+.nb-md h2::before {
+    content: ""; flex-shrink: 0; width: 4px; height: 1.05em;
+    border-radius: 3px; background: var(--pdo-gradient);
+}
+.nb-md h3 { font-size: 1.08rem; font-weight: 650; }
+.nb-md ul, .nb-md ol { margin: .5em 0; padding-left: 1.5em; }
+.nb-md ul { list-style: disc; }
+.nb-md ol { list-style: decimal; }
+.nb-md li { margin: .25em 0; }
+.nb-md li::marker { color: oklch(var(--p)); }
+.nb-md a { color: oklch(var(--p)); text-decoration: none; }
+.nb-md a:hover { text-decoration: underline; }
+.nb-md strong { font-weight: 650; }
+.nb-md blockquote {
+    margin: .9em 0; padding: 2px 0 2px 16px;
+    border-left: 3px solid oklch(var(--p));
+    opacity: .78; font-style: italic;
+}
+.nb-md hr {
+    border: none; margin: 1.6em 0; height: 1px;
+    background: linear-gradient(to right, transparent, oklch(var(--bc) / .2) 20%,
+        oklch(var(--bc) / .2) 80%, transparent);
+}
+.nb-md img { max-width: 100%; border-radius: .5rem; }
+.nb-md :not(pre) > code, .nb-rt :not(pre) > code {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: .84em; background: oklch(var(--p) / .11);
+    color: oklch(var(--p)); padding: .14em .45em; border-radius: 6px;
+}
+.nb-md li input[type="checkbox"] { accent-color: oklch(var(--p)); margin-right: 4px; }
+
+/* File references render as chips */
+a.nb-fileref {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: oklch(var(--p) / .1); color: oklch(var(--p));
+    border: 1px solid oklch(var(--p) / .25); border-radius: 999px;
+    padding: 1px 10px 1px 7px; font-size: .85em; font-weight: 600;
+    text-decoration: none !important; transition: background .15s;
+}
+a.nb-fileref:hover { background: oklch(var(--p) / .2); }
+
+/* Code blocks: editor-style panel with header (language + copy) */
+.nb-codeblock {
+    margin: 1em 0; border-radius: 14px; overflow: hidden;
+    background: #0f172a; border: 1px solid rgba(255, 255, 255, .08);
+}
+.nb-codeblock .cb-head {
+    display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+    background: rgba(255, 255, 255, .05); color: rgba(255, 255, 255, .5);
+    font-size: .7rem; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase;
+}
+.nb-codeblock .cb-dots { display: inline-flex; gap: 5px; margin-right: 4px; }
+.nb-codeblock .cb-dots i { width: 9px; height: 9px; border-radius: 50%; }
+.nb-codeblock .cb-dots i:nth-child(1) { background: #ff5f57; }
+.nb-codeblock .cb-dots i:nth-child(2) { background: #febc2e; }
+.nb-codeblock .cb-dots i:nth-child(3) { background: #28c840; }
+.nb-codeblock .cb-copy {
+    margin-left: auto; border: 0; cursor: pointer;
+    background: transparent; color: rgba(255, 255, 255, .5);
+    font-size: .72rem; display: inline-flex; gap: 5px; align-items: center;
+    padding: 2px 8px; border-radius: 6px; transition: background .15s, color .15s;
+}
+.nb-codeblock .cb-copy:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+.nb-codeblock pre { margin: 0; padding: 14px 16px; background: transparent;
+    overflow-x: auto; }
+.nb-codeblock .hljs { background: transparent; }
+
+/* Tables: card with soft header and row hover */
+.nb-tablewrap {
+    margin: 1em 0; overflow-x: auto; border-radius: 12px;
+    border: 1px solid oklch(var(--bc) / .12);
+}
+.nb-tablewrap table { margin: 0; width: 100%; border-collapse: collapse; }
+.nb-tablewrap th {
+    font-size: .74rem; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; opacity: .65; background: oklch(var(--p) / .07);
+    text-align: left; padding: 10px 14px;
+    border-bottom: 1px solid oklch(var(--bc) / .12);
+}
+.nb-tablewrap td {
+    padding: 10px 14px; border-bottom: 1px solid oklch(var(--bc) / .08);
+    font-size: .92rem; vertical-align: top;
+}
+.nb-tablewrap tr:last-child td { border-bottom: none; }
+.nb-tablewrap tbody tr { transition: background .12s; }
+.nb-tablewrap tbody tr:hover { background: oklch(var(--p) / .05); }
+
+/* To-do list (read mode): modern checkboxes */
+.nb-todo { list-style: none; padding-left: 0; display: flex;
+    flex-direction: column; gap: .35rem; margin: .4em 0; }
+.nb-todo li { display: flex; align-items: flex-start; gap: 10px; }
+.nb-todo .box {
+    flex-shrink: 0; width: 17px; height: 17px; margin-top: 5px;
+    border-radius: 5px; border: 1.5px solid oklch(var(--bc) / .4);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 10px;
+}
+.nb-todo .done .box { background: var(--pdo-gradient); border-color: transparent; }
+.nb-todo .done span { opacity: .5; text-decoration: line-through; }
+
+/* Edit and read mode share the same dynamic width, so toggling between
+   them never reflows the document. */
+#nb-root { max-width: min(1150px, 100%); }
+
+/* ---------- Read mode: document sheet ---------- */
 #nb-root.nb-reading .nb-add-bar,
 #nb-root.nb-reading .nb-cell-head,
 #nb-root.nb-reading #nb-checkpoint-btn,
@@ -183,8 +297,58 @@
 #nb-root.nb-reading .nb-add-toolbar { display: none; }
 #nb-root.nb-reading .nb-cell { background: transparent; border: none;
     box-shadow: none; backdrop-filter: none; padding-left: 0; padding-right: 0; }
-#nb-root.nb-reading #nb-cells { gap: 0; }
 #nb-root.nb-reading .nb-cell { padding-top: .35rem; padding-bottom: .35rem; }
+
+/* Slim floating pill toolbar — the document header carries the title */
+#nb-root.nb-reading > .glass-panel:first-child {
+    margin: 0 auto; width: fit-content; border-radius: 999px;
+    padding: .35rem .7rem; gap: 2px;
+}
+#nb-root.nb-reading .nb-toolbar-doc { display: none; }
+
+/* The sheet: dynamic width, card look, comfortable typography */
+#nb-root.nb-reading #nb-cells {
+    gap: 0;
+    background: oklch(var(--b1));
+    border: 1px solid oklch(var(--bc) / .1);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, .10);
+    padding: 44px clamp(22px, 5vw, 64px) 52px;
+    font-size: 1.02rem; line-height: 1.78;
+}
+#nb-root.nb-reading .nb-md { font-size: inherit; }
+
+/* Document header (JS-built, read mode only) */
+.nb-doc-head {
+    margin-bottom: 1.8rem; padding-bottom: 1.4rem;
+    border-bottom: 1px solid oklch(var(--bc) / .12);
+}
+.nb-doc-kicker {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: .68rem; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: oklch(var(--p));
+    background: oklch(var(--p) / .1); padding: 4px 10px;
+    border-radius: 999px; margin-bottom: 14px;
+}
+.nb-doc-title {
+    font-size: 2.05rem; font-weight: 800; line-height: 1.18;
+    letter-spacing: -.01em; margin: 0 0 10px;
+}
+.nb-doc-meta {
+    font-size: .8rem; opacity: .55; display: flex; gap: 16px; flex-wrap: wrap;
+}
+.nb-doc-meta i { margin-right: 5px; }
+
+/* Heading cells read like section headers in the document */
+#nb-root.nb-reading .nb-cell-title {
+    font-size: 1.45rem; display: flex; align-items: center; gap: 10px;
+    margin-top: .6em;
+}
+#nb-root.nb-reading .nb-cell-title::before {
+    content: ""; flex-shrink: 0; width: 4px; height: 1.05em;
+    border-radius: 3px; background: var(--pdo-gradient);
+}
+#nb-root.nb-reading .nb-cell-subtitle { font-size: 1.18rem; }
 
 /* Print button only makes sense in read mode */
 #nb-print-btn { display: none; }
@@ -220,6 +384,10 @@
         max-width: 100% !important; }
     #nb-root .glass-panel { box-shadow: none !important; border: none !important;
         background: transparent !important; backdrop-filter: none !important; }
+    #nb-root.nb-reading #nb-cells { box-shadow: none !important;
+        border: none !important; padding: 0 !important; }
+    .nb-codeblock .cb-head { display: none; }
+    .nb-codeblock { border-color: #bbb !important; }
     .nb-cell { break-inside: avoid; }
 }
 </style>
@@ -234,6 +402,7 @@
         docUrl: {{ url_for('notebooks.document_json', file_id=file.id)|tojson }},
         assetsUrl: {{ url_for('notebooks.upload_asset', file_id=file.id)|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
+        location: {{ ((file.drive.name if file.drive else '—') ~ ((' / ' ~ file.folder.name) if file.folder else ''))|tojson }},
         doc: {{ doc|tojson }}
     };
     // Lets the AI chat's @here attach this notebook (mirrors drive/view.html).
