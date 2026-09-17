@@ -350,9 +350,11 @@
 
         {{ grid_status(f) }}
 
-        <!-- Hover actions -->
-        <div class="absolute top-2 right-2 hidden group-hover:flex flex-col gap-1">
-            {{ file_actions(f) }}
+        <!-- Hover actions: bottom pill, always inside the card -->
+        <div class="absolute inset-x-1 bottom-1 hidden group-hover:flex justify-center pointer-events-none">
+            <div class="drive-card-actions glass-panel rounded-full px-1 flex items-center shadow-lg pointer-events-auto">
+                {{ file_actions(f) }}
+            </div>
         </div>
     </div>
     {% endfor %}
