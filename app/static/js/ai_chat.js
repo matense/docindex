@@ -43,6 +43,31 @@
             : d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + hm;
     }
 
+    // Conversation history grouping: Today / Yesterday / Previous 7 days /
+    // Previous 30 days / <Month Year>. Conversations arrive newest-first, so
+    // groups appear in order by watching for label changes.
+    function convGroupLabel(iso) {
+        if (!iso) return 'Older';
+        const d = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
+        if (isNaN(d)) return 'Older';
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const days = Math.round((todayStart - dayStart) / 86400000);
+        if (days <= 0) return 'Today';
+        if (days === 1) return 'Yesterday';
+        if (days < 7) return 'Previous 7 days';
+        if (days < 30) return 'Previous 30 days';
+        return d.toLocaleDateString([], { month: 'long', year: 'numeric' });
+    }
+
+    function convGroupHeader(label) {
+        const div = document.createElement('div');
+        div.className = 'ai-conv-group';
+        div.textContent = label;
+        return div;
+    }
+
     function iconFor(ext, isImage) {
         if (isImage) return 'fa-image text-secondary';
         const map = { pdf: 'fa-file-pdf text-error', txt: 'fa-file-lines', md: 'fa-file-lines', py: 'fa-file-code', js: 'fa-file-code', html: 'fa-file-code', json: 'fa-file-code', docx: 'fa-file-word text-info', xlsx: 'fa-file-excel text-success' };
@@ -504,22 +529,35 @@
                 .then(convs => {
                     convListEl.innerHTML = convs.length ? '' :
                         '<div class="text-center opacity-50 text-sm p-4">No conversations yet</div>';
+                    let lastGroup = null;
                     convs.forEach(c => {
+                        const group = convGroupLabel(c.updated_at);
+                        if (group !== lastGroup) {
+                            convListEl.appendChild(convGroupHeader(group));
+                            lastGroup = group;
+                        }
                         const row = document.createElement('div');
-                        row.className = 'flex items-center justify-between gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 cursor-pointer';
+                        row.className = 'ai-conv-row';
                         row.title = 'Open conversation';
                         row.onclick = () => loadConversation(c.id);
+
+                        const ico = document.createElement('span');
+                        ico.className = 'ai-conv-ico';
+                        ico.innerHTML = '<i class="fas fa-message"></i>';
 
                         const info = document.createElement('div');
                         info.className = 'flex-1 min-w-0';
                         const title = document.createElement('div');
-                        title.className = 'truncate text-sm';
+                        title.className = 'ai-conv-title truncate';
                         title.textContent = c.title;
                         info.appendChild(title);
                         const meta = document.createElement('div');
-                        meta.className = 'text-[10px] opacity-50 truncate';
+                        meta.className = 'ai-conv-meta truncate';
                         meta.textContent = [fmtTime(c.updated_at), c.model].filter(Boolean).join(' · ');
                         info.appendChild(meta);
+
+                        const actions = document.createElement('div');
+                        actions.className = 'ai-conv-actions';
 
                         const open = document.createElement('button');
                         open.className = 'btn btn-ghost btn-xs btn-circle';
@@ -539,9 +577,11 @@
                                     toggleList(); toggleList();
                                 });
                         };
+                        actions.appendChild(open);
+                        actions.appendChild(del);
+                        row.appendChild(ico);
                         row.appendChild(info);
-                        row.appendChild(open);
-                        row.appendChild(del);
+                        row.appendChild(actions);
                         convListEl.appendChild(row);
                     });
                     convListEl.classList.remove('hidden');
