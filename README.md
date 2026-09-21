@@ -215,6 +215,12 @@ python run.py                     # migrations are applied automatically on star
 > `git pull` + restart is enough. `flask --app run.py db upgrade heads` is still
 > available if you prefer to migrate explicitly before starting.
 
+> **"Can't locate revision identified by ..." during an update?** Databases
+> created by the very first public release carry a migration stamp that no
+> longer exists. This repairs itself automatically on app start, or run
+> `flask --app run.py db-repair` once (the update scripts do this fallback
+> for you). Your data is preserved.
+
 **Docker:**
 
 ```bash

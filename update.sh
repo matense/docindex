@@ -22,7 +22,11 @@ echo "-> Updating dependencies..."
 "$VENV_PY" -m pip install -r requirements.txt
 
 echo "-> Upgrading the database..."
-"$VENV_PY" -m flask --app run.py db upgrade heads
+if ! "$VENV_PY" -m flask --app run.py db upgrade heads; then
+    echo "-> Standard upgrade failed (the database may carry a stamp from the"
+    echo "   first public release) — repairing the migration stamp..."
+    "$VENV_PY" -m flask --app run.py db-repair
+fi
 
 echo ""
 echo "=== Done! Restart the server to use the new version: ==="

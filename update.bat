@@ -25,7 +25,12 @@ if errorlevel 1 exit /b 1
 
 echo -^> Upgrading the database...
 "%VENV_PY%" -m flask --app run.py db upgrade heads
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo -^> Standard upgrade failed ^(the database may carry a stamp from the
+    echo    first public release^) - repairing the migration stamp...
+    "%VENV_PY%" -m flask --app run.py db-repair
+    if errorlevel 1 exit /b 1
+)
 
 echo.
 echo === Done! Restart the server to use the new version: ===
