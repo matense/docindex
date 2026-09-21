@@ -2350,6 +2350,66 @@ body.show-shortcuts #shortcut-help-panel {
 
 .dock-task:hover .dock-task-close { display: flex; }
 
+/* "Live background task" banner pinned to the top of the chat messages. */
+.ai-task-banner {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: -0.5rem auto 0.25rem;
+    padding: 0.3rem 0.9rem;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: oklch(var(--p));
+    background: oklch(var(--p) / .1);
+    border: 1px solid oklch(var(--p) / .25);
+    backdrop-filter: blur(8px);
+    width: fit-content;
+}
+
+.ai-task-banner i {
+    animation: ai-task-pulse 1.6s ease-in-out infinite;
+}
+
+/* Finished state: calmer green tint, with an inline dismiss button. */
+.ai-task-banner-done {
+    color: #22c55e;
+    background: rgba(34, 197, 94, .1);
+    border-color: rgba(34, 197, 94, .3);
+}
+
+.ai-task-banner-done > i {
+    animation: none;
+}
+
+.ai-task-banner-dismiss {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 10px;
+    font-weight: 700;
+    color: inherit;
+    background: rgba(34, 197, 94, .15);
+    border: 1px solid rgba(34, 197, 94, .35);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.ai-task-banner-dismiss:hover {
+    background: rgba(34, 197, 94, .28);
+}
+
+@keyframes ai-task-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 /* --- Seamless page transitions (spa.js) --- */
 @keyframes page-enter {
     from { opacity: 0; transform: translateY(12px); }

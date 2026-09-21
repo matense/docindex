@@ -58,7 +58,8 @@
             `<span class="dock-label">${escapeHtml(t.title.slice(0, 12))}</span>`;
         item.title = t.title + (t.error ? '\n' + t.error : '');
 
-        // Click the tile: open the task's transcript in a chat window.
+        // Click the tile: open the task's transcript in a chat window —
+        // live-streamed while the task is still running.
         item.querySelector('.dock-tile').addEventListener('click', () => {
             if (window.aiChat) window.aiChat.openConversation(t.conversation_id);
         });
@@ -72,6 +73,8 @@
                 post(`/ai/tasks/${t.id}/stop`);
             } else {
                 post(`/ai/tasks/${t.id}/ack`);
+                // Open chat windows watching this task leave background mode.
+                window.dispatchEvent(new CustomEvent('ai-task-dismissed', { detail: t.id }));
             }
         });
         return item;

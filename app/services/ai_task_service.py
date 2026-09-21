@@ -15,6 +15,7 @@ connection's requests/minute limit is reached it sleeps for a slot instead
 of failing — long runs throttle themselves.
 """
 
+import queue
 import threading
 
 from flask import current_app
@@ -33,7 +34,35 @@ _TASK_NOTE = (
 
 # task_id -> threading.Event, set when the user asks to stop the task.
 _stop_events = {}
+# task_id -> list[queue.Queue]: live event subscribers (chat windows watching
+# the task's stream endpoint). Events are NDJSON-shaped dicts; None is the
+# end-of-stream sentinel.
+_subscribers = {}
 _lock = threading.Lock()
+
+
+def subscribe(task_id):
+    """Register a live-event subscriber; returns its queue."""
+    q = queue.Queue()
+    with _lock:
+        _subscribers.setdefault(task_id, []).append(q)
+    return q
+
+
+def unsubscribe(task_id, q):
+    with _lock:
+        subs = _subscribers.get(task_id)
+        if subs and q in subs:
+            subs.remove(q)
+        if subs == []:
+            _subscribers.pop(task_id, None)
+
+
+def _broadcast(task_id, event):
+    with _lock:
+        subs = list(_subscribers.get(task_id, ()))
+    for q in subs:
+        q.put(event)
 
 
 def start_task(user, message, drive_id=None, app=None):
@@ -141,8 +170,14 @@ def _task_worker(task_id, drive_id, app):
                 task.finished_at = utcnow()
                 db.session.commit()
         finally:
+            # Close any live stream watchers (None = end-of-stream sentinel).
+            task = db.session.get(AITask, task_id)
+            if task is not None:
+                _broadcast(task_id, {"type": "task_status", "status": task.status})
+            _broadcast(task_id, None)
             with _lock:
                 _stop_events.pop(task_id, None)
+                _subscribers.pop(task_id, None)
 
 
 def _run_task(task_id, drive_id, app):
@@ -191,30 +226,55 @@ def _run_task(task_id, drive_id, app):
         events = agent_service.run_agent_events(
             user, history, drive=drive, max_steps=max_steps,
             should_stop=should_stop, block=True)
+        # Same NDJSON shape as the interactive /ai/chat stream, so a chat
+        # window watching this task renders it exactly like a normal chat.
+        block_tokens = None  # None | "thinking" | "answer" (migrate logic)
         for kind, payload in events:
-            if kind in ("thinking_token", "answer_token"):
-                continue  # live-only deltas; the full blocks follow
-            if kind == "thinking":
+            ev = None
+            if kind == "thinking_token":
+                block_tokens = "thinking"
+                ev = {"type": "thinking_token", "content": payload}
+            elif kind == "answer_token":
+                block_tokens = "answer"
+                ev = {"type": "answer_token", "content": payload}
+            elif kind == "thinking":
                 persist("thinking", payload)
+                if block_tokens != "thinking":
+                    ev = {"type": "thinking", "content": payload}
+                    if block_tokens == "answer":
+                        ev["migrate"] = True
+                block_tokens = None
             elif kind == "step":
-                flush_step()  # a step without result (shouldn't happen, but stay sane)
+                block_tokens = None
+                flush_step()  # a step without result (stay sane)
                 pending_step = payload
+                ev = {"type": "step", "step": payload}
             elif kind == "tool_result":
                 flush_step(payload.get("summary"))
+                ev = {"type": "tool_result", "result": payload}
             elif kind == "stopped":
+                block_tokens = None
                 stopped = True
                 flush_step()
                 persist("assistant", "⏹ " + payload, model=model_name)
+                ev = {"type": "answer", "answer": "⏹ " + payload,
+                      "conversation_id": conv_id, "model": model_name}
             else:  # answer
+                block_tokens = None
                 answer = payload
                 flush_step()
                 persist("assistant", answer, model=model_name)
+                ev = {"type": "answer", "answer": answer,
+                      "conversation_id": conv_id, "model": model_name}
+            if ev is not None:
+                _broadcast(task_id, ev)
         flush_step()
     except ai_service.AIError as exc:
         msg = str(exc)
         log_service.log_event("error", "ai_task", msg,
                               user_id=user.id, path=f"/ai/tasks/{task_id}")
         persist("assistant", f"⚠ {msg}", model=model_name)
+        _broadcast(task_id, {"type": "error", "error": msg})
         task.status = "error"
         task.error = msg[:500]
         task.finished_at = utcnow()

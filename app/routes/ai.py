@@ -6,7 +6,7 @@ from flask import (Blueprint, Response, current_app, jsonify, request,
 from flask_login import current_user, login_required
 
 from ..extensions import db
-from ..models import AIConnection, ChatConversation, ChatMessage, Drive, StoredFile, User
+from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile, User
 from ..services import agent_service, ai_service, ai_task_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
@@ -119,9 +119,15 @@ def conversation(conv_id):
     conv = _get_conversation(conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
+    # A conversation owned by a background task reopens in background mode
+    # until the user dismisses the task (ack) — see ai_chat.js.
+    task = AITask.query.filter_by(conversation_id=conv.id).first()
     return jsonify({
         "id": conv.id,
         "title": conv.title,
+        "task": ({"id": task.id, "status": task.status, "title": task.title,
+                  "notified": bool(task.notified)}
+                 if task and not task.notified else None),
         "messages": [
             {"role": m.role, "content": m.content, "model": m.model,
              "archived": bool(m.archived),
@@ -553,3 +559,33 @@ def ack_task(task_id):
     if task is None:
         return jsonify({"error": "Not found or still running"}), 404
     return jsonify({"ok": True})
+
+
+@bp.route("/tasks/<int:task_id>/stream")
+@login_required
+def task_stream(task_id):
+    """Live NDJSON event stream for a running task — same event shape as
+    /ai/chat, so a chat window can watch a background task and render it
+    exactly like a normal streamed conversation. Ends with a task_status
+    event once the task reaches a final state."""
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+
+    def generate():
+        q = ai_task_service.subscribe(task.id)
+        try:
+            yield (json.dumps({"type": "task_status", "status": task.status},
+                              ensure_ascii=False) + "\n")
+            if not task.is_active:
+                return
+            while True:
+                ev = q.get()
+                if ev is None:  # worker finished — sentinel
+                    break
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        finally:
+            ai_task_service.unsubscribe(task.id, q)
+
+    return Response(stream_with_context(generate()),
+                    mimetype="application/x-ndjson")

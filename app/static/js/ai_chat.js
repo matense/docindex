@@ -525,6 +525,10 @@
                             if (el) el.classList.add('ai-archived');
                         }
                     });
+                    // Conversations owned by a background task reopen in
+                    // task mode until the task is dismissed.
+                    if (conv.task) enterTaskMode(conv.task);
+                    else if (taskMode) exitTaskMode();
                     toggleList(true);
                     scrollDown(true);  // opening a conversation lands at the end
                 });
@@ -857,6 +861,140 @@
         });
         input.addEventListener('blur', () => setTimeout(hideMentions, 150));
 
+        // --- NDJSON stream helpers (shared by the live chat answer and the
+        // background-task watcher) ---
+        function handleStreamEvent(event, state) {
+            if (event.type === 'thinking_token') {
+                appendThinkingToken(event.content);
+            } else if (event.type === 'answer_token') {
+                appendAnswerToken(event.content);
+            } else if (event.type === 'thinking') {
+                // With migrate, the tentative answer bubble moves into the
+                // reasoning box (it was narration before a tool call).
+                if (event.migrate) migrateLiveBubble(event.content);
+                else addReasoningLine('thinking', event.content);
+            } else if (event.type === 'step') {
+                addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
+            } else if (event.type === 'tool_result') {
+                addReasoningLine('tool_result', event.result.summary);
+            } else if (event.type === 'answer') {
+                state.gotResult = true;
+                if (event.conversation_id) conversationId = event.conversation_id;
+                collapseReasoningBox();
+                finalizeLiveBubble(event.answer,
+                                   { created_at: new Date().toISOString(), model: event.model });
+            } else if (event.type === 'error') {
+                state.gotResult = true;
+                collapseReasoningBox();
+                discardLiveBubble(); // keep whatever partial text arrived
+                addMessage('assistant', '**Error:** ' + event.error,
+                           { created_at: new Date().toISOString() });
+            }
+        }
+
+        async function readNdjson(reader, onEvent) {
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep incomplete line
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    let event;
+                    try { event = JSON.parse(line); } catch { continue; }
+                    onEvent(event);
+                }
+            }
+        }
+
+        // --- Background task mode ---
+        // A conversation owned by a background task stays in task mode every
+        // time it is opened (dock icon or history) until the user dismisses
+        // the task — only then does it behave as a normal chat again.
+        let taskAbort = null;
+        let taskMode = null;   // {id, status, title} while in task mode
+        let taskBanner = null;
+
+        function renderTaskBanner() {
+            if (taskBanner) taskBanner.remove();
+            taskBanner = null;
+            if (!taskMode) return;
+            const active = taskMode.status === 'queued' || taskMode.status === 'running';
+            const banner = document.createElement('div');
+            banner.className = 'ai-task-banner' + (active ? '' : ' ai-task-banner-done');
+            banner.innerHTML = active
+                ? '<i class="fas fa-rocket"></i>' +
+                  '<span>Live background task — running on the server</span>'
+                : '<i class="fas fa-flag-checkered"></i>' +
+                  '<span>Background task finished</span>' +
+                  '<button type="button" class="ai-task-banner-dismiss" title="Dismiss — back to a normal chat">' +
+                      '<i class="fas fa-xmark"></i> Dismiss</button>';
+            messagesEl.prepend(banner);
+            taskBanner = banner;
+            if (!active) {
+                banner.querySelector('.ai-task-banner-dismiss')
+                    .addEventListener('click', async () => {
+                        await fetch('/ai/tasks/' + taskMode.id + '/ack',
+                                    { method: 'POST' });
+                        exitTaskMode();
+                    });
+            }
+        }
+
+        function exitTaskMode() {
+            if (taskAbort) { taskAbort.abort(); taskAbort = null; }
+            taskMode = null;
+            renderTaskBanner();
+        }
+
+        function enterTaskMode(task) {
+            // Same task, status refresh only — don't restart the stream.
+            if (taskMode && taskMode.id === task.id
+                && taskMode.status === task.status) return;
+            exitTaskMode();
+            taskMode = task;
+            renderTaskBanner();
+            if (task.status === 'queued' || task.status === 'running')
+                watchTask(task);
+        }
+
+        // Dismissed from the dock widget -> leave task mode here too.
+        function onTaskDismissed(e) {
+            if (taskMode && e.detail === taskMode.id) exitTaskMode();
+        }
+        window.addEventListener('ai-task-dismissed', onTaskDismissed);
+
+        // Stream a running task's events live, exactly like a normal chat
+        // answer. The transcript is persisted server-side, so a stream that
+        // just ends is not an error here (gotResult starts true).
+        async function watchTask(task) {
+            taskAbort = new AbortController();
+            const state = { gotResult: true };
+            try {
+                const resp = await fetch('/ai/tasks/' + task.id + '/stream',
+                                         { signal: taskAbort.signal });
+                if (!resp.ok || !resp.body) return;
+                await readNdjson(resp.body.getReader(), (event) => {
+                    if (event.type === 'task_status') {
+                        if (taskMode && event.status !== 'queued'
+                            && event.status !== 'running') {
+                            taskMode.status = event.status;
+                            renderTaskBanner();
+                        }
+                        return;
+                    }
+                    handleStreamEvent(event, state);
+                });
+            } catch (err) { /* aborted or offline — the transcript persists */ }
+            taskAbort = null;
+            // Reconcile with the persisted transcript (covers anything
+            // missed between the history load and the subscription).
+            if (conversationId) loadConversation(conversationId);
+        }
+
         // --- Submit (streams NDJSON agent events) ---
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -954,55 +1092,15 @@
                 }
 
                 // Stream NDJSON events: steps appear live as the agent works.
-                const reader = resp.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
+                const state = { gotResult: false };
                 let firstEvent = true;
-                let gotResult = false;
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // keep incomplete line
-                    for (const line of lines) {
-                        if (!line.trim()) continue;
-                        let event;
-                        try { event = JSON.parse(line); } catch { continue; }
-                        if (firstEvent) { thinking.remove(); firstEvent = false; }
-                        if (event.type === 'thinking_token') {
-                            appendThinkingToken(event.content);
-                        } else if (event.type === 'answer_token') {
-                            appendAnswerToken(event.content);
-                        } else if (event.type === 'thinking') {
-                            // With migrate, the tentative answer bubble moves
-                            // into the reasoning box (it was narration before
-                            // a tool call, not the final answer).
-                            if (event.migrate) migrateLiveBubble(event.content);
-                            else addReasoningLine('thinking', event.content);
-                        } else if (event.type === 'step') {
-                            addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
-                        } else if (event.type === 'tool_result') {
-                            addReasoningLine('tool_result', event.result.summary);
-                        } else if (event.type === 'answer') {
-                            gotResult = true;
-                            conversationId = event.conversation_id;
-                            collapseReasoningBox();
-                            finalizeLiveBubble(event.answer,
-                                               { created_at: new Date().toISOString(), model: event.model });
-                        } else if (event.type === 'error') {
-                            gotResult = true;
-                            collapseReasoningBox();
-                            discardLiveBubble(); // keep whatever partial text arrived
-                            addMessage('assistant', '**Error:** ' + event.error,
-                                       { created_at: new Date().toISOString() });
-                        }
-                    }
-                }
+                await readNdjson(resp.body.getReader(), (event) => {
+                    if (firstEvent) { thinking.remove(); firstEvent = false; }
+                    handleStreamEvent(event, state);
+                });
                 thinking.remove();
                 collapseReasoningBox();
-                if (!gotResult) {
+                if (!state.gotResult) {
                     discardLiveBubble(); // keep any partial text that arrived
                     addMessage('assistant',
                                '**Error:** the connection was lost before the answer arrived. Please try again.',
@@ -1032,6 +1130,7 @@
             attachments = [];
             cellRef = null;
             driveRef = null;
+            exitTaskMode();
             renderChips();
             hideMentions();
             clearMessages();
@@ -1041,6 +1140,8 @@
 
         function destroy() {
             if (abortCtrl) abortCtrl.abort();  // stop any in-flight answer
+            if (taskAbort) taskAbort.abort();  // stop watching a background task
+            window.removeEventListener('ai-task-dismissed', onTaskDismissed);
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();
@@ -1124,7 +1225,8 @@
             w.setMessage(message || '');
         },
         // Open a window on an existing conversation (e.g. a background
-        // task's transcript from the dock widget).
+        // task's transcript from the dock widget). Task-owned conversations
+        // reopen in background mode automatically (loadConversation).
         openConversation(convId) {
             const w = createChatWindow();
             w.loadConversation(convId);

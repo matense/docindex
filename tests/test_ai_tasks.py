@@ -230,3 +230,107 @@ def test_task_uses_extended_step_budget(auth_client, app, user):
     assert seen["max_steps"] == app.config["AI_TASK_MAX_STEPS"]
     assert seen["block"] is True
     assert "long-horizon" in seen["note"]
+
+
+# --- Live stream (/ai/tasks/<id>/stream) ------------------------------------
+
+
+def _make_task(app, user, status):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        conv = ChatConversation(user_id=user_obj.id, title="t")
+        db.session.add(conv)
+        db.session.flush()
+        task = AITask(user_id=user_obj.id, conversation_id=conv.id,
+                      title="t", status=status)
+        db.session.add(task)
+        db.session.commit()
+        return task.id
+
+
+def test_stream_finished_task_returns_status_and_closes(auth_client, app, user):
+    import json
+    task_id = _make_task(app, user, "done")
+    resp = auth_client.get(f"/ai/tasks/{task_id}/stream")
+    events = [json.loads(line) for line in resp.data.decode().splitlines()
+              if line.strip()]
+    assert events == [{"type": "task_status", "status": "done"}]
+
+
+def test_stream_running_task_receives_broadcast_events(auth_client, app, user):
+    import json
+    import threading
+    task_id = _make_task(app, user, "running")
+
+    # Simulate the worker broadcasting live events, then finishing.
+    def produce():
+        ai_task_service._broadcast(task_id, {"type": "step", "step": {
+            "label": "Searched files", "detail": "vacation"}})
+        ai_task_service._broadcast(task_id, {"type": "answer", "answer": "ok",
+                                             "conversation_id": 1,
+                                             "model": "m"})
+        ai_task_service._broadcast(task_id,
+                                   {"type": "task_status", "status": "done"})
+        ai_task_service._broadcast(task_id, None)
+
+    threading.Timer(0.2, produce).start()
+    resp = auth_client.get(f"/ai/tasks/{task_id}/stream")
+    events = [json.loads(line) for line in resp.data.decode().splitlines()
+              if line.strip()]
+    assert [e["type"] for e in events] == [
+        "task_status", "step", "answer", "task_status"]
+    assert events[0]["status"] == "running"
+
+
+def test_worker_broadcasts_live_events(app, user):
+    """A subscriber attached before the worker runs receives the agent's
+    events (same NDJSON shape as /ai/chat) and the end-of-stream sentinel."""
+    _enable_ai(app)
+    task_id = _make_task(app, user, "queued")
+    with app.app_context():
+        q = ai_task_service.subscribe(task_id)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=_answers("live answer")):
+            ai_task_service._task_worker(task_id, None, app)
+        events = []
+        while True:
+            ev = q.get(timeout=2)
+            if ev is None:
+                break
+            events.append(ev)
+    kinds = [e["type"] for e in events]
+    assert "answer" in kinds
+    assert kinds[-1] == "task_status"
+    assert events[-1]["status"] == "done"
+
+
+def test_stream_requires_ownership(auth_client, app, user):
+    task_id = _make_task(app, user, "running")
+    with app.app_context():
+        bob = User(username="carol", email="carol@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+    client2 = app.test_client()
+    client2.post("/login", data={"username": "carol", "password": "password123"})
+    assert client2.get(f"/ai/tasks/{task_id}/stream").status_code == 404
+
+
+def test_conversation_stays_background_until_dismissed(auth_client, app, user):
+    """A task-owned conversation reports its task (reopen = background mode);
+    after the user dismisses the task it becomes a normal chat again."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        resp = auth_client.post("/ai/tasks", json={"message": "bg work"})
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        conv_id = db.session.get(AITask, task_id).conversation_id
+
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["task"]["id"] == task_id
+    assert data["task"]["status"] == "done"
+
+    auth_client.post(f"/ai/tasks/{task_id}/ack")
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["task"] is None
