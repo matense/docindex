@@ -126,6 +126,7 @@
 
         // --- Per-window state ---
         let conversationId = null;
+        let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
         let driveScopeDismissedId = null; // currentDrive.id the user unscoped
@@ -508,10 +509,12 @@
         }
 
         function loadConversation(id) {
-            fetch('/ai/conversations/' + id)
-                .then(r => r.json())
+            pendingConvId = id;  // set immediately: rapid repeated opens of
+            fetch('/ai/conversations/' + id)   // the same conversation must
+                .then(r => r.json())           // focus this window, not clone it
                 .then(conv => {
                     conversationId = conv.id;
+                    pendingConvId = null;
                     clearMessages();
                     let seenArchived = false;
                     conv.messages.forEach(m => {
@@ -531,7 +534,8 @@
                     else if (taskMode) exitTaskMode();
                     toggleList(true);
                     scrollDown(true);  // opening a conversation lands at the end
-                });
+                })
+                .catch(() => { pendingConvId = null; });
         }
 
         function toggleList(forceHide) {
@@ -1127,6 +1131,7 @@
         // --- Header buttons ---
         function newConversation() {
             conversationId = null;
+            pendingConvId = null;
             attachments = [];
             cellRef = null;
             driveRef = null;
@@ -1196,6 +1201,9 @@
             setMessage(msg) { input.value = msg || ''; },
             newConversation,
             toggleList,
+            // Read-only view of the loaded conversation, so openConversation
+            // can focus an existing window instead of spawning a clone.
+            get conversationId() { return conversationId || pendingConvId; },
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
@@ -1226,8 +1234,12 @@
         },
         // Open a window on an existing conversation (e.g. a background
         // task's transcript from the dock widget). Task-owned conversations
-        // reopen in background mode automatically (loadConversation).
+        // reopen in background mode automatically (loadConversation). If a
+        // window already shows this conversation, just focus it — repeated
+        // clicks must not spawn clones.
         openConversation(convId) {
+            const existing = windows.find(w => w.conversationId === convId);
+            if (existing) { existing.focus(); return; }
             const w = createChatWindow();
             w.loadConversation(convId);
         },
