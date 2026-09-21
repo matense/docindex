@@ -15,6 +15,7 @@ connection's requests/minute limit is reached it sleeps for a slot instead
 of failing — long runs throttle themselves.
 """
 
+import json
 import queue
 import threading
 
@@ -65,8 +66,13 @@ def _broadcast(task_id, event):
         q.put(event)
 
 
-def start_task(user, message, drive_id=None, app=None):
+def start_task(user, message, ctx=None, app=None):
     """Create the conversation + task row and launch the agent worker.
+
+    ``ctx`` is the dict returned by ``routes.ai._resolve_context`` — its
+    notes seed the worker's history and its ``context`` snapshot is stored
+    on the task, so the run keeps working with the drives/files/cell it was
+    launched with even after the user navigates elsewhere.
 
     Runs in a daemon thread unless AI_TASKS_ASYNC is off (tests), in which
     case the worker runs inline and the returned task is already finished.
@@ -75,13 +81,18 @@ def start_task(user, message, drive_id=None, app=None):
     if not message:
         raise ValueError("Empty message.")
 
+    display = message
+    if ctx and ctx["context"].get("file_names"):
+        display += "\n\n📎 " + ", ".join(ctx["context"]["file_names"])
+
     conv = ChatConversation(user_id=user.id, title=message[:80])
     db.session.add(conv)
     db.session.flush()
     db.session.add(ChatMessage(conversation_id=conv.id, role="user",
-                               content=message))
+                               content=display))
     task = AITask(user_id=user.id, conversation_id=conv.id,
-                  title=message[:80], status="queued")
+                  title=message[:80], status="queued",
+                  context=(json.dumps(ctx["context"]) if ctx else None))
     db.session.add(task)
     db.session.commit()
 
@@ -92,9 +103,9 @@ def start_task(user, message, drive_id=None, app=None):
     app = app or current_app._get_current_object()
     if app.config.get("AI_TASKS_ASYNC", True):
         threading.Thread(target=_task_worker,
-                         args=(task.id, drive_id, app), daemon=True).start()
+                         args=(task.id, app), daemon=True).start()
     else:
-        _task_worker(task.id, drive_id, app)
+        _task_worker(task.id, app)
     return task
 
 
@@ -156,10 +167,10 @@ def _owned_task(user, task_id):
     return AITask.query.filter_by(id=task_id, user_id=user.id).first()
 
 
-def _task_worker(task_id, drive_id, app):
+def _task_worker(task_id, app):
     with app.app_context():
         try:
-            _run_task(task_id, drive_id, app)
+            _run_task(task_id, app)
         except Exception as exc:  # noqa: BLE001 - the task must never die silently
             db.session.rollback()
             app.logger.exception("AI task %s failed", task_id)
@@ -180,12 +191,25 @@ def _task_worker(task_id, drive_id, app):
                 _subscribers.pop(task_id, None)
 
 
-def _run_task(task_id, drive_id, app):
+def _run_task(task_id, app):
     task = db.session.get(AITask, task_id)
     if task is None or task.status != "queued":
         return  # stopped before it started
     user = db.session.get(User, task.user_id)
-    drive = db.session.get(Drive, drive_id) if drive_id else None
+
+    # The captured context decides the drive scope and seeds the system
+    # notes — the task remembers what it was launched with, regardless of
+    # what the user is looking at now.
+    snapshot = {}
+    if task.context:
+        try:
+            snapshot = json.loads(task.context)
+        except ValueError:
+            snapshot = {}
+    drive_ids = snapshot.get("drive_ids")
+    drive = (Drive.query
+             .filter(Drive.id.in_(drive_ids), Drive.user_id == user.id)
+             .all()) if drive_ids else None
 
     task.status = "running"
     task.started_at = utcnow()
@@ -197,10 +221,15 @@ def _run_task(task_id, drive_id, app):
 
     model_name = ai_service.config_for(user).get("model", "")
     max_steps = app.config.get("AI_TASK_MAX_STEPS", 64)
-    history = [
-        {"role": "system", "content": _TASK_NOTE},
-        {"role": "user", "content": task.title},
-    ]
+    first_msg = next((m for m in task.conversation.messages
+                      if m.role == "user"), None)
+    user_text = first_msg.content if first_msg else task.title
+    notes = snapshot.get("notes") or []
+    history = (
+        [{"role": "system", "content": _TASK_NOTE}]
+        + [{"role": "system", "content": n} for n in notes]
+        + [{"role": "user", "content": user_text}]
+    )
 
     conv_id = task.conversation_id
     pending_step = None  # {"label", "detail"} waiting for its tool_result

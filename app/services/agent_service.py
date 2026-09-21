@@ -634,9 +634,11 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
                .filter_by(user_id=user.id)
                .filter(StoredFile.deleted_at.is_(None)))
     folders_q = Folder.query.filter_by(user_id=user.id)
-    if drive is not None:
-        files_q = files_q.filter(StoredFile.drive_id == drive.id)
-        folders_q = folders_q.filter(Folder.drive_id == drive.id)
+    drive_ids = search_service.drive_id_list(drive)
+    if drive_ids is not None:
+        scope = drive_ids or [-1]  # explicit empty scope matches nothing
+        files_q = files_q.filter(StoredFile.drive_id.in_(scope))
+        folders_q = folders_q.filter(Folder.drive_id.in_(scope))
 
     if recursive:
         counts = dict(
@@ -736,6 +738,10 @@ def _tool_list_drives(user, drive=None):
     """Every drive the user owns, with file counts and sizes."""
     drives = (Drive.query.filter_by(user_id=user.id)
               .order_by(Drive.name).all())
+    scoped = None
+    if drive is not None:
+        dl = drive if isinstance(drive, (list, tuple)) else [drive]
+        scoped = ", ".join(d.name for d in dl)
     stats = dict(
         (row.drive_id, (row.n, row.bytes))
         for row in db.session.query(
@@ -747,7 +753,7 @@ def _tool_list_drives(user, drive=None):
         .group_by(StoredFile.drive_id).all())
     return {
         "total": len(drives),
-        "scoped_to": drive.name if drive is not None else None,
+        "scoped_to": scoped,
         "drives": [{
             "id": d.id, "name": d.name,
             "read_only": bool(d.is_synced),
@@ -952,9 +958,12 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
         max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
     system = SYSTEM_PROMPT
     if drive is not None:
+        drives = list(drive) if isinstance(drive, (list, tuple)) else [drive]
+        names = ", ".join(f'"{d.name}"' for d in drives)
         system += (f"\n- You are currently working inside the user's "
-                   f'"{drive.name}" drive — only files from that drive are '
-                   f"visible to you.")
+                   f"{names} drive{'s' if len(drives) > 1 else ''} — only "
+                   f"files from {'those drives' if len(drives) > 1 else 'that drive'} "
+                   f"are visible to you.")
     # Merge any leading system messages from the caller (e.g. the attachments
     # notice added by the chat route) into the main system prompt — some chat
     # templates (e.g. Qwen in LM Studio) reject a system message that is not

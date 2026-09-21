@@ -326,6 +326,10 @@ class AITask(db.Model):
     error = db.Column(db.Text, nullable=True)
     # True once the user dismissed the finished task from the bottom dock.
     notified = db.Column(db.Boolean, nullable=False, default=False)
+    # JSON snapshot of the context the task was launched with (drives, files,
+    # open file, notebook cell). Reopening the task's chat keeps this context
+    # instead of adopting whatever the user happens to be viewing now.
+    context = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
     started_at = db.Column(db.DateTime, nullable=True)
     finished_at = db.Column(db.DateTime, nullable=True)

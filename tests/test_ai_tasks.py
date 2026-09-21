@@ -4,10 +4,11 @@ Tasks run inline here (TestConfig.AI_TASKS_ASYNC = False), so start_task()
 returns with the task already finished.
 """
 
+import json
 from unittest.mock import patch
 
 from app.extensions import db
-from app.models import AITask, ChatConversation, ChatMessage, User
+from app.models import AITask, ChatConversation, ChatMessage, Drive, StoredFile, User
 from app.services import agent_service, ai_task_service
 
 
@@ -291,7 +292,7 @@ def test_worker_broadcasts_live_events(app, user):
         q = ai_task_service.subscribe(task_id)
         with patch("app.services.ai_service.chat_completion",
                    side_effect=_answers("live answer")):
-            ai_task_service._task_worker(task_id, None, app)
+            ai_task_service._task_worker(task_id, app)
         events = []
         while True:
             ev = q.get(timeout=2)
@@ -334,3 +335,170 @@ def test_conversation_stays_background_until_dismissed(auth_client, app, user):
     auth_client.post(f"/ai/tasks/{task_id}/ack")
     data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
     assert data["task"] is None
+
+
+# --- Captured context (drives, files, cell) ---------------------------------
+
+
+def _make_drive_with_file(app, user_id, drive_name, file_name, text):
+    """Create a drive owning one indexed text file; returns (drive_id, file_id)."""
+    from app.services import file_service, indexing_service
+
+    class FakeStorage:
+        filename = file_name
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                fh.write(text.encode())
+
+    with app.app_context():
+        u = db.session.get(User, user_id)
+        drive = Drive(name=drive_name, user_id=user_id)
+        db.session.add(drive)
+        db.session.flush()
+        stored = file_service.save_upload(FakeStorage(), u)
+        stored.drive_id = drive.id
+        db.session.commit()
+        indexing_service.index_file(stored.id, app)
+        return drive.id, stored.id
+
+
+def test_task_captures_and_reuses_context(auth_client, app, user):
+    """A background task snapshots its launch context (drives, attachments,
+    open file) onto the task row, and the worker runs scoped to it."""
+    _enable_ai(app)
+    drive_id, file_id = _make_drive_with_file(
+        app, user, "Work", "notes.txt", "hello work notes")
+    _, open_id = _make_drive_with_file(
+        app, user, "Work2", "open.txt", "the file open on screen")
+    seen = {}
+    real_events = agent_service.run_agent_events
+
+    def spy(u, history, drive=None, **kwargs):
+        seen["drive_ids"] = [d.id for d in drive] if drive else None
+        seen["history"] = history
+        return real_events(u, history, drive=drive, **kwargs)
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")), \
+         patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
+        resp = auth_client.post("/ai/tasks", json={
+            "message": "summarize this",
+            "attachments": [file_id],
+            "context_file_id": open_id,
+            "scope_drive_ids": [drive_id],
+        })
+
+    assert resp.status_code == 200
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        task = db.session.get(AITask, task_id)
+        snap = json.loads(task.context)
+        assert snap["drive_ids"] == [drive_id]
+        assert snap["drive_names"] == ["Work"]
+        assert snap["file_ids"] == [file_id]
+        assert snap["file_names"] == ["notes.txt"]
+        assert snap["context_file_id"] == open_id
+        assert snap["context_file_name"] == "open.txt"
+        assert snap["all_drives"] is False
+        assert snap["notes"]  # resolved system notes travel with the snapshot
+        # The user message shows the attachments.
+        first = task.conversation.messages[0]
+        assert first.role == "user" and "📎 notes.txt" in first.content
+
+    # The worker ran scoped to the captured drive (as a list), with the
+    # captured notes seeding its history.
+    assert seen["drive_ids"] == [drive_id]
+    notes = [m["content"] for m in seen["history"] if m["role"] == "system"]
+    assert any("attached these files" in n for n in notes)
+    assert any("open on screen" in n for n in notes)
+
+
+def test_task_without_context_keeps_all_drives(auth_client, app, user):
+    """scope_all_drives snapshots as all_drives=True and the worker runs
+    unscoped (drive=None)."""
+    _enable_ai(app)
+    seen = {}
+    real_events = agent_service.run_agent_events
+
+    def spy(u, history, drive=None, **kwargs):
+        seen["drive_ids"] = [d.id for d in drive] if drive else None
+        return real_events(u, history, drive=drive, **kwargs)
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")), \
+         patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
+        resp = auth_client.post("/ai/tasks", json={
+            "message": "scan everything", "scope_all_drives": True})
+
+    assert resp.status_code == 200
+    assert seen["drive_ids"] is None
+    with app.app_context():
+        task = db.session.get(AITask, resp.get_json()["task"]["id"])
+        assert json.loads(task.context)["all_drives"] is True
+
+
+def test_conversation_endpoint_exposes_task_context(auth_client, app, user):
+    """Reopening a task chat returns the captured context so the UI can show
+    it instead of the user's current screen context."""
+    _enable_ai(app)
+    drive_id, _ = _make_drive_with_file(app, user, "Work", "a.txt", "aaa")
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        resp = auth_client.post("/ai/tasks", json={
+            "message": "bg work", "scope_drive_ids": [drive_id]})
+    task_id = resp.get_json()["task"]["id"]
+    with app.app_context():
+        conv_id = db.session.get(AITask, task_id).conversation_id
+
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["task"]["context"]["drive_names"] == ["Work"]
+
+    # After dismissing the task the context is gone with it (normal chat).
+    auth_client.post(f"/ai/tasks/{task_id}/ack")
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["task"] is None
+
+
+def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
+    """/ai/chat takes scope_drive_ids and the agent runs scoped to that list."""
+    _enable_ai(app)
+    d1, _ = _make_drive_with_file(app, user, "Alpha", "a.txt", "aaa")
+    d2, _ = _make_drive_with_file(app, user, "Beta", "b.txt", "bbb")
+    seen = {}
+    real_events = agent_service.run_agent_events
+
+    def spy(u, history, drive=None, **kwargs):
+        seen["drive_ids"] = sorted(d.id for d in drive) if drive else None
+        return real_events(u, history, drive=drive, **kwargs)
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("hi")), \
+         patch("app.routes.ai.agent_service.run_agent_events", spy):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "hello", "scope_drive_ids": [d1, d2]})
+        resp.data  # consume the stream inside the patch
+
+    assert resp.status_code == 200
+    assert seen["drive_ids"] == sorted([d1, d2])
+
+
+def test_search_files_accepts_multiple_drives(app, user):
+    """search_files with a list of drives searches all of them and nothing
+    else."""
+    from app.services import search_service
+    _, f1 = _make_drive_with_file(app, user, "Alpha", "one.txt", "commonword alpha")
+    _, f2 = _make_drive_with_file(app, user, "Beta", "two.txt", "commonword beta")
+    d3, f3 = _make_drive_with_file(app, user, "Gamma", "three.txt", "commonword gamma")
+
+    with app.app_context():
+        u = db.session.get(User, user)
+        drives = Drive.query.filter(Drive.name.in_(["Alpha", "Beta"])).all()
+        ids = {r["file"].id for r in search_service.search_files("commonword", u, drive=drives)}
+        assert ids == {f1, f2}
+        # A single Drive still works (legacy scope).
+        only = Drive.query.filter_by(name="Gamma").one()
+        ids = {r["file"].id for r in search_service.search_files("commonword", u, drive=only)}
+        assert ids == {f3}
+        assert d3 != drives  # sanity: distinct scope

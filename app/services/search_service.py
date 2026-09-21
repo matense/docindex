@@ -115,6 +115,30 @@ def _fts_query(terms):
     return " AND ".join('"%s"*' % t.replace('"', '""') for t in terms)
 
 
+def drive_id_list(drive):
+    """Normalize a drive scope: None (all drives), one Drive, or a list of
+    Drives (multi-drive $ mentions / background task context). Returns a
+    list of drive ids, or None for unscoped."""
+    if drive is None:
+        return None
+    if isinstance(drive, (list, tuple)):
+        return [d.id for d in drive]
+    return [drive.id]
+
+
+def _drive_sql(column, drive, params, prefix="did"):
+    """WHERE fragment restricting `column` to the scoped drive(s). Returns ''
+    when unscoped; matches nothing when the scope list is empty."""
+    ids = drive_id_list(drive)
+    if ids is None:
+        return ""
+    if not ids:
+        return " AND 1 = 0"  # explicit empty scope: no drives at all
+    names = ", ".join(f":{prefix}{i}" for i in range(len(ids)))
+    params.update({f"{prefix}{i}": d for i, d in enumerate(ids)})
+    return f" AND {column} IN ({names})"
+
+
 def _fts_candidates(terms, user, drive, limit):
     """file ids matching all terms via FTS5, best BM25 rank first.
 
@@ -127,9 +151,7 @@ def _fts_candidates(terms, user, drive, limit):
            "WHERE file_fts MATCH :match "
            "  AND files.user_id = :uid AND files.deleted_at IS NULL")
     params = {"match": _fts_query(terms), "uid": user.id}
-    if drive is not None:
-        sql += " AND files.drive_id = :did"
-        params["did"] = drive.id
+    sql += _drive_sql("files.drive_id", drive, params)
     sql += " ORDER BY rank LIMIT :lim"
     params["lim"] = max(limit * 4, 50)
     try:
@@ -267,8 +289,9 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
          .outerjoin(FileIndex, FileIndex.file_id == StoredFile.id)
          .filter(StoredFile.user_id == user.id,
                  StoredFile.deleted_at.is_(None)))
-    if drive is not None:
-        q = q.filter(StoredFile.drive_id == drive.id)
+    drive_ids = drive_id_list(drive)
+    if drive_ids is not None:
+        q = q.filter(StoredFile.drive_id.in_(drive_ids or [-1]))
     rows = q.filter(or_(*conditions)).all()
 
     results = []
@@ -322,9 +345,15 @@ def _advanced_clauses(user, drive=None, extensions=None, folder_id=None,
     """SQL WHERE fragments + params shared by search_advanced/count_files."""
     clauses = ["files.user_id = :uid", "files.deleted_at IS NULL"]
     params = {"uid": user.id}
-    if drive is not None:
-        clauses.append("files.drive_id = :did")
-        params["did"] = drive.id
+    drive_ids = drive_id_list(drive)
+    if drive_ids is not None:
+        if drive_ids:
+            clauses.append("files.drive_id IN ("
+                           + ", ".join(f":did{i}" for i in range(len(drive_ids)))
+                           + ")")
+            params.update({f"did{i}": d for i, d in enumerate(drive_ids)})
+        else:
+            clauses.append("1 = 0")  # explicit empty scope: no drives at all
     if extensions:
         exts = [str(e).lower().lstrip(".") for e in extensions][:20]
         if exts:

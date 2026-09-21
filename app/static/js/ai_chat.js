@@ -131,7 +131,7 @@
         let contextDismissedId = null; // currentFile.id the user hid
         let driveScopeDismissedId = null; // currentDrive.id the user unscoped
         let cellRef = null; // notebook cell dropped into the chat
-        let driveRef = null; // drive picked with a $ mention {id, name}
+        let driveRefs = []; // drives picked with $ mentions [{id, name}]
         let driveListCache = null; // /api/drives, fetched on first $ use
         let backgroundMode = false; // send as a long-horizon background task
         let reasoningBox = null;
@@ -229,96 +229,110 @@
 
         function renderChips() {
             chipsEl.innerHTML = '';
+            // In task mode the captured context is fixed: show it as
+            // non-removable chips (captured when the task started) instead of
+            // whatever file/drive the user is looking at now.
+            const captured = (taskMode && taskMode.context) ? taskMode.context : null;
+
+            function chip(cls, icon, text, title, onRemove) {
+                const c = document.createElement('span');
+                c.className = 'badge ' + cls + ' badge-outline gap-1 text-xs';
+                c.innerHTML = '<i class="fas ' + icon + '"></i>';
+                c.appendChild(document.createTextNode(text));
+                if (title) c.title = title;
+                if (onRemove) {
+                    const rm = document.createElement('button');
+                    rm.type = 'button';
+                    rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                    rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                    rm.onclick = onRemove;
+                    c.appendChild(rm);
+                }
+                chipsEl.appendChild(c);
+            }
+
+            if (captured) {
+                const fixedTitle = 'Captured when this background task started — it keeps this context until you dismiss the task';
+                const capDriveIds = captured.drive_ids || [];
+                const capFileIds = captured.file_ids || [];
+                if (captured.all_drives) {
+                    chip('badge-accent', 'fa-globe', 'All drives', fixedTitle);
+                } else {
+                    // Skip ones the user re-added themselves (removable below).
+                    (captured.drive_names || []).forEach((name, i) => {
+                        if (driveRefs.some(r => r.id === capDriveIds[i])) return;
+                        chip('badge-accent', 'fa-hard-drive', name, fixedTitle);
+                    });
+                }
+                if (captured.context_file_name
+                        && !attachments.some(a => a.id === captured.context_file_id)) {
+                    chip('badge-secondary', 'fa-eye', captured.context_file_name,
+                         'Open on screen when the task started — ' + fixedTitle);
+                }
+                if (captured.context_cell
+                        && !(cellRef && cellRef.cell_id === captured.context_cell.cell_id)) {
+                    chip('badge-info', 'fa-table-cells',
+                         captured.context_cell.file_name + ' › cell', fixedTitle);
+                }
+                (captured.file_names || []).forEach((name, i) => {
+                    if (attachments.some(a => a.id === capFileIds[i])) return;
+                    chip('badge-primary', 'fa-paperclip', name, fixedTitle);
+                });
+            }
+
             // Removable chip: a notebook cell dropped into the chat.
             if (cellRef) {
-                const cr = document.createElement('span');
-                cr.className = 'badge badge-info badge-outline gap-1 text-xs';
-                cr.innerHTML = '<i class="fas fa-table-cells"></i>';
-                cr.appendChild(document.createTextNode(
-                    cellRef.file_name + ' › cell'));
-                cr.title = (cellRef.preview || 'Notebook cell')
-                    + ' — the AI will focus on this cell';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.onclick = () => { cellRef = null; renderChips(); };
-                cr.appendChild(rm);
-                chipsEl.appendChild(cr);
+                chip('badge-info', 'fa-table-cells', cellRef.file_name + ' › cell',
+                     (cellRef.preview || 'Notebook cell') + ' — the AI will focus on this cell',
+                     () => { cellRef = null; renderChips(); });
             }
-            // Removable chip: a drive picked with a $ mention (wins over
-            // the drive being browsed).
-            if (driveRef) {
-                const drv = document.createElement('span');
-                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
-                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
-                drv.appendChild(document.createTextNode(driveRef.name));
-                drv.title = 'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Remove this drive scope';
-                rm.onclick = () => { driveRef = null; renderChips(); };
-                drv.appendChild(rm);
-                chipsEl.appendChild(drv);
-            } else if (window.currentDrive
-                    && window.currentDrive.id !== driveScopeDismissedId) {
-                const drv = document.createElement('span');
-                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
-                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
-                drv.appendChild(document.createTextNode(window.currentDrive.name));
-                drv.title = 'Answers are narrowed to this drive — remove to search all drives';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Search across all drives';
-                rm.onclick = () => {
-                    driveScopeDismissedId = window.currentDrive.id;
-                    renderChips();
-                };
-                drv.appendChild(rm);
-                chipsEl.appendChild(drv);
-            }
-            // Removable chip showing the open file shared as context.
-            if (window.currentFile
-                    && window.currentFile.id !== contextDismissedId
-                    && !attachments.some(a => a.id === window.currentFile.id)) {
-                const ctx = document.createElement('span');
-                ctx.className = 'badge badge-secondary badge-outline gap-1 text-xs';
-                ctx.innerHTML = '<i class="fas fa-eye"></i>';
-                ctx.appendChild(document.createTextNode(window.currentFile.name));
-                ctx.title = 'Open on screen — the AI knows this is your current context';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Stop sharing this file as context';
-                rm.onclick = () => {
-                    contextDismissedId = window.currentFile.id;
-                    renderChips();
-                };
-                ctx.appendChild(rm);
-                chipsEl.appendChild(ctx);
+            // Removable chips: drives picked with $ mentions (win over the
+            // drive being browsed).
+            driveRefs.forEach((r) => {
+                chip('badge-accent', 'fa-hard-drive', r.name,
+                     'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing',
+                     () => { driveRefs = driveRefs.filter(x => x.id !== r.id); renderChips(); });
+            });
+            // Auto chips for the screen context — hidden in task mode, where
+            // the captured context above is the truth.
+            if (!captured) {
+                if (!driveRefs.length && window.currentDrive
+                        && window.currentDrive.id !== driveScopeDismissedId) {
+                    chip('badge-accent', 'fa-hard-drive', window.currentDrive.name,
+                         'Answers are narrowed to this drive — remove to search all drives',
+                         () => {
+                             driveScopeDismissedId = window.currentDrive.id;
+                             renderChips();
+                         });
+                }
+                // Removable chip showing the open file shared as context.
+                if (window.currentFile
+                        && window.currentFile.id !== contextDismissedId
+                        && !attachments.some(a => a.id === window.currentFile.id)) {
+                    chip('badge-secondary', 'fa-eye', window.currentFile.name,
+                         'Open on screen — the AI knows this is your current context',
+                         () => {
+                             contextDismissedId = window.currentFile.id;
+                             renderChips();
+                         });
+                }
             }
             attachments.forEach((a) => {
-                const chip = document.createElement('span');
-                chip.className = 'badge badge-primary badge-outline gap-1 text-xs';
-                chip.innerHTML = '<i class="fas fa-paperclip"></i>';
-                chip.appendChild(document.createTextNode(a.name));
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.onclick = () => {
-                    attachments = attachments.filter(x => x.id !== a.id);
-                    renderChips();
-                };
-                chip.appendChild(rm);
-                chipsEl.appendChild(chip);
+                chip('badge-primary', 'fa-paperclip', a.name, null,
+                     () => {
+                         attachments = attachments.filter(x => x.id !== a.id);
+                         renderChips();
+                     });
             });
             const hasChips = chipsEl.childNodes.length > 0;
+            if (hasChips) {
+                // The user should always see at a glance what the AI is
+                // working with.
+                const lbl = document.createElement('span');
+                lbl.className = 'text-[10px] uppercase tracking-wide opacity-50 self-center';
+                lbl.textContent = 'Context:';
+                chipsEl.insertBefore(lbl, chipsEl.firstChild);
+            }
             chipsEl.classList.toggle('hidden', !hasChips);
             chipsEl.classList.toggle('flex', hasChips);
         }
@@ -800,7 +814,8 @@
         }
 
         function pickDrive(d) {
-            driveRef = { id: d.id, name: d.name };
+            if (!driveRefs.some(r => r.id === d.id))
+                driveRefs.push({ id: d.id, name: d.name });
             if (mentionToken) {
                 input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
             }
@@ -813,7 +828,9 @@
             loadDrives().then(drives => {
                 if (!mentionToken) return; // user moved on meanwhile
                 const query = q.toLowerCase();
-                const matches = drives.filter(d => d.name.toLowerCase().includes(query));
+                const matches = drives.filter(d =>
+                    d.name.toLowerCase().includes(query)
+                    && !driveRefs.some(r => r.id === d.id));
                 mentionEl.innerHTML = '';
                 if (!matches.length) {
                     mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No drives found</div>';
@@ -952,6 +969,7 @@
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             taskMode = null;
             renderTaskBanner();
+            renderChips();  // back to live screen context
         }
 
         function enterTaskMode(task) {
@@ -961,6 +979,7 @@
             exitTaskMode();
             taskMode = task;
             renderTaskBanner();
+            renderChips();  // show the context captured when the task started
             if (task.status === 'queued' || task.status === 'running')
                 watchTask(task);
         }
@@ -1011,27 +1030,40 @@
             if (!question && !attachments.length) return;
 
             // Background mode: launch a long-horizon task on the server and
-            // leave this chat untouched — the dock widget tracks it.
+            // leave this chat untouched — the dock widget tracks it. The
+            // task captures the CURRENT context (drives, open file, cell,
+            // attachments) and keeps it for its whole lifetime.
             if (backgroundMode) {
-                if (attachments.length) {
-                    window.uiAlert('Background tasks work on your drives directly — attachments are not needed. Remove them and try again.',
-                                   { title: 'Run in background' });
-                    return;
-                }
+                const sentAttachments = attachments;
+                const sentCell = cellRef;
+                const sentDrives = driveRefs;
+                attachments = [];
+                cellRef = null;
+                driveRefs = [];
                 input.value = '';
                 growInput();
                 hideMentions();
                 backgroundMode = false;
                 bgToggle.classList.remove('ai-toggle-on');
+                renderChips();
                 try {
                     const resp = await fetch('/ai/tasks', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             message: question,
-                            drive_id: driveRef ? driveRef.id
-                                : (window.currentDrive && window.currentDrive.id !== driveScopeDismissedId
-                                    ? window.currentDrive.id : null),
+                            attachments: sentAttachments.map(a => a.id),
+                            context_file_id: (window.currentFile
+                                && window.currentFile.id !== contextDismissedId
+                                && !sentAttachments.some(a => a.id === window.currentFile.id))
+                                ? window.currentFile.id : null,
+                            scope_all_drives: !!(window.currentDrive
+                                && window.currentDrive.id === driveScopeDismissedId),
+                            scope_drive_ids: sentDrives.length
+                                ? sentDrives.map(r => r.id) : null,
+                            context_cell: sentCell
+                                ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
+                                : null,
                         }),
                     });
                     const data = await resp.json().catch(() => ({}));
@@ -1062,6 +1094,45 @@
 
             try {
                 abortCtrl = new AbortController();
+                // In task mode the captured context is the base: the current
+                // screen does NOT override it — only references the user
+                // explicitly added (chips above) are merged in.
+                const captured = (taskMode && taskMode.context) ? taskMode.context : null;
+                let bodyAttachments, bodyContextFile, bodyAllDrives, bodyDriveIds, bodyCell;
+                if (captured) {
+                    bodyAttachments = [...new Set([
+                        ...(captured.file_ids || []),
+                        ...sentAttachments.map(a => a.id)])];
+                    bodyContextFile = captured.context_file_id || null;
+                    bodyAllDrives = !!captured.all_drives;
+                    bodyDriveIds = [...new Set([
+                        ...(captured.drive_ids || []),
+                        ...driveRefs.map(r => r.id)])];
+                    if (!bodyDriveIds.length) bodyDriveIds = null;
+                    bodyCell = cellRef
+                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
+                        : (captured.context_cell
+                            ? { file_id: captured.context_cell.file_id,
+                                cell_id: captured.context_cell.cell_id }
+                            : null);
+                } else {
+                    bodyAttachments = sentAttachments.map(a => a.id);
+                    // Implicit context: the file/notebook open on screen.
+                    bodyContextFile = (window.currentFile
+                        && window.currentFile.id !== contextDismissedId
+                        && !sentAttachments.some(a => a.id === window.currentFile.id))
+                        ? window.currentFile.id : null;
+                    // Drive scope removed via the chip -> search all drives.
+                    bodyAllDrives = !!(window.currentDrive
+                        && window.currentDrive.id === driveScopeDismissedId);
+                    // Drives picked with $ mentions (win over the above).
+                    bodyDriveIds = driveRefs.length
+                        ? driveRefs.map(r => r.id) : null;
+                    // Notebook cell dropped into the chat.
+                    bodyCell = cellRef
+                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
+                        : null;
+                }
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1069,21 +1140,11 @@
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
-                        attachments: sentAttachments.map(a => a.id),
-                        // Implicit context: the file/notebook open on screen.
-                        context_file_id: (window.currentFile
-                            && window.currentFile.id !== contextDismissedId
-                            && !sentAttachments.some(a => a.id === window.currentFile.id))
-                            ? window.currentFile.id : null,
-                        // Drive scope removed via the chip -> search all drives.
-                        scope_all_drives: !!(window.currentDrive
-                            && window.currentDrive.id === driveScopeDismissedId),
-                        // Drive picked with a $ mention (wins over the above).
-                        scope_drive_id: driveRef ? driveRef.id : null,
-                        // Notebook cell dropped into the chat.
-                        context_cell: cellRef
-                            ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                            : null,
+                        attachments: bodyAttachments,
+                        context_file_id: bodyContextFile,
+                        scope_all_drives: bodyAllDrives,
+                        scope_drive_ids: bodyDriveIds,
+                        context_cell: bodyCell,
                     }),
                 });
 
@@ -1134,7 +1195,7 @@
             pendingConvId = null;
             attachments = [];
             cellRef = null;
-            driveRef = null;
+            driveRefs = [];
             exitTaskMode();
             renderChips();
             hideMentions();
