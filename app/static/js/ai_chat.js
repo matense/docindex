@@ -1204,6 +1204,9 @@
             // Read-only view of the loaded conversation, so openConversation
             // can focus an existing window instead of spawning a clone.
             get conversationId() { return conversationId || pendingConvId; },
+            // A window with nothing loaded yet — Ask AI focuses it instead
+            // of piling up empty windows.
+            get isFresh() { return !conversationId && !pendingConvId && !taskMode; },
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
@@ -1216,9 +1219,12 @@
     // Global API (dock button, Alt+A, "Merge with AI", drive actions)
     // ------------------------------------------------------------------
     window.aiChat = {
-        // Open a chat window if none exists, otherwise focus the last one.
+        // Ask AI always offers a fresh chat: if the last window is still
+        // empty, focus it; otherwise (e.g. it shows a background task) open
+        // a NEW window with no context so the user can start a conversation.
         toggle() {
-            if (windows.length) windows[windows.length - 1].focus();
+            const last = windows[windows.length - 1];
+            if (last && last.isFresh) last.focus();
             else createChatWindow();
         },
         // Always spawn a new parallel chat session.
