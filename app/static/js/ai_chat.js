@@ -140,6 +140,7 @@
         let liveBubble = null;         // tentative answer bubble while streaming
         let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
+        let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
         let mentionToken = null; // the full "#query" match, to replace on pick
 
         // --- Initial position (cascade from the bottom-right) ---
@@ -880,7 +881,15 @@
                 form.requestSubmit();
             }
         });
-        input.addEventListener('blur', () => setTimeout(hideMentions, 150));
+        input.addEventListener('blur', () => {
+            // Delayed so a click on a mention row registers first — and
+            // cancelled on focus, so toolbar buttons (Drive / Search files)
+            // that refocus the input don't get their dropdown hidden by the
+            // pending blur timer.
+            clearTimeout(mentionHideTimer);
+            mentionHideTimer = setTimeout(hideMentions, 150);
+        });
+        input.addEventListener('focus', () => clearTimeout(mentionHideTimer));
 
         // --- NDJSON stream helpers (shared by the live chat answer and the
         // background-task watcher) ---

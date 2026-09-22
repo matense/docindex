@@ -623,6 +623,7 @@
 
     // --- @here and # mention autocomplete --------------------------------------
     let mentionTimer = null;
+    let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
     let mentionToken = null;
 
     function hideMentions() {
@@ -809,7 +810,15 @@
             form.requestSubmit();
         }
     });
-    input.addEventListener('blur', () => setTimeout(hideMentions, 150));
+    input.addEventListener('blur', () => {
+        // Delayed so a click on a mention row registers first — and
+        // cancelled on focus, so toolbar buttons (Drive / Search files)
+        // that refocus the input don't get their dropdown hidden by the
+        // pending blur timer.
+        clearTimeout(mentionHideTimer);
+        mentionHideTimer = setTimeout(hideMentions, 150);
+    });
+    input.addEventListener('focus', () => clearTimeout(mentionHideTimer));
 
     // --- Submit -----------------------------------------------------------------
     form.addEventListener('submit', async (e) => {
