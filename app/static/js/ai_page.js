@@ -59,12 +59,15 @@
     // Long-horizon mode: the next message starts a server-side background
     // task tracked in the bottom dock instead of a live streamed answer.
     const bgToggle = document.getElementById('aip-bg-toggle');
-    bgToggle.addEventListener('click', () => {
-        backgroundMode = !backgroundMode;
-        bgToggle.classList.toggle('ai-toggle-on', backgroundMode);
-        bgToggle.title = backgroundMode
+    function setBackgroundMode(on) {
+        backgroundMode = on;
+        bgToggle.classList.toggle('ai-toggle-on', on);
+        bgToggle.title = on
             ? 'Background mode ON — the next message starts a long-horizon task on the server'
             : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
+    }
+    bgToggle.addEventListener('click', () => {
+        setBackgroundMode(!backgroundMode);
         input.focus();
     });
 
@@ -493,6 +496,9 @@
                     }
                 });
                 restoreContext(conv.context);
+                // A conversation owned by a background task stays in
+                // background mode until the user dismisses the task.
+                setBackgroundMode(!!conv.task);
                 toggleList(true);
                 scrollDown(true);  // opening a conversation lands at the end
             });
@@ -892,8 +898,7 @@
             input.value = '';
             growInput();
             hideMentions();
-            backgroundMode = false;
-            bgToggle.classList.remove('ai-toggle-on');
+            setBackgroundMode(false);
             renderChips();
             try {
                 const resp = await fetch('/ai/tasks', {

@@ -115,12 +115,15 @@
         // a live chat answer — the agent runs on the server and reports to the
         // bottom dock when done.
         const bgToggle = el.querySelector('.acw-bg-toggle');
-        bgToggle.addEventListener('click', () => {
-            backgroundMode = !backgroundMode;
-            bgToggle.classList.toggle('ai-toggle-on', backgroundMode);
-            bgToggle.title = backgroundMode
+        function setBackgroundMode(on) {
+            backgroundMode = on;
+            bgToggle.classList.toggle('ai-toggle-on', on);
+            bgToggle.title = on
                 ? 'Background mode ON — the next message starts a long-horizon task on the server'
                 : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
+        }
+        bgToggle.addEventListener('click', () => {
+            setBackgroundMode(!backgroundMode);
             input.focus();
         });
 
@@ -1016,6 +1019,7 @@
         function exitTaskMode() {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             taskMode = null;
+            setBackgroundMode(false);  // dismissed -> back to a normal chat
             renderTaskBanner();
             renderChips();  // back to live screen context
         }
@@ -1026,6 +1030,10 @@
                 && taskMode.status === task.status) return;
             exitTaskMode();
             taskMode = task;
+            // A conversation that started as a background task STAYS in
+            // background mode until the user dismisses the task — follow-up
+            // messages launch new background tasks, not live answers.
+            setBackgroundMode(true);
             renderTaskBanner();
             renderChips();  // show the context captured when the task started
             if (task.status === 'queued' || task.status === 'running')
@@ -1091,8 +1099,9 @@
                 input.value = '';
                 growInput();
                 hideMentions();
-                backgroundMode = false;
-                bgToggle.classList.remove('ai-toggle-on');
+                // One-shot by default, but a task conversation stays in
+                // background mode until the user dismisses the task.
+                if (!taskMode) setBackgroundMode(false);
                 renderChips();
                 try {
                     const resp = await fetch('/ai/tasks', {
