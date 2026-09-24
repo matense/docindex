@@ -313,7 +313,10 @@ Rules:
 - Some files are marked read_only=true — they mirror a real folder on disk
   and cannot be edited, moved or deleted. Never offer to modify them.
 - If the files don't contain the answer, say so honestly — never invent content.
-- Answer in the same language the user writes in."""
+- Answer in the same language the user writes in.
+- When you write the FINAL answer (no more tool calls needed), end it with
+  the marker [[END]] on its own line. Never use this marker anywhere else or
+  in the middle of a message."""
 
 
 # Smaller/local models sometimes narrate the next step ("Vou ler o ficheiro…",
@@ -331,9 +334,53 @@ _INTENT_RE = re.compile(
 
 _NUDGE = ("You described what you plan to do next but did not call any tool. "
           "Continue the task now: call the next tool if you still need "
-          "information, or write the final answer if you are done.")
+          "information, or write the final answer now, ending it with "
+          "[[END]], if you are done.")
+
+# The previous reply was cut off by the token limit (finish_reason=length) —
+# that is never a deliberate final answer.
+_TRUNCATED_NUDGE = ("Your previous message was cut off by the output length "
+                    "limit. Continue from where you stopped: call the next "
+                    "tool if you still need information, or write the "
+                    "complete final answer ending it with [[END]].")
 
 _MAX_NUDGES = 4
+
+# Explicit "I am done" signal requested in the system prompt: the final answer
+# ends with [[END]] on its own line. Tolerant to spacing/case and a trailing
+# punctuation mark; only matches at the very end of the message. A positive
+# signal, not a hard gate — models that never emit it fall back to the
+# heuristic checks below.
+_FINAL_MARKER_RE = re.compile(r"\[\[\s*END\s*\]\]\s*[.!]?\s*$", re.IGNORECASE)
+
+# A message citing a source file ([name](file://ID)) is a composed answer,
+# not a statement of intent.
+_ANSWER_SIGNAL_RE = re.compile(r"\]\(file://\d+\)")
+
+# Pushback after a nudge ("I already have the answer…") or a reference to
+# something already said means the model considers itself done — accept it
+# as the final answer instead of nudging again (which produced loops where
+# the model repeated 'I already have the answer').
+_DONE_RE = re.compile(
+    r"(\bi already\b|\bas (i|we) (said|mentioned|discussed)\b"
+    r"|\bjá (tenho|respondi|disse|indiquei|mostrei)\b"
+    r"|\bcomo (já )?(disse|indiquei|mencionei)\b"
+    r"|\bya (tengo|respondí|dije|mostré)\b|\bcomo (ya )?(dije|mencioné)\b)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_intent(text):
+    """True when the message reads like stated intent to keep working rather
+    than a final answer. Only the TAIL is checked — intent is announced at
+    the end ("Let me now read X"), while a real answer may legitimately
+    contain "next"/"I will" earlier in the text."""
+    if _ANSWER_SIGNAL_RE.search(text):
+        return False
+    tail = text[-300:]
+    if _DONE_RE.search(tail):
+        return False
+    return bool(_INTENT_RE.search(tail))
 
 # grep_file output budgets: the goal is to point the model at the right
 # section, not to stream the whole file through the chat.
@@ -634,9 +681,11 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
                .filter_by(user_id=user.id)
                .filter(StoredFile.deleted_at.is_(None)))
     folders_q = Folder.query.filter_by(user_id=user.id)
-    if drive is not None:
-        files_q = files_q.filter(StoredFile.drive_id == drive.id)
-        folders_q = folders_q.filter(Folder.drive_id == drive.id)
+    drive_ids = search_service.drive_id_list(drive)
+    if drive_ids is not None:
+        scope = drive_ids or [-1]  # explicit empty scope matches nothing
+        files_q = files_q.filter(StoredFile.drive_id.in_(scope))
+        folders_q = folders_q.filter(Folder.drive_id.in_(scope))
 
     if recursive:
         counts = dict(
@@ -736,6 +785,10 @@ def _tool_list_drives(user, drive=None):
     """Every drive the user owns, with file counts and sizes."""
     drives = (Drive.query.filter_by(user_id=user.id)
               .order_by(Drive.name).all())
+    scoped = None
+    if drive is not None:
+        dl = drive if isinstance(drive, (list, tuple)) else [drive]
+        scoped = ", ".join(d.name for d in dl)
     stats = dict(
         (row.drive_id, (row.n, row.bytes))
         for row in db.session.query(
@@ -747,7 +800,7 @@ def _tool_list_drives(user, drive=None):
         .group_by(StoredFile.drive_id).all())
     return {
         "total": len(drives),
-        "scoped_to": drive.name if drive is not None else None,
+        "scoped_to": scoped,
         "drives": [{
             "id": d.id, "name": d.name,
             "read_only": bool(d.is_synced),
@@ -877,22 +930,28 @@ def _summarize_result(name, result):
     return str(result)[:200]
 
 
-def _complete(messages, tools, config):
+def _complete(messages, tools, config, block=False):
     """One model call, streaming when enabled.
 
     Yields ("thinking_token", text) for reasoning deltas and
     ("answer_token", text) for content deltas; returns the assembled message
     dict (same shape as chat_completion's). Falls back once to the
     non-streaming chat_completion if the provider fails before sending any
-    delta (e.g. it rejects streamed tool calls).
+    delta (e.g. it rejects streamed tool calls). With block=True, rate-limit
+    waits sleep for a slot instead of raising (background tasks).
+
+    `block` is only forwarded when True: several tests mock chat_completion
+    with plain functions that don't accept the keyword.
     """
+    block_kw = {"block": True} if block else {}
     if not config.get("streaming", True):
-        return ai_service.chat_completion(messages, tools=tools, config=config)
+        return ai_service.chat_completion(messages, tools=tools, config=config,
+                                          **block_kw)
 
     got_delta = False
     try:
         stream = ai_service.chat_completion_stream(
-            messages, tools=tools, config=config)
+            messages, tools=tools, config=config, **block_kw)
         while True:
             try:
                 kind, payload = next(stream)
@@ -909,21 +968,31 @@ def _complete(messages, tools, config):
             raise  # mid-stream failure: the route reports it as an error event
         current_app.logger.warning(
             "AI streaming failed before any delta; retrying non-streaming.")
-        return ai_service.chat_completion(messages, tools=tools, config=config)
+        return ai_service.chat_completion(messages, tools=tools, config=config,
+                                          **block_kw)
     raise ai_service.AIError("AI stream ended without a completed message.")
 
 
-def run_agent_events(user, history, drive=None):
+def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=None,
+                     block=False):
     """Run the multi-step tool-calling loop, yielding events as they happen.
 
     `history` is a list of {"role": ..., "content": ...} chat messages.
     `drive` optionally scopes search/list tools to a single drive.
+    `max_steps` overrides the per-connection/global step limit (used by
+    long-horizon background tasks, which get a much larger budget).
+    `should_stop` is an optional zero-arg callable checked before every step;
+    when it returns True the loop stops early with a ("stopped", ...) event.
+    `block=True` makes rate-limit waits sleep for a slot instead of raising —
+    background tasks throttle themselves instead of failing.
     Yields, in order:
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
       ("thinking", text)                       — the model's intermediate reasoning
       ("step", {"label":..., "detail":...})    — a tool call being made
       ("tool_result", {"label":..., "summary":...}) — what the tool returned
+      ("notice", text)                         — automatic context compaction
+      ("stopped", text)                        — cancelled via `should_stop`
       ("answer", text)                         — the final answer (always last)
 
     With streaming, a ("thinking", text) event that follows answer_token
@@ -933,12 +1002,16 @@ def run_agent_events(user, history, drive=None):
     answer).
     """
     config = ai_service.config_for(user)
-    max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
+    if max_steps is None:
+        max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
     system = SYSTEM_PROMPT
     if drive is not None:
+        drives = list(drive) if isinstance(drive, (list, tuple)) else [drive]
+        names = ", ".join(f'"{d.name}"' for d in drives)
         system += (f"\n- You are currently working inside the user's "
-                   f'"{drive.name}" drive — only files from that drive are '
-                   f"visible to you.")
+                   f"{names} drive{'s' if len(drives) > 1 else ''} — only "
+                   f"files from {'those drives' if len(drives) > 1 else 'that drive'} "
+                   f"are visible to you.")
     # Merge any leading system messages from the caller (e.g. the attachments
     # notice added by the chat route) into the main system prompt — some chat
     # templates (e.g. Qwen in LM Studio) reject a system message that is not
@@ -954,17 +1027,27 @@ def run_agent_events(user, history, drive=None):
     active_tools, active_handlers, active_labels = _active_tools()
 
     for _ in range(max_steps):
+        if should_stop is not None and should_stop():
+            yield ("stopped", "Task stopped by the user.")
+            return
         _trim_tool_messages(messages)
         # Hard prompt budget: drop the oldest conversation units (whole
         # tool-call exchanges at a time) until the estimated size fits.
         dropped = _fit_prompt(messages, prompt_budget)
         if dropped and not fit_notified:
             fit_notified = True
-            yield ("thinking",
-                   f"Older conversation messages were dropped "
-                   f"({dropped} block(s)) to fit this model's context window. "
-                   "Use Summarize & reset to compact the history instead.")
-        message = yield from _complete(messages, active_tools, config)
+            # Visible in the chat (notice card), not just the reasoning box —
+            # the user must know the AI is now working with less history.
+            yield ("notice",
+                   f"Context compacted automatically: {dropped} older "
+                   "conversation block(s) were dropped to fit this model's "
+                   "context window. Use Summarize & reset to compact the "
+                   "history into a summary instead of losing it.")
+        message = yield from _complete(messages, active_tools, config, block=block)
+        # finish_reason is metadata for the loop, not part of the message —
+        # strip it so it is never sent back to the provider in the history
+        # (strict APIs reject unknown message fields).
+        finish_reason = message.pop("finish_reason", None)
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -976,7 +1059,29 @@ def run_agent_events(user, history, drive=None):
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
-            if reasoning and nudges < _MAX_NUDGES and _INTENT_RE.search(reasoning):
+            # Layered "is it done?" check:
+            # 1. finish_reason=length -> truncated output, never final.
+            # 2. [[END]] marker -> explicit final answer, never nudge.
+            # 3. otherwise fall back to the intent heuristics (tail-only
+            #    regex + citation/pushback guards). Models that never emit
+            #    the marker degrade to this path, not to a worse one.
+            truncated = finish_reason == "length"
+            has_marker = bool(_FINAL_MARKER_RE.search(reasoning))
+            if has_marker:
+                # Strip the marker server-side: the UI and the persisted
+                # transcript never see it. (During token streaming a partial
+                # marker may briefly appear in the tentative bubble; the
+                # finalized answer replaces it.)
+                reasoning = _FINAL_MARKER_RE.sub("", reasoning).rstrip()
+                message["content"] = reasoning
+            if truncated and nudges < _MAX_NUDGES:
+                nudges += 1
+                if reasoning:
+                    yield ("thinking", reasoning)
+                messages.append({"role": "user", "content": _TRUNCATED_NUDGE})
+                continue
+            if (not has_marker and reasoning and nudges < _MAX_NUDGES
+                    and _looks_like_intent(reasoning)):
                 # The model narrated its next step without calling the tool —
                 # surface it as reasoning and push the model to continue.
                 nudges += 1
@@ -1025,7 +1130,7 @@ def run_agent_events(user, history, drive=None):
         "missing, say so honestly and summarize what you found.")})
     answer = ""
     try:
-        final = yield from _complete(messages, None, config)
+        final = yield from _complete(messages, None, config, block=block)
         answer = (final.get("content") or "").strip()
     except ai_service.AIError:
         answer = ""

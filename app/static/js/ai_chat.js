@@ -111,20 +111,40 @@
         });
         renderAutoScroll();
 
+        // Long-horizon mode: send the message as a background task instead of
+        // a live chat answer — the agent runs on the server and reports to the
+        // bottom dock when done.
+        const bgToggle = el.querySelector('.acw-bg-toggle');
+        function setBackgroundMode(on) {
+            backgroundMode = on;
+            bgToggle.classList.toggle('ai-toggle-on', on);
+            bgToggle.title = on
+                ? 'Background mode ON — the next message starts a long-horizon task on the server'
+                : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
+        }
+        bgToggle.addEventListener('click', () => {
+            setBackgroundMode(!backgroundMode);
+            input.focus();
+        });
+
         // --- Per-window state ---
         let conversationId = null;
+        let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
-        let driveScopeDismissedId = null; // currentDrive.id the user unscoped
+        let scopeAllDrives = false; // user removed the drive scope (× on the
+                                    // drive chip) -> search across ALL drives
         let cellRef = null; // notebook cell dropped into the chat
-        let driveRef = null; // drive picked with a $ mention {id, name}
+        let driveRefs = []; // drives picked with $ mentions [{id, name}]
         let driveListCache = null; // /api/drives, fetched on first $ use
+        let backgroundMode = false; // send as a long-horizon background task
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
         let liveBubble = null;         // tentative answer bubble while streaming
         let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
+        let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
         let mentionToken = null; // the full "#query" match, to replace on pick
 
         // --- Initial position (cascade from the bottom-right) ---
@@ -214,96 +234,115 @@
 
         function renderChips() {
             chipsEl.innerHTML = '';
+            // In task mode the captured context is fixed: show it as
+            // non-removable chips (captured when the task started) instead of
+            // whatever file/drive the user is looking at now.
+            const captured = (taskMode && taskMode.context) ? taskMode.context : null;
+
+            function chip(cls, icon, text, title, onRemove) {
+                const c = document.createElement('span');
+                c.className = 'badge ' + cls + ' badge-outline gap-1 text-xs';
+                c.innerHTML = '<i class="fas ' + icon + '"></i>';
+                c.appendChild(document.createTextNode(text));
+                if (title) c.title = title;
+                if (onRemove) {
+                    const rm = document.createElement('button');
+                    rm.type = 'button';
+                    rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+                    rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                    rm.onclick = onRemove;
+                    c.appendChild(rm);
+                }
+                chipsEl.appendChild(c);
+            }
+
+            if (captured) {
+                const fixedTitle = 'Captured when this background task started — it keeps this context until you dismiss the task';
+                const capDriveIds = captured.drive_ids || [];
+                const capFileIds = captured.file_ids || [];
+                if (captured.all_drives) {
+                    chip('badge-accent', 'fa-globe', 'All drives', fixedTitle);
+                } else {
+                    // Skip ones the user re-added themselves (removable below).
+                    (captured.drive_names || []).forEach((name, i) => {
+                        if (driveRefs.some(r => r.id === capDriveIds[i])) return;
+                        chip('badge-accent', 'fa-hard-drive', name, fixedTitle);
+                    });
+                }
+                if (captured.context_file_name
+                        && !attachments.some(a => a.id === captured.context_file_id)) {
+                    chip('badge-secondary', 'fa-eye', captured.context_file_name,
+                         'Open on screen when the task started — ' + fixedTitle);
+                }
+                if (captured.context_cell
+                        && !(cellRef && cellRef.cell_id === captured.context_cell.cell_id)) {
+                    chip('badge-info', 'fa-table-cells',
+                         captured.context_cell.file_name + ' › cell', fixedTitle);
+                }
+                (captured.file_names || []).forEach((name, i) => {
+                    if (attachments.some(a => a.id === capFileIds[i])) return;
+                    chip('badge-primary', 'fa-paperclip', name, fixedTitle);
+                });
+            }
+
             // Removable chip: a notebook cell dropped into the chat.
             if (cellRef) {
-                const cr = document.createElement('span');
-                cr.className = 'badge badge-info badge-outline gap-1 text-xs';
-                cr.innerHTML = '<i class="fas fa-table-cells"></i>';
-                cr.appendChild(document.createTextNode(
-                    cellRef.file_name + ' › cell'));
-                cr.title = (cellRef.preview || 'Notebook cell')
-                    + ' — the AI will focus on this cell';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.onclick = () => { cellRef = null; renderChips(); };
-                cr.appendChild(rm);
-                chipsEl.appendChild(cr);
+                chip('badge-info', 'fa-table-cells', cellRef.file_name + ' › cell',
+                     (cellRef.preview || 'Notebook cell') + ' — the AI will focus on this cell',
+                     () => { cellRef = null; renderChips(); });
             }
-            // Removable chip: a drive picked with a $ mention (wins over
-            // the drive being browsed).
-            if (driveRef) {
-                const drv = document.createElement('span');
-                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
-                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
-                drv.appendChild(document.createTextNode(driveRef.name));
-                drv.title = 'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Remove this drive scope';
-                rm.onclick = () => { driveRef = null; renderChips(); };
-                drv.appendChild(rm);
-                chipsEl.appendChild(drv);
-            } else if (window.currentDrive
-                    && window.currentDrive.id !== driveScopeDismissedId) {
-                const drv = document.createElement('span');
-                drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
-                drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
-                drv.appendChild(document.createTextNode(window.currentDrive.name));
-                drv.title = 'Answers are narrowed to this drive — remove to search all drives';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Search across all drives';
-                rm.onclick = () => {
-                    driveScopeDismissedId = window.currentDrive.id;
-                    renderChips();
-                };
-                drv.appendChild(rm);
-                chipsEl.appendChild(drv);
-            }
-            // Removable chip showing the open file shared as context.
-            if (window.currentFile
-                    && window.currentFile.id !== contextDismissedId
-                    && !attachments.some(a => a.id === window.currentFile.id)) {
-                const ctx = document.createElement('span');
-                ctx.className = 'badge badge-secondary badge-outline gap-1 text-xs';
-                ctx.innerHTML = '<i class="fas fa-eye"></i>';
-                ctx.appendChild(document.createTextNode(window.currentFile.name));
-                ctx.title = 'Open on screen — the AI knows this is your current context';
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.title = 'Stop sharing this file as context';
-                rm.onclick = () => {
-                    contextDismissedId = window.currentFile.id;
-                    renderChips();
-                };
-                ctx.appendChild(rm);
-                chipsEl.appendChild(ctx);
+            // Removable chips: drives picked with $ mentions (win over the
+            // drive being browsed).
+            driveRefs.forEach((r) => {
+                chip('badge-accent', 'fa-hard-drive', r.name,
+                     'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing',
+                     () => { driveRefs = driveRefs.filter(x => x.id !== r.id); renderChips(); });
+            });
+            // Auto chips for the screen context — hidden in task mode, where
+            // the captured context above is the truth.
+            if (!captured) {
+                if (!driveRefs.length && scopeAllDrives) {
+                    // The user removed the drive scope: show the "all drives"
+                    // state explicitly instead of showing nothing.
+                    chip('badge-accent', 'fa-globe', 'All drives',
+                         'Answers search across ALL your drives — remove to narrow back to the drive you are browsing',
+                         () => { scopeAllDrives = false; renderChips(); });
+                } else if (!driveRefs.length && window.currentDrive) {
+                    chip('badge-accent', 'fa-hard-drive', window.currentDrive.name,
+                         'Answers are narrowed to this drive — remove to search all drives',
+                         () => {
+                             scopeAllDrives = true;
+                             renderChips();
+                         });
+                }
+                // Removable chip showing the open file shared as context.
+                if (window.currentFile
+                        && window.currentFile.id !== contextDismissedId
+                        && !attachments.some(a => a.id === window.currentFile.id)) {
+                    chip('badge-secondary', 'fa-eye', window.currentFile.name,
+                         'Open on screen — the AI knows this is your current context',
+                         () => {
+                             contextDismissedId = window.currentFile.id;
+                             renderChips();
+                         });
+                }
             }
             attachments.forEach((a) => {
-                const chip = document.createElement('span');
-                chip.className = 'badge badge-primary badge-outline gap-1 text-xs';
-                chip.innerHTML = '<i class="fas fa-paperclip"></i>';
-                chip.appendChild(document.createTextNode(a.name));
-                const rm = document.createElement('button');
-                rm.type = 'button';
-                rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
-                rm.innerHTML = '<i class="fas fa-xmark"></i>';
-                rm.onclick = () => {
-                    attachments = attachments.filter(x => x.id !== a.id);
-                    renderChips();
-                };
-                chip.appendChild(rm);
-                chipsEl.appendChild(chip);
+                chip('badge-primary', 'fa-paperclip', a.name, null,
+                     () => {
+                         attachments = attachments.filter(x => x.id !== a.id);
+                         renderChips();
+                     });
             });
             const hasChips = chipsEl.childNodes.length > 0;
+            if (hasChips) {
+                // The user should always see at a glance what the AI is
+                // working with.
+                const lbl = document.createElement('span');
+                lbl.className = 'text-[10px] uppercase tracking-wide opacity-50 self-center';
+                lbl.textContent = 'Context:';
+                chipsEl.insertBefore(lbl, chipsEl.firstChild);
+            }
             chipsEl.classList.toggle('hidden', !hasChips);
             chipsEl.classList.toggle('flex', hasChips);
         }
@@ -341,6 +380,12 @@
                 messagesEl.appendChild(det);
                 scrollDown();
                 return det;
+            } else if (role === 'notice') {
+                // Automatic context compaction — a visible card, not hidden
+                // in the reasoning box.
+                div.className = 'ai-notice';
+                div.innerHTML = '<i class="fas fa-triangle-exclamation"></i><span></span>';
+                div.querySelector('span').textContent = content;
             } else if (role === 'step') {
                 div.className = 'text-xs opacity-60 flex items-center gap-2 pl-2';
                 div.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
@@ -494,10 +539,12 @@
         }
 
         function loadConversation(id) {
-            fetch('/ai/conversations/' + id)
-                .then(r => r.json())
+            pendingConvId = id;  // set immediately: rapid repeated opens of
+            fetch('/ai/conversations/' + id)   // the same conversation must
+                .then(r => r.json())           // focus this window, not clone it
                 .then(conv => {
                     conversationId = conv.id;
+                    pendingConvId = null;
                     clearMessages();
                     let seenArchived = false;
                     conv.messages.forEach(m => {
@@ -511,9 +558,39 @@
                             if (el) el.classList.add('ai-archived');
                         }
                     });
+                    // Conversations owned by a background task reopen in
+                    // task mode until the task is dismissed.
+                    if (conv.task) enterTaskMode(conv.task);
+                    else if (taskMode) exitTaskMode();
+                    // Restore the context the user last set up in this
+                    // conversation (task mode shows its captured context
+                    // instead, via renderChips in enterTaskMode).
+                    if (!conv.task) restoreContext(conv.context);
                     toggleList(true);
                     scrollDown(true);  // opening a conversation lands at the end
-                });
+                })
+                .catch(() => { pendingConvId = null; });
+        }
+
+        // Rebuild the chips from a conversation's saved context snapshot
+        // (null/legacy -> a clean slate). The live screen context stays
+        // untouched: the current file/drive chips reappear on their own.
+        function restoreContext(c) {
+            attachments = (c && c.file_ids || []).map((id, i) => ({
+                id, name: (c.file_names || [])[i] || ('file #' + id),
+            }));
+            driveRefs = (c && c.drive_ids || []).map((id, i) => ({
+                id, name: (c.drive_names || [])[i] || ('drive #' + id),
+            }));
+            cellRef = (c && c.context_cell) ? {
+                file_id: c.context_cell.file_id,
+                cell_id: c.context_cell.cell_id,
+                file_name: c.context_cell.file_name,
+            } : null;
+            // "All drives" survives as an explicit scope, shown as its chip.
+            scopeAllDrives = !!(c && c.all_drives);
+            contextDismissedId = null;
+            renderChips();
         }
 
         function toggleList(forceHide) {
@@ -778,7 +855,8 @@
         }
 
         function pickDrive(d) {
-            driveRef = { id: d.id, name: d.name };
+            if (!driveRefs.some(r => r.id === d.id))
+                driveRefs.push({ id: d.id, name: d.name });
             if (mentionToken) {
                 input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
             }
@@ -791,7 +869,9 @@
             loadDrives().then(drives => {
                 if (!mentionToken) return; // user moved on meanwhile
                 const query = q.toLowerCase();
-                const matches = drives.filter(d => d.name.toLowerCase().includes(query));
+                const matches = drives.filter(d =>
+                    d.name.toLowerCase().includes(query)
+                    && !driveRefs.some(r => r.id === d.id));
                 mentionEl.innerHTML = '';
                 if (!matches.length) {
                     mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No drives found</div>';
@@ -841,7 +921,158 @@
                 form.requestSubmit();
             }
         });
-        input.addEventListener('blur', () => setTimeout(hideMentions, 150));
+        input.addEventListener('blur', () => {
+            // Delayed so a click on a mention row registers first — and
+            // cancelled on focus, so toolbar buttons (Drive / Search files)
+            // that refocus the input don't get their dropdown hidden by the
+            // pending blur timer.
+            clearTimeout(mentionHideTimer);
+            mentionHideTimer = setTimeout(hideMentions, 150);
+        });
+        input.addEventListener('focus', () => clearTimeout(mentionHideTimer));
+
+        // --- NDJSON stream helpers (shared by the live chat answer and the
+        // background-task watcher) ---
+        function handleStreamEvent(event, state) {
+            if (event.type === 'thinking_token') {
+                appendThinkingToken(event.content);
+            } else if (event.type === 'answer_token') {
+                appendAnswerToken(event.content);
+            } else if (event.type === 'thinking') {
+                // With migrate, the tentative answer bubble moves into the
+                // reasoning box (it was narration before a tool call).
+                if (event.migrate) migrateLiveBubble(event.content);
+                else addReasoningLine('thinking', event.content);
+            } else if (event.type === 'step') {
+                addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
+            } else if (event.type === 'tool_result') {
+                addReasoningLine('tool_result', event.result.summary);
+            } else if (event.type === 'notice') {
+                addMessage('notice', event.content);
+            } else if (event.type === 'answer') {
+                state.gotResult = true;
+                if (event.conversation_id) conversationId = event.conversation_id;
+                collapseReasoningBox();
+                finalizeLiveBubble(event.answer,
+                                   { created_at: new Date().toISOString(), model: event.model });
+            } else if (event.type === 'error') {
+                state.gotResult = true;
+                collapseReasoningBox();
+                discardLiveBubble(); // keep whatever partial text arrived
+                addMessage('assistant', '**Error:** ' + event.error,
+                           { created_at: new Date().toISOString() });
+            }
+        }
+
+        async function readNdjson(reader, onEvent) {
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep incomplete line
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    let event;
+                    try { event = JSON.parse(line); } catch { continue; }
+                    onEvent(event);
+                }
+            }
+        }
+
+        // --- Background task mode ---
+        // A conversation owned by a background task stays in task mode every
+        // time it is opened (dock icon or history) until the user dismisses
+        // the task — only then does it behave as a normal chat again.
+        let taskAbort = null;
+        let taskMode = null;   // {id, status, title} while in task mode
+        let taskBanner = null;
+
+        function renderTaskBanner() {
+            if (taskBanner) taskBanner.remove();
+            taskBanner = null;
+            if (!taskMode) return;
+            const active = taskMode.status === 'queued' || taskMode.status === 'running';
+            const banner = document.createElement('div');
+            banner.className = 'ai-task-banner' + (active ? '' : ' ai-task-banner-done');
+            banner.innerHTML = active
+                ? '<i class="fas fa-rocket"></i>' +
+                  '<span>Live background task — running on the server</span>'
+                : '<i class="fas fa-flag-checkered"></i>' +
+                  '<span>Background task finished</span>' +
+                  '<button type="button" class="ai-task-banner-dismiss" title="Dismiss — back to a normal chat">' +
+                      '<i class="fas fa-xmark"></i> Dismiss</button>';
+            messagesEl.prepend(banner);
+            taskBanner = banner;
+            if (!active) {
+                banner.querySelector('.ai-task-banner-dismiss')
+                    .addEventListener('click', async () => {
+                        await fetch('/ai/tasks/' + taskMode.id + '/ack',
+                                    { method: 'POST' });
+                        exitTaskMode();
+                    });
+            }
+        }
+
+        function exitTaskMode() {
+            if (taskAbort) { taskAbort.abort(); taskAbort = null; }
+            taskMode = null;
+            setBackgroundMode(false);  // dismissed -> back to a normal chat
+            renderTaskBanner();
+            renderChips();  // back to live screen context
+        }
+
+        function enterTaskMode(task) {
+            // Same task, status refresh only — don't restart the stream.
+            if (taskMode && taskMode.id === task.id
+                && taskMode.status === task.status) return;
+            exitTaskMode();
+            taskMode = task;
+            // A conversation that started as a background task STAYS in
+            // background mode until the user dismisses the task — follow-up
+            // messages launch new background tasks, not live answers.
+            setBackgroundMode(true);
+            renderTaskBanner();
+            renderChips();  // show the context captured when the task started
+            if (task.status === 'queued' || task.status === 'running')
+                watchTask(task);
+        }
+
+        // Dismissed from the dock widget -> leave task mode here too.
+        function onTaskDismissed(e) {
+            if (taskMode && e.detail === taskMode.id) exitTaskMode();
+        }
+        window.addEventListener('ai-task-dismissed', onTaskDismissed);
+
+        // Stream a running task's events live, exactly like a normal chat
+        // answer. The transcript is persisted server-side, so a stream that
+        // just ends is not an error here (gotResult starts true).
+        async function watchTask(task) {
+            taskAbort = new AbortController();
+            const state = { gotResult: true };
+            try {
+                const resp = await fetch('/ai/tasks/' + task.id + '/stream',
+                                         { signal: taskAbort.signal });
+                if (!resp.ok || !resp.body) return;
+                await readNdjson(resp.body.getReader(), (event) => {
+                    if (event.type === 'task_status') {
+                        if (taskMode && event.status !== 'queued'
+                            && event.status !== 'running') {
+                            taskMode.status = event.status;
+                            renderTaskBanner();
+                        }
+                        return;
+                    }
+                    handleStreamEvent(event, state);
+                });
+            } catch (err) { /* aborted or offline — the transcript persists */ }
+            taskAbort = null;
+            // Reconcile with the persisted transcript (covers anything
+            // missed between the history load and the subscription).
+            if (conversationId) loadConversation(conversationId);
+        }
 
         // --- Submit (streams NDJSON agent events) ---
         form.addEventListener('submit', async (e) => {
@@ -853,6 +1084,56 @@
             }
             const question = input.value.trim();
             if (!question && !attachments.length) return;
+
+            // Background mode: launch a long-horizon task on the server and
+            // leave this chat untouched — the dock widget tracks it. The
+            // task captures the CURRENT context (drives, open file, cell,
+            // attachments) and keeps it for its whole lifetime.
+            if (backgroundMode) {
+                const sentAttachments = attachments;
+                const sentCell = cellRef;
+                const sentDrives = driveRefs;
+                attachments = [];
+                cellRef = null;
+                driveRefs = [];
+                input.value = '';
+                growInput();
+                hideMentions();
+                // One-shot by default, but a task conversation stays in
+                // background mode until the user dismisses the task.
+                if (!taskMode) setBackgroundMode(false);
+                renderChips();
+                try {
+                    const resp = await fetch('/ai/tasks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            message: question,
+                            attachments: sentAttachments.map(a => a.id),
+                            context_file_id: (window.currentFile
+                                && window.currentFile.id !== contextDismissedId
+                                && !sentAttachments.some(a => a.id === window.currentFile.id))
+                                ? window.currentFile.id : null,
+                            scope_all_drives: scopeAllDrives,
+                            scope_drive_ids: sentDrives.length
+                                ? sentDrives.map(r => r.id) : null,
+                            context_cell: sentCell
+                                ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
+                                : null,
+                        }),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        window.uiAlert(data.error || 'Could not start the background task.',
+                                       { title: 'Run in background' });
+                        return;
+                    }
+                    window.uiToast('Background task started — follow it in the dock below.', 'info');
+                } catch (err) {
+                    window.uiAlert('Could not reach the server.', { title: 'Run in background' });
+                }
+                return;
+            }
 
             input.value = '';
             growInput();
@@ -869,6 +1150,45 @@
 
             try {
                 abortCtrl = new AbortController();
+                // In task mode the captured context is the base: the current
+                // screen does NOT override it — only references the user
+                // explicitly added (chips above) are merged in.
+                const captured = (taskMode && taskMode.context) ? taskMode.context : null;
+                let bodyAttachments, bodyContextFile, bodyAllDrives, bodyDriveIds, bodyCell;
+                if (captured) {
+                    bodyAttachments = [...new Set([
+                        ...(captured.file_ids || []),
+                        ...sentAttachments.map(a => a.id)])];
+                    bodyContextFile = captured.context_file_id || null;
+                    bodyAllDrives = !!captured.all_drives;
+                    // "All drives" cannot be narrowed by adding a drive.
+                    bodyDriveIds = captured.all_drives ? null : [...new Set([
+                        ...(captured.drive_ids || []),
+                        ...driveRefs.map(r => r.id)])];
+                    if (!bodyDriveIds.length) bodyDriveIds = null;
+                    bodyCell = cellRef
+                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
+                        : (captured.context_cell
+                            ? { file_id: captured.context_cell.file_id,
+                                cell_id: captured.context_cell.cell_id }
+                            : null);
+                } else {
+                    bodyAttachments = sentAttachments.map(a => a.id);
+                    // Implicit context: the file/notebook open on screen.
+                    bodyContextFile = (window.currentFile
+                        && window.currentFile.id !== contextDismissedId
+                        && !sentAttachments.some(a => a.id === window.currentFile.id))
+                        ? window.currentFile.id : null;
+                    // Drive scope removed via the chip -> search all drives.
+                    bodyAllDrives = scopeAllDrives;
+                    // Drives picked with $ mentions (win over the above).
+                    bodyDriveIds = driveRefs.length
+                        ? driveRefs.map(r => r.id) : null;
+                    // Notebook cell dropped into the chat.
+                    bodyCell = cellRef
+                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
+                        : null;
+                }
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -876,21 +1196,11 @@
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
-                        attachments: sentAttachments.map(a => a.id),
-                        // Implicit context: the file/notebook open on screen.
-                        context_file_id: (window.currentFile
-                            && window.currentFile.id !== contextDismissedId
-                            && !sentAttachments.some(a => a.id === window.currentFile.id))
-                            ? window.currentFile.id : null,
-                        // Drive scope removed via the chip -> search all drives.
-                        scope_all_drives: !!(window.currentDrive
-                            && window.currentDrive.id === driveScopeDismissedId),
-                        // Drive picked with a $ mention (wins over the above).
-                        scope_drive_id: driveRef ? driveRef.id : null,
-                        // Notebook cell dropped into the chat.
-                        context_cell: cellRef
-                            ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                            : null,
+                        attachments: bodyAttachments,
+                        context_file_id: bodyContextFile,
+                        scope_all_drives: bodyAllDrives,
+                        scope_drive_ids: bodyDriveIds,
+                        context_cell: bodyCell,
                     }),
                 });
 
@@ -903,55 +1213,15 @@
                 }
 
                 // Stream NDJSON events: steps appear live as the agent works.
-                const reader = resp.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
+                const state = { gotResult: false };
                 let firstEvent = true;
-                let gotResult = false;
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // keep incomplete line
-                    for (const line of lines) {
-                        if (!line.trim()) continue;
-                        let event;
-                        try { event = JSON.parse(line); } catch { continue; }
-                        if (firstEvent) { thinking.remove(); firstEvent = false; }
-                        if (event.type === 'thinking_token') {
-                            appendThinkingToken(event.content);
-                        } else if (event.type === 'answer_token') {
-                            appendAnswerToken(event.content);
-                        } else if (event.type === 'thinking') {
-                            // With migrate, the tentative answer bubble moves
-                            // into the reasoning box (it was narration before
-                            // a tool call, not the final answer).
-                            if (event.migrate) migrateLiveBubble(event.content);
-                            else addReasoningLine('thinking', event.content);
-                        } else if (event.type === 'step') {
-                            addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
-                        } else if (event.type === 'tool_result') {
-                            addReasoningLine('tool_result', event.result.summary);
-                        } else if (event.type === 'answer') {
-                            gotResult = true;
-                            conversationId = event.conversation_id;
-                            collapseReasoningBox();
-                            finalizeLiveBubble(event.answer,
-                                               { created_at: new Date().toISOString(), model: event.model });
-                        } else if (event.type === 'error') {
-                            gotResult = true;
-                            collapseReasoningBox();
-                            discardLiveBubble(); // keep whatever partial text arrived
-                            addMessage('assistant', '**Error:** ' + event.error,
-                                       { created_at: new Date().toISOString() });
-                        }
-                    }
-                }
+                await readNdjson(resp.body.getReader(), (event) => {
+                    if (firstEvent) { thinking.remove(); firstEvent = false; }
+                    handleStreamEvent(event, state);
+                });
                 thinking.remove();
                 collapseReasoningBox();
-                if (!gotResult) {
+                if (!state.gotResult) {
                     discardLiveBubble(); // keep any partial text that arrived
                     addMessage('assistant',
                                '**Error:** the connection was lost before the answer arrived. Please try again.',
@@ -978,9 +1248,12 @@
         // --- Header buttons ---
         function newConversation() {
             conversationId = null;
+            pendingConvId = null;
             attachments = [];
             cellRef = null;
-            driveRef = null;
+            driveRefs = [];
+            scopeAllDrives = false;
+            exitTaskMode();
             renderChips();
             hideMentions();
             clearMessages();
@@ -990,6 +1263,8 @@
 
         function destroy() {
             if (abortCtrl) abortCtrl.abort();  // stop any in-flight answer
+            if (taskAbort) taskAbort.abort();  // stop watching a background task
+            window.removeEventListener('ai-task-dismissed', onTaskDismissed);
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();
@@ -1039,10 +1314,17 @@
         const api = {
             el,
             attachFile,
+            loadConversation,
             focus() { focusWindow(); input.focus(); },
             setMessage(msg) { input.value = msg || ''; },
             newConversation,
             toggleList,
+            // Read-only view of the loaded conversation, so openConversation
+            // can focus an existing window instead of spawning a clone.
+            get conversationId() { return conversationId || pendingConvId; },
+            // A window with nothing loaded yet — Ask AI focuses it instead
+            // of piling up empty windows.
+            get isFresh() { return !conversationId && !pendingConvId && !taskMode; },
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
@@ -1055,9 +1337,12 @@
     // Global API (dock button, Alt+A, "Merge with AI", drive actions)
     // ------------------------------------------------------------------
     window.aiChat = {
-        // Open a chat window if none exists, otherwise focus the last one.
+        // Ask AI always offers a fresh chat: if the last window is still
+        // empty, focus it; otherwise (e.g. it shows a background task) open
+        // a NEW window with no context so the user can start a conversation.
         toggle() {
-            if (windows.length) windows[windows.length - 1].focus();
+            const last = windows[windows.length - 1];
+            if (last && last.isFresh) last.focus();
             else createChatWindow();
         },
         // Always spawn a new parallel chat session.
@@ -1070,6 +1355,17 @@
             const w = createChatWindow();
             (files || []).forEach(f => w.attachFile(f.id, f.name));
             w.setMessage(message || '');
+        },
+        // Open a window on an existing conversation (e.g. a background
+        // task's transcript from the dock widget). Task-owned conversations
+        // reopen in background mode automatically (loadConversation). If a
+        // window already shows this conversation, just focus it — repeated
+        // clicks must not spawn clones.
+        openConversation(convId) {
+            const existing = windows.find(w => w.conversationId === convId);
+            if (existing) { existing.focus(); return; }
+            const w = createChatWindow();
+            w.loadConversation(convId);
         },
     };
 })();

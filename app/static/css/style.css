@@ -2294,6 +2294,122 @@ body.show-shortcuts #shortcut-help-panel {
     opacity: 1;
 }
 
+/* --- AI background tasks in the bottom dock --- */
+.dock-separator {
+    width: 1px;
+    align-self: stretch;
+    margin: 8px 0;
+    background: oklch(var(--bc) / .15);
+}
+
+.dock-tile-task { background: linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%); }
+
+/* Running spinner / finished notification badge — top-right of the tile. */
+.dock-task-spin,
+.dock-task-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 20px;
+    height: 20px;
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: white;
+    border: 2px solid oklch(var(--b1));
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .3);
+    pointer-events: none;
+}
+
+.dock-task-spin { background: oklch(var(--p)); }
+.dock-task-badge-done { background: #22c55e; }
+.dock-task-badge-stopped { background: #9ca3af; }
+.dock-task-badge-error { background: #ef4444; }
+
+/* Stop (running) / dismiss (finished) — top-left, visible on hover. */
+.dock-task-close {
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 9999px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    cursor: pointer;
+    background: oklch(var(--b1));
+    color: oklch(var(--bc));
+    border: 1px solid oklch(var(--bc) / .25);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
+    z-index: 2;
+}
+
+.dock-task:hover .dock-task-close { display: flex; }
+
+/* "Live background task" banner pinned to the top of the chat messages. */
+.ai-task-banner {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: -0.5rem auto 0.25rem;
+    padding: 0.3rem 0.9rem;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: oklch(var(--p));
+    background: oklch(var(--p) / .1);
+    border: 1px solid oklch(var(--p) / .25);
+    backdrop-filter: blur(8px);
+    width: fit-content;
+}
+
+.ai-task-banner i {
+    animation: ai-task-pulse 1.6s ease-in-out infinite;
+}
+
+/* Finished state: calmer green tint, with an inline dismiss button. */
+.ai-task-banner-done {
+    color: #22c55e;
+    background: rgba(34, 197, 94, .1);
+    border-color: rgba(34, 197, 94, .3);
+}
+
+.ai-task-banner-done > i {
+    animation: none;
+}
+
+.ai-task-banner-dismiss {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 10px;
+    font-weight: 700;
+    color: inherit;
+    background: rgba(34, 197, 94, .15);
+    border: 1px solid rgba(34, 197, 94, .35);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.ai-task-banner-dismiss:hover {
+    background: rgba(34, 197, 94, .28);
+}
+
+@keyframes ai-task-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 /* --- Seamless page transitions (spa.js) --- */
 @keyframes page-enter {
     from { opacity: 0; transform: translateY(12px); }
@@ -3245,6 +3361,31 @@ body.search-hero-mode #search-dock-container {
     content: '';
     flex: 1;
     border-top: 1px dashed currentColor;
+}
+
+/* Automatic context compaction notice: a visible amber card in the chat
+   flow so the user knows the AI is now working with less history. */
+.ai-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    padding: 0.55rem 0.8rem;
+    margin: 0.25rem 0;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(217, 119, 6, 0.35);
+    background: rgba(217, 119, 6, 0.08);
+    color: #b45309;
+}
+.ai-notice i {
+    margin-top: 0.1rem;
+    flex-shrink: 0;
+}
+html[data-theme="dark"] .ai-notice {
+    border-color: rgba(251, 191, 36, 0.3);
+    background: rgba(251, 191, 36, 0.08);
+    color: #fbbf24;
 }
 
 /* Profile: hide the native disclosure triangle on the collapsible

@@ -276,6 +276,9 @@ class ChatConversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     title = db.Column(db.String(255), nullable=False, default="New conversation")
+    # JSON snapshot of the context used in the latest message (drives,
+    # attachments, open file, cell) — reopening the conversation restores it.
+    context = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 
@@ -293,7 +296,7 @@ class ChatMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     conversation_id = db.Column(db.Integer, db.ForeignKey("chat_conversations.id"),
                                 nullable=False, index=True)
-    role = db.Column(db.String(20), nullable=False)  # user / assistant / thinking / step
+    role = db.Column(db.String(20), nullable=False)  # user / assistant / thinking / step / notice
     content = db.Column(db.Text, nullable=False, default="")
     # Model that produced the message (assistant messages only; NULL otherwise).
     model = db.Column(db.String(120), nullable=True)
@@ -304,6 +307,44 @@ class ChatMessage(db.Model):
 
     def __repr__(self):
         return f"<ChatMessage {self.role} conv={self.conversation_id}>"
+
+
+class AITask(db.Model):
+    """A long-horizon background AI task: an agent run decoupled from the HTTP
+    request, with every event persisted as chat messages so the user can open
+    the transcript at any time. Status lifecycle:
+    queued -> running -> done | error | stopped | interrupted."""
+
+    __tablename__ = "ai_tasks"
+
+    STATUSES = ("queued", "running", "done", "error", "stopped", "interrupted")
+    FINAL_STATUSES = ("done", "error", "stopped", "interrupted")
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("chat_conversations.id"),
+                                nullable=False, unique=True)
+    title = db.Column(db.String(255), nullable=False, default="Background task")
+    status = db.Column(db.String(20), nullable=False, default="queued", index=True)
+    error = db.Column(db.Text, nullable=True)
+    # True once the user dismissed the finished task from the bottom dock.
+    notified = db.Column(db.Boolean, nullable=False, default=False)
+    # JSON snapshot of the context the task was launched with (drives, files,
+    # open file, notebook cell). Reopening the task's chat keeps this context
+    # instead of adopting whatever the user happens to be viewing now.
+    context = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    started_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+    conversation = db.relationship("ChatConversation", backref=db.backref("task", uselist=False))
+
+    @property
+    def is_active(self):
+        return self.status in ("queued", "running")
+
+    def __repr__(self):
+        return f"<AITask {self.id} {self.status} '{self.title[:30]}'>"
 
 
 class ErrorLog(db.Model):

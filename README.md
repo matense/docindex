@@ -53,7 +53,18 @@ questions about your files by searching and reading them step by step.
   AI connection's per-minute limit). Never runs automatically.
 - **AI assistant** — agentic chat that searches, reads and cross-references
   your files in multiple steps, then answers with cited sources. Multiple AI
-  connections (models) can be configured and switched per conversation.
+  connections (models) can be configured and switched per conversation. Scope
+  answers to specific drives with `$` mentions or to all drives at once —
+  the context chips always show what the assistant is working with, and each
+  conversation remembers the context you last used.
+- **Background AI tasks (long horizon)** — flip the Background toggle and
+  your question runs as a server-side task: the agent keeps working (with a
+  much larger step budget, throttling itself to your connection's rate
+  limit) while you do other things. One dock icon per task shows live
+  progress and a badge when it finishes; tasks survive page refreshes and
+  server restarts, keep the exact context they were launched with, and can
+  be stopped or dismissed from the dock. A task conversation stays in
+  background mode until you dismiss it.
 - **Notebooks (module)** — Jupyter-style notebooks stored as regular files on
   your drives: markdown, rich text (images + file references), code, todo,
   table, heading and separator cells. Autosave with version history and
@@ -173,6 +184,8 @@ AI can be configured in two places:
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 | `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 | `AI_STREAMING`    | Token-by-token chat streaming (`false` if the provider breaks with streamed tool calls) | `true` |
+| `AI_TASK_MAX_STEPS` | Step budget for long-horizon background tasks | `64` |
+| `AI_TASK_WIDGET_POLL_MS` | Poll interval of the background-task dock widget | `3000` |
 | `SEARCH_FTS`      | FTS5 full-text search with BM25 ranking (automatic ILIKE fallback) | `true` |
 | `INDEX_WORKERS`   | Background threads draining the persistent index queue | `2` |
 

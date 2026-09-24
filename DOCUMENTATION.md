@@ -106,6 +106,8 @@ app refuses to start without it.
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
+| `AI_TASK_MAX_STEPS`   | `64`                                           | Agent step budget for long-horizon background tasks |
+| `AI_TASK_WIDGET_POLL_MS` | `3000`                                      | Poll interval (ms) of the background-task dock widget |
 | `SEARCH_FTS`          | `true`                                         | FTS5 full-text search with BM25 ranking (falls back to ILIKE) |
 | `INDEX_WORKERS`       | `2`                                            | Background drainers for the persistent index queue |
 | `ERROR_LOG_KEEP`      | `2000`                                         | Newest rows kept in the error log (`/settings/logs`) |
@@ -115,7 +117,8 @@ Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
 `MAX_FILE_SIZE` 16 MB per file, `ALLOWED_EXTENSIONS` (documents, code,
 images incl. svg), `IMAGE_EXTENSIONS` (raster images, no svg),
 `EDITABLE_EXTENSIONS` (text/code files editable in place), `INDEX_ASYNC`,
-`SYNC_ASYNC` and `HASHTAG_ASYNC` (True in prod, False in tests).
+`SYNC_ASYNC`, `HASHTAG_ASYNC` and `AI_TASKS_ASYNC` (True in prod, False in
+tests).
 
 `TestConfig` uses in-memory SQLite, disables CSRF and AI, sets
 `INDEX_ASYNC=False` and redirects uploads to `instance/test_uploads`.
@@ -266,6 +269,7 @@ Full-text search index for a stored file (one row per file).
 | `id` | Integer PK | |
 | `user_id` | FK -> users.id, indexed | |
 | `title` | String(255), default "New conversation" | first question, truncated to 80 chars |
+| `context` | Text, **nullable** | JSON snapshot of the context used in the latest message (drives, attachments, open file, notebook cell, all-drives flag) — reopening the conversation restores these chips |
 | `created_at`, `updated_at` | DateTime | |
 
 Relationship: `messages` (ordered by `created_at`, cascade delete-orphan).
@@ -276,13 +280,32 @@ Relationship: `messages` (ordered by `created_at`, cascade delete-orphan).
 |--------|------|-------|
 | `id` | Integer PK | |
 | `conversation_id` | FK -> chat_conversations.id, indexed | |
-| `role` | String(20) | `user` / `assistant` / `step` / `thinking` |
+| `role` | String(20) | `user` / `assistant` / `step` / `thinking` / `notice` |
 | `content` | Text, default "" | |
 | `model` | String(120), **nullable** | model that produced the message (assistant rows only); shown in the chat UI next to the timestamp |
 | `created_at` | DateTime | shown as the message timestamp in the chat UI |
 
 Only `user` and `assistant` messages are sent back to the model as history;
-`thinking` and `step` rows exist purely for the conversation-history UI.
+`thinking`, `step` and `notice` rows exist purely for the
+conversation-history UI (`notice` = automatic context compaction card).
+
+### `ai_tasks` (`AITask`)
+
+A long-horizon background AI task: an agent run decoupled from the HTTP
+request (see "Background AI tasks"). Status lifecycle: `queued` -> `running`
+-> `done` | `error` | `stopped` | `interrupted`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | Integer PK | |
+| `user_id` | FK -> users.id, indexed | |
+| `conversation_id` | FK -> chat_conversations.id, unique | every task owns its transcript conversation (one-to-one) |
+| `title` | String(255), default "Background task" | first 80 chars of the request |
+| `status` | String(20), indexed | see lifecycle above |
+| `error` | Text, **nullable** | failure detail for `error`/`interrupted` |
+| `notified` | Boolean, default False | set when the user dismisses the finished task from the dock — the "end" of the long horizon |
+| `context` | Text, **nullable** | JSON snapshot of the launch context (drives, files, open file, cell); the worker runs with it and the chat keeps showing it |
+| `created_at`, `started_at`, `finished_at` | DateTime | |
 
 ### `ai_connections` (`AIConnection`)
 
@@ -366,7 +389,12 @@ by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
   400 for synced drives/files (`_guard_writable`).
 - `search.py`: `GET /search` (results page; `?mode=ai` renders the full-page
   AI chat), `GET /api/search` (instant-search JSON, limit 8).
-- `ai.py`: see "AI chat streaming" below.
+- `ai.py`: see "AI chat streaming" below, plus the long-horizon background
+  task endpoints: `POST /ai/tasks` (launch), `GET /ai/tasks/active` (dock
+  widget poll), `GET /ai/tasks/<id>` (detail), `POST /ai/tasks/<id>/stop`
+  (cooperative cancel), `POST /ai/tasks/<id>/ack` (dismiss a finished task)
+  and `GET /ai/tasks/<id>/stream` (live NDJSON event stream, same shape as
+  `/ai/chat`).
 - `settings.py` (`/settings/ai`): list/add/edit/activate/delete connections,
   `POST /settings/ai/test` and `/settings/ai/<id>/test` (ping the provider's
   `/models`), `POST /settings/ai/models` (fetch model list for dropdowns).
@@ -532,9 +560,11 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    user query found in messages").
 4. The response is `application/x-ndjson` streamed with
    `stream_with_context`. Each agent event becomes one JSON line:
-   `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"answer"|"error", ...}`.
+   `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"notice"|"answer"|"error", ...}`.
    Errors (including `AIError` and unexpected exceptions) are emitted as an
-   `error` event rather than killing the stream silently.
+   `error` event rather than killing the stream silently. A `notice` event
+   means the agent compacted the context automatically (prompt budget) and
+   renders as a visible card in the chat, not just a reasoning line.
 
    **Token streaming.** With `AI_STREAMING=true` (default), the agent calls
    `ai_service.chat_completion_stream()` — an SSE client (`stream=True` on
@@ -570,8 +600,14 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
 `GET /ai/conversations` lists conversations (each with `updated_at` and the
 `model` that wrote the latest assistant reply, for the history list);
 `GET /ai/conversations/<id>` returns the full message list with `created_at`
-and `model` per message (including thinking/step rows for the history view);
-`POST /ai/conversations/<id>/delete` removes one.
+and `model` per message (including thinking/step/notice rows for the history
+view), the latest `context` snapshot (restored into the client's chips), and
+the owning background `task` when the conversation belongs to one the user
+has not dismissed yet (the client reopens it in background mode);
+`POST /ai/conversations/<id>/delete` removes one. Every `/ai/chat` message
+also refreshes the conversation's stored `context` snapshot (drive scope —
+single drive, multiple `$`-mentioned drives or all drives — attachments,
+open file, notebook cell).
 `POST /ai/conversations/<id>/summarize` ("Summarize & reset" button in the
 chat header): the model condenses the active user/assistant transcript
 (capped at ~120k chars) into a compact summary, then every existing message
@@ -582,6 +618,35 @@ compacted" divider — but are excluded from the history sent to the model:
 a reset with memory, where the summary is the memory. Re-summarizing only
 considers the active (non-archived) tail and needs ≥ 4 user/assistant
 messages.
+
+### Background AI tasks (long horizon)
+
+`ai_task_service` runs an agent run decoupled from the HTTP request: the
+user flips the Background toggle in a chat client, `POST /ai/tasks` creates
+a dedicated conversation plus an `AITask` row, and a daemon worker thread
+(`AI_TASKS_ASYNC=False` runs it inline, used by tests) executes
+`agent_service.run_agent_events` with `max_steps=AI_TASK_MAX_STEPS`
+(default 64) and `block=True` — when the connection's rate limit is hit the
+worker sleeps for a slot instead of failing, so long runs throttle
+themselves. Every event is persisted as a `ChatMessage` in the task's
+conversation as it happens (live progress), and broadcast to subscribers of
+`GET /ai/tasks/<id>/stream`, which emits the same NDJSON shape as `/ai/chat`
+plus a final `task_status` event — a chat window watching a task renders it
+exactly like a normal streamed answer.
+
+The task captures the launch context (drive scope, attachments, open file,
+notebook cell) in its `context` column: the worker runs with it (a system
+note plus the drive scope) and the chat window keeps showing it instead of
+the live screen context until the task is dismissed. `should_stop` is wired
+to a per-task `threading.Event` set by `POST /ai/tasks/<id>/stop`
+(cooperative cancel between steps). `POST /ai/tasks/<id>/ack` sets
+`notified=True` — the "end" of the long horizon: the dock icon disappears
+and the conversation becomes a normal chat again. `GET /ai/tasks/active`
+returns running/queued tasks plus finished ones not yet dismissed, so the
+dock widget (`ai_tasks_widget.js`, one icon per task right of the Ask AI
+button, polling every `AI_TASK_WIDGET_POLL_MS`) survives page refreshes.
+`recover_interrupted(app)` marks tasks left queued/running by a dead process
+as `interrupted` at startup.
 
 ## Services
 
@@ -645,13 +710,23 @@ messages.
   `chat_completion_stream()` is the SSE streaming variant used by the agent
   (see "AI chat streaming"), `list_models()` /
   `test_connection()` hit `/models`, `caption_image()` sends a base64
-  data-URL image to the vision model.
+  data-URL image to the vision model. Both completion variants propagate the
+  provider's `finish_reason` on the returned message — the agent loop uses
+  it to detect truncated (`length`) answers.
+- **ai_task_service** — long-horizon background tasks (see "Background AI
+  tasks" under Request flows).
 - **agent_service** — the agentic loop (next section).
 
 ## The AI agent
 
-`agent_service.run_agent_events(user, history, drive=None)` is a generator
-that runs the multi-step tool-calling loop and yields events as they happen:
+`agent_service.run_agent_events(user, history, drive=None, *, max_steps=None,
+should_stop=None, block=False)` is a generator that runs the multi-step
+tool-calling loop and yields events as they happen. `drive` may be a single
+`Drive` or a list of them (multi-drive scope from `$` mentions);
+`max_steps` overrides the connection/global budget (background tasks pass
+`AI_TASK_MAX_STEPS`); `should_stop` is checked before every step (cooperative
+cancel); `block=True` makes rate-limit waits sleep for a slot instead of
+raising (background tasks throttle themselves).
 
 - `("thinking_token", text)` / `("answer_token", text)` — live token deltas
   (only when `AI_STREAMING` is on; see "AI chat streaming"). Model calls go
@@ -664,6 +739,9 @@ that runs the multi-step tool-calling loop and yields events as they happen:
   "Searched files").
 - `("tool_result", {"label", "summary"})` — a one-line summary of what the
   tool returned (`_summarize_result`).
+- `("notice", text)` — automatic context compaction: the prompt budget
+  dropped older conversation blocks; rendered as a visible card in the chat.
+- `("stopped", text)` — cancelled via `should_stop`.
 - `("answer", text)` — always the last event.
 
 If the step budget is exhausted, the loop does not end with a dead end: it
@@ -733,29 +811,50 @@ candidates, `grep_file` to pinpoint the relevant lines inside a file, and
 `read_file` only around that section. It also enforces a single tool call
 per step, continued reading while `has_more=true`, source citations as
 `[filename](file://ID)`, answering in the user's language, and never
-inventing content. When scoped to a drive, a line is appended telling the
-model only that drive's files are visible.
+inventing content. It also asks the model to close its final answer with an
+`[[END]]` marker (see "Stopping correctly" below). When scoped to one or
+more drives, a line is appended telling the model only those drives' files
+are visible.
 
-### The nudge mechanism
+### Stopping correctly: marker, finish_reason and nudges
 
-Smaller/local models sometimes narrate the next step ("Let me read the
-file...", "Vou ler o ficheiro...") without emitting the tool call, which
-looks like a final answer but is really intermediate reasoning. When a
-response has no tool calls, the loop checks `_INTENT_RE` (a regex over
-Portuguese/English/Spanish intent phrases such as "let me", "I will", "vou",
-"preciso", "voy a", "next") against the reasoning text. On a match — up to
-`_MAX_NUDGES = 4` times — it yields the text as `thinking`, appends the
-`_NUDGE` user message ("You described what you plan to do next but did not
-call any tool..."), and continues the loop instead of ending mid-task. Text
-without intent phrases is accepted as the final answer.
+The hard part of the loop is deciding whether a response without tool calls
+is the final answer or just the model narrating its next step ("Let me read
+the file..."). Three layers, in order:
+
+1. **`finish_reason == "length"`** — the provider says the output was cut
+   off, so it can never be final: the partial text is yielded as `thinking`
+   and a `_TRUNCATED_NUDGE` user message asks the model to continue.
+   (`ai_service` propagates `finish_reason` from chat completions, streaming
+   or not; it is stripped before the message is appended to the history —
+   strict APIs reject unknown message fields.)
+2. **The `[[END]]` marker** — the system prompt asks the model to end its
+   final answer with `[[END]]`. A response carrying it is accepted as final
+   unconditionally (the marker is stripped server-side, so the UI and the
+   transcript never see it); a response without tool calls that does NOT
+   carry it is a candidate for a nudge. This is the primary signal: the
+   model can reason at length and cite files without being pushed into an
+   extra, confused round-trip.
+3. **Intent heuristics (fallback)** — models that never learn the marker
+   degrade to the old behaviour: `_looks_like_intent()` checks the *tail*
+   of the text for Portuguese/English/Spanish intent phrases ("let me",
+   "I will", "vou", "preciso", "voy a", "next"), but suppresses the nudge
+   when the text already looks like an answer (contains `[file](file://ID)`
+   citations, or pushes back like "I already have the answer").
+
+Layers 1 and 3 are capped at `_MAX_NUDGES = 4` per run; on a nudge the text
+is yielded as `thinking` and the loop continues instead of ending mid-task.
+Anything else is yielded as the final `answer`.
 
 ### Max steps resolution
 
 The step budget per run is resolved in this order:
 
-1. `AIConnection.max_steps` of the user's active connection (if set), via
+1. An explicit `max_steps` argument to `run_agent_events` — long-horizon
+   background tasks pass `AI_TASK_MAX_STEPS` (default 64).
+2. `AIConnection.max_steps` of the user's active connection (if set), via
    `ai_service.config_for(user)`.
-2. Global `AI_MAX_STEPS` env var (default 16).
+3. Global `AI_MAX_STEPS` env var (default 16).
 
 The same fallback applies inside `config_for` itself (`conn.max_steps or
 AI_MAX_STEPS`).
@@ -839,8 +938,20 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   mention autocomplete backed by `/api/search`, drag & drop accepts drive
   files (attach directly) and OS files (upload via `POST /upload` with
   `Accept: application/json`, then attach). Chips show pending attachments.
+- Drive scope: `$query` opens a drive mention autocomplete (multiple drives
+  can be referenced); removing the current-drive chip switches to an
+  explicit "All drives" chip, and removing that narrows back. The context
+  used in the latest message is persisted on the conversation and restored
+  into the chips when it is reopened.
+- Background mode: a rocket toggle sends the next message to `POST /ai/tasks`
+  instead of `/ai/chat`. A conversation owned by a task reopens in "task
+  mode" (banner + captured context + background toggle forced on) until the
+  task is dismissed; while the task runs, the window subscribes to
+  `/ai/tasks/<id>/stream` and renders it live like a normal answer.
+  `ai_tasks_widget.js` adds one dock icon per task (running spinner /
+  finished badge / stop / dismiss), polling `/ai/tasks/active`.
 - Conversation history: list, load and delete via the `/ai/conversations`
-  endpoints.
+  endpoints, grouped by period (today, yesterday, this week, older).
 
 `base.html` wraps `window.fetch` to attach the `X-CSRFToken` header (from
 `<meta name="csrf-token">`) to same-origin mutating requests, so the JSON API
@@ -887,7 +998,10 @@ ai_connections -> `f7a3b5c91e02` model on chat messages ->
 -> `14b7197e2390` synced drives (`source_path`) -> `1c175e28cab5` sync
 stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 -> `7a1c9e4b2d55` file_index hashtags -> ... -> `a9d3e7b15c02` user theme
-(light/dark) -> `b2e4f6a81c53` module_states.
+(light/dark) -> `b2e4f6a81c53` module_states -> `e9b5d2a47c31` ai_tasks
+(long-horizon background tasks) -> `f1c6a9e25d83` `AITask.context` (launch
+context snapshot) -> `a2d8f4c17e90` `ChatConversation.context` (latest chat
+context snapshot).
 
 Module migrations are **independent alembic roots** living in
 `modules/<name>/migrations/versions/` (`down_revision = None`,
@@ -994,7 +1108,9 @@ pytest suite in `tests/`, 326 tests across 20+ modules:
   pagination), file stats, AI settings (connection CRUD, env
   fallback, isolation), and the agent (multi-step runs, `read_file`
   chunking, `grep_file`/`count_files` tools, thinking/tool_result events,
-  token streaming, attachments, reasoning field, the nudge mechanism), and
+  token streaming, attachments, reasoning field, the stop-detection layers
+  — `[[END]]` marker, truncation nudge, intent fallback, compaction
+  notices), background tasks (launch, stop, dismiss, context capture), and
   the module system (discovery/validation, route guard, namespaced tool
   registry, file guards, admin toggle page), and the notebooks module
   (document service, AI lock/hide flags, assets upload, history/diff,

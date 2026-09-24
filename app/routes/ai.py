@@ -1,12 +1,13 @@
 import json
 import traceback
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import (Blueprint, Response, current_app, jsonify, request,
+                   stream_with_context)
 from flask_login import current_user, login_required
 
 from ..extensions import db
-from ..models import AIConnection, ChatConversation, ChatMessage, Drive, StoredFile, User
-from ..services import agent_service, ai_service, drive_service, log_service
+from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile, User
+from ..services import agent_service, ai_service, ai_task_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -18,39 +19,40 @@ def _get_conversation(conv_id):
     return None
 
 
-def _resolve_context_cell(ref):
-    """Build a system note for a notebook cell dragged into the chat
-    ({"file_id", "cell_id"}), or None when invalid/not applicable."""
+def _resolve_context_cell(ref, user_id):
+    """Resolve a notebook cell dragged into the chat ({"file_id", "cell_id"})
+    into (system_note, snapshot_info), or (None, None) when invalid or not
+    applicable. snapshot_info feeds the AITask context snapshot."""
     if not isinstance(ref, dict):
-        return None
+        return None, None
     try:
         file_id = int(ref.get("file_id") or 0)
     except (TypeError, ValueError):
-        return None
+        return None, None
     cell_id = str(ref.get("cell_id") or "")
     if not file_id or not cell_id:
-        return None
+        return None, None
     stored = (StoredFile.query
-              .filter_by(id=file_id, user_id=current_user.id,
+              .filter_by(id=file_id, user_id=user_id,
                          extension="pdocnb")
               .filter(StoredFile.deleted_at.is_(None))
               .first())
     if not stored:
-        return None
+        return None, None
     from ..services import file_service, module_service
     if not module_service.is_enabled("notebooks"):
-        return None
+        return None, None
     try:
         doc = json.loads(file_service.read_text_content(stored,
                                                         max_chars=500_000))
     except (OSError, ValueError):
-        return None
+        return None, None
     cell = next((c for c in doc.get("cells", [])
                  if c.get("id") == cell_id), None)
     if cell is None:
-        return None
+        return None, None
     if doc.get("ai_hidden"):
-        return None  # hidden notebooks stay invisible to the AI
+        return None, None  # hidden notebooks stay invisible to the AI
     preview = (cell.get("content") or "")[:200]
     note = (
         f"The user dragged a cell from the notebook [id {stored.id}] "
@@ -65,7 +67,9 @@ def _resolve_context_cell(ref):
                  "If they ask for changes, tell them the notebook is locked "
                  "and ask them to unlock it with the lock button in the "
                  "notebook toolbar, then repeat the request.")
-    return note
+    info = {"file_id": stored.id, "cell_id": cell_id,
+            "file_name": stored.name}
+    return note, info
 
 
 def _notebook_access_note(stored):
@@ -96,6 +100,114 @@ def _notebook_access_note(stored):
     return ""
 
 
+def _resolve_context(user, data):
+    """Resolve a chat/task request's context payload into a dict with:
+
+    - ``notes``: system notes to prepend to the history, in final order;
+    - ``attachments``: the attached StoredFile rows;
+    - ``drives``: the scoped Drive rows, or None when all drives are in scope;
+    - ``context``: a JSON-serializable snapshot of every reference, stored on
+      AITask so a background task remembers what it was launched with.
+
+    Drive scope precedence: explicit $ mentions (``scope_drive_ids`` /
+    legacy ``scope_drive_id``) win; then ``scope_all_drives``; otherwise the
+    drive the user is currently browsing.
+    """
+    notes = []
+    snapshot = {"drive_ids": None, "drive_names": None, "all_drives": False,
+                "file_ids": [], "file_names": [],
+                "context_file_id": None, "context_file_name": None,
+                "context_cell": None}
+
+    # Drive scope — resolved first so its note ends up first in the history.
+    scope_all_drives = bool(data.get("scope_all_drives"))
+    raw_ids = data.get("scope_drive_ids")
+    if isinstance(raw_ids, list):
+        drive_ids = []
+        for i in raw_ids:
+            try:
+                drive_ids.append(int(i))
+            except (TypeError, ValueError):
+                pass
+    else:
+        try:
+            one = int(data.get("scope_drive_id") or 0)
+        except (TypeError, ValueError):
+            one = 0
+        drive_ids = [one] if one else []
+    drives = None
+    if drive_ids:
+        drives = (Drive.query
+                  .filter(Drive.id.in_(drive_ids), Drive.user_id == user.id)
+                  .all())
+    elif not scope_all_drives:
+        drives = [drive_service.get_current_drive(user)]
+    if drives is None:
+        snapshot["all_drives"] = True
+        notes.append(
+            "The user removed the drive scope: you can see files from ALL "
+            "their drives, not just the one they are browsing. Use "
+            "list_drives to discover what drives exist.")
+    else:
+        snapshot["drive_ids"] = [d.id for d in drives]
+        snapshot["drive_names"] = [d.name for d in drives]
+
+    # Cell context: a notebook cell the user dragged into the chat.
+    cell_note, cell_info = _resolve_context_cell(data.get("context_cell"),
+                                                 user.id)
+    if cell_note:
+        notes.append(cell_note)
+        snapshot["context_cell"] = cell_info
+
+    # Implicit context: the file/notebook the user currently has open, so
+    # "improve this notebook" works without an explicit @here mention.
+    attachment_ids = data.get("attachments") or []
+    context_file = None
+    try:
+        context_file_id = int(data.get("context_file_id") or 0)
+    except (TypeError, ValueError):
+        context_file_id = 0
+    if context_file_id and context_file_id not in [
+            int(i) for i in attachment_ids if str(i).isdigit()]:
+        context_file = (StoredFile.query
+                        .filter_by(id=context_file_id, user_id=user.id)
+                        .filter(StoredFile.deleted_at.is_(None))
+                        .first())
+    if context_file:
+        kind = "notebook" if context_file.extension == "pdocnb" else "file"
+        notes.append(
+            f"The user currently has the {kind} "
+            f"[id {context_file.id}] {context_file.name} open on screen. "
+            "When they say things like \"this notebook\", \"this file\" or "
+            "\"here\" without naming a target, they mean that one — you "
+            "can read or edit it directly by id, no need to search first."
+            + _notebook_access_note(context_file))
+        snapshot["context_file_id"] = context_file.id
+        snapshot["context_file_name"] = context_file.name
+
+    # Explicitly attached files (@ mentions).
+    attached = []
+    if attachment_ids:
+        attached = (StoredFile.query
+                    .filter(StoredFile.id.in_(attachment_ids),
+                            StoredFile.user_id == user.id,
+                            StoredFile.deleted_at.is_(None))
+                    .all())
+    if attached:
+        listing = ", ".join(f"[id {f.id}] {f.name}" for f in attached)
+        notes.append(
+            f"The user attached these files to this question: {listing}. "
+            "You can read_file them directly by id — no need to search first.")
+        snapshot["file_ids"] = [f.id for f in attached]
+        snapshot["file_names"] = [f.name for f in attached]
+
+    # The worker thread cannot rebuild the notes (no request context), so
+    # the snapshot carries their final text.
+    snapshot["notes"] = list(notes)
+    return {"notes": notes, "attachments": attached, "drives": drives,
+            "context": snapshot}
+
+
 @bp.route("/conversations")
 @login_required
 def conversations():
@@ -118,9 +230,20 @@ def conversation(conv_id):
     conv = _get_conversation(conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
+    # A conversation owned by a background task reopens in background mode
+    # until the user dismisses the task (ack) — see ai_chat.js.
+    task = AITask.query.filter_by(conversation_id=conv.id).first()
     return jsonify({
         "id": conv.id,
         "title": conv.title,
+        # Latest context the user set up in this conversation (drives,
+        # attachments, cell) — restored into the chips on open.
+        "context": json.loads(conv.context) if conv.context else None,
+        "task": ({"id": task.id, "status": task.status, "title": task.title,
+                  "notified": bool(task.notified),
+                  "context": (json.loads(task.context)
+                              if task.context else None)}
+                 if task and not task.notified else None),
         "messages": [
             {"role": m.role, "content": m.content, "model": m.model,
              "archived": bool(m.archived),
@@ -249,31 +372,8 @@ def chat():
     if not question and not attachment_ids:
         return jsonify({"error": "Empty message."}), 400
 
-    attached = []
-    if attachment_ids:
-        attached = (StoredFile.query
-                    .filter(StoredFile.id.in_(attachment_ids),
-                            StoredFile.user_id == current_user.id,
-                            StoredFile.deleted_at.is_(None))
-                    .all())
-
-    # Implicit context: the file/notebook the user currently has open, so
-    # "improve this notebook" works without an explicit @here mention.
-    context_file = None
-    try:
-        context_file_id = int(data.get("context_file_id") or 0)
-    except (TypeError, ValueError):
-        context_file_id = 0
-    if context_file_id and context_file_id not in [
-            int(i) for i in attachment_ids if str(i).isdigit()]:
-        context_file = (StoredFile.query
-                        .filter_by(id=context_file_id,
-                                   user_id=current_user.id)
-                        .filter(StoredFile.deleted_at.is_(None))
-                        .first())
-
-    # Cell context: a notebook cell the user dragged into the chat.
-    context_cell_note = _resolve_context_cell(data.get("context_cell"))
+    ctx = _resolve_context(current_user, data)
+    attached = ctx["attachments"]
 
     conv = _get_conversation(data.get("conversation_id"))
     if not conv:
@@ -288,6 +388,9 @@ def chat():
         display_question += f"\n\n📎 {names}"
     db.session.add(ChatMessage(conversation_id=conv.id, role="user",
                                content=display_question))
+    # Remember the context of this message — reopening the conversation
+    # restores the drives/files the user had referenced.
+    conv.context = json.dumps(ctx["context"])
     db.session.commit()
 
     conv_id = conv.id
@@ -315,60 +418,13 @@ def chat():
         history.insert(0, {"role": "system", "content":
             "Summary of the earlier conversation:\n\n" + "\n\n".join(preamble)})
 
-    if attached:
-        listing = ", ".join(f"[id {f.id}] {f.name}" for f in attached)
-        history.insert(0, {
-            "role": "system",
-            "content": (
-                f"The user attached these files to this question: {listing}. "
-                "You can read_file them directly by id — no need to search first."
-            ),
-        })
-
-    if context_file:
-        kind = "notebook" if context_file.extension == "pdocnb" else "file"
-        history.insert(0, {
-            "role": "system",
-            "content": (
-                f"The user currently has the {kind} "
-                f"[id {context_file.id}] {context_file.name} open on screen. "
-                "When they say things like \"this notebook\", \"this file\" or "
-                "\"here\" without naming a target, they mean that one — you "
-                "can read or edit it directly by id, no need to search first."
-                + _notebook_access_note(context_file)
-            ),
-        })
-
-    if context_cell_note:
-        history.insert(0, {"role": "system", "content": context_cell_note})
+    # Context notes (drive scope, dragged cell, open file, attachments) go
+    # first, before the conversation summary preamble.
+    history = [{"role": "system", "content": note} for note in ctx["notes"]] \
+        + history
 
     user_id = current_user.id
-    # Drive scope: an explicit $ mention wins; otherwise the chip state
-    # decides between the drive being browsed and all drives.
-    scope_all_drives = bool(data.get("scope_all_drives"))
-    try:
-        scope_drive_id = int(data.get("scope_drive_id") or 0)
-    except (TypeError, ValueError):
-        scope_drive_id = 0
-    scoped_drive = None
-    if scope_drive_id:
-        scoped_drive = (Drive.query
-                        .filter_by(id=scope_drive_id, user_id=current_user.id)
-                        .first())
-    if scoped_drive is not None:
-        drive_id = scoped_drive.id
-    else:
-        drive_id = None if scope_all_drives else \
-            drive_service.get_current_drive(current_user).id
-    if scoped_drive is None and scope_all_drives:
-        history.insert(0, {
-            "role": "system",
-            "content": (
-                "The user removed the drive scope: you can see files from ALL "
-                "their drives, not just the one they are browsing. Use "
-                "list_drives to discover what drives exist."
-            ),
-        })
+    drive_ids = ctx["context"]["drive_ids"]  # None -> all drives in scope
 
     def generate():
         """Stream NDJSON events: thinking(+_token) / step / tool_result /
@@ -384,11 +440,14 @@ def chat():
         """
         thinkings = []
         steps = []
+        notices = []
         answer = None
         block_tokens = None  # None | "thinking" | "answer"
         # ORM objects are detached after the earlier commit; re-fetch by id.
         user = db.session.get(User, user_id)
-        drive = db.session.get(Drive, drive_id)
+        drive = (Drive.query
+                 .filter(Drive.id.in_(drive_ids), Drive.user_id == user_id)
+                 .all()) if drive_ids else None
         model_name = ai_service.config_for(user).get("model", "")
         try:
             for kind, payload in agent_service.run_agent_events(user, history, drive=drive):
@@ -417,6 +476,11 @@ def chat():
                     if steps:
                         steps[-1]["summary"] = payload["summary"]
                     yield json.dumps({"type": "tool_result", "result": payload},
+                                     ensure_ascii=False) + "\n"
+                elif kind == "notice":
+                    block_tokens = None
+                    notices.append(payload)
+                    yield json.dumps({"type": "notice", "content": payload},
                                      ensure_ascii=False) + "\n"
                 else:
                     block_tokens = None
@@ -461,11 +525,134 @@ def chat():
                 text += f" → {step['summary']}"
             db.session.add(ChatMessage(conversation_id=conv_id,
                                        role="step", content=text))
+        for notice in notices:
+            db.session.add(ChatMessage(conversation_id=conv_id,
+                                       role="notice", content=notice))
         if answer is not None:
             db.session.add(ChatMessage(conversation_id=conv_id,
                                        role="assistant", content=answer,
                                        model=model_name))
         db.session.commit()
+
+    return Response(stream_with_context(generate()),
+                    mimetype="application/x-ndjson")
+
+
+# --- Long-horizon background tasks -----------------------------------------
+
+
+def _task_json(task):
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "error": task.error,
+        "conversation_id": task.conversation_id,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+    }
+
+
+@bp.route("/tasks", methods=["POST"])
+@login_required
+def start_task():
+    """Launch a long-horizon background task: the agent runs in a server
+    thread with an extended step budget, persisting every event to its own
+    conversation so the user can open the transcript at any time."""
+    if not ai_service.is_enabled(current_user):
+        return jsonify({
+            "error": "AI is not configured. Add a connection in AI Settings."
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    attachment_ids = data.get("attachments") or []
+    if not message and not attachment_ids:
+        return jsonify({"error": "Empty message."}), 400
+
+    # Legacy single drive_id maps onto the multi-drive scope.
+    if not data.get("scope_drive_ids") and not data.get("scope_drive_id"):
+        try:
+            legacy_drive_id = int(data.get("drive_id") or 0)
+        except (TypeError, ValueError):
+            legacy_drive_id = 0
+        if legacy_drive_id:
+            data["scope_drive_ids"] = [legacy_drive_id]
+            if not Drive.query.filter_by(
+                    id=legacy_drive_id, user_id=current_user.id).first():
+                return jsonify({"error": "Drive not found."}), 404
+
+    # Snapshot the full context (drives, files, cell) so the task keeps
+    # working with what it was launched with, even if the user moves on.
+    ctx = _resolve_context(current_user, data)
+    task = ai_task_service.start_task(current_user, message, ctx=ctx)
+    return jsonify({"ok": True, "task": _task_json(task)})
+
+
+@bp.route("/tasks/active")
+@login_required
+def active_tasks():
+    """Tasks for the dock widget: running/queued plus finished ones the user
+    has not dismissed yet (those carry the notification badge)."""
+    return jsonify({
+        "tasks": [_task_json(t) for t in ai_task_service.active_tasks(current_user)],
+        "poll_ms": current_app.config.get("AI_TASK_WIDGET_POLL_MS", 3000),
+    })
+
+
+@bp.route("/tasks/<int:task_id>")
+@login_required
+def task_detail(task_id):
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_task_json(task))
+
+
+@bp.route("/tasks/<int:task_id>/stop", methods=["POST"])
+@login_required
+def stop_task(task_id):
+    task = ai_task_service.stop_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found or already finished"}), 404
+    return jsonify({"ok": True, "task": _task_json(task)})
+
+
+@bp.route("/tasks/<int:task_id>/ack", methods=["POST"])
+@login_required
+def ack_task(task_id):
+    """Dismiss a finished task from the dock — ends its long horizon."""
+    task = ai_task_service.ack_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found or still running"}), 404
+    return jsonify({"ok": True})
+
+
+@bp.route("/tasks/<int:task_id>/stream")
+@login_required
+def task_stream(task_id):
+    """Live NDJSON event stream for a running task — same event shape as
+    /ai/chat, so a chat window can watch a background task and render it
+    exactly like a normal streamed conversation. Ends with a task_status
+    event once the task reaches a final state."""
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+
+    def generate():
+        q = ai_task_service.subscribe(task.id)
+        try:
+            yield (json.dumps({"type": "task_status", "status": task.status},
+                              ensure_ascii=False) + "\n")
+            if not task.is_active:
+                return
+            while True:
+                ev = q.get()
+                if ev is None:  # worker finished — sentinel
+                    break
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        finally:
+            ai_task_service.unsubscribe(task.id, q)
 
     return Response(stream_with_context(generate()),
                     mimetype="application/x-ndjson")
