@@ -163,15 +163,35 @@
             onto the window.</li>
             <li><strong>Model selector</strong> — switch between your AI
             connections from the header dropdown.</li>
+            <li><strong>Context chips</strong> — the <em>Context:</em> bar
+            always shows what the assistant is working with: attached files,
+            the open file, and the drive scope. Type <code>$</code> to narrow
+            answers to one or more drives; remove the drive chip to search
+            across <strong>All drives</strong>. Each conversation remembers
+            the context you last set up and restores it when reopened.</li>
+            <li><strong>Background mode</strong> — the rocket toggle sends
+            your question as a <strong>long-horizon background task</strong>:
+            the agent keeps working on the server (with a much larger step
+            budget, respecting your connection's rate limit) while you do
+            other things. One icon per task appears in the bottom dock —
+            spinning while running, with a badge when finished — and
+            survives page refreshes. Click the icon to watch the live
+            transcript; use its × to stop a running task or dismiss a
+            finished one. A task conversation stays in background mode until
+            you dismiss it.</li>
             <li><strong>Conversations</strong> — the clock button lists past
-            conversations; reopen or delete them there.</li>
+            conversations, grouped by period (today, yesterday, …); reopen
+            or delete them there.</li>
             <li><strong>Stop</strong> — while the assistant works, the send
             button becomes a red stop button that cancels the answer.</li>
             <li><strong>Summarize &amp; reset</strong> — the compress button
             asks the AI to condense the whole conversation into a summary.
             Old messages stay visible (grayed out, under a "History
             compacted" divider) but leave the model's context — the summary
-            becomes the memory. Perfect for long sessions and small models.</li>
+            becomes the memory. Perfect for long sessions and small models.
+            If the history grows past the model's context window on its own,
+            the oldest blocks are dropped automatically and a notice card in
+            the chat tells you when that happens.</li>
         </ul>
     {% endcall %}
 
