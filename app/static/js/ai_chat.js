@@ -129,7 +129,8 @@
         let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
-        let driveScopeDismissedId = null; // currentDrive.id the user unscoped
+        let scopeAllDrives = false; // user removed the drive scope (× on the
+                                    // drive chip) -> search across ALL drives
         let cellRef = null; // notebook cell dropped into the chat
         let driveRefs = []; // drives picked with $ mentions [{id, name}]
         let driveListCache = null; // /api/drives, fetched on first $ use
@@ -297,12 +298,17 @@
             // Auto chips for the screen context — hidden in task mode, where
             // the captured context above is the truth.
             if (!captured) {
-                if (!driveRefs.length && window.currentDrive
-                        && window.currentDrive.id !== driveScopeDismissedId) {
+                if (!driveRefs.length && scopeAllDrives) {
+                    // The user removed the drive scope: show the "all drives"
+                    // state explicitly instead of showing nothing.
+                    chip('badge-accent', 'fa-globe', 'All drives',
+                         'Answers search across ALL your drives — remove to narrow back to the drive you are browsing',
+                         () => { scopeAllDrives = false; renderChips(); });
+                } else if (!driveRefs.length && window.currentDrive) {
                     chip('badge-accent', 'fa-hard-drive', window.currentDrive.name,
                          'Answers are narrowed to this drive — remove to search all drives',
                          () => {
-                             driveScopeDismissedId = window.currentDrive.id;
+                             scopeAllDrives = true;
                              renderChips();
                          });
                 }
@@ -371,6 +377,12 @@
                 messagesEl.appendChild(det);
                 scrollDown();
                 return det;
+            } else if (role === 'notice') {
+                // Automatic context compaction — a visible card, not hidden
+                // in the reasoning box.
+                div.className = 'ai-notice';
+                div.innerHTML = '<i class="fas fa-triangle-exclamation"></i><span></span>';
+                div.querySelector('span').textContent = content;
             } else if (role === 'step') {
                 div.className = 'text-xs opacity-60 flex items-center gap-2 pl-2';
                 div.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
@@ -547,10 +559,35 @@
                     // task mode until the task is dismissed.
                     if (conv.task) enterTaskMode(conv.task);
                     else if (taskMode) exitTaskMode();
+                    // Restore the context the user last set up in this
+                    // conversation (task mode shows its captured context
+                    // instead, via renderChips in enterTaskMode).
+                    if (!conv.task) restoreContext(conv.context);
                     toggleList(true);
                     scrollDown(true);  // opening a conversation lands at the end
                 })
                 .catch(() => { pendingConvId = null; });
+        }
+
+        // Rebuild the chips from a conversation's saved context snapshot
+        // (null/legacy -> a clean slate). The live screen context stays
+        // untouched: the current file/drive chips reappear on their own.
+        function restoreContext(c) {
+            attachments = (c && c.file_ids || []).map((id, i) => ({
+                id, name: (c.file_names || [])[i] || ('file #' + id),
+            }));
+            driveRefs = (c && c.drive_ids || []).map((id, i) => ({
+                id, name: (c.drive_names || [])[i] || ('drive #' + id),
+            }));
+            cellRef = (c && c.context_cell) ? {
+                file_id: c.context_cell.file_id,
+                cell_id: c.context_cell.cell_id,
+                file_name: c.context_cell.file_name,
+            } : null;
+            // "All drives" survives as an explicit scope, shown as its chip.
+            scopeAllDrives = !!(c && c.all_drives);
+            contextDismissedId = null;
+            renderChips();
         }
 
         function toggleList(forceHide) {
@@ -907,6 +944,8 @@
                 addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
             } else if (event.type === 'tool_result') {
                 addReasoningLine('tool_result', event.result.summary);
+            } else if (event.type === 'notice') {
+                addMessage('notice', event.content);
             } else if (event.type === 'answer') {
                 state.gotResult = true;
                 if (event.conversation_id) conversationId = event.conversation_id;
@@ -1066,8 +1105,7 @@
                                 && window.currentFile.id !== contextDismissedId
                                 && !sentAttachments.some(a => a.id === window.currentFile.id))
                                 ? window.currentFile.id : null,
-                            scope_all_drives: !!(window.currentDrive
-                                && window.currentDrive.id === driveScopeDismissedId),
+                            scope_all_drives: scopeAllDrives,
                             scope_drive_ids: sentDrives.length
                                 ? sentDrives.map(r => r.id) : null,
                             context_cell: sentCell
@@ -1114,7 +1152,8 @@
                         ...sentAttachments.map(a => a.id)])];
                     bodyContextFile = captured.context_file_id || null;
                     bodyAllDrives = !!captured.all_drives;
-                    bodyDriveIds = [...new Set([
+                    // "All drives" cannot be narrowed by adding a drive.
+                    bodyDriveIds = captured.all_drives ? null : [...new Set([
                         ...(captured.drive_ids || []),
                         ...driveRefs.map(r => r.id)])];
                     if (!bodyDriveIds.length) bodyDriveIds = null;
@@ -1132,8 +1171,7 @@
                         && !sentAttachments.some(a => a.id === window.currentFile.id))
                         ? window.currentFile.id : null;
                     // Drive scope removed via the chip -> search all drives.
-                    bodyAllDrives = !!(window.currentDrive
-                        && window.currentDrive.id === driveScopeDismissedId);
+                    bodyAllDrives = scopeAllDrives;
                     // Drives picked with $ mentions (win over the above).
                     bodyDriveIds = driveRefs.length
                         ? driveRefs.map(r => r.id) : null;
@@ -1205,6 +1243,7 @@
             attachments = [];
             cellRef = null;
             driveRefs = [];
+            scopeAllDrives = false;
             exitTaskMode();
             renderChips();
             hideMentions();

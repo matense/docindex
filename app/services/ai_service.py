@@ -151,7 +151,11 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
 
     try:
         data = resp.json()
-        return data["choices"][0]["message"]
+        message = data["choices"][0]["message"]
+        # Propagated so the agent loop can tell a truncated answer
+        # (finish_reason="length") from a deliberate stop.
+        message["finish_reason"] = data["choices"][0].get("finish_reason")
+        return message
     except (ValueError, KeyError, IndexError) as exc:
         raise AIError(f"Unexpected AI response format: {exc}") from exc
 
@@ -213,6 +217,7 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
     reasoning_parts = []
     tool_calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
     got_anything = False
+    finish_reason = None
 
     try:
         # Iterate raw bytes and decode as UTF-8 explicitly — SSE servers often
@@ -238,6 +243,10 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
                 continue
             delta = choices[0].get("delta") or {}
             got_anything = True
+            # The final chunk usually carries finish_reason ("stop", "length",
+            # "tool_calls") — keep the last one seen.
+            if choices[0].get("finish_reason"):
+                finish_reason = choices[0]["finish_reason"]
 
             piece = delta.get("content")
             if piece:
@@ -274,6 +283,8 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
         raise AIError("AI backend closed the stream without any content.")
 
     message = {"role": "assistant", "content": "".join(content_parts)}
+    if finish_reason:
+        message["finish_reason"] = finish_reason
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:

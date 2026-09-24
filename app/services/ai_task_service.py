@@ -281,6 +281,10 @@ def _run_task(task_id, app):
             elif kind == "tool_result":
                 flush_step(payload.get("summary"))
                 ev = {"type": "tool_result", "result": payload}
+            elif kind == "notice":
+                # Automatic context compaction — visible in the transcript.
+                persist("notice", payload)
+                ev = {"type": "notice", "content": payload}
             elif kind == "stopped":
                 block_tokens = None
                 stopped = True

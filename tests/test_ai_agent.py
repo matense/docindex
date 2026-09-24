@@ -904,3 +904,186 @@ def test_list_files_recursive_small_drive_not_truncated(app, user):
         out = _tool_list_files(user_obj, recursive=True)
         assert len(out["folders"]) == 3
         assert out["folders_truncated"] is False
+
+
+def test_agent_no_nudge_for_answer_with_citation_and_intent_words(app, user):
+    """A final answer that cites a source is never nudged, even when it
+    contains intent words like 'next' or 'I will' — nudging it made the
+    model complain 'I already have the answer'."""
+    file_id = _make_indexed_file(app, "handbook.txt",
+                                 "Vacation policy: every employee gets 25 days per year.")
+
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "search_files", "arguments": '{"query": "vacation"}'},
+            }]}
+        return {"role": "assistant", "content":
+                f"Employees get 25 vacation days [handbook.txt](file://{file_id}). "
+                "Next, I will also check the contract if you want."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            answer, _ = agent_service.run_agent(
+                user_obj, [{"role": "user", "content": "vacation days?"}])
+
+    assert "25 vacation days" in answer
+    assert calls["n"] == 2  # no nudge round-trip after the cited answer
+
+
+def test_agent_no_nudge_when_intent_words_are_not_at_the_end(app, user):
+    """Intent is announced at the END of a message. A final answer that
+    mentions 'next' early on is not mistaken for stated intent."""
+    file_id = _make_indexed_file(app, "handbook.txt",
+                                 "Vacation policy: every employee gets 25 days per year.")
+
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "search_files", "arguments": '{"query": "vacation"}'},
+            }]}
+        # "next" appears early (outside the tail window); the message ends
+        # with the actual answer.
+        return {"role": "assistant", "content":
+                "The next section of the handbook covers sick leave. "
+                + "More policy details follow here. " * 10
+                + "As for your question: every employee gets 25 vacation "
+                  "days per year, according to the vacation policy."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            answer, _ = agent_service.run_agent(
+                user_obj, [{"role": "user", "content": "vacation days?"}])
+
+    assert "25 vacation days" in answer
+    assert calls["n"] == 2  # accepted as final, no nudge
+
+
+def test_agent_accepts_pushback_as_final_answer(app, user):
+    """After a nudge, a model that pushes back ('I already have the answer…')
+    is done — nudging again produced endless 'I already have it' loops."""
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Narrates intent without a tool call -> nudge.
+            return {"role": "assistant", "content": "Let me search for that."}
+        # Pushback after the nudge -> must be accepted as the final answer.
+        return {"role": "assistant", "content":
+                "I already have the answer: 25 vacation days per year."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "vacation days?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["thinking", "answer"]
+    assert "25 vacation days" in events[-1][1]
+    assert calls["n"] == 2  # the pushback was NOT nudged again
+
+
+def test_agent_emits_notice_when_history_is_compacted(app, user):
+    """When the prompt budget forces old messages to be dropped, the agent
+    emits a visible 'notice' event (rendered as a card in the chat)."""
+    app.config["AI_MAX_PROMPT_TOKENS"] = 400  # tiny budget forces drops
+    history = []
+    for i in range(6):
+        history.append({"role": "user", "content": f"question {i} " + "x" * 200})
+        history.append({"role": "assistant", "content": f"answer {i} " + "y" * 200})
+    history.append({"role": "user", "content": "latest question"})
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   return_value={"role": "assistant", "content": "ok"}):
+            events = list(agent_service.run_agent_events(user_obj, history))
+
+    kinds = [k for k, _ in events]
+    assert "notice" in kinds
+    notice = next(p for k, p in events if k == "notice")
+    assert "compacted" in notice.lower()
+    assert kinds[-1] == "answer"
+
+
+def test_agent_marker_ends_answer_despite_intent_words(app, user):
+    """The [[END]] marker is an explicit 'done' signal: even with intent
+    words at the end, a marked answer is final and the marker is stripped."""
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        return {"role": "assistant", "content":
+                "Your vacation balance is 25 days. Next, I will update the "
+                "spreadsheet if you confirm.\n\n[[END]]"}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "vacation balance?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["answer"]  # no thinking/nudge round-trip
+    assert calls["n"] == 1
+    assert "[[END]]" not in events[-1][1]
+    assert "25 days" in events[-1][1]
+
+
+def test_agent_continues_when_output_is_truncated(app, user):
+    """finish_reason=length means the answer was cut off by the token limit —
+    never treat it as final, continue instead."""
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"role": "assistant", "finish_reason": "length",
+                    "content": "The report says the vacation balance is"}
+        return {"role": "assistant", "finish_reason": "stop",
+                "content": "The vacation balance is 25 days."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "vacation balance?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["thinking", "answer"]
+    assert "25 days" in events[-1][1]
+    assert calls["n"] == 2
+
+
+def test_agent_narration_without_marker_still_nudges(app, user):
+    """Fallback layer: no marker, intent in the tail -> nudge (the marker is
+    a positive signal, not a hard gate for non-compliant models)."""
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"role": "assistant", "content": "Let me check the files."}
+        return {"role": "assistant", "content": "All clear."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "anything new?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["thinking", "answer"]  # nudge happened, then final answer
+    assert calls["n"] == 2

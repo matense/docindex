@@ -49,7 +49,8 @@
     let conversationId = null;
     let attachments = []; // [{id, name}]
     let contextDismissedId = null; // currentFile.id the user hid
-    let driveScopeDismissedId = null; // currentDrive.id the user unscoped
+    let scopeAllDrives = false; // user removed the drive scope (× on the
+                                // drive chip) -> search across ALL drives
     let cellRef = null; // notebook cell dropped into the chat
     let driveRefs = []; // drives picked with $ mentions [{id, name}]
     let driveListCache = null; // /api/drives, fetched on first $ use
@@ -105,8 +106,26 @@
             drv.appendChild(rm);
             chipsEl.appendChild(drv);
         });
-        if (!driveRefs.length && window.currentDrive
-                && window.currentDrive.id !== driveScopeDismissedId) {
+        if (!driveRefs.length && scopeAllDrives) {
+            // The user removed the drive scope: show the "all drives" state
+            // explicitly instead of showing nothing.
+            const drv = document.createElement('span');
+            drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
+            drv.innerHTML = '<i class="fas fa-globe"></i>';
+            drv.appendChild(document.createTextNode('All drives'));
+            drv.title = 'Answers search across ALL your drives — remove to narrow back to the drive you are browsing';
+            const rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+            rm.innerHTML = '<i class="fas fa-xmark"></i>';
+            rm.title = 'Narrow to the current drive';
+            rm.onclick = () => {
+                scopeAllDrives = false;
+                renderChips();
+            };
+            drv.appendChild(rm);
+            chipsEl.appendChild(drv);
+        } else if (!driveRefs.length && window.currentDrive) {
             const drv = document.createElement('span');
             drv.className = 'badge badge-accent badge-outline gap-1 text-xs';
             drv.innerHTML = '<i class="fas fa-hard-drive"></i>';
@@ -118,7 +137,7 @@
             rm.innerHTML = '<i class="fas fa-xmark"></i>';
             rm.title = 'Search across all drives';
             rm.onclick = () => {
-                driveScopeDismissedId = window.currentDrive.id;
+                scopeAllDrives = true;
                 renderChips();
             };
             drv.appendChild(rm);
@@ -292,6 +311,12 @@
             messagesEl.appendChild(det);
             scrollDown();
             return det;
+        } else if (role === 'notice') {
+            // Automatic context compaction — a visible card, not hidden
+            // in the reasoning box.
+            div.className = 'ai-notice';
+            div.innerHTML = '<i class="fas fa-triangle-exclamation"></i><span></span>';
+            div.querySelector('span').textContent = content;
         } else if (role === 'step') {
             div.className = 'text-xs opacity-60 flex items-center gap-2 pl-2';
             div.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
@@ -467,9 +492,31 @@
                         if (el) el.classList.add('ai-archived');
                     }
                 });
+                restoreContext(conv.context);
                 toggleList(true);
                 scrollDown(true);  // opening a conversation lands at the end
             });
+    }
+
+    // Rebuild the chips from a conversation's saved context snapshot
+    // (null/legacy -> a clean slate). The live screen context stays
+    // untouched: the current file/drive chips reappear on their own.
+    function restoreContext(c) {
+        attachments = (c && c.file_ids || []).map((id, i) => ({
+            id, name: (c.file_names || [])[i] || ('file #' + id),
+        }));
+        driveRefs = (c && c.drive_ids || []).map((id, i) => ({
+            id, name: (c.drive_names || [])[i] || ('drive #' + id),
+        }));
+        cellRef = (c && c.context_cell) ? {
+            file_id: c.context_cell.file_id,
+            cell_id: c.context_cell.cell_id,
+            file_name: c.context_cell.file_name,
+        } : null;
+        // "All drives" survives as an explicit scope, shown as its chip.
+        scopeAllDrives = !!(c && c.all_drives);
+        contextDismissedId = null;
+        renderChips();
     }
 
     function toggleList(forceHide) {
@@ -859,8 +906,7 @@
                             && window.currentFile.id !== contextDismissedId
                             && !sentAttachments.some(a => a.id === window.currentFile.id))
                             ? window.currentFile.id : null,
-                        scope_all_drives: !!(window.currentDrive
-                            && window.currentDrive.id === driveScopeDismissedId),
+                        scope_all_drives: scopeAllDrives,
                         scope_drive_ids: sentDrives.length
                             ? sentDrives.map(r => r.id) : null,
                         context_cell: sentCell
@@ -910,8 +956,7 @@
                         && !sentAttachments.some(a => a.id === window.currentFile.id))
                         ? window.currentFile.id : null,
                     // Drive scope removed via the chip -> search all drives.
-                    scope_all_drives: !!(window.currentDrive
-                        && window.currentDrive.id === driveScopeDismissedId),
+                    scope_all_drives: scopeAllDrives,
                     // Drives picked with $ mentions (win over the above).
                     scope_drive_ids: driveRefs.length
                         ? driveRefs.map(r => r.id) : null,
@@ -961,6 +1006,8 @@
                         addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
                     } else if (event.type === 'tool_result') {
                         addReasoningLine('tool_result', event.result.summary);
+                    } else if (event.type === 'notice') {
+                        addMessage('notice', event.content);
                     } else if (event.type === 'answer') {
                         gotResult = true;
                         conversationId = event.conversation_id;
@@ -1008,6 +1055,7 @@
             attachments = [];
             cellRef = null;
             driveRefs = [];
+            scopeAllDrives = false;
             renderChips();
             hideMentions();
             clearMessages();

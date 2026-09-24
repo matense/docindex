@@ -273,8 +273,9 @@ def test_prompt_budget_drops_oldest_exchanges(auth_client, app, user):
         raw = resp.data.decode()
 
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    # The user is told that older messages were dropped.
-    notes = [e for e in events if e["type"] == "thinking"
+    # The user is told that older messages were dropped — as a visible
+    # "notice" card (a hidden "thinking" line was too easy to miss).
+    notes = [e for e in events if e["type"] == "notice"
              and "context window" in e.get("content", "")]
     assert notes
 
@@ -574,3 +575,64 @@ def test_api_drives_lists_only_own(auth_client, app, user):
     names = [d["name"] for d in resp.get_json()]
     assert "Archive" in names
     assert "BobDrive" not in names
+
+
+def test_conversation_returns_latest_context(auth_client, app, user):
+    """Each chat message snapshots its context onto the conversation, and the
+    conversation endpoint returns it so reopening restores the user's chips."""
+    from app.models import Drive
+    _add_conn(auth_client)
+    with app.app_context():
+        drive = Drive(name="Work", user_id=user)
+        db.session.add(drive)
+        db.session.commit()
+        drive_id = drive.id
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "hi"}):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "hello", "scope_drive_ids": [drive_id]})
+        resp.data
+
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        conv_id = conv.id
+        snap = json.loads(conv.context)
+        assert snap["drive_ids"] == [drive_id]
+        assert snap["drive_names"] == ["Work"]
+
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["context"]["drive_ids"] == [drive_id]
+    assert data["context"]["drive_names"] == ["Work"]
+
+    # A later message with a different context replaces the snapshot.
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "hi again"}):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "now everywhere", "conversation_id": conv_id,
+            "scope_all_drives": True})
+        resp.data
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["context"]["all_drives"] is True
+    assert data["context"]["drive_ids"] is None
+
+
+def test_chat_persists_compaction_notice(auth_client, app, user):
+    """Automatic prompt compaction is visible: a 'notice' message is stored
+    in the conversation and streamed to the client."""
+    _add_conn(auth_client)
+    app.config["AI_MAX_PROMPT_TOKENS"] = 400  # tiny budget forces drops
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "hello " + "x" * 400,
+            "conversation_id": _make_conversation(app, n_pairs=5)})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    assert any(e["type"] == "notice" for e in events)
+
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        notices = [m for m in conv.messages if m.role == "notice"]
+        assert notices and "compacted" in notices[0].content.lower()

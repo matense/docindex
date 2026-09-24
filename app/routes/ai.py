@@ -236,6 +236,9 @@ def conversation(conv_id):
     return jsonify({
         "id": conv.id,
         "title": conv.title,
+        # Latest context the user set up in this conversation (drives,
+        # attachments, cell) — restored into the chips on open.
+        "context": json.loads(conv.context) if conv.context else None,
         "task": ({"id": task.id, "status": task.status, "title": task.title,
                   "notified": bool(task.notified),
                   "context": (json.loads(task.context)
@@ -385,6 +388,9 @@ def chat():
         display_question += f"\n\n📎 {names}"
     db.session.add(ChatMessage(conversation_id=conv.id, role="user",
                                content=display_question))
+    # Remember the context of this message — reopening the conversation
+    # restores the drives/files the user had referenced.
+    conv.context = json.dumps(ctx["context"])
     db.session.commit()
 
     conv_id = conv.id
@@ -434,6 +440,7 @@ def chat():
         """
         thinkings = []
         steps = []
+        notices = []
         answer = None
         block_tokens = None  # None | "thinking" | "answer"
         # ORM objects are detached after the earlier commit; re-fetch by id.
@@ -469,6 +476,11 @@ def chat():
                     if steps:
                         steps[-1]["summary"] = payload["summary"]
                     yield json.dumps({"type": "tool_result", "result": payload},
+                                     ensure_ascii=False) + "\n"
+                elif kind == "notice":
+                    block_tokens = None
+                    notices.append(payload)
+                    yield json.dumps({"type": "notice", "content": payload},
                                      ensure_ascii=False) + "\n"
                 else:
                     block_tokens = None
@@ -513,6 +525,9 @@ def chat():
                 text += f" → {step['summary']}"
             db.session.add(ChatMessage(conversation_id=conv_id,
                                        role="step", content=text))
+        for notice in notices:
+            db.session.add(ChatMessage(conversation_id=conv_id,
+                                       role="notice", content=notice))
         if answer is not None:
             db.session.add(ChatMessage(conversation_id=conv_id,
                                        role="assistant", content=answer,
