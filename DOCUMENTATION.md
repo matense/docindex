@@ -214,8 +214,10 @@ in `EDITABLE_EXTENSIONS`).
 thumbnail and version history stay on disk. Trashed files are hidden from
 drive listings, search, the AI agent, attachments and profile stats (every
 active-file query filters `deleted_at IS NULL`). Restoring clears the column;
-purging (`purge_file`) removes blobs and rows permanently. The profile page
-has a Trash section with restore / delete-forever / empty-trash actions.
+purging (`purge_file`) removes blobs and rows permanently. The dedicated
+Trash page (`GET /settings/trash`, linked from a card on the profile page)
+lists deleted files with search and pagination, and offers restore /
+delete-forever / empty-trash actions.
 Deleting a folder trashes its files with `folder_id` reset to NULL, so a
 restore lands at the drive root.
 
@@ -404,8 +406,9 @@ by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
   email update (`POST /settings/profile/email`), password change
   (`POST /settings/profile/password`, requires the current password),
   per-drive stats (files, folders, space used, indexed words), AI usage
-  (conversations, messages, active connection), the trash bin (restore /
-  delete forever / empty trash) and, for admins only,
+  (conversations, messages, active connection), a card linking to the trash
+  bin (`GET /settings/trash` — deleted files with name search and
+  pagination; restore / delete forever / empty trash) and, for admins only,
   `POST /settings/profile/registration` to toggle the
   `registration_enabled` setting.
 

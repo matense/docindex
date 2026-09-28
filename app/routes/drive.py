@@ -561,7 +561,7 @@ def delete(file_id):
     _guard_writable(stored)
     folder_id = stored.folder_id
     file_service.delete_file(stored)
-    flash(f'"{stored.name}" moved to the trash — restore it from your profile.',
+    flash(f'"{stored.name}" moved to the trash — restore it from the Trash page.',
           "success")
     return redirect(url_for("drive.index", folder_id=folder_id))
 
@@ -575,7 +575,7 @@ def restore(file_id):
     _guard_writable(stored)
     file_service.restore_file(stored)
     flash(f'"{stored.name}" restored.', "success")
-    return redirect(url_for("settings.profile"))
+    return redirect(url_for("settings.trash"))
 
 
 @bp.route("/file/<int:file_id>/purge", methods=["POST"])
@@ -586,7 +586,7 @@ def purge(file_id):
     name = stored.name
     file_service.purge_file(stored)
     flash(f'"{name}" permanently deleted.', "success")
-    return redirect(url_for("settings.profile"))
+    return redirect(url_for("settings.trash"))
 
 
 @bp.route("/trash/empty", methods=["POST"])
@@ -596,7 +596,7 @@ def empty_trash():
     for stored in trashed:
         file_service.purge_file(stored)
     flash(f"Trash emptied — {len(trashed)} file(s) permanently deleted.", "success")
-    return redirect(url_for("settings.profile"))
+    return redirect(url_for("settings.trash"))
 
 
 @bp.route("/file/<int:file_id>/view")

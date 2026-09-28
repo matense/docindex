@@ -10,7 +10,7 @@ from sqlalchemy import func
 from ..extensions import db
 from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
                       ErrorLog, FileIndex, Folder, Setting, StoredFile, User)
-from ..services import ai_service, file_service, indexing_service, module_service
+from ..services import ai_service, indexing_service, module_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 
@@ -108,9 +108,41 @@ def profile():
     return render_template("settings/profile.html",
                            drive_stats=drive_stats,
                            ai_stats=ai_stats,
-                           trashed=file_service.trashed_files(current_user.id),
+                           trash_count=(StoredFile.query
+                                        .filter(StoredFile.user_id == current_user.id,
+                                                StoredFile.deleted_at.isnot(None))
+                                        .count()),
                            error_count=ErrorLog.query.filter_by(level="error").count(),
                            registration_enabled=Setting.get_bool("registration_enabled", True))
+
+
+# --------------------------------------------------------------------------
+# Trash bin
+# --------------------------------------------------------------------------
+
+TRASH_PER_PAGE = 50
+
+
+@bp.route("/trash")
+@login_required
+def trash():
+    """Dedicated trash bin page: browse, search, restore or purge deleted
+    files (linked from a card on the profile page)."""
+    page = max(1, request.args.get("page", 1, type=int))
+    q = (request.args.get("q") or "").strip()
+    query = (StoredFile.query
+             .filter(StoredFile.user_id == current_user.id,
+                     StoredFile.deleted_at.isnot(None)))
+    if q:
+        query = query.filter(StoredFile.name.ilike(f"%{q}%"))
+    pagination = (query.order_by(StoredFile.deleted_at.desc())
+                  .paginate(page=page, per_page=TRASH_PER_PAGE, error_out=False))
+    total = (StoredFile.query
+             .filter(StoredFile.user_id == current_user.id,
+                     StoredFile.deleted_at.isnot(None))
+             .count())
+    return render_template("settings/trash.html", files=pagination.items,
+                           pagination=pagination, q=q, total=total)
 
 
 # --------------------------------------------------------------------------

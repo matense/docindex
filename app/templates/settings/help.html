@@ -124,11 +124,11 @@
     {% endcall %}
 
     {% call section('help-trash', 'fa-trash', 'Trash bin') %}
-        <p>Deleted files go to the trash (profile page → Trash). From there
-        you can <strong>restore</strong> them to their original folder or
-        <strong>purge</strong> them permanently (this also deletes versions
-        and thumbnails). A confirmation dialog always asks before anything is
-        destroyed.</p>
+        <p>Deleted files go to the trash, on its own page (profile → Trash).
+        From there you can search deleted files, <strong>restore</strong>
+        them to their original folder or <strong>purge</strong> them
+        permanently (this also deletes versions and thumbnails). A
+        confirmation dialog always asks before anything is destroyed.</p>
     {% endcall %}
 
     {% call section('help-sync', 'fa-arrows-rotate', 'Synced drives (local folders)') %}
@@ -218,7 +218,8 @@
             <li><strong>Error logs</strong> — every warning and error the app
             records (AI, database, indexing…), in a searchable table, with
             CSV export to share with support.</li>
-            <li><strong>Trash</strong> — restore or purge deleted files.</li>
+            <li><strong>Trash</strong> — a card linking to the dedicated
+            Trash page: search deleted files, restore or purge them.</li>
             <li><strong>Admins</strong> can additionally enable or disable new
             registrations on the login page.</li>
         </ul>

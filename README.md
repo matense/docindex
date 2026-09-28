@@ -18,9 +18,9 @@ questions about your files by searching and reading them step by step.
 
 - **File drive** — folders, multi-file upload, download, rename, move, delete,
   and in-place editing of text/code files.
-- **Trash bin** — deleting a file moves it to a trash bin on your profile
-  page, where you can restore it or delete it forever (nothing is lost until
-  you purge it).
+- **Trash bin** — deleting a file moves it to the trash bin, a dedicated
+  page (linked from your profile) where you can search deleted files,
+  restore them or delete them forever (nothing is lost until you purge it).
 - **Folder sync** — point DocIndex at a local folder and it creates a
   read-only drive that mirrors it: files are indexed (text, PDF, DOCX,
   OCR/images) and searchable by the AI, but never copied or modified — they

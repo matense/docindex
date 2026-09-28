@@ -142,3 +142,55 @@ def test_folder_delete_trashes_files_and_restore_lands_at_root(auth_client, app)
     auth_client.post(f"/file/{fid}/restore", follow_redirects=True)
     resp = auth_client.get("/")
     assert b"notes.txt" in resp.data
+
+
+# --- Dedicated trash page (/settings/trash) ---
+
+def test_trash_page_lists_deleted_files(auth_client, app):
+    _upload(auth_client, "notes.txt", b"some content")
+    auth_client.post(f"/file/{_file_id(app)}/delete", follow_redirects=True)
+
+    resp = auth_client.get("/settings/trash")
+    assert resp.status_code == 200
+    assert b"notes.txt" in resp.data
+
+
+def test_trash_page_hides_active_files_and_filters_by_name(auth_client, app):
+    _upload(auth_client, "keepme.txt", b"active")
+    _upload(auth_client, "old-report.txt", b"trashed")
+    auth_client.post(f"/file/{_file_id(app, 'old-report.txt')}/delete",
+                     follow_redirects=True)
+
+    resp = auth_client.get("/settings/trash")
+    assert b"old-report.txt" in resp.data
+    assert b"keepme.txt" not in resp.data
+
+    resp = auth_client.get("/settings/trash?q=report")
+    assert b"old-report.txt" in resp.data
+    resp = auth_client.get("/settings/trash?q=keepme")
+    assert b"keepme.txt" not in resp.data
+
+
+def test_trash_page_requires_login(client):
+    resp = client.get("/settings/trash")
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+
+
+def test_profile_links_to_trash_page_with_count(auth_client, app):
+    _upload(auth_client, "notes.txt", b"some content")
+    auth_client.post(f"/file/{_file_id(app)}/delete", follow_redirects=True)
+
+    resp = auth_client.get("/settings/profile")
+    assert b"/settings/trash" in resp.data
+    assert b"1 file" in resp.data
+
+
+def test_restore_redirects_to_trash_page(auth_client, app):
+    _upload(auth_client, "notes.txt", b"some content")
+    fid = _file_id(app)
+    auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
+
+    resp = auth_client.post(f"/file/{fid}/restore")
+    assert resp.status_code == 302
+    assert "/settings/trash" in resp.headers["Location"]
