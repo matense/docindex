@@ -1013,6 +1013,8 @@
                         addReasoningLine('tool_result', event.result.summary);
                     } else if (event.type === 'notice') {
                         addMessage('notice', event.content);
+                    } else if (event.type === 'ui_action') {
+                        window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
                     } else if (event.type === 'answer') {
                         gotResult = true;
                         conversationId = event.conversation_id;

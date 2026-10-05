@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Behaviors - Automation{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-4">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-masks-theater"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">AI behaviors</h1>
+            <p class="text-xs opacity-50">
+                Reusable instructions for the AI nodes ("system prompt"). Pick them from the
+                behavior field's examples dropdown in any AI prompt, extract or agent node.
+            </p>
+        </div>
+        <a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-sm gap-1">
+            <i class="fas fa-arrow-left"></i> Workflows
+        </a>
+        <button type="button" class="btn btn-primary btn-sm gap-1"
+                onclick="document.getElementById('behavior-new-modal').showModal()">
+            <i class="fas fa-plus"></i> New behavior
+        </button>
+    </div>
+
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        {% if behaviors %}
+        <div class="divide-y divide-base-content/5">
+            {% for b in behaviors %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4">
+                <span class="w-9 h-9 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-masks-theater"></i>
+                </span>
+                <div class="flex-1 min-w-0">
+                    <span class="block font-semibold truncate">{{ b.name }}</span>
+                    <span class="block text-[11px] opacity-45 truncate">{{ b.content[:140] }}{{ '…' if b.content|length > 140 }}</span>
+                </div>
+                <div class="flex gap-1 flex-shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs gap-1" title="Edit"
+                            onclick="document.getElementById('behavior-edit-{{ b.id }}').showModal()">
+                        <i class="fas fa-pen"></i>
+                    </button>
+                    <form method="POST" action="{{ url_for('automation.behavior_delete', behavior_id=b.id) }}"
+                          data-confirm="Delete behavior &quot;{{ b.name }}&quot;? Nodes using its text keep their saved copy."
+                          data-confirm-danger>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost btn-xs text-error gap-1" title="Delete">
+                            <i class="fas fa-trash-can"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Edit modal -->
+            <dialog id="behavior-edit-{{ b.id }}" class="modal">
+                <div class="modal-box glass-panel">
+                    <h3 class="font-bold text-lg mb-1"><i class="fas fa-pen text-primary"></i> Edit behavior</h3>
+                    <p class="text-xs opacity-50 mb-4">How the AI should act when this behavior is picked.</p>
+                    <form method="POST" action="{{ url_for('automation.behavior_update', behavior_id=b.id) }}"
+                          class="flex flex-col gap-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="text" name="name" value="{{ b.name }}" required maxlength="120"
+                               class="input input-bordered input-sm w-full">
+                        <textarea name="content" rows="5" required
+                                  class="textarea textarea-bordered textarea-sm w-full font-mono">{{ b.content }}</textarea>
+                        <div class="modal-action">
+                            <button type="button" class="btn btn-ghost btn-sm"
+                                    onclick="document.getElementById('behavior-edit-{{ b.id }}').close()">Cancel</button>
+                            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-14 opacity-50">
+            <i class="fas fa-masks-theater text-4xl mb-3 block"></i>
+            <p class="font-semibold">No behaviors yet.</p>
+            <p class="text-xs mt-1">Create one — e.g. "Translator" — and pick it in any AI node.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- New behavior modal -->
+<dialog id="behavior-new-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New behavior</h3>
+        <p class="text-xs opacity-50 mb-4">
+            A name plus the instructions the AI follows — e.g. <em>"You are a professional
+            translator. Answer only with the translation."</em>
+        </p>
+        <form method="POST" action="{{ url_for('automation.behavior_create') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="e.g. Translator" required maxlength="120"
+                   class="input input-bordered input-sm w-full">
+            <textarea name="content" rows="5" required
+                      placeholder="You are a professional translator. Translate the input faithfully and answer only with the translation — no commentary."
+                      class="textarea textarea-bordered textarea-sm w-full font-mono"></textarea>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('behavior-new-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">Create</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+{% endblock %}

@@ -24,12 +24,27 @@ def register_extractor(extension, fn):
 
 
 def extract_text(stored_file):
-    """Extract searchable text from a file based on its extension."""
+    """Extract searchable text from a file based on its extension.
+
+    Never raises for the built-in types: a mislabeled or corrupt file falls
+    back to format sniffing, then plain text, then "" — one weird file must
+    not fail the whole index (synced folders contain anything, e.g. test
+    fixtures inside a venv)."""
     ext = stored_file.extension
     path = file_service.file_path(stored_file)
 
     if ext in _EXTRACTORS:
         return _EXTRACTORS[ext](stored_file)[:MAX_TEXT_CHARS]
+    try:
+        return _dispatch_builtin(ext, path, stored_file)
+    except Exception as exc:
+        current_app.logger.warning(
+            ".%s extractor failed for %r (%s: %s) — trying fallbacks",
+            ext, stored_file.name, type(exc).__name__, exc)
+        return _fallback_extract(path, ext)
+
+
+def _dispatch_builtin(ext, path, stored_file):
     if ext == "pdf":
         return _extract_pdf(path)
     if ext == "docx":
@@ -42,6 +57,41 @@ def extract_text(stored_file):
         return file_service.read_text_content(stored_file, max_chars=MAX_TEXT_CHARS)
     if stored_file.is_image:
         return _extract_image_ocr(path)
+    return ""
+
+
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # old MS Office compound doc
+
+
+def _magic(path, n=8):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(n)
+    except OSError:
+        return b""
+
+
+def _fallback_extract(path, ext):
+    """Best-effort text for a file whose extension lies (or that is mildly
+    corrupt): sniff the real format, then read it as plain text when it is
+    not binary, else give up with "" instead of failing the index."""
+    head = _magic(path)
+    try:
+        if head.startswith(_OLE2_MAGIC) and ext in ("xlsx", "xlsm"):
+            # An old-format workbook saved with a modern extension.
+            return _extract_xls(path)
+        if head.startswith(b"PK\x03\x04") and ext == "xls":
+            # Actually a modern workbook.
+            return _extract_xlsx(path)
+        if head.startswith(b"%PDF") and ext != "pdf":
+            return _extract_pdf(path)
+        if b"\x00" not in _magic(path, 8192):
+            # CSV/JSON/log/etc. renamed to .xlsx & friends — index the text.
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read(MAX_TEXT_CHARS)
+    except Exception:
+        current_app.logger.info("Fallback extraction failed for %s",
+                                path, exc_info=True)
     return ""
 
 
@@ -144,6 +194,17 @@ def _extract_image_ocr(path):
     return (text or "")[:MAX_TEXT_CHARS]
 
 
+def ocr_image(path):
+    """Public OCR helper (automation's Extract-text node): the image's
+    text, or "" when tesseract is unavailable."""
+    return _extract_image_ocr(path)
+
+
+def ocr_available():
+    """Whether the tesseract binary is on PATH (OCR possible at all)."""
+    return _tesseract_available()
+
+
 def index_file(file_id, app=None):
     """Index a single file: text extraction + AI caption for images."""
     app = app or current_app._get_current_object()
@@ -173,8 +234,15 @@ def index_file(file_id, app=None):
             # Synced drives can turn AI captions off (drive setting).
             captions_on = stored.drive.captions_enabled if stored.drive else True
             if stored.is_image and captions_on and ai_cfg["enabled"] and ai_cfg["base_url"]:
-                caption = ai_service.caption_image(
-                    file_service.file_path(stored), config=ai_cfg)
+                try:
+                    caption = ai_service.caption_image(
+                        file_service.file_path(stored), config=ai_cfg)
+                except Exception as exc:  # noqa: BLE001 - AI backend down etc.
+                    # A caption outage must not fail the file's index: the
+                    # OCR text (if any) still goes in and the image stays
+                    # findable by name; reindexing retries the caption.
+                    app.logger.warning(
+                        "AI caption failed for image %s: %s", file_id, exc)
 
             if stored.is_image and ocr_error and not caption:
                 raise ocr_error  # neither OCR nor AI caption produced anything

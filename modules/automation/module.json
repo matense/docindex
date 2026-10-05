@@ -1,0 +1,12 @@
+{
+  "name": "automation",
+  "version": "0.1.0",
+  "description": "Visual workflow builder: chain inputs, transforms, AI prompts and logic into automated flows that read your drives and write new files.",
+  "capabilities": ["routes", "tools", "models"],
+  "nav": {"label": "Automation", "icon": "fa-diagram-project", "url": "/"},
+  "help": [
+    "Automation lets you build workflows: visual flows of nodes on a canvas. Drag nodes from the palette, connect outputs to inputs, configure each node, and run the flow manually, on a schedule, or from the AI chat.",
+    "Flows typically start with an input node (a file from a drive — text, CSV, Excel or JSON — a manual text, or a DocIndex search), pass through transform nodes (templates, JSON paths, table filters, column selects, AI prompts and AI JSON extraction) and logic nodes (conditions and merges), and end in output nodes that save new, editable files to a drive or mark the workflow result.",
+    "Every run is recorded with a per-node log: open a workflow's Runs to watch execution live, inspect each node's output and stop a running flow. Scheduled workflows run every N minutes when enabled; a workflow never overlaps with itself. Read-only (synced) drives can be used as inputs but never as outputs. Other modules can register their own node types, extending the palette."
+  ]
+}

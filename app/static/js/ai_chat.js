@@ -949,6 +949,8 @@
                 addReasoningLine('tool_result', event.result.summary);
             } else if (event.type === 'notice') {
                 addMessage('notice', event.content);
+            } else if (event.type === 'ui_action') {
+                window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
             } else if (event.type === 'answer') {
                 state.gotResult = true;
                 if (event.conversation_id) conversationId = event.conversation_id;
@@ -1201,6 +1203,11 @@
                         scope_all_drives: bodyAllDrives,
                         scope_drive_ids: bodyDriveIds,
                         context_cell: bodyCell,
+                        // Automation editor open on this page (if any).
+                        context_workflow_id: window.currentWorkflow
+                            ? window.currentWorkflow.id : null,
+                        context_workflow_node: window.currentWorkflowNode
+                            || null,
                     }),
                 });
 

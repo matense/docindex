@@ -91,6 +91,8 @@
         await new Promise(r => setTimeout(r, 150));
 
         window.currentFile = null;
+        window.currentWorkflow = null;
+        window.currentWorkflowNode = null;
         container.innerHTML = newContent.innerHTML;
         execScripts(container);
         updatePageState(doc, url);

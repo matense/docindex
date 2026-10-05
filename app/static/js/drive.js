@@ -332,6 +332,8 @@
         }
         entries.push({ icon: 'fa-circle-info', label: 'Info',
                        action: () => showFileInfo(id) });
+        entries.push({ icon: 'fa-diagram-project', label: 'Run workflow…',
+                       action: () => openRunWorkflow(id, name) });
         if (!synced) {
             entries.push('-',
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
@@ -440,6 +442,85 @@ function renameFile(fileId, currentName) {
     form.action = '/file/' + fileId + '/rename';
     document.getElementById('rename-input').value = currentName;
     document.getElementById('rename-modal').showModal();
+}
+
+// "Run workflow" on a file — Automation module integration. The workflow
+// list is fetched once per page load; 404 means the module is disabled.
+let runWfCache = null;
+
+async function openRunWorkflow(fileId, fileName) {
+    const modal = document.getElementById('run-wf-modal');
+    if (!modal) return;
+    document.getElementById('run-wf-file').textContent = fileName;
+    const list = document.getElementById('run-wf-list');
+    list.innerHTML = '<div class="text-xs opacity-40 p-4 text-center">loading…</div>';
+    modal.showModal();
+    if (runWfCache === null) {
+        try {
+            const resp = await fetch('/m/automation/api/for-file');
+            if (!resp.ok) throw new Error('unavailable');
+            runWfCache = (await resp.json()).workflows || [];
+        } catch {
+            runWfCache = [];
+        }
+    }
+    if (!runWfCache.length) {
+        list.innerHTML = '<div class="text-xs opacity-40 p-6 text-center">' +
+            'No workflows accept a file yet.<br>Add a <b>Trigger input</b> node to a ' +
+            'workflow in Automation (or start from the "Translate a file" example).</div>';
+        return;
+    }
+    list.innerHTML = '';
+    runWfCache.forEach((wf) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'flex items-center gap-3 px-4 py-3 text-left hover:bg-primary/5 transition-colors';
+        const icon = document.createElement('i');
+        icon.className = 'fas fa-diagram-project text-primary/70 w-4 flex-shrink-0';
+        const wrap = document.createElement('span');
+        wrap.className = 'min-w-0';
+        const title = document.createElement('span');
+        title.className = 'block text-sm font-semibold truncate';
+        title.textContent = wf.name;
+        wrap.appendChild(title);
+        if (wf.description) {
+            const desc = document.createElement('span');
+            desc.className = 'block text-[11px] opacity-45 truncate';
+            desc.textContent = wf.description;
+            wrap.appendChild(desc);
+        }
+        btn.appendChild(icon);
+        btn.appendChild(wrap);
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/m/automation/' + wf.id + '/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: parseInt(fileId, 10) }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                modal.close();
+                if (!resp.ok) {
+                    if (window.uiAlert) {
+                        window.uiAlert(data.error || 'Could not start the run.',
+                                       { title: 'Run workflow' });
+                    }
+                    btn.disabled = false;
+                    return;
+                }
+                if (window.spaNavigate) window.spaNavigate(data.url);
+                else location.href = data.url;
+            } catch {
+                modal.close();
+                if (window.uiAlert) {
+                    window.uiAlert('Could not reach the server.',
+                                   { title: 'Run workflow' });
+                }
+            }
+        });
+        list.appendChild(btn);
+    });
 }
 
 function showFileInfo(fileId) {

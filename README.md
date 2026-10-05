@@ -70,6 +70,14 @@ questions about your files by searching and reading them step by step.
   table, heading and separator cells. Autosave with version history and
   side-by-side diffs, read/print mode, full AI editing tools with lock and
   hide-from-AI toggles, and drag-a-cell-into-the-chat context.
+- **Automation (module)** — visual workflows on a drag & drop canvas:
+  chain file inputs (text/CSV/Excel/JSON), notebooks, transforms, AI
+  prompts (with custom behavior) and logic into flows that run manually,
+  on a schedule, straight from a file's context menu, or from the AI
+  chat — and the AI assistant can design new workflows for you.
+  Ready-made examples (translate a file, summarize into a notebook, …)
+  get you started, and results can be saved back to your drives as new,
+  editable files or notebooks. Enable it in *Settings → Modules*.
 - **Extensible module system** — new features can ship as self-contained
   modules under `modules/` (pages, AI tools, database tables, file viewers,
   AI file guards) with an admin enable/disable toggle. See

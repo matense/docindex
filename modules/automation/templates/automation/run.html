@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run.id }} - Automation{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-4" id="automation-run-root"
+     data-status-url="{{ url_for('automation.run_status', run_id=run.id) }}"
+     data-stop-url="{{ url_for('automation.run_stop', run_id=run.id) }}"
+     data-active="{{ '1' if run.is_active else '0' }}">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-diagram-project"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold truncate">
+                {{ run.workflow.name if run.workflow else 'Workflow' }} — run #{{ run.id }}
+            </h1>
+            <p class="text-xs opacity-50">
+                {{ run.created_at.strftime('%d %b %Y %H:%M:%S') if run.created_at }} · trigger: {{ run.trigger }}
+            </p>
+            {% if params %}
+            <p class="text-xs opacity-60 mt-1 flex items-center gap-1 flex-wrap">
+                <i class="fas fa-circle-question text-primary/60"></i>
+                {% for key, value in params.items() %}
+                <span class="badge badge-ghost badge-sm">{{ key }}: {{ value if value|length < 60 else value[:60] + '…' }}</span>
+                {% endfor %}
+            </p>
+            {% endif %}
+        </div>
+        <span id="run-status-badge"
+              class="badge badge-lg {{ 'badge-success' if run.status == 'done' else ('badge-error' if run.status in ('error', 'interrupted') else ('badge-warning' if run.is_active else 'badge-ghost')) }} gap-1">
+            {% if run.is_active %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
+            {{ run.status }}
+        </span>
+        {% if run.is_active %}
+        <button type="button" id="run-stop" class="btn btn-outline btn-error btn-sm gap-1">
+            <i class="fas fa-stop"></i> Stop
+        </button>
+        {% endif %}
+        {% if run.workflow %}
+        <a href="{{ url_for('automation.runs', workflow_id=run.workflow_id) }}" class="btn btn-ghost btn-sm gap-1">
+            <i class="fas fa-arrow-left"></i> All runs
+        </a>
+        {% endif %}
+    </div>
+
+    <div id="run-error" class="glass-panel rounded-2xl px-4 py-3 border border-error/30 {{ 'hidden' if not run.error }}">
+        <div class="text-sm text-error"><i class="fas fa-triangle-exclamation mr-1"></i><span id="run-error-text">{{ run.error }}</span></div>
+    </div>
+
+    <!-- Per-node log -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 text-[10px] uppercase tracking-wide opacity-50">
+            Node log{% if run.is_active %} — live{% endif %}
+        </div>
+        <div id="run-log" class="divide-y divide-base-content/5"></div>
+    </div>
+
+    <!-- Output -->
+    <div id="run-output-panel" class="glass-panel rounded-2xl overflow-hidden hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 text-[10px] uppercase tracking-wide opacity-50">Output</div>
+        <div id="run-output" class="p-4 flex flex-col gap-3"></div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const root = document.getElementById('automation-run-root');
+    const logEl = document.getElementById('run-log');
+    const badge = document.getElementById('run-status-badge');
+    const ACTIVE = new Set(['queued', 'running']);
+    const ICONS = { done: 'fa-circle-check text-success',
+                    error: 'fa-circle-xmark text-error',
+                    skipped: 'fa-forward opacity-40',
+                    running: 'fa-circle-notch fa-spin text-warning' };
+
+    function renderLog(entries) {
+        logEl.innerHTML = entries.length ? '' :
+            '<div class="text-center py-10 opacity-40 text-sm"><i class="fas fa-circle-notch fa-spin text-xl mb-2 block"></i>Waiting for the first node…</div>';
+        entries.forEach(e => {
+            const row = document.createElement('div');
+            row.className = 'px-4 py-2.5 flex items-center gap-3 text-sm';
+            row.innerHTML =
+                `<i class="fas ${ICONS[e.status] || 'fa-circle opacity-30'} w-4"></i>` +
+                `<span class="font-semibold">${e.label}</span>` +
+                `<code class="text-[10px] opacity-40">${e.node}</code>` +
+                `<span class="text-xs opacity-50 flex-1 truncate" title="${e.summary || ''}">${e.summary || ''}</span>` +
+                `<span class="text-[10px] opacity-40">${e.ms || 0} ms</span>`;
+            logEl.appendChild(row);
+        });
+    }
+
+    function renderOutput(output) {
+        const panel = document.getElementById('run-output-panel');
+        const box = document.getElementById('run-output');
+        if (!output || (!output.results?.length && !output.files?.length)) return;
+        panel.classList.remove('hidden');
+        box.innerHTML = '';
+        (output.files || []).forEach(f => {
+            const a = document.createElement('a');
+            a.href = '/file/' + f.file_id + '/view';
+            a.className = 'btn btn-outline btn-primary btn-sm gap-2 justify-start';
+            a.innerHTML = `<i class="fas fa-file-circle-check"></i> ${f.name} <span class="opacity-50 text-xs">— open file</span>`;
+            box.appendChild(a);
+        });
+        (output.results || []).forEach(r => {
+            const pre = document.createElement('pre');
+            pre.className = 'code-view rounded-lg p-3 overflow-x-auto text-xs';
+            pre.style.background = '#0d1117'; pre.style.color = '#e6edf3';
+            pre.textContent = r.preview;
+            box.appendChild(pre);
+        });
+    }
+
+    function apply(data) {
+        renderLog(data.log || []);
+        renderOutput(data.output);
+        badge.textContent = data.status;
+        if (!ACTIVE.has(data.status)) {
+            badge.className = 'badge badge-lg gap-1 ' +
+                (data.status === 'done' ? 'badge-success'
+                 : (data.status === 'error' || data.status === 'interrupted') ? 'badge-error'
+                 : 'badge-ghost');
+            const stop = document.getElementById('run-stop');
+            if (stop) stop.remove();
+            if (data.error) {
+                document.getElementById('run-error').classList.remove('hidden');
+                document.getElementById('run-error-text').textContent = data.error;
+            }
+        }
+    }
+
+    const stopBtn = document.getElementById('run-stop');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', async () => {
+            const ok = await window.uiConfirm('Stop this run? Nodes already executed stay in the log.',
+                                              { title: 'Stop run', confirmText: 'Stop' });
+            if (!ok) return;
+            await fetch(root.dataset.stopUrl, { method: 'POST' });
+            poll();
+        });
+    }
+
+    let timer = null;
+    async function poll() {
+        try {
+            const resp = await fetch(root.dataset.statusUrl);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            apply(data);
+            if (ACTIVE.has(data.status)) {
+                timer = setTimeout(poll, 2000);
+            }
+        } catch { timer = setTimeout(poll, 4000); }
+    }
+
+    // Initial render from the server payload, then poll while active.
+    poll();
+    document.addEventListener('spa:navigate', () => clearTimeout(timer), { once: true });
+})();
+</script>
+{% endblock %}

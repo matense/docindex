@@ -1114,6 +1114,10 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
             yield ("step", {"label": label, "detail": str(detail)})
             yield ("tool_result", {"label": label,
                                    "summary": _summarize_result(name, result)})
+            # A tool may ask the browser to react (e.g. the automation
+            # editor reloads the canvas after edit_workflow).
+            if isinstance(result, dict) and isinstance(result.get("ui"), dict):
+                yield ("ui_action", result["ui"])
 
             messages.append({
                 "role": "tool",

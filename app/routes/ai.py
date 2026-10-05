@@ -185,6 +185,39 @@ def _resolve_context(user, data):
         snapshot["context_file_id"] = context_file.id
         snapshot["context_file_name"] = context_file.name
 
+    # Automation editor context: the workflow open on screen, so "add a
+    # filter node here" works while the user builds a flow.
+    try:
+        context_workflow_id = int(data.get("context_workflow_id") or 0)
+    except (TypeError, ValueError):
+        context_workflow_id = 0
+    if context_workflow_id:
+        try:
+            from docindex_module_automation.models import AutomationWorkflow
+        except ImportError:
+            AutomationWorkflow = None
+        if not module_service.is_enabled("automation"):
+            AutomationWorkflow = None
+        workflow = (db.session.get(AutomationWorkflow, context_workflow_id)
+                    if AutomationWorkflow is not None else None)
+        if workflow is not None and workflow.user_id == user.id:
+            node = data.get("context_workflow_node")
+            node_txt = ""
+            if isinstance(node, dict) and node.get("id"):
+                node_txt = (f" The node they are configuring right now is "
+                            f"'{node.get('id')}' ({node.get('type')}, "
+                            f"\"{node.get('label')}\").")
+            notes.append(
+                f"The user has the automation workflow "
+                f"[id {workflow.id}] \"{workflow.name}\" open in the "
+                f"Automation editor.{node_txt} When they ask for changes "
+                "to \"this workflow\" or a node, use automation.get_workflow "
+                "to read the current graph and automation.edit_workflow to "
+                "apply the edits — the editor canvas refreshes "
+                "automatically.")
+            snapshot["workflow_id"] = workflow.id
+            snapshot["workflow_name"] = workflow.name
+
     # Explicitly attached files (@ mentions).
     attached = []
     if attachment_ids:
@@ -476,6 +509,11 @@ def chat():
                     if steps:
                         steps[-1]["summary"] = payload["summary"]
                     yield json.dumps({"type": "tool_result", "result": payload},
+                                     ensure_ascii=False) + "\n"
+                elif kind == "ui_action":
+                    # Browser-side signal from a tool (e.g. the automation
+                    # editor reloads a changed workflow canvas).
+                    yield json.dumps({"type": "ui_action", "action": payload},
                                      ensure_ascii=False) + "\n"
                 elif kind == "notice":
                     block_tokens = None

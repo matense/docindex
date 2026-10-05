@@ -16,3 +16,4 @@ xlrd==2.0.1
 Pillow>=10.4.0,<13
 pytesseract==0.3.10
 pytest
+pandas>=2.2,<3

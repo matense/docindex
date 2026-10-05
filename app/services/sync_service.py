@@ -337,6 +337,12 @@ def _count_files(root):
 def sync_drive(drive, job=None):
     """Re-scan the drive's local folder and reconcile DB rows with disk.
 
+    Two phases: the scan does every slow operation (hashing, thumbnails)
+    WITHOUT any pending DB writes, then the changes are applied in short
+    write-only transactions. The SQLite write lock is never held across
+    file I/O, so concurrent writers (index workers, requests) never hit
+    "database is locked" because of a sync.
+
     When a `job` is given, progress is reported into it and pause/checkpoint
     is honored between files. Returns stats: {added, updated, removed, skipped}.
     """
@@ -352,7 +358,7 @@ def sync_drive(drive, job=None):
     if job:
         job.total = _count_files(root)
 
-    # Existing state, keyed by path relative to the root.
+    # Existing state, keyed by path relative to the root (read-only).
     existing_files = {}
     for f in StoredFile.query.filter_by(drive_id=drive.id).all():
         rel = os.path.relpath(f.source_path, root)
@@ -361,15 +367,16 @@ def sync_drive(drive, job=None):
     for folder in Folder.query.filter_by(drive_id=drive.id).all():
         existing_folders[_folder_rel_path(folder)] = folder
 
-    seen_files, seen_folders = set(), set()
-    to_index = []
+    # -- Phase 1: scan the disk. Nothing is written to the DB here, so the
+    # slow parts (sha256 of every file, thumbnail generation) run without
+    # holding the write lock.
+    seen_files, needed_dirs = set(), set()
+    adds, updates, thumbnails = [], [], []
 
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         rel_dir = os.path.relpath(dirpath, root)
-        parent = None
         if rel_dir != ".":
-            parent = _ensure_folder_path(drive, rel_dir, existing_folders,
-                                         seen_folders)
+            needed_dirs.add(rel_dir)
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             if os.path.islink(path):
@@ -399,41 +406,69 @@ def sync_drive(drive, job=None):
                     mime_type=None,
                     size=size,
                     checksum=_sha256_of(path),
-                    folder_id=parent.id if parent else None,
                     user_id=drive.user_id,
                     drive_id=drive.id,
                     source_path=os.path.abspath(path),
                 )
-                db.session.add(stored)
-                db.session.flush()
-                db.session.add(FileIndex(file_id=stored.id, status="pending"))
+                adds.append((rel, rel_dir, stored))
                 if stored.is_image:
-                    file_service._make_thumbnail(path, stored.stored_name)
-                existing_files[rel] = stored
-                to_index.append(stored.id)
+                    thumbnails.append((path, stored.stored_name))
                 stats["added"] += 1
             else:
                 checksum = _sha256_of(path)
                 if checksum != stored.checksum or size != stored.size:
-                    stored.checksum = checksum
-                    stored.size = size
-                    stored.updated_at = utcnow()
-                    if stored.index:
-                        stored.index.status = "pending"
+                    updates.append((stored, checksum, size))
                     if stored.is_image:
-                        file_service._make_thumbnail(path, stored.stored_name)
-                    to_index.append(stored.id)
+                        thumbnails.append((path, stored.stored_name))
                     stats["updated"] += 1
             if job:
                 job.processed += 1
-            # Flush in batches: other requests see fresh rows, the write lock
-            # is not held for the whole sync, and indexing (persistent queue)
-            # starts while the scan is still running — the queue card in the
-            # profile shows live progress instead of "empty" during a sync.
-            if len(to_index) >= 50:
-                db.session.commit()
-                _trigger_indexing(to_index, workers=drive.index_workers)
-                to_index = []
+
+    for path, stored_name in thumbnails:
+        file_service._make_thumbnail(path, stored_name)
+
+    # -- Phase 2: apply the changes. Only fast DB statements run between a
+    # batch's first write and its commit, so the write lock is held for
+    # milliseconds at a time. Folders first (parents before children).
+    seen_folders = set()
+    for rel_dir in sorted(needed_dirs, key=lambda p: (p.count(os.sep), p)):
+        _ensure_folder_path(drive, rel_dir, existing_folders, seen_folders)
+    db.session.commit()
+
+    # Flush in batches: other requests see fresh rows and indexing
+    # (persistent queue) starts while the apply phase is still running —
+    # the queue card in the profile shows live progress.
+    to_index = []
+    pending = 0
+
+    def flush_batch(force=False):
+        nonlocal pending
+        if pending and (force or pending >= 50):
+            db.session.commit()
+            _trigger_indexing(to_index, workers=drive.index_workers)
+            to_index.clear()
+            pending = 0
+
+    for rel, rel_dir, stored in adds:
+        parent = existing_folders.get(rel_dir)
+        stored.folder_id = parent.id if parent else None
+        db.session.add(stored)
+        db.session.flush()
+        db.session.add(FileIndex(file_id=stored.id, status="pending"))
+        existing_files[rel] = stored
+        to_index.append(stored.id)
+        pending += 1
+        flush_batch()
+    for stored, checksum, size in updates:
+        stored.checksum = checksum
+        stored.size = size
+        stored.updated_at = utcnow()
+        if stored.index:
+            stored.index.status = "pending"
+        to_index.append(stored.id)
+        pending += 1
+        flush_batch()
+    flush_batch(force=True)
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).
@@ -456,8 +491,6 @@ def sync_drive(drive, job=None):
     drive.last_synced_at = utcnow()
     drive.last_sync_stats = json.dumps(stats)
     db.session.commit()
-
-    _trigger_indexing(to_index, workers=drive.index_workers)
     return stats
 
 
