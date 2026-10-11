@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 from datetime import datetime
 
 from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, url_for
@@ -68,6 +69,21 @@ def help_page():
     """User guide: every feature of the app, in one page."""
     return render_template("settings/help.html",
                            enabled_modules=module_service.help_entries())
+
+
+@bp.route("/releases")
+@login_required
+def releases():
+    """What's new: release notes for every published version."""
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "data", "releases.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = {}
+    return render_template("settings/releases.html",
+                           releases=data.get("releases", []))
 
 
 @bp.route("/profile")

@@ -57,6 +57,7 @@
     let driveListCache = null; // /api/drives, fetched on first $ use
     let backgroundMode = false; // send as a long-horizon background task
     let personaRef = null; // {key, name, emoji} — sticky per conversation
+    let taskAbort = null;  // AbortController of the live task stream
 
     // Long-horizon mode: the next message starts a server-side background
     // task tracked in the bottom dock instead of a live streamed answer.
@@ -676,6 +677,7 @@
     }
 
     function loadConversation(id) {
+        if (taskAbort) { taskAbort.abort(); taskAbort = null; }
         fetch('/ai/conversations/' + id)
             .then(r => r.json())
             .then(conv => {
@@ -695,11 +697,74 @@
                 });
                 restoreContext(conv.context);
                 // A conversation owned by a background task stays in
-                // background mode until the user dismisses the task.
+                // background mode until the user dismisses the task, and a
+                // still-running task streams its events live (below).
                 setBackgroundMode(!!conv.task);
+                if (conv.task && (conv.task.status === 'queued'
+                        || conv.task.status === 'running')) {
+                    watchTask(conv.task);
+                }
                 toggleList(true);
                 scrollDown(true);  // opening a conversation lands at the end
             });
+    }
+
+    // Stream a running background task's events live, exactly like a normal
+    // chat answer. The transcript is persisted server-side, so a stream that
+    // just ends is not an error — the final loadConversation reconciles.
+    async function watchTask(task) {
+        taskAbort = new AbortController();
+        liveBubble = null;
+        lastThinkingSpan = null;
+        try {
+            const resp = await fetch('/ai/tasks/' + task.id + '/stream',
+                                     { signal: taskAbort.signal });
+            if (!resp.ok || !resp.body) return;
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    let event;
+                    try { event = JSON.parse(line); } catch { continue; }
+                    if (event.type === 'task_status') continue;
+                    if (event.type === 'thinking_token') {
+                        appendThinkingToken(event.content);
+                    } else if (event.type === 'answer_token') {
+                        appendAnswerToken(event.content);
+                    } else if (event.type === 'thinking') {
+                        if (event.migrate) migrateLiveBubble(event.content);
+                        else addReasoningLine('thinking', event.content);
+                    } else if (event.type === 'step') {
+                        addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
+                    } else if (event.type === 'tool_result') {
+                        addReasoningLine('tool_result', event.result.summary);
+                    } else if (event.type === 'notice') {
+                        addMessage('notice', event.content);
+                    } else if (event.type === 'ui_action') {
+                        window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
+                    } else if (event.type === 'answer') {
+                        collapseReasoningBox();
+                        finalizeLiveBubble(event.answer,
+                                           { created_at: new Date().toISOString(), model: event.model });
+                    } else if (event.type === 'error') {
+                        collapseReasoningBox();
+                        discardLiveBubble();
+                        addMessage('assistant', '**Error:** ' + event.error,
+                                   { created_at: new Date().toISOString() });
+                    }
+                }
+            }
+        } catch { /* aborted or offline — the transcript persists */ }
+        taskAbort = null;
+        collapseReasoningBox();
+        if (conversationId) loadConversation(conversationId);
     }
 
     // Rebuild the chips from a conversation's saved context snapshot
@@ -1139,7 +1204,13 @@
                                    { title: 'Run in background' });
                     return;
                 }
-                window.uiToast('Background task started — follow it in the dock below.', 'info');
+                window.uiToast('Background task started — follow it live here or in the dock below.', 'info');
+                // Follow the task live on THIS page: loading its fresh
+                // conversation keeps background mode on and subscribes to
+                // the event stream, so the AI's work renders as it happens.
+                if (data.task && data.task.conversation_id) {
+                    loadConversation(data.task.conversation_id);
+                }
             } catch (err) {
                 window.uiAlert('Could not reach the server.', { title: 'Run in background' });
             }

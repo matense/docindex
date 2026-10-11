@@ -145,6 +145,7 @@
                             <li><a href="{{ url_for('settings.profile') }}"><i class="fas fa-user w-5"></i> Profile</a></li>
                             <li><a href="{{ url_for('settings.ai_settings') }}"><i class="fas fa-robot w-5"></i> AI Settings</a></li>
                             <li><a href="{{ url_for('settings.help_page') }}"><i class="fas fa-circle-question w-5"></i> Help</a></li>
+                            <li><a href="{{ url_for('settings.releases') }}"><i class="fas fa-gift w-5"></i> What's new <span class="badge badge-xs badge-primary ml-auto">v{{ app_version }}</span></a></li>
                             {% if current_user.is_admin %}
                             <li><a href="{{ url_for('settings.modules') }}"><i class="fas fa-puzzle-piece w-5"></i> Manage modules</a></li>
                             {% endif %}

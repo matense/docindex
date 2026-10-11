@@ -13,6 +13,10 @@ from .extensions import csrf, db, login_manager, migrate
 MIGRATIONS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "migrations")
 
+# App version — bump on every release and tag it (see CONTRIBUTING.md);
+# shown in the user menu and on the release notes page (/settings/releases).
+APP_VERSION = "0.1.2"
+
 # Aggregate module migrations (independent alembic roots under
 # modules/<name>/migrations/versions) into every flask-migrate command.
 # ScriptDirectory reads version_locations when the command starts, so this
@@ -155,6 +159,7 @@ def create_app(config_class=Config):
         return {
             "ai_enabled": enabled,
             "app_name": "DocIndex",
+            "app_version": APP_VERSION,
             "current_drive": current_drive,
             "module_nav": module_service.nav_items() if cu.is_authenticated else [],
             "user_drives": drive_service.list_drives(cu) if cu.is_authenticated else [],

@@ -1351,7 +1351,14 @@
                                        { title: 'Run in background' });
                         return;
                     }
-                    window.uiToast('Background task started — follow it in the dock below.', 'info');
+                    window.uiToast('Background task started — follow it live here or in the dock below.', 'info');
+                    // Follow the task live in THIS window: loading its fresh
+                    // conversation enters task mode (banner + captured context)
+                    // and subscribes to the event stream, so the AI's work
+                    // renders here as it happens — no close/reopen needed.
+                    if (data.task && data.task.conversation_id) {
+                        loadConversation(data.task.conversation_id);
+                    }
                 } catch (err) {
                     window.uiAlert('Could not reach the server.', { title: 'Run in background' });
                 }

@@ -30,6 +30,14 @@
     </div>
     {% endif %}
 
+    <div class="alert alert-warning text-xs py-2.5 rounded-xl">
+        <i class="fas fa-triangle-exclamation flex-shrink-0"></i>
+        <span><strong>Early stage:</strong> Automation is in a very early stage —
+        use it with care. Workflows may misbehave, node configs may change
+        between releases, and runs can fail midway. Keep a copy of anything
+        important before letting a workflow modify it.</span>
+    </div>
+
     <!-- Examples gallery (collapsible — state remembered per browser) -->
     <details id="automation-examples" class="glass-panel rounded-2xl group">
         <summary class="px-6 py-4 cursor-pointer select-none flex items-center gap-3 list-none

@@ -60,7 +60,9 @@ git push
 ```
 
 - Use feature branches for larger work: `git checkout -b feature/my-thing`.
-- Tag releases: `git tag v0.2 && git push --tags`.
+- Tag releases: `git tag v0.2 && git push --tags`. Before tagging, bump
+  `APP_VERSION` in `app/__init__.py` and add the entry to
+  `app/data/releases.json` (rendered on `/settings/releases`).
 - Never force-push to `main` (the one-time `--force` at the initial cleanup
   was the exception).
 

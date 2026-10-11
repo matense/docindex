@@ -429,7 +429,10 @@ or per division (enable/disable all) on `/behaviors`.
   pagination; restore / delete forever / empty trash), a card linking to the
   behaviors & personas page (`/behaviors`) and, for admins only,
   `POST /settings/profile/registration` to toggle the
-  `registration_enabled` setting.
+  `registration_enabled` setting. Also `GET /settings/help` (user guide) and
+  `GET /settings/releases` (what's new — release notes rendered from
+  `app/data/releases.json`; the running version `APP_VERSION` in
+  `app/__init__.py` is injected as `app_version` and shown in the user menu).
 - `behaviors.py` (`/behaviors`): dedicated page for core behaviors (your
   reusable system prompts — create/edit/delete/toggle enabled) and the persona
   library (per-persona enable/disable toggles, grouped by division, plus a
@@ -989,7 +992,9 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   used in the latest message is persisted on the conversation and restored
   into the chips when it is reopened.
 - Background mode: a rocket toggle sends the next message to `POST /ai/tasks`
-  instead of `/ai/chat`. A conversation owned by a task reopens in "task
+  instead of `/ai/chat`. The launching chat immediately loads the task's
+  fresh conversation and follows it live (banner + event stream) — no
+  close/reopen needed. A conversation owned by a task reopens in "task
   mode" (banner + captured context + background toggle forced on) until the
   task is dismissed; while the task runs, the window subscribes to
   `/ai/tasks/<id>/stream` and renders it live like a normal answer.
