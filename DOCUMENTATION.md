@@ -946,6 +946,13 @@ modal (`/file/<id>/info`), rename, and drag & drop:
   Paste here (when the clipboard has items), Delete folder; empty-space
   right-click offers New folder, Upload files, Paste, Select all and Refresh
   (OS-style). Synced items (`data-is-synced`) hide all mutating entries.
+- SPA re-run safety: the router re-executes this script on every drive-page
+  navigation, so per-element listeners re-bind on the fresh cards while the
+  document/container-level listeners (keyboard, click-to-clear, menu close,
+  background context menu) are bound once behind `window._driveGlobalBound`
+  and share `window._driveState` (selection, last-click anchor, open menu).
+  Page-level scripts must never declare top-level `let`/`const` — a
+  re-executed script would die with a SyntaxError (`var`/functions only).
 
 `window.currentFile` tracks the file open in the viewer for `@here`.
 
