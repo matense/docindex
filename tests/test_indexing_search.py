@@ -78,6 +78,27 @@ def test_image_indexing_caption_called(auth_client, app):
             assert stored.index.status == "ok"
 
 
+def test_image_caption_outage_still_indexes(auth_client, app):
+    """AI backend down must not fail the file's index: the OCR text (or
+    nothing) is indexed and the image stays findable by name."""
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    app.config["AI_ENABLED"] = True
+    with patch("app.services.ai_service.caption_image",
+               side_effect=ConnectionError("backend down")), \
+         patch("app.services.indexing_service._extract_image_ocr",
+               return_value="ocr words"):
+        _upload(auth_client, "pixel.png", png)
+    with app.app_context():
+        stored = StoredFile.query.one()
+        assert stored.index.status == "ok"
+        assert stored.index.caption is None
+        assert stored.index.extracted_text == "ocr words"
+
+
 def test_index_error_status(auth_client, app):
     with patch("app.services.indexing_service.extract_text",
                side_effect=RuntimeError("boom")):
@@ -219,8 +240,21 @@ def test_extract_xls_uses_xlrd(app):
     assert "alpha | 1" in text and "beta | 2" in text
 
 
-def test_corrupt_xlsx_marks_index_error(auth_client, app):
+def test_mislabeled_xlsx_falls_back_to_text(auth_client, app):
+    """A .xlsx that is really plain text (or a dump fixture) is indexed as
+    text instead of failing — one weird file must not break indexing."""
     _upload(auth_client, "broken.xlsx", b"not a zip at all")
     with app.app_context():
         stored = StoredFile.query.one()
-        assert stored.index.status == "error"
+        assert stored.index.status == "ok"
+        assert stored.index.extracted_text == "not a zip at all"
+
+
+def test_binary_garbage_xlsx_indexes_empty_without_error(auth_client, app):
+    """Truly binary junk with a .xlsx name indexes with no text and no
+    error status (still findable by file name)."""
+    _upload(auth_client, "junk.xlsx", b"\x89\x00\xff\x00binary\x00junk")
+    with app.app_context():
+        stored = StoredFile.query.one()
+        assert stored.index.status == "ok"
+        assert stored.index.extracted_text is None

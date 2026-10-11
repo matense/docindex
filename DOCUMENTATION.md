@@ -117,11 +117,12 @@ Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
 `MAX_FILE_SIZE` 16 MB per file, `ALLOWED_EXTENSIONS` (documents, code,
 images incl. svg), `IMAGE_EXTENSIONS` (raster images, no svg),
 `EDITABLE_EXTENSIONS` (text/code files editable in place), `INDEX_ASYNC`,
-`SYNC_ASYNC`, `HASHTAG_ASYNC` and `AI_TASKS_ASYNC` (True in prod, False in
-tests).
+`SYNC_ASYNC`, `HASHTAG_ASYNC`, `AI_TASKS_ASYNC`, `AUTOMATION_ASYNC` and
+`AUTOMATION_SCHEDULER` (True in prod, False in tests).
 
 `TestConfig` uses in-memory SQLite, disables CSRF and AI, sets
-`INDEX_ASYNC=False` and redirects uploads to `instance/test_uploads`.
+`INDEX_ASYNC=False` (and the other async flags, so workers run inline) and
+redirects uploads to `instance/test_uploads`.
 
 ## Database schema
 
@@ -365,6 +366,23 @@ Admin-managed enable/disable state for extension modules (see Module system):
 disabled), `enabled_by` (FK `users.id`), `enabled_at`. Consulted per request
 by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
 
+### `behaviors` (`Behavior`)
+
+Core reusable system prompts (formerly an Automation module feature, migrated
+by `c1a2b3d4e5f6`): `user_id` owner, `name`, `content`, `enabled` (default
+true — disabled behaviors are hidden from pickers and the agent's
+`list_behaviors` tool), timestamps. Managed on `/behaviors` and merged into
+the workflow-editor preset dropdowns via `/behaviors/api/presets`.
+
+### `persona_prefs` (`PersonaPref`)
+
+Per-user enable/disable state for the bundled AI persona library
+(`persona_service`): (`user_id`, `persona_key`) with `enabled` (default true —
+a persona without a row is enabled). Disabled personas are hidden from the
+chat persona selector and are never injected into the system prompt
+(`_resolve_context` treats a disabled persona as invalid). Toggled per card
+or per division (enable/disable all) on `/behaviors`.
+
 ## HTTP surface
 
 - `auth.py`: `GET/POST /login`, `GET/POST /register` (blocked when the
@@ -408,9 +426,22 @@ by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
   per-drive stats (files, folders, space used, indexed words), AI usage
   (conversations, messages, active connection), a card linking to the trash
   bin (`GET /settings/trash` — deleted files with name search and
-  pagination; restore / delete forever / empty trash) and, for admins only,
+  pagination; restore / delete forever / empty trash), a card linking to the
+  behaviors & personas page (`/behaviors`) and, for admins only,
   `POST /settings/profile/registration` to toggle the
-  `registration_enabled` setting.
+  `registration_enabled` setting. Also `GET /settings/help` (user guide) and
+  `GET /settings/releases` (what's new — release notes rendered from
+  `app/data/releases.json`; the running version `APP_VERSION` in
+  `app/__init__.py` is injected as `app_version` and shown in the user menu).
+- `behaviors.py` (`/behaviors`): dedicated page for core behaviors (your
+  reusable system prompts — create/edit/delete/toggle enabled) and the persona
+  library (per-persona enable/disable toggles, grouped by division, plus a
+  per-division enable/disable-all button — `POST
+  /behaviors/personas/division/<division>/toggle`; the persona preview renders
+  its markdown content). Linked from the profile page (no nav-dock entry).
+  `GET /behaviors/api/presets` (JSON presets for the workflow-editor
+  dropdowns, enabled behaviors only). The legacy
+  `GET /m/automation/behaviors` redirects here.
 
 Ownership is enforced everywhere by filtering on `user_id` (`_get_owned`
 returns 404 for foreign objects; `_get_file` additionally hides trashed
@@ -898,7 +929,8 @@ Alt+N new folder, Alt+A toggle AI chat; holding Alt reveals shortcut badges.
 ### `drive.js`
 
 Drive page interactions: multi-select (Ctrl/Cmd+click toggle, Shift+click
-range, Ctrl+A select all visible, Esc or background click clears), cut/paste
+range, rubber-band lasso by dragging from empty background — additive with
+Ctrl/Cmd held, Ctrl+A select all visible, Esc or background click clears), cut/paste
 clipboard (sessionStorage), bulk delete/move via `/selection/*`, file info
 modal (`/file/<id>/info`), rename, and drag & drop:
 
@@ -918,6 +950,13 @@ modal (`/file/<id>/info`), rename, and drag & drop:
   Paste here (when the clipboard has items), Delete folder; empty-space
   right-click offers New folder, Upload files, Paste, Select all and Refresh
   (OS-style). Synced items (`data-is-synced`) hide all mutating entries.
+- SPA re-run safety: the router re-executes this script on every drive-page
+  navigation, so per-element listeners re-bind on the fresh cards while the
+  document/container-level listeners (keyboard, click-to-clear, menu close,
+  background context menu) are bound once behind `window._driveGlobalBound`
+  and share `window._driveState` (selection, last-click anchor, open menu).
+  Page-level scripts must never declare top-level `let`/`const` — a
+  re-executed script would die with a SyntaxError (`var`/functions only).
 
 `window.currentFile` tracks the file open in the viewer for `@here`.
 
@@ -941,13 +980,21 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   mention autocomplete backed by `/api/search`, drag & drop accepts drive
   files (attach directly) and OS files (upload via `POST /upload` with
   `Accept: application/json`, then attach). Chips show pending attachments.
+- Screen-context chips: the file open in the viewer (`window.currentFile`)
+  and the workflow open in the Automation editor (`window.currentWorkflow`)
+  each appear as a removable chip and are sent as `context_file_id` /
+  `context_workflow_id` (+ `context_workflow_node`); dismissing a chip
+  suppresses its payload field. The chips re-render on every `spa:navigated`
+  event so they always match what is on screen.
 - Drive scope: `$query` opens a drive mention autocomplete (multiple drives
   can be referenced); removing the current-drive chip switches to an
   explicit "All drives" chip, and removing that narrows back. The context
   used in the latest message is persisted on the conversation and restored
   into the chips when it is reopened.
 - Background mode: a rocket toggle sends the next message to `POST /ai/tasks`
-  instead of `/ai/chat`. A conversation owned by a task reopens in "task
+  instead of `/ai/chat`. The launching chat immediately loads the task's
+  fresh conversation and follows it live (banner + event stream) — no
+  close/reopen needed. A conversation owned by a task reopens in "task
   mode" (banner + captured context + background toggle forced on) until the
   task is dismissed; while the task runs, the window subscribes to
   `/ai/tasks/<id>/stream` and renders it live like a normal answer.
@@ -1086,10 +1133,90 @@ tool + table).
   cells can reference drive files. Cells can be dragged into the AI chat
   as a context chip (`context_cell` on `/ai/chat` → system note naming
   the notebook and cell id).
+- `automation` — visual workflow builder. Workflows are DAGs of
+  typed nodes edited on a drag & drop canvas (Drawflow, vendored) and
+  executed server-side. Node categories: **Input** (text/JSON, file from
+  drive — CSV/Excel become tables, JSON parses to nested data, anything
+  else yields its text; search files; trigger input — the file the run
+  was started from; run input — a parameter the workflow asks for in a
+  run form before it starts, or falls back to a static default for
+  scheduled/triggered/AI runs; kinds: short/long text, number, file —
+  the answers ride on `AutomationRun.params` and duplicate/unnamed
+  parameters are rejected at validation; notebook input), **Transform**
+  (template with `{{ node.port.path }}` references, pick-a-value-from-JSON,
+  JSON to table (a list of objects becomes rows; an object becomes a
+  key/value table), multi-condition row filter (column/operator/value
+  rows combined with ALL/ANY — operators include contains, numeric
+  comparisons, is one of / is not one of for comma-separated lists; the
+  column becomes a dropdown with the connected file's real columns),
+  column select/rename (same row-based picker with real column dropdowns,
+  preloaded with all of the source's columns the first time a table is
+  connected), read files — several file inputs flattened into one
+  labelled text; pandas-backed table nodes: aggregate/group-by, join
+  (two table inputs, inner/left/right/outer), sort, dedupe, computed
+  column via `df.eval`; image nodes: image info — dimensions/format via
+  PIL — and OCR via tesseract when available), **AI** (prompt chaining
+  and extract-JSON with one retry — both accept a `system` behavior
+  field — a full agent node that runs the core tool-using agent loop
+  over its inputs, and caption image via the vision model with an
+  optional instruction), **Logic** (condition with true/false ports —
+  both sides accept literal text or `{{ node }}` references picked from
+  a datalist, the right side hides for the empty/not-empty operators —
+  and merge), **Output** (save file to a writable drive — synced drives
+  are refused — save table as CSV/Excel, notebook output: append a cell,
+  replace all cells, or update one specific cell picked from a live list
+  fed by `/api/notebook-cells` — and workflow
+  result preview). Notebook nodes are gated on the notebooks module.
+  Data flows as typed payload envelopes (`text`/`json`/
+  `table`/`files`) with coercions between kinds. Runs are persistent
+  rows (`mod_automation_run`) with a per-node log, live-polling detail
+  page with an output console and per-node output inspection,
+  cooperative stop, startup recovery of interrupted runs, and a
+  daemon scheduler (`AUTOMATION_SCHEDULER`) that fires enabled workflows
+  every N minutes without overlapping themselves. Triggers: manual,
+  schedule, the drive UI (a file's context menu offers "Run workflow…"
+  for every workflow containing a trigger-input node, passing the file
+  as the trigger payload), and the AI chat via the namespaced tools
+  `automation.list_workflows` / `automation.run_workflow` /
+  `automation.get_node_catalog` / `automation.create_workflow` /
+  `automation.get_workflow` / `automation.edit_workflow` — so the
+  assistant can design, inspect and edit workflows on request.
+  `edit_workflow` applies a list of operations (add_node, update_node —
+  config merged, remove_node, connect, disconnect), re-validates the
+  whole graph before saving, and returns a `ui.workflow_changed` payload
+  that the agent stream forwards as a `ui_action` NDJSON event; the open
+  editor listens for `docindex-ui-action` and reloads the canvas from
+  `GET /m/automation/<id>/graph` (deferred while a config popup is
+  open). The chat payload carries `context_workflow_id` /
+  `context_workflow_node` (the workflow open in the editor and the node
+  being configured), so the assistant answers "add a filter here"
+  against the right graph. The index page
+  ships a gallery of ready-made example workflows (translate a file,
+  summarize files into a notebook, research digest, spreadsheet filter,
+  caption an image, ask-a-question report with a run input,
+  JSON to spreadsheet) that can be instantiated in one click. The node
+  config popup is spec-driven and self-explanatory: every node type
+  carries a plain-language description, accepts/returns chips and a
+  concrete example; fields have placeholders, "Examples…" preset
+  dropdowns fed by built-in presets and the user's own **behaviors**
+  (reusable system prompts — a core feature managed on `/behaviors`,
+  merged into the dropdown via `/behaviors/api/presets`), and the
+  table/JSON nodes show
+  the real columns/keys of the connected file as live hints via
+  `/api/file-shape`. The canvas enforces payload-kind connection rules
+  (e.g. table inputs only accept table-producing nodes — and from a
+  "File from drive" node only CSV/Excel files). Other modules
+  can contribute node types with
+  `automation.registry.register_node_type(...)`; types of disabled
+  modules are hidden from the palette and fail closed at execution.
+  Tables: `mod_automation_workflow` (graph JSON, schedule fields) and
+  `mod_automation_run` (status, log, output, optional trigger file,
+  answered run params), with an independent alembic
+  branch (`automation`).
 
 ## Testing
 
-pytest suite in `tests/`, 326 tests across 20+ modules:
+pytest suite in `tests/`, 493 tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
@@ -1117,7 +1244,13 @@ pytest suite in `tests/`, 326 tests across 20+ modules:
   the module system (discovery/validation, route guard, namespaced tool
   registry, file guards, admin toggle page), and the notebooks module
   (document service, AI lock/hide flags, assets upload, history/diff,
-  chat `context_cell`).
+  chat `context_cell`), and the automation module (graph validation and
+  topological ordering, template references, condition branch skipping,
+  payload coercions, every built-in node — including trigger input, read
+  files, agent, JSON-to-table and notebook nodes — run lifecycle/stop/
+  recovery, trigger-file runs, example instantiation, the file-shape
+  hint endpoint, scheduler due-workflow rules and tick, AI tools, routes
+  with ownership and disabled-module 404s).
 
 Run with `pytest`.
 

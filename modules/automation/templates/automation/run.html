@@ -1,0 +1,477 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run.id }} - Automation{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full flex flex-col gap-4" id="automation-run-root"
+     data-status-url="{{ url_for('automation.run_status', run_id=run.id) }}"
+     data-stop-url="{{ url_for('automation.run_stop', run_id=run.id) }}"
+     data-active="{{ '1' if run.is_active else '0' }}">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-diagram-project"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold truncate">
+                {{ run.workflow.name if run.workflow else 'Workflow' }} — run #{{ run.id }}
+            </h1>
+            <p class="text-xs opacity-50">
+                {{ run.created_at.strftime('%d %b %Y %H:%M:%S') if run.created_at }} · trigger: {{ run.trigger }}<span id="run-duration"></span>
+            </p>
+            {% if params %}
+            <p class="text-xs opacity-60 mt-1 flex items-center gap-1 flex-wrap">
+                <i class="fas fa-circle-question text-primary/60"></i>
+                {% for key, value in params.items() %}
+                <span class="badge badge-ghost badge-sm">{{ key }}: {{ value if value|length < 60 else value[:60] + '…' }}</span>
+                {% endfor %}
+            </p>
+            {% endif %}
+        </div>
+        <span id="run-status-badge"
+              class="badge badge-lg {{ 'badge-success' if run.status == 'done' else ('badge-error' if run.status in ('error', 'interrupted') else ('badge-warning' if run.is_active else 'badge-ghost')) }} gap-1">
+            {% if run.is_active %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
+            {{ run.status }}
+        </span>
+        {% if run.is_active %}
+        <button type="button" id="run-stop" class="btn btn-outline btn-error btn-sm gap-1">
+            <i class="fas fa-stop"></i> Stop
+        </button>
+        {% endif %}
+        {% if run.workflow %}
+        <a href="{{ url_for('automation.runs', workflow_id=run.workflow_id) }}" class="btn btn-ghost btn-sm gap-1">
+            <i class="fas fa-arrow-left"></i> All runs
+        </a>
+        {% endif %}
+    </div>
+
+    <div id="run-error" class="glass-panel rounded-2xl px-4 py-3 border border-error/30 {{ 'hidden' if not run.error }}">
+        <div class="text-sm text-error"><i class="fas fa-triangle-exclamation mr-1"></i><span id="run-error-text">{{ run.error }}</span></div>
+    </div>
+
+    <!-- Live progress: current node + overall percentage -->
+    <div class="glass-panel rounded-2xl px-5 py-4">
+        <div class="flex items-center justify-between gap-3 text-xs mb-2">
+            <span id="run-current" class="flex items-center gap-2 opacity-70 min-w-0 truncate">
+                <i class="fas fa-circle-notch fa-spin text-warning"></i>
+                <span class="truncate">Waiting for the first node…</span>
+            </span>
+            <span class="flex items-center gap-2 flex-shrink-0">
+                <span id="run-fraction" class="opacity-40"></span>
+                <span id="run-percent" class="font-bold font-mono">0%</span>
+            </span>
+        </div>
+        <progress id="run-progress" class="progress progress-primary w-full" value="0" max="100"></progress>
+    </div>
+
+    <!-- Pipeline: executed nodes (with times + output popup), the running
+         one, and the ones still pending -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 text-[10px] uppercase tracking-wide opacity-50 flex items-center gap-2">
+            <span class="flex-1">Pipeline{% if run.is_active %} — live{% endif %}</span>
+            <span class="normal-case tracking-normal opacity-60 hidden sm:inline">click a finished node to see its output</span>
+            <span id="run-pipeline-count" class="normal-case tracking-normal"></span>
+        </div>
+        <div id="run-log" class="divide-y divide-base-content/5"></div>
+    </div>
+
+    <!-- Inputs & outputs: every file/object the run used and produced -->
+    <div id="run-io-panel" class="glass-panel rounded-2xl overflow-hidden hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 text-[10px] uppercase tracking-wide opacity-50 flex items-center gap-2">
+            <i class="fas fa-arrow-right-arrow-left"></i>
+            <span>Inputs &amp; outputs</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-base-content/10">
+            <div class="p-4">
+                <div class="text-[10px] uppercase tracking-wide opacity-50 mb-2">
+                    <i class="fas fa-arrow-down mr-1"></i>Inputs used
+                </div>
+                <div id="run-inputs" class="flex flex-col gap-1.5"></div>
+            </div>
+            <div class="p-4">
+                <div class="text-[10px] uppercase tracking-wide opacity-50 mb-2">
+                    <i class="fas fa-arrow-up mr-1"></i>Outputs produced
+                </div>
+                <div id="run-outputs" class="flex flex-col gap-1.5"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Console: raw execution lines -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 text-[10px] uppercase tracking-wide opacity-50 flex items-center gap-2">
+            <i class="fas fa-terminal"></i>
+            <span class="flex-1">Console</span>
+        </div>
+        <div id="run-console"
+             class="p-3 font-mono text-xs leading-relaxed h-52 overflow-y-auto rounded-b-2xl"
+             style="background:#0d1117;color:#e6edf3"></div>
+    </div>
+</div>
+
+<!-- Node output popup -->
+<dialog id="node-output-modal" class="modal">
+    <div class="modal-box glass-panel max-w-2xl">
+        <h3 class="font-bold text-lg mb-1 flex items-center gap-2 min-w-0">
+            <i class="fas fa-cube text-primary flex-shrink-0"></i>
+            <span id="node-output-title" class="truncate"></span>
+            <code id="node-output-id" class="text-[10px] opacity-40 font-normal"></code>
+        </h3>
+        <div id="node-output-body" class="flex flex-col gap-3 max-h-[60vh] overflow-y-auto mt-2"></div>
+        <div class="modal-action">
+            <form method="dialog"><button class="btn btn-ghost btn-sm">Close</button></form>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+(function () {
+    const root = document.getElementById('automation-run-root');
+    const logEl = document.getElementById('run-log');
+    const consoleEl = document.getElementById('run-console');
+    const badge = document.getElementById('run-status-badge');
+    const bar = document.getElementById('run-progress');
+    const pctEl = document.getElementById('run-percent');
+    const fracEl = document.getElementById('run-fraction');
+    const curEl = document.getElementById('run-current');
+    const countEl = document.getElementById('run-pipeline-count');
+    const durEl = document.getElementById('run-duration');
+    const ioPanel = document.getElementById('run-io-panel');
+    const inputsEl = document.getElementById('run-inputs');
+    const outputsEl = document.getElementById('run-outputs');
+    const ACTIVE = new Set(['queued', 'running']);
+    const ICONS = { done: 'fa-circle-check text-success',
+                    error: 'fa-circle-xmark text-error',
+                    skipped: 'fa-forward opacity-40',
+                    running: 'fa-circle-notch fa-spin text-warning',
+                    pending: 'fa-circle opacity-20' };
+    // nodeId -> timestamp when the node was first seen running (live timer)
+    const runningSince = {};
+    // latest poll payload — node output popups read from it
+    let lastData = null;
+
+    // Same format as the backend `duration` filter:
+    // 420 ms → "420 ms", 3.25s → "3.25s", 65.3s → "1m 05.3s", 3723s → "1h 02m 03s"
+    function fmtMs(ms) {
+        ms = Math.max(0, Math.round(ms || 0));
+        if (ms < 1000) return ms + ' ms';
+        const hours = Math.floor(ms / 3600000);
+        const minutes = Math.floor((ms % 3600000) / 60000);
+        const secs = Math.floor((ms % 60000) / 1000);
+        const millis = ms % 1000;
+        let frac = millis ? ('.' + String(millis).padStart(3, '0')).replace(/0+$/, '') : '';
+        if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+        if (minutes) return `${minutes}m ${String(secs).padStart(2, '0')}${frac}s`;
+        return `${secs}${frac}s`;
+    }
+
+    function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+    }
+
+    function fmtClock(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return isNaN(d) ? '' : d.toLocaleTimeString();
+    }
+
+    // --- Node output popup ------------------------------------------------
+    function openNodeOutput(nid, label) {
+        const modal = document.getElementById('node-output-modal');
+        document.getElementById('node-output-title').textContent = label;
+        document.getElementById('node-output-id').textContent = nid;
+        const body = document.getElementById('node-output-body');
+        body.innerHTML = '';
+        const ports = (lastData && lastData.node_outputs
+                       ? lastData.node_outputs[nid] : null) || null;
+        if (!ports || !Object.keys(ports).length) {
+            body.appendChild(el('p', 'text-sm opacity-50',
+                'No output was captured for this node (empty output, or the run predates output capture).'));
+        } else {
+            Object.entries(ports).forEach(([port, text]) => {
+                const wrap = el('div');
+                wrap.appendChild(el('div',
+                    'text-[10px] uppercase tracking-wide opacity-50 mb-1',
+                    `output · ${port}`));
+                const pre = el('pre', 'code-view rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap');
+                pre.style.background = '#0d1117'; pre.style.color = '#e6edf3';
+                pre.textContent = text;
+                wrap.appendChild(pre);
+                body.appendChild(wrap);
+            });
+        }
+        modal.showModal();
+    }
+
+    // --- Progress bar + current node ------------------------------------
+    function renderProgress(p, status) {
+        p = p || { total: 0, finished: 0, percent: 0, current: null };
+        bar.value = p.percent;
+        pctEl.textContent = p.percent + '%';
+        fracEl.textContent = p.total ? `${p.finished}/${p.total} nodes` : '';
+        bar.className = 'progress w-full ' +
+            (status === 'done' ? 'progress-success'
+             : (status === 'error' || status === 'interrupted') ? 'progress-error'
+             : status === 'stopped' ? 'progress-warning'
+             : 'progress-primary');
+        curEl.innerHTML = '';
+        if (ACTIVE.has(status)) {
+            if (p.current) {
+                curEl.appendChild(el('i', 'fas fa-circle-notch fa-spin text-warning'));
+                const wrap = el('span', 'truncate');
+                wrap.appendChild(document.createTextNode('Running: '));
+                wrap.appendChild(el('b', '', p.current.label));
+                wrap.appendChild(el('code', 'text-[10px] opacity-40 ml-1', p.current.node));
+                curEl.appendChild(wrap);
+            } else {
+                curEl.appendChild(el('i', 'fas fa-circle-notch fa-spin text-warning'));
+                curEl.appendChild(el('span', 'truncate', 'Waiting for the first node…'));
+            }
+        } else if (status === 'done') {
+            curEl.appendChild(el('i', 'fas fa-circle-check text-success'));
+            curEl.appendChild(el('span', 'truncate', `All ${p.total} node(s) finished.`));
+        } else if (status === 'error' || status === 'interrupted') {
+            curEl.appendChild(el('i', 'fas fa-circle-xmark text-error'));
+            curEl.appendChild(el('span', 'truncate',
+                `Failed — ${p.finished} of ${p.total} node(s) finished.`));
+        } else {
+            curEl.appendChild(el('i', 'fas fa-stop text-warning'));
+            curEl.appendChild(el('span', 'truncate',
+                `Stopped — ${p.finished} of ${p.total} node(s) finished.`));
+        }
+    }
+
+    // --- Pipeline rows ---------------------------------------------------
+    function renderPipeline(pipeline, entries, status) {
+        const isActive = ACTIVE.has(status);
+        const nodeOutputs = (lastData && lastData.node_outputs) || {};
+        const byNode = {};
+        entries.forEach(e => { byNode[e.node] = e; });
+        Object.keys(byNode).forEach(nid => {
+            if (byNode[nid].status === 'running' && !runningSince[nid]) {
+                runningSince[nid] = Date.now();
+            }
+        });
+        // Rows: full pipeline when known (executed + running + pending),
+        // otherwise just the log entries (graph unavailable).
+        const rows = pipeline && pipeline.length
+            ? pipeline.map(n => ({ node: n.node, label: n.label,
+                                   entry: byNode[n.node] || null }))
+            : entries.map(e => ({ node: e.node, label: e.label, entry: e }));
+        logEl.innerHTML = '';
+        if (!rows.length) {
+            logEl.innerHTML =
+                '<div class="text-center py-10 opacity-40 text-sm"><i class="fas fa-circle-notch fa-spin text-xl mb-2 block"></i>Waiting for the first node…</div>';
+            countEl.textContent = '';
+            return;
+        }
+        rows.forEach(r => {
+            const e = r.entry;
+            const st = e ? e.status : 'pending';
+            const hasOutput = !!(nodeOutputs[r.node] &&
+                                 Object.keys(nodeOutputs[r.node]).length);
+            const clickable = hasOutput && e && e.status !== 'running';
+            const row = el('div', 'px-4 py-2.5 flex items-center gap-3 text-sm' +
+                (st === 'pending' ? ' opacity-45' : '') +
+                (clickable ? ' cursor-pointer hover:bg-base-content/[0.04] transition-colors' : ''));
+            row.appendChild(el('i', `fas ${ICONS[st] || ICONS.pending} w-4`));
+            row.appendChild(el('span', 'font-semibold', r.label));
+            row.appendChild(el('code', 'text-[10px] opacity-40', r.node));
+            const mid = el('span', 'text-xs opacity-50 flex-1 truncate',
+                           e ? (e.summary || '') : (isActive ? 'pending' : 'not executed'));
+            if (e && e.summary) mid.title = e.summary;
+            row.appendChild(mid);
+            if (clickable) {
+                const eye = el('i', 'fas fa-eye text-[10px] opacity-30 flex-shrink-0');
+                eye.title = 'View output';
+                row.appendChild(eye);
+                row.addEventListener('click', () => openNodeOutput(r.node, r.label));
+            }
+            if (st === 'running') {
+                row.appendChild(el('span', 'text-[10px] opacity-60 font-mono', ''))
+                   .dataset.liveElapsed = r.node;
+            } else if (e) {
+                row.appendChild(el('span', 'text-[10px] opacity-40 font-mono',
+                                   fmtMs(e.ms)));
+            }
+            logEl.appendChild(row);
+        });
+        const done = entries.filter(e => e.status !== 'running').length;
+        countEl.textContent = pipeline && pipeline.length
+            ? `${done}/${pipeline.length}` : '';
+    }
+
+    // --- Inputs & outputs -------------------------------------------------
+    function fileLink(f, extraCls) {
+        const a = el('a', 'flex items-center gap-2 text-sm rounded-lg border ' +
+            'border-base-content/10 px-3 py-2 hover:border-primary/40 ' +
+            'hover:bg-primary/5 transition-colors group/io ' + (extraCls || ''));
+        a.href = '/file/' + f.file_id + '/view';
+        a.appendChild(el('i', 'fas fa-file text-primary/60 text-xs'));
+        a.appendChild(el('span', 'truncate flex-1 group-hover/io:text-primary transition-colors',
+                         f.name || ('file #' + f.file_id)));
+        if (f.via) a.appendChild(el('span', 'badge badge-ghost badge-xs flex-shrink-0', f.via));
+        return a;
+    }
+
+    function renderIO(data) {
+        const inputs = data.inputs || [];
+        const out = data.output || {};
+        const files = out.files || [];
+        const results = out.results || [];
+        const nodeOutputs = data.node_outputs || {};
+        if (!inputs.length && !files.length && !results.length) {
+            ioPanel.classList.add('hidden');
+            return;
+        }
+        ioPanel.classList.remove('hidden');
+        inputsEl.innerHTML = '';
+        outputsEl.innerHTML = '';
+        if (inputs.length) {
+            inputs.forEach(f => inputsEl.appendChild(fileLink(f)));
+        } else {
+            inputsEl.appendChild(el('p', 'text-xs opacity-40', 'No file inputs — the run started from static content.'));
+        }
+        if (files.length || results.length) {
+            files.forEach(f => outputsEl.appendChild(fileLink(f, 'border-success/20')));
+            results.forEach(r => {
+                const label = (data.pipeline || []).find(n => n.node === r.node);
+                const btn = el('button', 'flex items-center gap-2 text-sm rounded-lg border ' +
+                    'border-base-content/10 px-3 py-2 hover:border-primary/40 ' +
+                    'hover:bg-primary/5 transition-colors text-left w-full');
+                btn.type = 'button';
+                btn.appendChild(el('i', 'fas fa-align-left text-secondary/70 text-xs'));
+                const txt = el('span', 'truncate flex-1',
+                               (label ? label.label : r.node) + ' — result');
+                btn.appendChild(txt);
+                btn.appendChild(el('i', 'fas fa-eye text-[10px] opacity-30'));
+                btn.addEventListener('click', () =>
+                    openNodeOutput(r.node, label ? label.label : r.node));
+                outputsEl.appendChild(btn);
+            });
+        } else {
+            outputsEl.appendChild(el('p', 'text-xs opacity-40', 'No outputs produced.'));
+        }
+    }
+
+    // --- Console ----------------------------------------------------------
+    function renderConsole(data) {
+        consoleEl.innerHTML = '';
+        const lines = [];
+        if (data.started_at) {
+            lines.push({ cls: 'opacity-50',
+                         text: `▸ run #${data.id} started at ${fmtClock(data.started_at)}` });
+        } else {
+            lines.push({ cls: 'opacity-50', text: `▸ run #${data.id} queued…` });
+        }
+        (data.log || []).forEach(e => {
+            if (e.status === 'running') {
+                lines.push({ cls: 'text-yellow-300',
+                             text: `▶ [${e.node}] ${e.label} — running…` });
+            } else if (e.status === 'done') {
+                lines.push({ cls: 'text-green-400',
+                             text: `✓ [${e.node}] ${e.label} — done in ${fmtMs(e.ms)}` +
+                                   (e.summary && e.summary !== 'ok' ? ` — ${e.summary}` : '') });
+            } else if (e.status === 'error') {
+                lines.push({ cls: 'text-red-400',
+                             text: `✗ [${e.node}] ${e.label} — ERROR: ${e.summary || ''}` });
+            } else if (e.status === 'skipped') {
+                lines.push({ cls: 'opacity-40',
+                             text: `↷ [${e.node}] ${e.label} — skipped (${e.summary || ''})` });
+            }
+        });
+        if (!ACTIVE.has(data.status)) {
+            if (data.status === 'done') {
+                const dur = data.started_at && data.finished_at
+                    ? fmtMs(new Date(data.finished_at) - new Date(data.started_at))
+                    : '';
+                lines.push({ cls: 'text-green-400 font-bold',
+                             text: `■ run finished: done in ${dur}` });
+            } else if (data.status === 'error') {
+                lines.push({ cls: 'text-red-400 font-bold',
+                             text: `■ run failed: ${data.error || 'error'}` });
+            } else {
+                lines.push({ cls: 'text-yellow-300 font-bold',
+                             text: `■ run ${data.status}` });
+            }
+        }
+        lines.forEach(l => consoleEl.appendChild(el('div', l.cls, l.text)));
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    // --- Live elapsed timer for the running node --------------------------
+    let ticker = null;
+    function startTicker() {
+        if (ticker) return;
+        ticker = setInterval(() => {
+            document.querySelectorAll('[data-live-elapsed]').forEach(span => {
+                const since = runningSince[span.dataset.liveElapsed];
+                if (since) span.textContent = fmtMs(Date.now() - since);
+            });
+        }, 200);
+    }
+    function stopTicker() {
+        if (ticker) { clearInterval(ticker); ticker = null; }
+    }
+
+    function apply(data) {
+        lastData = data;
+        renderProgress(data.progress, data.status);
+        renderPipeline(data.pipeline, data.log || [], data.status);
+        renderConsole(data);
+        renderIO(data);
+        if (data.started_at) {
+            const end = data.finished_at ? new Date(data.finished_at) : new Date();
+            durEl.textContent = ' · duration: ' + fmtMs(end - new Date(data.started_at));
+        }
+        badge.textContent = data.status;
+        if (ACTIVE.has(data.status)) {
+            startTicker();
+        } else {
+            stopTicker();
+            badge.className = 'badge badge-lg gap-1 ' +
+                (data.status === 'done' ? 'badge-success'
+                 : (data.status === 'error' || data.status === 'interrupted') ? 'badge-error'
+                 : 'badge-ghost');
+            const stop = document.getElementById('run-stop');
+            if (stop) stop.remove();
+            if (data.error) {
+                document.getElementById('run-error').classList.remove('hidden');
+                document.getElementById('run-error-text').textContent = data.error;
+            }
+        }
+    }
+
+    const stopBtn = document.getElementById('run-stop');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', async () => {
+            const ok = await window.uiConfirm('Stop this run? Nodes already executed stay in the log.',
+                                              { title: 'Stop run', confirmText: 'Stop' });
+            if (!ok) return;
+            await fetch(root.dataset.stopUrl, { method: 'POST' });
+            poll();
+        });
+    }
+
+    let timer = null;
+    async function poll() {
+        try {
+            const resp = await fetch(root.dataset.statusUrl);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            apply(data);
+            if (ACTIVE.has(data.status)) {
+                timer = setTimeout(poll, 2000);
+            }
+        } catch { timer = setTimeout(poll, 4000); }
+    }
+
+    // Initial render from the server payload, then poll while active.
+    poll();
+    document.addEventListener('spa:navigate', () => { clearTimeout(timer); stopTicker(); },
+                              { once: true });
+})();
+</script>
+{% endblock %}

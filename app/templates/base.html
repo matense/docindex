@@ -53,7 +53,7 @@
     </script>
     {% endif %}
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=8">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=9">
     {% block head %}{% endblock %}
 </head>
 <body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
@@ -145,6 +145,7 @@
                             <li><a href="{{ url_for('settings.profile') }}"><i class="fas fa-user w-5"></i> Profile</a></li>
                             <li><a href="{{ url_for('settings.ai_settings') }}"><i class="fas fa-robot w-5"></i> AI Settings</a></li>
                             <li><a href="{{ url_for('settings.help_page') }}"><i class="fas fa-circle-question w-5"></i> Help</a></li>
+                            <li><a href="{{ url_for('settings.releases') }}"><i class="fas fa-gift w-5"></i> What's new <span class="badge badge-xs badge-primary ml-auto">v{{ app_version }}</span></a></li>
                             {% if current_user.is_admin %}
                             <li><a href="{{ url_for('settings.modules') }}"><i class="fas fa-puzzle-piece w-5"></i> Manage modules</a></li>
                             {% endif %}
@@ -334,7 +335,7 @@
             {% endif %}
             {% if ai_enabled %}
                 {% include 'components/ai_chat.html' %}
-                <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=5" defer></script>
+                <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=6" defer></script>
                 <script src="{{ url_for('static', filename='js/ai_tasks_widget.js') }}?v=1" defer></script>
             {% endif %}
             <script src="{{ url_for('static', filename='js/sync_widget.js') }}?v=4" defer></script>

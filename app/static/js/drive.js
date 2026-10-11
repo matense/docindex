@@ -2,13 +2,31 @@
 
 // --- Multi-select (Ctrl/Shift+click), drag & drop between folders, ----------
 // --- right-click context menu. Selection keys: "f<id>" files, "d<id>" folders.
+//
+// NOTE: the SPA router re-executes this script on every drive-page
+// navigation. Per-element listeners are re-bound on the fresh cards (fine),
+// but document/container-level listeners must be bound only once and must
+// share state through `window._driveState` — otherwise each visit would
+// stack duplicate handlers closing over a dead selection.
 (function () {
     if (!document.querySelector('[data-folder-id]')) return; // not a drive page
 
-    const selected = new Map(); // key -> { kind, id, name }
+    // Shared state lives on window so the once-bound global handlers (below)
+    // keep working across SPA re-runs. Mutate in place — never reassign.
+    const S = window._driveState || (window._driveState = {
+        selected: new Map(),   // key -> { kind, id, name }
+        lastClicked: null,     // anchor for shift-range selection
+        ctxMenu: null,
+        driveSynced: false,
+    });
+    S.selected.clear();
+    S.lastClicked = null;
+    S.driveSynced = !!document.querySelector('[data-drive-synced]');
     const CLIP_KEY = 'docindex-clipboard';
-    const driveSynced = !!document.querySelector('[data-drive-synced]');
-    let lastClicked = null;   // anchor for shift-range selection
+
+    function onDrivePage() {
+        return !!document.querySelector('[data-folder-id]');
+    }
 
     function csrfToken() {
         return document.querySelector('meta[name="csrf-token"]')?.content || '';
@@ -40,7 +58,7 @@
         const del = document.getElementById('tb-delete');
         const paste = document.getElementById('tb-paste');
         if (!cut) return;
-        const n = selected.size;
+        const n = S.selected.size;
         cut.disabled = n === 0;
         del.disabled = n === 0;
         const selBadge = document.getElementById('tb-sel-count');
@@ -56,17 +74,17 @@
 
     function paint() {
         document.querySelectorAll('[data-file-id]').forEach((card) => {
-            card.classList.toggle('drive-selected', selected.has('f' + card.dataset.fileId));
+            card.classList.toggle('drive-selected', S.selected.has('f' + card.dataset.fileId));
         });
         document.querySelectorAll('[data-folder-sel-id]').forEach((card) => {
-            card.classList.toggle('drive-selected', selected.has('d' + card.dataset.folderSelId));
+            card.classList.toggle('drive-selected', S.selected.has('d' + card.dataset.folderSelId));
         });
         updateToolbar();
     }
 
     function clearSelection() {
-        if (!selected.size) return;
-        selected.clear();
+        if (!S.selected.size) return;
+        S.selected.clear();
         paint();
     }
 
@@ -76,26 +94,26 @@
         if (i === -1 || j === -1) return;
         const from = Math.min(i, j), to = Math.max(i, j);
         for (let k = from; k <= to; k++) {
-            selected.set(itemKey(items[k]), itemEntry(items[k]));
+            S.selected.set(itemKey(items[k]), itemEntry(items[k]));
         }
     }
 
     function handleItemClick(el, e) {
-        if (e.shiftKey && lastClicked) {
+        if (e.shiftKey && S.lastClicked) {
             e.preventDefault();
             e.stopPropagation();
-            selectRange(lastClicked, el);
+            selectRange(S.lastClicked, el);
             paint();
         } else if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             e.stopPropagation();
             const key = itemKey(el);
-            if (selected.has(key)) selected.delete(key);
-            else selected.set(key, itemEntry(el));
-            lastClicked = el;
+            if (S.selected.has(key)) S.selected.delete(key);
+            else S.selected.set(key, itemEntry(el));
+            S.lastClicked = el;
             paint();
         } else {
-            lastClicked = el; // normal click navigates (handled by spa.js)
+            S.lastClicked = el; // normal click navigates (handled by spa.js)
         }
     }
 
@@ -105,8 +123,8 @@
     // by the folder drop targets below for moves).
 
     function buildDragPayload(el) {
-        const items = selected.has(itemKey(el)) && selected.size
-            ? [...selected.values()]
+        const items = S.selected.has(itemKey(el)) && S.selected.size
+            ? [...S.selected.values()]
             : [itemEntry(el)];
         return {
             files: items.filter(i => i.kind === 'file'),
@@ -137,7 +155,7 @@
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
         }).then(r => r.json()).then(() => {
-            selected.clear();
+            S.selected.clear();
             refreshPage();
         });
     }
@@ -151,7 +169,7 @@
         card.addEventListener('click', (e) => handleItemClick(card, e));
         card.addEventListener('dragstart', (e) => onDragStart(card, e));
 
-        if (driveSynced) return; // read-only drive: no drop targets
+        if (S.driveSynced) return; // read-only drive: no drop targets
         card.addEventListener('dragover', (e) => {
             if (!e.dataTransfer.types.includes('application/x-docindex-items')) return;
             e.preventDefault();
@@ -188,11 +206,11 @@
     }
 
     window.driveCutSelection = function () {
-        if (!selected.size) return;
+        if (!S.selected.size) return;
         const clip = { files: [], folders: [] };
-        selected.forEach((s) => clip[s.kind === 'file' ? 'files' : 'folders'].push({ id: s.id, name: s.name }));
+        S.selected.forEach((s) => clip[s.kind === 'file' ? 'files' : 'folders'].push({ id: s.id, name: s.name }));
         sessionStorage.setItem(CLIP_KEY, JSON.stringify(clip));
-        selected.clear();
+        S.selected.clear();
         paint();
     };
 
@@ -205,15 +223,15 @@
     };
 
     window.driveDeleteSelection = async function () {
-        if (!selected.size) return;
-        const names = [...selected.values()].map(s => s.name);
+        if (!S.selected.size) return;
+        const names = [...S.selected.values()].map(s => s.name);
         const ok = await window.uiConfirm(
-            'Move ' + selected.size + ' item(s) to the trash?\n\n' + names.slice(0, 10).join('\n') +
+            'Move ' + S.selected.size + ' item(s) to the trash?\n\n' + names.slice(0, 10).join('\n') +
             (names.length > 10 ? '\n…' : ''),
             { danger: true, title: 'Delete selection', confirmText: 'Move to trash' });
         if (!ok) return;
         const files = [], folders = [];
-        selected.forEach((s) => (s.kind === 'file' ? files : folders).push(s.id));
+        S.selected.forEach((s) => (s.kind === 'file' ? files : folders).push(s.id));
         const body = new URLSearchParams();
         body.set('file_ids', files.join(','));
         body.set('folder_ids', folders.join(','));
@@ -222,38 +240,15 @@
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
         }).then(r => r.json()).then(() => {
-            selected.clear();
+            S.selected.clear();
             refreshPage();
         });
     };
 
-    // --- Keyboard shortcuts + background click --------------------------------
-
-    document.addEventListener('keydown', (e) => {
-        const tag = (e.target.tagName || '').toLowerCase();
-        if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-            e.preventDefault();
-            visibleItems().forEach(el => selected.set(itemKey(el), itemEntry(el)));
-            paint();
-        } else if (e.key === 'Escape') {
-            if (ctxMenu) closeContextMenu();
-            else clearSelection();
-        }
-    });
-
-    document.addEventListener('click', (e) => {
-        if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
-                              'button, a, form, dialog, input, .context-menu')) return;
-        clearSelection();
-    });
-
     // --- Right-click context menu ---------------------------------------------
 
-    let ctxMenu = null;
-
     function closeContextMenu() {
-        if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+        if (S.ctxMenu) { S.ctxMenu.remove(); S.ctxMenu = null; }
     }
 
     function navigateTo(url) {
@@ -291,19 +286,13 @@
         const r = ul.getBoundingClientRect();
         ul.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8)) + 'px';
         ul.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + 'px';
-        ctxMenu = ul;
+        S.ctxMenu = ul;
     }
-
-    ['scroll', 'resize'].forEach(evt =>
-        window.addEventListener(evt, closeContextMenu, true));
-    document.addEventListener('click', (e) => {
-        if (ctxMenu && !e.target.closest('.context-menu')) closeContextMenu();
-    });
 
     function selectionEntries() {
         // Actions for a multi-item selection.
-        const entries = [{ header: selected.size + ' items selected' }];
-        if (!driveSynced) {
+        const entries = [{ header: S.selected.size + ' items selected' }];
+        if (!S.driveSynced) {
             entries.push(
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
                 { icon: 'fa-trash', label: 'Delete', danger: true,
@@ -313,7 +302,7 @@
     }
 
     function fileEntries(el) {
-        if (selected.size > 1) return selectionEntries();
+        if (S.selected.size > 1) return selectionEntries();
         const id = el.dataset.fileId;
         const name = el.dataset.fileName;
         const synced = el.dataset.isSynced === '1';
@@ -332,6 +321,8 @@
         }
         entries.push({ icon: 'fa-circle-info', label: 'Info',
                        action: () => showFileInfo(id) });
+        entries.push({ icon: 'fa-diagram-project', label: 'Run workflow…',
+                       action: () => openRunWorkflow(id, name) });
         if (!synced) {
             entries.push('-',
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
@@ -348,12 +339,12 @@
               action: () => navigateTo(el.dataset.nav || ('/folder/' + id)) },
         ];
         const clip = getClipboard();
-        if (!driveSynced && clip && (clip.files.length + clip.folders.length) > 0) {
+        if (!S.driveSynced && clip && (clip.files.length + clip.folders.length) > 0) {
             entries.push({ icon: 'fa-paste',
                            label: 'Paste here (' + (clip.files.length + clip.folders.length) + ')',
                            action: () => window.drivePasteSelection(id) });
         }
-        if (!driveSynced) {
+        if (!S.driveSynced) {
             entries.push('-', { icon: 'fa-trash', label: 'Delete folder', danger: true,
                 action: async () => {
                     const ok = await window.uiConfirm(
@@ -376,9 +367,9 @@
             e.preventDefault();
             e.stopPropagation();
             const key = itemKey(el);
-            if (!selected.has(key)) {
-                selected.clear();
-                selected.set(key, itemEntry(el));
+            if (!S.selected.has(key)) {
+                S.selected.clear();
+                S.selected.set(key, itemEntry(el));
                 paint();
             }
             openContextMenu(e.clientX, e.clientY, fileEntries(el));
@@ -398,7 +389,7 @@
     // background right-clicks.
     function backgroundEntries() {
         const entries = [];
-        if (!driveSynced) {
+        if (!S.driveSynced) {
             entries.push(
                 { icon: 'fa-folder-plus', label: 'New folder',
                   action: () => document.getElementById('new-folder-modal')?.showModal() },
@@ -415,7 +406,7 @@
         if (visibleItems().length) {
             entries.push({ icon: 'fa-square-check', label: 'Select all',
                 action: () => {
-                    visibleItems().forEach(el => selected.set(itemKey(el), itemEntry(el)));
+                    visibleItems().forEach(el => S.selected.set(itemKey(el), itemEntry(el)));
                     paint();
                 } });
         }
@@ -423,14 +414,102 @@
         return entries;
     }
 
-    (document.getElementById('page-content-container') || document)
-        .addEventListener('contextmenu', (e) => {
-            if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
-                                 '.breadcrumbs, .view-switch, thead, button, a, form, ' +
-                                 'dialog, input, textarea, .context-menu')) return;
-            e.preventDefault();
-            openContextMenu(e.clientX, e.clientY, backgroundEntries());
+    // --- Global listeners: keyboard, background click, menu close, ----------
+    // --- empty-space context menu. Bound ONCE — they read the shared state --
+    // --- above, so they keep working after every SPA re-run of this script. -
+    if (!window._driveGlobalBound) {
+        window._driveGlobalBound = true;
+        let suppressNextClear = false; // set after a lasso drag ends
+
+        document.addEventListener('keydown', (e) => {
+            if (!onDrivePage()) return;
+            const tag = (e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                visibleItems().forEach(el => S.selected.set(itemKey(el), itemEntry(el)));
+                paint();
+            } else if (e.key === 'Escape') {
+                if (S.ctxMenu) closeContextMenu();
+                else clearSelection();
+            }
         });
+
+        document.addEventListener('click', (e) => {
+            if (!onDrivePage()) return;
+            if (suppressNextClear) { suppressNextClear = false; return; }
+            if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
+                                  'button, a, form, dialog, input, .context-menu')) return;
+            clearSelection();
+        });
+
+        // --- Rubber-band (lasso) selection -----------------------------------
+        // Dragging from empty background draws a rectangle; every visible item
+        // it touches joins the selection (additive when Ctrl/Cmd is held).
+        let lasso = null; // { x0, y0, rect, base }
+
+        (document.getElementById('page-content-container') || document)
+            .addEventListener('mousedown', (e) => {
+                if (!onDrivePage() || e.button !== 0) return;
+                if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
+                                     '.breadcrumbs, .view-switch, thead, button, a, form, ' +
+                                     'dialog, input, textarea, select, summary, .context-menu')) return;
+                lasso = { x0: e.clientX, y0: e.clientY, rect: null,
+                          base: (e.ctrlKey || e.metaKey) ? new Map(S.selected) : new Map() };
+            });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!lasso) return;
+            const w = Math.abs(e.clientX - lasso.x0), h = Math.abs(e.clientY - lasso.y0);
+            if (!lasso.rect) {
+                if (w < 5 && h < 5) return; // ignore micro-drags (plain clicks)
+                const rect = document.createElement('div');
+                rect.className = 'lasso-rect';
+                document.body.appendChild(rect);
+                lasso.rect = rect;
+            }
+            e.preventDefault();
+            const left = Math.min(lasso.x0, e.clientX), top = Math.min(lasso.y0, e.clientY);
+            Object.assign(lasso.rect.style, {
+                left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' });
+            const box = { left, top, right: left + w, bottom: top + h };
+            S.selected.clear();
+            lasso.base.forEach((v, k) => S.selected.set(k, v));
+            visibleItems().forEach((el) => {
+                const r = el.getBoundingClientRect();
+                if (r.left < box.right && r.right > box.left &&
+                    r.top < box.bottom && r.bottom > box.top) {
+                    S.selected.set(itemKey(el), itemEntry(el));
+                }
+            });
+            paint();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!lasso) return;
+            if (lasso.rect) {
+                lasso.rect.remove();
+                suppressNextClear = true; // the trailing click must not clear
+            }
+            lasso = null;
+        });
+
+        ['scroll', 'resize'].forEach(evt =>
+            window.addEventListener(evt, closeContextMenu, true));
+        document.addEventListener('click', (e) => {
+            if (S.ctxMenu && !e.target.closest('.context-menu')) closeContextMenu();
+        });
+
+        (document.getElementById('page-content-container') || document)
+            .addEventListener('contextmenu', (e) => {
+                if (!onDrivePage()) return;
+                if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
+                                     '.breadcrumbs, .view-switch, thead, button, a, form, ' +
+                                     'dialog, input, textarea, .context-menu')) return;
+                e.preventDefault();
+                openContextMenu(e.clientX, e.clientY, backgroundEntries());
+            });
+    }
 
     paint();
 })();
@@ -440,6 +519,87 @@ function renameFile(fileId, currentName) {
     form.action = '/file/' + fileId + '/rename';
     document.getElementById('rename-input').value = currentName;
     document.getElementById('rename-modal').showModal();
+}
+
+// "Run workflow" on a file — Automation module integration. The workflow
+// list is fetched once per page load; 404 means the module is disabled.
+// `var` (not `let`) so the SPA can re-execute this script after every
+// navigation without throwing "Identifier has already been declared".
+var runWfCache = null;
+
+async function openRunWorkflow(fileId, fileName) {
+    const modal = document.getElementById('run-wf-modal');
+    if (!modal) return;
+    document.getElementById('run-wf-file').textContent = fileName;
+    const list = document.getElementById('run-wf-list');
+    list.innerHTML = '<div class="text-xs opacity-40 p-4 text-center">loading…</div>';
+    modal.showModal();
+    if (runWfCache === null) {
+        try {
+            const resp = await fetch('/m/automation/api/for-file');
+            if (!resp.ok) throw new Error('unavailable');
+            runWfCache = (await resp.json()).workflows || [];
+        } catch {
+            runWfCache = [];
+        }
+    }
+    if (!runWfCache.length) {
+        list.innerHTML = '<div class="text-xs opacity-40 p-6 text-center">' +
+            'No workflows accept a file yet.<br>Add a <b>Trigger input</b> node to a ' +
+            'workflow in Automation (or start from the "Translate a file" example).</div>';
+        return;
+    }
+    list.innerHTML = '';
+    runWfCache.forEach((wf) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'flex items-center gap-3 px-4 py-3 text-left hover:bg-primary/5 transition-colors';
+        const icon = document.createElement('i');
+        icon.className = 'fas fa-diagram-project text-primary/70 w-4 flex-shrink-0';
+        const wrap = document.createElement('span');
+        wrap.className = 'min-w-0';
+        const title = document.createElement('span');
+        title.className = 'block text-sm font-semibold truncate';
+        title.textContent = wf.name;
+        wrap.appendChild(title);
+        if (wf.description) {
+            const desc = document.createElement('span');
+            desc.className = 'block text-[11px] opacity-45 truncate';
+            desc.textContent = wf.description;
+            wrap.appendChild(desc);
+        }
+        btn.appendChild(icon);
+        btn.appendChild(wrap);
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/m/automation/' + wf.id + '/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: parseInt(fileId, 10) }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                modal.close();
+                if (!resp.ok) {
+                    if (window.uiAlert) {
+                        window.uiAlert(data.error || 'Could not start the run.',
+                                       { title: 'Run workflow' });
+                    }
+                    btn.disabled = false;
+                    return;
+                }
+                if (window.spaNavigate) window.spaNavigate(data.url);
+                else location.href = data.url;
+            } catch {
+                modal.close();
+                if (window.uiAlert) {
+                    window.uiAlert('Could not reach the server.',
+                                   { title: 'Run workflow' });
+                }
+            }
+        });
+        list.appendChild(btn);
+    });
 }
 
 function showFileInfo(fileId) {

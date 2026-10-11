@@ -91,6 +91,8 @@
         await new Promise(r => setTimeout(r, 150));
 
         window.currentFile = null;
+        window.currentWorkflow = null;
+        window.currentWorkflowNode = null;
         container.innerHTML = newContent.innerHTML;
         execScripts(container);
         updatePageState(doc, url);
@@ -120,6 +122,10 @@
         container.classList.remove('page-exit');
         container.classList.add('page-enter');
         setTimeout(() => container.classList.remove('page-enter'), 300);
+
+        // Page context globals (window.currentFile / currentWorkflow / ...)
+        // changed — let the chat UIs refresh their context chips.
+        document.dispatchEvent(new CustomEvent('spa:navigated', { detail: { url } }));
     }
 
     // --- navigation -----------------------------------------------------------

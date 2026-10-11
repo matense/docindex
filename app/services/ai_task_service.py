@@ -281,6 +281,10 @@ def _run_task(task_id, app):
             elif kind == "tool_result":
                 flush_step(payload.get("summary"))
                 ev = {"type": "tool_result", "result": payload}
+            elif kind == "ui_action":
+                # Browser-side signal (e.g. automation canvas refresh) —
+                # broadcast live, but not persisted as a chat message.
+                ev = {"type": "ui_action", "action": payload}
             elif kind == "notice":
                 # Automatic context compaction — visible in the transcript.
                 persist("notice", payload)

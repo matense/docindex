@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block title %}Behaviors & personas - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full flex flex-col gap-4" id="behaviors-root">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-masks-theater"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Behaviors &amp; personas</h1>
+            <p class="text-xs opacity-50">
+                Reusable AI instructions ("system prompts") — your own behaviors below, or a
+                ready-made persona from the Agency library. Pick them in the chat persona
+                selector or in any Automation AI node. Disable the ones you don't use to keep
+                the pickers short.
+            </p>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm gap-1"
+                onclick="document.getElementById('behavior-new-modal').showModal()">
+            <i class="fas fa-plus"></i> New behavior
+        </button>
+    </div>
+
+    <!-- Your behaviors -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2">
+            <i class="fas fa-masks-theater text-primary/60 text-xs"></i>
+            <span class="text-[10px] uppercase tracking-wide opacity-50 flex-1">Your behaviors</span>
+            {% if behaviors %}
+            <span class="badge badge-ghost badge-sm">
+                {{ behaviors | selectattr('enabled') | list | length }}/{{ behaviors|length }} enabled
+            </span>
+            {% endif %}
+        </div>
+        {% if behaviors %}
+        <div class="divide-y divide-base-content/5">
+            {% for b in behaviors %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 {{ 'opacity-50' if not b.enabled }}">
+                <span class="w-9 h-9 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-masks-theater"></i>
+                </span>
+                <div class="flex-1 min-w-0">
+                    <span class="block font-semibold truncate">{{ b.name }}</span>
+                    <span class="block text-[11px] opacity-45 truncate">{{ b.content[:140] }}{{ '…' if b.content|length > 140 }}</span>
+                </div>
+                <input type="checkbox" class="toggle toggle-primary toggle-sm flex-shrink-0 behavior-toggle"
+                       data-id="{{ b.id }}" {{ 'checked' if b.enabled }}
+                       title="{{ 'Enabled — shown in pickers' if b.enabled else 'Disabled — hidden from pickers' }}">
+                <div class="flex gap-1 flex-shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs gap-1" title="Edit"
+                            onclick="document.getElementById('behavior-edit-{{ b.id }}').showModal()">
+                        <i class="fas fa-pen"></i>
+                    </button>
+                    <form method="POST" action="{{ url_for('behaviors.delete', behavior_id=b.id) }}"
+                          data-confirm="Delete behavior &quot;{{ b.name }}&quot;? Nodes using its text keep their saved copy."
+                          data-confirm-danger>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost btn-xs text-error gap-1" title="Delete">
+                            <i class="fas fa-trash-can"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Edit modal -->
+            <dialog id="behavior-edit-{{ b.id }}" class="modal">
+                <div class="modal-box glass-panel">
+                    <h3 class="font-bold text-lg mb-1"><i class="fas fa-pen text-primary"></i> Edit behavior</h3>
+                    <p class="text-xs opacity-50 mb-4">How the AI should act when this behavior is picked.</p>
+                    <form method="POST" action="{{ url_for('behaviors.update', behavior_id=b.id) }}"
+                          class="flex flex-col gap-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="text" name="name" value="{{ b.name }}" required maxlength="120"
+                               class="input input-bordered input-sm w-full">
+                        <textarea name="content" rows="5" required
+                                  class="textarea textarea-bordered textarea-sm w-full font-mono">{{ b.content }}</textarea>
+                        <div class="modal-action">
+                            <button type="button" class="btn btn-ghost btn-sm"
+                                    onclick="document.getElementById('behavior-edit-{{ b.id }}').close()">Cancel</button>
+                            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-14 opacity-50">
+            <i class="fas fa-masks-theater text-4xl mb-3 block"></i>
+            <p class="font-semibold">No behaviors yet.</p>
+            <p class="text-xs mt-1">Create one — e.g. "Translator" — or pick a persona below with <strong>Use</strong>.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Persona library (grouped by division, per-persona enable toggle) -->
+    <div class="glass-panel rounded-2xl px-6 py-5 flex flex-col gap-4">
+        <div class="flex items-center gap-3 flex-wrap">
+            <span class="w-9 h-9 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
+                <i class="fas fa-user-astronaut"></i>
+            </span>
+            <div class="flex-1 min-w-0">
+                <h2 class="font-bold">Persona library</h2>
+                <p class="text-[11px] opacity-50">
+                    Ready-made AI personalities from
+                    <a href="https://github.com/msitarzewski/agency-agents" target="_blank" rel="noopener"
+                       class="link link-hover text-primary">The Agency</a> (MIT — see NOTICE.md).
+                    Toggle a persona off to hide it from every picker; <strong>Use</strong> saves an
+                    editable copy as your own behavior.
+                </p>
+            </div>
+            <span id="persona-count" class="text-[11px] opacity-40"></span>
+            <input id="persona-search" type="text" placeholder="Search personas…"
+                   class="input input-bordered input-sm w-full sm:w-56">
+        </div>
+        <div id="persona-divisions" class="flex flex-col gap-2">
+            <p class="text-xs opacity-50 py-6 text-center">
+                <i class="fas fa-circle-notch fa-spin"></i> Loading personas…
+            </p>
+        </div>
+    </div>
+</div>
+
+<!-- Persona preview modal -->
+<dialog id="persona-preview-modal" class="modal">
+    <div class="modal-box glass-panel max-w-2xl">
+        <h3 class="font-bold text-lg mb-1 flex items-center gap-2">
+            <span id="persona-preview-emoji"></span><span id="persona-preview-name"></span>
+        </h3>
+        <p class="text-xs opacity-50 mb-3" id="persona-preview-division"></p>
+        <div id="persona-preview-content"
+             class="markdown-body text-xs bg-base-200/60 rounded-xl p-4 max-h-96 overflow-auto"></div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('persona-preview-modal').close()">Close</button>
+            <button type="button" class="btn btn-primary btn-sm gap-1" id="persona-preview-use">
+                <i class="fas fa-plus"></i> Use as behavior
+            </button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+(function () {
+    const listUrl = "/ai/personas?all=1";
+    const itemUrl = "/ai/personas/__KEY__";
+    const personaToggleUrl = "{{ url_for('behaviors.persona_toggle', key='__KEY__') }}";
+    const divisionToggleUrl = "{{ url_for('behaviors.persona_division_toggle', division='__DIV__') }}";
+    const behaviorToggleUrl = "{{ url_for('behaviors.toggle', behavior_id=0) }}";
+    const container = document.getElementById('persona-divisions');
+    const search = document.getElementById('persona-search');
+    const countEl = document.getElementById('persona-count');
+    const previewModal = document.getElementById('persona-preview-modal');
+    let personas = [];
+    let current = null;
+
+    const esc = s => String(s ?? '').replace(/[&<>"']/g,
+        c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+    // --- toggles ----------------------------------------------------------
+    function bindToggle(input, url, onDone) {
+        input.addEventListener('change', () => {
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+                body: JSON.stringify({ enabled: input.checked })
+            }).then(r => r.ok ? r.json() : Promise.reject())
+              .then(data => { input.checked = !!data.enabled; if (onDone) onDone(data.enabled); })
+              .catch(() => { input.checked = !input.checked; });  // revert on failure
+        });
+    }
+
+    document.querySelectorAll('.behavior-toggle').forEach(input => {
+        bindToggle(input, behaviorToggleUrl.replace(/0$/, input.dataset.id), enabled => {
+            input.closest('div.px-4').classList.toggle('opacity-50', !enabled);
+        });
+    });
+
+    // --- persona library ---------------------------------------------------
+    function personaCard(p) {
+        return `
+            <div class="rounded-xl border border-base-content/10 p-3 flex flex-col gap-2
+                        hover:border-primary/40 transition-colors ${p.enabled ? '' : 'opacity-50'}">
+                <div class="flex items-center gap-2 min-w-0">
+                    <span class="text-xl flex-shrink-0">${esc(p.emoji || '🎭')}</span>
+                    <div class="min-w-0 flex-1">
+                        <div class="font-semibold text-sm truncate">${esc(p.name)}</div>
+                        <div class="text-[10px] opacity-50 truncate">${esc(p.division)}</div>
+                    </div>
+                    <input type="checkbox" class="toggle toggle-primary toggle-xs flex-shrink-0 persona-toggle"
+                           data-key="${esc(p.key)}" ${p.enabled ? 'checked' : ''}
+                           title="Enabled — shown in pickers">
+                </div>
+                <p class="text-[11px] opacity-60 line-clamp-2 flex-1">${esc(p.description || '')}</p>
+                <div class="flex gap-1 justify-end">
+                    <button type="button" class="btn btn-ghost btn-xs gap-1" data-preview="${esc(p.key)}">
+                        <i class="fas fa-eye"></i> Preview
+                    </button>
+                    <button type="button" class="btn btn-primary btn-xs gap-1" data-use="${esc(p.key)}">
+                        <i class="fas fa-plus"></i> Use
+                    </button>
+                </div>
+            </div>`;
+    }
+
+    function render(items) {
+        const enabledCount = items.filter(p => p.enabled).length;
+        countEl.textContent = `${enabledCount}/${items.length} enabled`;
+        if (!items.length) {
+            container.innerHTML = '<p class="text-xs opacity-50 py-6 text-center">No personas match your search.</p>';
+            return;
+        }
+        // Group by division — one collapsible section per division.
+        const divisions = new Map();
+        items.forEach(p => {
+            if (!divisions.has(p.division)) divisions.set(p.division, []);
+            divisions.get(p.division).push(p);
+        });
+        container.innerHTML = [...divisions.entries()].map(([division, ps]) => {
+            const allOn = ps.every(p => p.enabled);
+            return `
+            <details class="rounded-xl border border-base-content/10 group/div">
+                <summary class="px-4 py-2.5 cursor-pointer select-none flex items-center gap-2 list-none
+                                hover:bg-base-content/[0.03] rounded-xl transition-colors">
+                    <i class="fas fa-chevron-down text-[10px] opacity-40 transition-transform group-open/div:rotate-180"></i>
+                    <span class="font-semibold text-sm flex-1 truncate">${esc(division)}</span>
+                    <span class="badge badge-ghost badge-xs">${ps.filter(p => p.enabled).length}/${ps.length} enabled</span>
+                    <button type="button" class="btn btn-ghost btn-xs division-toggle"
+                            data-division="${esc(division)}" data-target="${allOn ? '0' : '1'}">
+                        ${allOn ? 'Disable all' : 'Enable all'}
+                    </button>
+                </summary>
+                <div class="px-3 pb-3 pt-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    ${ps.map(personaCard).join('')}
+                </div>
+            </details>`;
+        }).join('');
+        container.querySelectorAll('.persona-toggle').forEach(input => {
+            bindToggle(input,
+                personaToggleUrl.replace('__KEY__', encodeURIComponent(input.dataset.key)),
+                enabled => {
+                    const p = personas.find(x => x.key === input.dataset.key);
+                    if (p) p.enabled = enabled;
+                    input.closest('div.rounded-xl').classList.toggle('opacity-50', !enabled);
+                    applyFilter();  // refresh the enabled counters
+                });
+        });
+    }
+
+    function applyFilter() {
+        const q = search.value.trim().toLowerCase();
+        render(q ? personas.filter(p =>
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.division || '').toLowerCase().includes(q) ||
+            (p.description || '').toLowerCase().includes(q)) : personas);
+    }
+
+    function fetchPersona(key) {
+        return fetch(itemUrl.replace('__KEY__', encodeURIComponent(key)))
+            .then(r => r.ok ? r.json() : null);
+    }
+
+    function openPreview(key) {
+        fetchPersona(key).then(p => {
+            if (!p) return;
+            current = p;
+            document.getElementById('persona-preview-emoji').textContent = p.emoji || '🎭';
+            document.getElementById('persona-preview-name').textContent = p.name || key;
+            document.getElementById('persona-preview-division').textContent =
+                (p.division || '') + (p.description ? ' — ' + p.description : '');
+            // Persona content is markdown — render it like the chat answers.
+            const contentEl = document.getElementById('persona-preview-content');
+            if (window.marked) {
+                contentEl.innerHTML = marked.parse(p.content || '', { breaks: true });
+            } else {
+                contentEl.textContent = p.content || '';
+            }
+            previewModal.showModal();
+        });
+    }
+
+    function usePersona(key) {
+        fetchPersona(key || (current && current.key)).then(p => {
+            if (!p) return;
+            const modal = document.getElementById('behavior-new-modal');
+            modal.querySelector('input[name="name"]').value = p.name || '';
+            modal.querySelector('textarea[name="content"]').value = p.content || '';
+            previewModal.close();
+            modal.showModal();
+        });
+    }
+
+    container.addEventListener('click', ev => {
+        const dt = ev.target.closest('.division-toggle');
+        if (dt) {
+            // The button lives inside <summary> — don't collapse the section.
+            ev.preventDefault();
+            ev.stopPropagation();
+            const division = dt.dataset.division;
+            const target = dt.dataset.target === '1';
+            dt.disabled = true;
+            fetch(divisionToggleUrl.replace('__DIV__', encodeURIComponent(division)), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+                body: JSON.stringify({ enabled: target })
+            }).then(r => r.ok ? r.json() : Promise.reject())
+              .then(data => {
+                  personas.forEach(p => { if (p.division === division) p.enabled = data.enabled; });
+                  applyFilter();  // re-render cards, counters and the button
+              })
+              .catch(() => { dt.disabled = false; });
+            return;
+        }
+        const pv = ev.target.closest('[data-preview]');
+        const us = ev.target.closest('[data-use]');
+        if (pv) openPreview(pv.dataset.preview);
+        else if (us) usePersona(us.dataset.use);
+    });
+    document.getElementById('persona-preview-use').addEventListener('click', () => usePersona());
+    search.addEventListener('input', applyFilter);
+
+    fetch(listUrl)
+        .then(r => r.json())
+        .then(data => { personas = data.personas || []; applyFilter(); })
+        .catch(() => {
+            container.innerHTML = '<p class="text-xs text-error py-6 text-center">Could not load the persona library.</p>';
+        });
+})();
+</script>
+
+<!-- New behavior modal -->
+<dialog id="behavior-new-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New behavior</h3>
+        <p class="text-xs opacity-50 mb-4">
+            A name plus the instructions the AI follows — e.g. <em>"You are a professional
+            translator. Answer only with the translation."</em>
+        </p>
+        <form method="POST" action="{{ url_for('behaviors.create') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="e.g. Translator" required maxlength="120"
+                   class="input input-bordered input-sm w-full">
+            <textarea name="content" rows="5" required
+                      placeholder="You are a professional translator. Translate the input faithfully and answer only with the translation — no commentary."
+                      class="textarea textarea-bordered textarea-sm w-full font-mono"></textarea>
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('behavior-new-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">Create</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+{% endblock %}

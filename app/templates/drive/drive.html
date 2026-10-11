@@ -387,6 +387,28 @@
     </div>
 </dialog>
 
+<!-- Run workflow modal (Automation module; list loads on demand) -->
+<dialog id="run-wf-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1">
+            <i class="fas fa-diagram-project text-primary"></i> Run workflow
+        </h3>
+        <p class="text-xs opacity-50 mb-3">
+            Run an automation on <b id="run-wf-file"></b>. Only workflows with
+            a <i>Trigger input</i> node can run on a file.
+        </p>
+        <div id="run-wf-list"
+             class="flex flex-col divide-y divide-base-content/5 border border-base-content/10 rounded-xl max-h-[50vh] overflow-y-auto">
+            <div class="text-xs opacity-40 p-4 text-center">loading…</div>
+        </div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-ghost"
+                    onclick="document.getElementById('run-wf-modal').close()">Cancel</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
 {% if ai_enabled %}
 <!-- Bulk hashtag generation modal -->
 <dialog id="hashtags-modal" class="modal">
@@ -463,5 +485,5 @@
 </script>
 {% endif %}
 
-<script src="{{ url_for('static', filename='js/drive.js') }}?v=3" defer></script>
+<script src="{{ url_for('static', filename='js/drive.js') }}?v=4" defer></script>
 {% endblock %}

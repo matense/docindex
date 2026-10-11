@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}{{ workflow.name }} - Automation{% endblock %}
+{% block content %}
+<div class="max-w-full w-full flex flex-col gap-3" id="automation-editor-root"
+     data-save-url="{{ url_for('automation.save', workflow_id=workflow.id) }}"
+     data-run-url="{{ url_for('automation.run', workflow_id=workflow.id) }}"
+     data-runs-url="{{ url_for('automation.runs', workflow_id=workflow.id) }}"
+     data-list-url="{{ url_for('automation.index') }}"
+     data-preview-url="{{ url_for('automation.preview', workflow_id=workflow.id) }}"
+     data-browse-url="{{ url_for('automation.api_browse') }}"
+     data-shape-url="{{ url_for('automation.api_file_shape') }}"
+     data-cells-url="{{ url_for('automation.api_notebook_cells') }}"
+     data-behaviors-url="{{ url_for('behaviors.api_presets') }}"
+     data-personas-url="{{ url_for('ai.personas') }}"
+     data-graph-url="{{ url_for('automation.graph_json', workflow_id=workflow.id) }}"
+     data-flags-url="{{ url_for('automation.ai_flags', workflow_id=workflow.id) }}">
+
+    <!-- Toolbar -->
+    <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3 flex-wrap">
+        <a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-sm" title="All workflows">
+            <i class="fas fa-arrow-left"></i>
+        </a>
+        <input type="text" id="wf-name" value="{{ workflow.name }}"
+               class="input input-ghost input-sm font-bold text-base w-56 focus:bg-base-100">
+        <input type="text" id="wf-description" value="{{ workflow.description }}"
+               placeholder="Description…"
+               class="input input-ghost input-sm flex-1 min-w-32 opacity-70 focus:bg-base-100">
+        <label class="flex items-center gap-1.5 text-xs opacity-70" title="Run every N minutes">
+            <i class="fas fa-clock"></i>
+            <input type="number" id="wf-interval" min="1" placeholder="—"
+                   value="{{ workflow.interval_minutes or '' }}"
+                   class="input input-bordered input-xs w-16"> min
+        </label>
+        <label class="flex items-center gap-1.5 text-xs opacity-70 cursor-pointer" title="Enable the schedule">
+            <input type="checkbox" id="wf-enabled" class="toggle toggle-success toggle-xs"
+                   {{ 'checked' if workflow.enabled }}> schedule
+        </label>
+        <a href="{{ url_for('behaviors.index') }}"
+           class="btn btn-ghost btn-sm gap-1" title="Behaviors & personas library">
+            <i class="fas fa-masks-theater"></i>
+        </a>
+        <button type="button" id="wf-ai-lock"
+                class="btn btn-ghost btn-sm gap-1 {{ 'btn-active text-warning' if workflow.ai_lock }}"
+                title="Lock against AI edits — the assistant can read but not change this workflow">
+            <i class="fas {{ 'fa-lock' if workflow.ai_lock else 'fa-lock-open' }}"></i>
+        </button>
+        <button type="button" id="wf-ai-hide"
+                class="btn btn-ghost btn-sm gap-1 {{ 'btn-active text-warning' if workflow.ai_hidden }}"
+                title="Hide from the AI — the assistant can't see, run or edit this workflow">
+            <i class="fas {{ 'fa-eye-slash' if workflow.ai_hidden else 'fa-eye' }}"></i>
+        </button>
+        <button type="button" id="wf-console-toggle" class="btn btn-ghost btn-sm gap-1"
+                title="Toggle the run console">
+            <i class="fas fa-terminal"></i>
+        </button>
+        <button type="button" id="wf-save" class="btn btn-outline btn-primary btn-sm gap-1">
+            <i class="fas fa-floppy-disk"></i> Save
+        </button>
+        <button type="button" id="wf-run" class="btn btn-primary btn-sm gap-1">
+            <i class="fas fa-play"></i> Run
+        </button>
+        <a href="{{ url_for('automation.runs', workflow_id=workflow.id) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Run history">
+            <i class="fas fa-clock-rotate-left"></i>
+        </a>
+    </div>
+
+    <div class="flex gap-3 items-stretch" style="height: calc(100vh - 220px); min-height: 420px;">
+        <!-- Palette -->
+        <div class="glass-panel rounded-2xl p-3 w-60 flex-shrink-0 overflow-y-auto flex flex-col gap-1.5"
+             id="wf-palette">
+            <div class="text-[10px] uppercase tracking-wide opacity-50 mb-1">Nodes — click or drag to add</div>
+            {% set ns = namespace(cat=None) %}
+            {% for node in palette %}
+            {% if node.category != ns.cat %}
+            {% set ns.cat = node.category %}
+            <div class="wf-palette-cat">{{ node.category }}</div>
+            {% endif %}
+            <button type="button" draggable="true"
+                    class="wf-palette-node btn btn-ghost btn-sm justify-start items-start gap-2 w-full h-auto min-h-8 py-1.5 whitespace-normal"
+                    data-type="{{ node.type }}"
+                    title="{{ node.description or node.label }}">
+                <i class="fas {{ node.icon }} text-primary/70 w-4 mt-0.5 flex-shrink-0"></i>
+                <span class="flex-1 text-left leading-tight">{{ node.label }}</span>
+            </button>
+            {% endfor %}
+        </div>
+
+        <!-- Canvas -->
+        <div class="glass-panel rounded-2xl flex-1 overflow-hidden relative">
+            <div id="drawflow" class="w-full h-full"></div>
+            <div class="absolute bottom-3 right-3 text-[10px] opacity-40 pointer-events-none">
+                double-click a node to configure it · drag from a socket to connect
+            </div>
+            <!-- Run console -->
+            <div id="wf-console" class="wf-console hidden">
+                <div class="wf-console-head">
+                    <span class="flex items-center gap-2"><i class="fas fa-terminal"></i> Console</span>
+                    <span class="flex-1"></span>
+                    <button type="button" id="wf-console-clear" title="Clear console">
+                        <i class="fas fa-ban"></i>
+                    </button>
+                    <button type="button" id="wf-console-close" title="Close console">
+                        <i class="fas fa-xmark"></i>
+                    </button>
+                </div>
+                <div id="wf-console-body" class="wf-console-body"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Node context menu (right-click) -->
+<div id="wf-context-menu" class="wf-context-menu hidden">
+    <button type="button" data-action="configure"><i class="fas fa-pen"></i> Configure</button>
+    <button type="button" data-action="run-up-to"><i class="fas fa-play"></i> Run up to this node</button>
+    <button type="button" data-action="view-output" class="hidden"><i class="fas fa-eye"></i> View output</button>
+    <button type="button" data-action="duplicate"><i class="fas fa-clone"></i> Duplicate</button>
+    <div class="wf-context-sep"></div>
+    <button type="button" data-action="delete" class="wf-context-danger"><i class="fas fa-trash-can"></i> Delete</button>
+</div>
+
+<!-- Node output modal (right-click "View output") -->
+<dialog id="wf-output-modal" class="modal">
+    <div class="modal-box glass-panel max-w-lg">
+        <h3 class="font-bold text-lg mb-3" id="wf-output-title">
+            <i class="fas fa-eye text-primary"></i> Node output
+        </h3>
+        <div id="wf-output-body" class="flex flex-col gap-3 max-h-[60vh] overflow-y-auto pr-1"></div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="document.getElementById('wf-output-modal').close()">Close</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- Preview run result modal -->
+<dialog id="wf-preview-modal" class="modal">
+    <div class="modal-box glass-panel max-w-lg">
+        <h3 class="font-bold text-lg mb-3"><i class="fas fa-play text-primary"></i> Node run</h3>
+        <div id="wf-preview-body" class="flex flex-col gap-3 max-h-[60vh] overflow-y-auto pr-1"></div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="document.getElementById('wf-preview-modal').close()">Close</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- Node configuration modal -->
+<dialog id="wf-config-modal" class="modal">
+    <div class="modal-box glass-panel max-w-lg">
+        <div id="wf-config-head" class="flex items-center gap-2 mb-1"></div>
+        <div id="wf-config-desc" class="wf-config-desc hidden"></div>
+        <div id="wf-config-meta" class="mb-3"></div>
+        <div id="wf-config-form" class="flex flex-col gap-2.5 max-h-[55vh] overflow-y-auto pr-1"></div>
+        <div class="flex items-center justify-end mt-4">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="document.getElementById('wf-config-modal').close()">Done</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- Run parameters modal (input.param nodes with "ask at run time") -->
+<dialog id="wf-params-modal" class="modal">
+    <div class="modal-box glass-panel max-w-md">
+        <h3 class="font-bold text-lg mb-1">
+            <i class="fas fa-circle-question text-primary"></i> Run inputs
+        </h3>
+        <p class="text-xs opacity-50 mb-3">
+            This workflow asks for a few values before it starts. Leave a
+            field empty to use its default.
+        </p>
+        <div id="wf-params-form" class="flex flex-col gap-2.5 max-h-[55vh] overflow-y-auto pr-1"></div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('wf-params-modal').close()">Cancel</button>
+            <button type="button" id="wf-params-go" class="btn btn-primary btn-sm gap-1">
+                <i class="fas fa-play"></i> Start run
+            </button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- File browser modal (input.file picker) -->
+<dialog id="wf-file-modal" class="modal">
+    <div class="modal-box glass-panel max-w-lg">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-folder-open text-primary"></i> Pick a file</h3>
+        <p class="text-xs opacity-50 mb-3">
+            Browse your drives and click a file to select it. CSV and Excel
+            files become tables, JSON becomes structured data, everything
+            else is read as text.
+        </p>
+        <div class="flex items-center gap-2 mb-3">
+            <select id="wf-file-drive" class="select select-bordered select-sm flex-1"></select>
+            <button type="button" id="wf-file-up" class="btn btn-ghost btn-sm" title="Up one folder">
+                <i class="fas fa-arrow-up"></i>
+            </button>
+        </div>
+        <div id="wf-file-crumbs" class="text-xs opacity-50 mb-2 flex items-center gap-1 flex-wrap"></div>
+        <div id="wf-file-list"
+             class="flex flex-col border border-base-content/10 rounded-xl overflow-y-auto max-h-[50vh] min-h-32">
+        </div>
+        <div class="modal-action">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('wf-file-modal').close()">Cancel</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<link rel="stylesheet" href="{{ url_for('automation.static', filename='vendor/drawflow.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}">
+<script>
+window.automationEditorData = {
+    graphRaw: {{ workflow.graph | tojson }},
+    palette: {{ palette | tojson }},
+    drives: {{ drives | tojson }},
+    notebooks: {{ notebooks | tojson }},
+};
+// The AI chat reads this to know which workflow is open in the editor
+// (cleared by spa.js on navigation).
+window.currentWorkflow = { id: {{ workflow.id }},
+                           name: {{ workflow.name | tojson }} };
+(function bootstrap() {
+    function mount() {
+        if (window.AutomationEditor) {
+            window.AutomationEditor.mount(document.getElementById('automation-editor-root'));
+            return;
+        }
+        const s = document.createElement('script');
+        s.src = "{{ url_for('automation.static', filename='automation.js') }}";
+        s.onload = () => window.AutomationEditor.mount(
+            document.getElementById('automation-editor-root'));
+        document.body.appendChild(s);
+    }
+    if (!window.Drawflow) {
+        const s = document.createElement('script');
+        s.src = "{{ url_for('automation.static', filename='vendor/drawflow.min.js') }}";
+        s.onload = mount;
+        document.body.appendChild(s);
+    } else {
+        mount();
+    }
+})();
+</script>
+{% endblock %}

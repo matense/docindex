@@ -1,0 +1,631 @@
+/* Automation editor — Drawflow theming on top of the glass palette. */
+
+.wf-palette-cat {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.45;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+.wf-palette-cat:first-of-type {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+#drawflow {
+    background-image: radial-gradient(circle, rgba(128, 128, 128, 0.18) 1px, transparent 1px);
+    background-size: 22px 22px;
+}
+
+.drawflow .drawflow-node {
+    display: block;
+    background: transparent;
+    border: none;
+    padding: 0;
+    width: 190px;
+    box-shadow: none;
+}
+
+.drawflow .drawflow-node .drawflow_content_node {
+    width: 100%;
+}
+
+.wf-node-card {
+    border-radius: 14px;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    background: color-mix(in srgb, var(--fallback-b1, oklch(var(--b1))) 92%, transparent);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: grab;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+/* Explicit text colour — Drawflow's stylesheet forces `.drawflow
+   .drawflow-node { color:#000 }` (higher specificity than .wf-node-card),
+   which is unreadable on the dark theme's card background. */
+.drawflow .drawflow-node .wf-node-card {
+    color: oklch(var(--bc));
+}
+
+.drawflow .drawflow-node.selected .wf-node-card {
+    border-color: oklch(var(--p));
+    box-shadow: 0 0 0 3px oklch(var(--p) / 0.2);
+}
+
+/* Drawflow's default .selected paints the node red — keep it transparent,
+   the card above carries the selection highlight. */
+.drawflow .drawflow-node.selected {
+    background: transparent;
+}
+
+.wf-node-card .wf-node-ico {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+.wf-node-card .wf-node-label {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wf-node-card .wf-node-summary {
+    font-size: 9.5px;
+    opacity: 0.62;
+    font-family: monospace;
+    line-height: 1.3;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wf-node-card .wf-node-edit {
+    font-size: 10px;
+    opacity: 0;
+    transition: opacity .12s;
+    flex-shrink: 0;
+    padding: 4px;
+    margin: -4px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.wf-node-card:hover .wf-node-edit {
+    opacity: 0.5;
+}
+
+.wf-node-card .wf-node-edit:hover {
+    opacity: 1 !important;
+    color: oklch(var(--p));
+    background: oklch(var(--p) / 0.12);
+}
+
+.wf-cat-Input .wf-node-ico { background: oklch(var(--su) / 0.15); color: oklch(var(--su)); }
+.wf-cat-AI .wf-node-ico { background: oklch(var(--se) / 0.15); color: oklch(var(--se)); }
+.wf-cat-Transform .wf-node-ico { background: oklch(var(--p) / 0.12); color: oklch(var(--p)); }
+.wf-cat-Data .wf-node-ico { background: oklch(var(--in) / 0.15); color: oklch(var(--in)); }
+.wf-cat-Logic .wf-node-ico { background: oklch(var(--wa) / 0.18); color: oklch(var(--wa)); }
+.wf-cat-Output .wf-node-ico { background: oklch(var(--er) / 0.12); color: oklch(var(--er)); }
+
+.drawflow .connection .main-path {
+    stroke: oklch(var(--p) / 0.55);
+    stroke-width: 2.5px;
+}
+
+.drawflow .connection .main-path:hover,
+.drawflow .connection .main-path.selected {
+    stroke: oklch(var(--p));
+}
+
+/* Port containers hug the card edges; multiple ports (condition, merge)
+   spread evenly along the edge. Drawflow anchors connections to each
+   socket's bounding box, so absolute positioning is safe. */
+.drawflow .drawflow-node .inputs,
+.drawflow .drawflow-node .outputs {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-evenly;
+    width: 0;
+}
+
+.drawflow .drawflow-node .inputs { left: 0; }
+.drawflow .drawflow-node .outputs { right: 0; }
+
+.drawflow .drawflow-node .input,
+.drawflow .drawflow-node .output {
+    position: relative;
+    left: 0;
+    right: 0;
+    top: 0;
+    width: 13px;
+    height: 13px;
+    /* Drawflow's socket classes collide with DaisyUI's .input form class —
+       kill its padding/min sizes or the sockets stretch into pills. */
+    padding: 0;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    flex-shrink: 0;
+    background: oklch(var(--b1));
+    border: 2.5px solid oklch(var(--p) / 0.6);
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform .12s, background .12s;
+}
+
+/* Sockets straddle the card edge. */
+.drawflow .drawflow-node .input { transform: translateX(-50%); }
+.drawflow .drawflow-node .output { transform: translateX(50%); }
+
+.drawflow .drawflow-node .input:hover,
+.drawflow .drawflow-node .output:hover {
+    background: oklch(var(--p));
+}
+
+.drawflow .drawflow-node .input:hover { transform: translateX(-50%) scale(1.25); }
+.drawflow .drawflow-node .output:hover { transform: translateX(50%) scale(1.25); }
+
+/* Label the condition node's two outputs (true on top, false below). */
+.drawflow .wf-type-logic-condition .output::after {
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9px;
+    font-weight: 600;
+    opacity: 0.55;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.drawflow .wf-type-logic-condition .output_1::after { content: 'true'; }
+.drawflow .wf-type-logic-condition .output_2::after { content: 'false'; }
+
+/* Reroute points on the wires: subtle, on-theme. */
+.drawflow .connection .point {
+    stroke: oklch(var(--p) / 0.45);
+    fill: oklch(var(--b1));
+}
+
+.drawflow .connection .point.selected,
+.drawflow .connection .point:hover {
+    fill: oklch(var(--p));
+}
+
+/* Config modal: current-file line and the drive/folder browser rows. */
+.wf-file-current {
+    font-size: 12px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.08);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Config modal: what the node does, under the header. */
+.wf-config-desc {
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.6;
+    margin: -2px 0 12px;
+}
+
+/* Per-node help: accepts/returns chips + a concrete example. */
+.wf-config-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wf-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    background: rgba(128, 128, 128, 0.06);
+    opacity: 0.8;
+}
+
+.wf-chip > i {
+    font-size: 8.5px;
+    opacity: 0.6;
+}
+
+.wf-config-example {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    font-size: 11px;
+    line-height: 1.45;
+    margin-top: 6px;
+    padding: 7px 10px;
+    border-radius: 9px;
+    color: oklch(var(--wa));
+    background: oklch(var(--wa) / 0.08);
+    border: 1px solid oklch(var(--wa) / 0.2);
+}
+
+.wf-config-example > i {
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+/* Live hint: real columns/keys detected in the connected file. */
+.wf-detected {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 10.5px;
+    line-height: 1.45;
+    padding: 5px 9px;
+    border-radius: 8px;
+    color: oklch(var(--p));
+    background: oklch(var(--p) / 0.07);
+    border: 1px dashed oklch(var(--p) / 0.3);
+}
+
+.wf-detected > i {
+    font-size: 9px;
+    flex-shrink: 0;
+}
+
+/* Filter rows: one row per condition (column / operator / value / ×). */
+.wf-cond-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.wf-cond-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.wf-cond-col {
+    flex: 1.2;
+    min-width: 0;
+}
+
+.wf-cond-op {
+    flex: 1;
+    min-width: 0;
+}
+
+.wf-cond-val {
+    flex: 1;
+    min-width: 0;
+}
+
+.wf-cond-rm {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-size: 10px;
+    opacity: 0.4;
+}
+
+.wf-cond-rm:hover {
+    opacity: 1;
+    color: oklch(var(--er));
+    background: oklch(var(--er) / 0.1);
+}
+
+/* Each field is a soft card: label row, control, help. */
+.wf-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid rgba(128, 128, 128, 0.14);
+    border-radius: 12px;
+    background: rgba(128, 128, 128, 0.04);
+}
+
+/* Conditionally hidden fields (spec show_when) must win over the flex
+   display above — Tailwind's .hidden alone can lose the specificity fight. */
+.wf-field.hidden {
+    display: none !important;
+}
+
+.wf-field-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wf-field-label {
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.75;
+}
+
+/* The "Examples…" dropdown next to a field label. */
+.wf-preset-select {
+    font-size: 10px;
+    padding: 2px 6px;
+    max-width: 140px;
+    border-radius: 7px;
+    border: 1px dashed oklch(var(--p) / 0.4);
+    background: transparent;
+    color: oklch(var(--p));
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.wf-preset-select:hover {
+    background: oklch(var(--p) / 0.08);
+    border-style: solid;
+}
+
+.wf-field-help {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 10.5px;
+    line-height: 1.45;
+    opacity: 0.5;
+}
+
+.wf-field-help > i {
+    font-size: 9px;
+    flex-shrink: 0;
+}
+
+/* Footer tip: how to reference this node from other nodes. */
+.wf-ref-tip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 10.5px;
+    padding: 7px 11px;
+    border-radius: 9px;
+    border: 1px solid oklch(var(--p) / 0.18);
+    background: oklch(var(--p) / 0.06);
+    opacity: 0.85;
+}
+
+.wf-ref-tip > i {
+    opacity: 0.6;
+    font-size: 10px;
+}
+
+.wf-ref-tip code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: oklch(var(--p) / 0.12);
+}
+
+.wf-browse-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 12px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+}
+
+.wf-browse-row:last-child {
+    border-bottom: none;
+}
+
+.wf-browse-row:hover {
+    background: oklch(var(--p) / 0.08);
+}
+
+
+/* ---------------------------------------------------------------- */
+/* Node context menu (right-click) + preview run modal              */
+/* ---------------------------------------------------------------- */
+.wf-context-menu {
+    position: fixed;
+    z-index: 9999;
+    min-width: 190px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 10px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    background: color-mix(in srgb, var(--fallback-b1, oklch(var(--b1))) 97%, transparent);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    backdrop-filter: blur(8px);
+}
+
+.wf-context-menu.hidden {
+    display: none;
+}
+
+.wf-context-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 12px;
+    border-radius: 7px;
+}
+
+.wf-context-menu button i {
+    width: 14px;
+    text-align: center;
+    opacity: 0.6;
+}
+
+.wf-context-menu button:hover {
+    background: oklch(var(--p) / 0.08);
+}
+
+.wf-context-menu button.hidden {
+    display: none;
+}
+
+.wf-context-menu .wf-context-sep {
+    height: 1px;
+    background: rgba(128, 128, 128, 0.2);
+    margin: 3px 6px;
+}
+
+.wf-context-menu .wf-context-danger {
+    color: oklch(var(--er));
+}
+
+.wf-context-menu .wf-context-danger i {
+    opacity: 1;
+}
+
+.wf-context-menu .wf-context-danger:hover {
+    background: oklch(var(--er) / 0.1);
+}
+
+.wf-preview-log-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.06);
+}
+
+.wf-preview-log-row > i {
+    width: 14px;
+    text-align: center;
+}
+
+.wf-preview-output {
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(128, 128, 128, 0.15);
+    background: rgba(128, 128, 128, 0.06);
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+
+/* ---------------------------------------------------------------- */
+/* Run console (toggleable drawer at the bottom of the canvas)      */
+/* ---------------------------------------------------------------- */
+.wf-console {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    min-height: 180px;
+    max-height: 55%;
+    border-radius: 12px;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    background: color-mix(in srgb, var(--fallback-b2, oklch(var(--b2))) 96%, transparent);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
+    backdrop-filter: blur(8px);
+    overflow: hidden;
+}
+
+.wf-console.hidden {
+    display: none;
+}
+
+.wf-console-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.8;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.wf-console-head button {
+    padding: 2px 6px;
+    border-radius: 6px;
+    opacity: 0.6;
+}
+
+.wf-console-head button:hover {
+    opacity: 1;
+    background: oklch(var(--p) / 0.1);
+}
+
+.wf-console-body {
+    overflow-y: auto;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.wf-console-row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+}
+
+.wf-console-time {
+    flex-shrink: 0;
+    opacity: 0.35;
+    font-size: 10px;
+}
+
+.wf-console-msg {
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.wf-console-success .wf-console-msg { color: oklch(var(--su)); }
+.wf-console-error .wf-console-msg { color: oklch(var(--er)); }
+.wf-console-muted .wf-console-msg { opacity: 0.45; }
+
+
+/* Drawflow's built-in delete "X" is redundant — nodes are removed via
+   the right-click context menu instead. */
+.drawflow .drawflow-delete {
+    display: none !important;
+}

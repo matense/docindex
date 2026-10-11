@@ -70,6 +70,19 @@ questions about your files by searching and reading them step by step.
   table, heading and separator cells. Autosave with version history and
   side-by-side diffs, read/print mode, full AI editing tools with lock and
   hide-from-AI toggles, and drag-a-cell-into-the-chat context.
+- **Automation (module)** — visual workflows on a drag & drop canvas:
+  chain file inputs (text/CSV/Excel/JSON), notebooks, transforms, AI
+  prompts (with custom behavior) and logic into flows that run manually,
+  on a schedule, straight from a file's context menu, or from the AI
+  chat — and the AI assistant can design new workflows for you.
+  Ready-made examples (translate a file, summarize into a notebook, …)
+  get you started, and results can be saved back to your drives as new,
+  editable files or notebooks. Enable it in *Settings → Modules*.
+
+  > ⚠️ **Early stage** — the Automation module is in a very early stage and
+  > should be used with care: workflows may misbehave, node configs may
+  > change between releases, and runs can fail midway. Keep a copy of
+  > anything important before letting a workflow modify it.
 - **Extensible module system** — new features can ship as self-contained
   modules under `modules/` (pages, AI tools, database tables, file viewers,
   AI file guards) with an admin enable/disable toggle. See
@@ -286,3 +299,12 @@ installations compatible.
 ## License
 
 [MIT](LICENSE)
+
+### Third-party attributions
+
+The built-in **persona library** (AI personalities available in the chat and in
+workflow AI nodes) bundles content from
+[The Agency / agency-agents](https://github.com/msitarzewski/agency-agents),
+© 2025 AgentLand Contributors, released under the
+[MIT license](licenses/AGENCY-AGENTS-LICENSE.txt). See [NOTICE.md](NOTICE.md)
+for details.

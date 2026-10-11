@@ -55,29 +55,65 @@
     <!-- Composer -->
     <div class="relative pb-2">
         <div id="aip-mention-dropdown" class="hidden absolute bottom-full left-2 right-2 mb-1 glass-menu max-h-48 overflow-y-auto z-10"></div>
+        <!-- Jump to latest (auto-scroll paused) -->
+        <button type="button" id="aip-jump" class="ai-jump-pill hidden">
+            <i class="fas fa-arrow-down"></i> New messages
+        </button>
+        <!-- Background-mode banner -->
+        <div id="aip-bg-banner" class="ai-bg-banner hidden">
+            <i class="fas fa-rocket"></i>
+            <span><strong>Background mode</strong> — the next message runs as a long-horizon task</span>
+            <button type="button" id="aip-bg-off" class="ai-bg-off" title="Turn off background mode">
+                <i class="fas fa-xmark"></i>
+            </button>
+        </div>
         <div id="aip-attachments" class="hidden flex-wrap gap-1 px-2 pb-2"></div>
+        <!-- Persona picker popup -->
+        <div id="aip-persona-popup" class="hidden absolute bottom-full left-2 right-2 mb-1 glass-menu z-10 flex flex-col max-h-72">
+            <div class="p-2 border-b border-base-content/10">
+                <input type="text" id="aip-persona-search" class="input input-bordered input-xs w-full"
+                       placeholder="Search personas… (e.g. translator, reviewer)">
+            </div>
+            <div id="aip-persona-list" class="overflow-y-auto p-1"></div>
+        </div>
+        <!-- "+" attach/options menu -->
+        <div id="aip-plus-menu" class="hidden absolute bottom-full left-2 mb-1 glass-menu z-10 flex-col min-w-56 p-1.5">
+            <button type="button" id="aip-attach-here" class="ai-menu-item"
+                    title="Attach the file open in the viewer (@here)">
+                <i class="fas fa-at w-5 text-center text-primary"></i> Attach current file
+                <span class="ai-menu-hint">@here</span>
+            </button>
+            <button type="button" id="aip-attach-search" class="ai-menu-item"
+                    title="Search files to attach (#)">
+                <i class="fas fa-hashtag w-5 text-center text-primary"></i> Search files to attach
+                <span class="ai-menu-hint">#</span>
+            </button>
+            <button type="button" id="aip-attach-drive" class="ai-menu-item"
+                    title="Scope the answer to a drive ($)">
+                <i class="fas fa-hard-drive w-5 text-center text-accent"></i> Scope to a drive
+                <span class="ai-menu-hint">$</span>
+            </button>
+            <button type="button" id="aip-attach-persona" class="ai-menu-item"
+                    title="Give the AI a personality/skill (Agency persona library)">
+                <i class="fas fa-masks-theater w-5 text-center text-secondary"></i> Choose a persona
+            </button>
+            <div class="ai-menu-sep"></div>
+            <button type="button" id="aip-bg-toggle" class="ai-menu-item"
+                    title="Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock">
+                <i class="fas fa-rocket w-5 text-center text-warning"></i> Run in background
+                <span class="ai-menu-tog"></span>
+            </button>
+            <div class="ai-menu-sep"></div>
+            <div class="px-2.5 py-1 text-[10px] opacity-40">tip: drop files onto the chat to attach them</div>
+        </div>
         <form id="aip-form" data-no-spa class="ai-composer !m-0 shadow-lg">
             <textarea rows="1" id="aip-input" placeholder="Ask anything about your files… (Shift+Enter for a new line)"
                       class="ai-input w-full bg-transparent focus:outline-none px-4 pt-3.5 pb-2" autocomplete="off"></textarea>
             <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
-                <button type="button" id="aip-attach-here" class="ai-attach-btn"
-                        title="Attach the file open in the viewer (@here)">
-                    <i class="fas fa-at"></i><span>Current file</span>
+                <button type="button" id="aip-plus" class="ai-plus-btn" title="Attach &amp; options">
+                    <i class="fas fa-plus"></i>
                 </button>
-                <button type="button" id="aip-attach-search" class="ai-attach-btn"
-                        title="Search files to attach (#)">
-                    <i class="fas fa-hashtag"></i><span>Search files</span>
-                </button>
-                <button type="button" id="aip-attach-drive" class="ai-attach-btn"
-                        title="Scope the answer to a drive ($)">
-                    <i class="fas fa-hard-drive"></i><span>Drive</span>
-                </button>
-                <span class="text-xs opacity-30 hidden md:inline">drop files here to attach</span>
                 <span class="flex-1"></span>
-                <button type="button" id="aip-bg-toggle" class="ai-attach-btn"
-                        title="Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock">
-                    <i class="fas fa-rocket"></i><span>Background</span>
-                </button>
                 <button type="submit" id="aip-send" class="ai-send-btn" title="Send">
                     <i class="fas fa-paper-plane"></i>
                 </button>
@@ -90,5 +126,5 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=4" defer></script>
+<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=6" defer></script>
 {% endblock %}

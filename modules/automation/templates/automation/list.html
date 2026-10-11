@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Automation - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-diagram-project"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Automation</h1>
+            <p class="text-xs opacity-50">
+                Visual workflows: chain files, transforms, AI prompts and logic into
+                flows that run manually, on a schedule, or from the AI chat.
+            </p>
+        </div>
+        <a href="{{ url_for('behaviors.index') }}" class="btn btn-outline btn-sm gap-1"
+           title="Reusable AI instructions for the AI nodes (core library)">
+            <i class="fas fa-masks-theater"></i> Behaviors
+        </a>
+        <button type="button" class="btn btn-primary btn-sm gap-1"
+                onclick="document.getElementById('wf-new-modal').showModal()">
+            <i class="fas fa-plus"></i> New workflow
+        </button>
+    </div>
+
+    {% if example_error %}
+    <div class="alert alert-error text-sm py-2">
+        <i class="fas fa-triangle-exclamation"></i> {{ example_error }}
+    </div>
+    {% endif %}
+
+    <div class="alert alert-warning text-xs py-2.5 rounded-xl">
+        <i class="fas fa-triangle-exclamation flex-shrink-0"></i>
+        <span><strong>Early stage:</strong> Automation is in a very early stage —
+        use it with care. Workflows may misbehave, node configs may change
+        between releases, and runs can fail midway. Keep a copy of anything
+        important before letting a workflow modify it.</span>
+    </div>
+
+    <!-- Examples gallery (collapsible — state remembered per browser) -->
+    <details id="automation-examples" class="glass-panel rounded-2xl group">
+        <summary class="px-6 py-4 cursor-pointer select-none flex items-center gap-3 list-none
+                        hover:bg-base-content/[0.03] rounded-2xl transition-colors">
+            <span class="w-8 h-8 rounded-lg bg-secondary/15 text-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-lightbulb"></i>
+            </span>
+            <span class="flex-1 min-w-0">
+                <span class="block font-semibold text-sm">Start from an example</span>
+                <span class="block text-[11px] opacity-50">One click creates an editable copy — then adjust it in the editor.</span>
+            </span>
+            <span class="badge badge-ghost badge-sm">{{ examples|length }}</span>
+            <i class="fas fa-chevron-down text-xs opacity-40 transition-transform group-open:rotate-180"></i>
+        </summary>
+        <div class="px-6 pb-5 pt-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {% for ex in examples %}
+            <form method="POST" action="{{ url_for('automation.example_use', key=ex.key) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="w-full text-left rounded-xl border border-base-content/10 p-4 hover:border-primary/40 hover:bg-primary/5 transition-colors flex items-start gap-3 group/ex">
+                    <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <i class="fas {{ ex.icon }}"></i>
+                    </span>
+                    <span class="min-w-0">
+                        <span class="block font-semibold text-sm group-hover/ex:text-primary transition-colors">{{ ex.name }}</span>
+                        <span class="block text-[11px] opacity-50 mt-1 leading-snug">{{ ex.description }}</span>
+                    </span>
+                </button>
+            </form>
+            {% endfor %}
+        </div>
+    </details>
+
+    <!-- Your workflows -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2">
+            <i class="fas fa-diagram-project text-primary/60 text-xs"></i>
+            <span class="text-[10px] uppercase tracking-wide opacity-50 flex-1">Your workflows</span>
+            {% if workflows %}<span class="badge badge-ghost badge-sm">{{ workflows|length }}</span>{% endif %}
+        </div>
+        {% if workflows %}        <div class="divide-y divide-base-content/5">
+            {% for w in workflows %}
+            {% set last = w.runs[0] if w.runs else None %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap">
+                <a href="{{ url_for('automation.editor', workflow_id=w.id) }}"
+                   class="flex items-center gap-3 flex-1 min-w-0 group">
+                    <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-diagram-project"></i>
+                    </span>
+                    <span class="min-w-0">
+                        <span class="block font-semibold truncate group-hover:text-primary transition-colors">{{ w.name }}
+                            {% if w.ai_lock %}<i class="fas fa-lock text-warning text-[10px] ml-1"
+                               title="Locked against AI edits"></i>{% endif %}
+                            {% if w.ai_hidden %}<i class="fas fa-eye-slash text-warning text-[10px] ml-1"
+                               title="Hidden from the AI"></i>{% endif %}
+                        </span>
+                        <span class="text-[11px] opacity-45 flex items-center gap-3 mt-0.5 flex-wrap">
+                            {% if w.interval_minutes %}
+                            <span><i class="fas fa-clock mr-1"></i>every {{ w.interval_minutes }} min{{ ' (on)' if w.enabled else ' (off)' }}</span>
+                            {% else %}
+                            <span><i class="fas fa-hand-pointer mr-1"></i>manual</span>
+                            {% endif %}
+                            {% if last %}
+                            <span>last run
+                                <span class="badge badge-xs {{ 'badge-success' if last.status == 'done' else ('badge-error' if last.status in ('error', 'interrupted') else 'badge-warning') }}">{{ last.status }}</span>
+                                {{ last.finished_at.strftime('%d %b %H:%M') if last.finished_at else '' }}
+                            </span>
+                            {% else %}
+                            <span>never ran</span>
+                            {% endif %}
+                        </span>
+                    </span>
+                </a>
+                <div class="flex gap-1 flex-shrink-0">
+                    <a href="{{ url_for('automation.runs', workflow_id=w.id) }}"
+                       class="btn btn-ghost btn-xs gap-1" title="Run history">
+                        <i class="fas fa-clock-rotate-left"></i> Runs
+                    </a>
+                    <form method="POST" action="{{ url_for('automation.duplicate', workflow_id=w.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Duplicate">
+                            <i class="fas fa-clone"></i>
+                        </button>
+                    </form>
+                    <form method="POST" action="{{ url_for('automation.delete', workflow_id=w.id) }}"
+                          data-confirm="Delete workflow &quot;{{ w.name }}&quot; and all its runs? This cannot be undone."
+                          data-confirm-danger>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost btn-xs text-error gap-1" title="Delete">
+                            <i class="fas fa-trash-can"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-14 opacity-50">
+            <i class="fas fa-diagram-project text-4xl mb-3 block"></i>
+            <p class="font-semibold">No workflows yet.</p>
+            <p class="text-xs mt-1">Create one and chain your first nodes on the canvas — or start from an example above.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Recent runs across all workflows -->
+    <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2">
+            <i class="fas fa-clock-rotate-left text-primary/60 text-xs"></i>
+            <span class="text-[10px] uppercase tracking-wide opacity-50 flex-1">Recent runs</span>
+            {% if recent_runs %}<span class="badge badge-ghost badge-sm">last {{ recent_runs|length }}</span>{% endif %}
+        </div>
+        {% if recent_runs %}
+        <div class="divide-y divide-base-content/5">
+            {% for r in recent_runs %}
+            <a href="{{ url_for('automation.run_detail', run_id=r.id) }}"
+               class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap group">
+                <span class="badge {{ 'badge-success' if r.status == 'done' else ('badge-error' if r.status in ('error', 'interrupted') else ('badge-warning' if r.status in ('running', 'queued') else 'badge-ghost')) }} gap-1">
+                    {% if r.status in ('running', 'queued') %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
+                    {{ r.status }}
+                </span>
+                <span class="font-semibold text-sm truncate max-w-56 group-hover:text-primary transition-colors">
+                    {{ r.workflow.name if r.workflow else '(deleted workflow)' }}
+                </span>
+                <span class="badge badge-ghost badge-xs">{{ r.trigger }}</span>
+                <span class="text-xs opacity-50 flex-1">
+                    {{ r.created_at.strftime('%d %b %Y %H:%M:%S') if r.created_at }}
+                    {% if r.finished_at and r.started_at %}
+                    · {{ ((r.finished_at - r.started_at).total_seconds())|duration }}
+                    {% endif %}
+                </span>
+                {% if r.error %}
+                <span class="text-xs text-error truncate max-w-64">{{ r.error }}</span>
+                {% endif %}
+                <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 transition-all"></i>
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-10 opacity-50">
+            <i class="fas fa-clock-rotate-left text-3xl mb-2 block"></i>
+            <p class="text-sm font-semibold">No runs yet.</p>
+            <p class="text-xs mt-1">Executions of any workflow show up here, newest first.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- New workflow modal -->
+<dialog id="wf-new-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New workflow</h3>
+        <p class="text-xs opacity-50 mb-4">A blank canvas — add nodes, connect them, then run the
+        flow manually, on a schedule, or from the AI chat.</p>
+        <form method="POST" action="{{ url_for('automation.create') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="e.g. Translate new documents" required
+                   class="input input-bordered input-sm w-full">
+            <input type="text" name="description" placeholder="What does this flow do? (optional)"
+                   class="input input-bordered input-sm w-full">
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('wf-new-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">Create &amp; open editor</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+(function () {
+    // Remember whether the examples gallery is open across navigations.
+    const el = document.getElementById('automation-examples');
+    if (!el) return;
+    const KEY = 'docindex.automation.examplesOpen';
+    try {
+        if (localStorage.getItem(KEY) === '1') el.open = true;
+        el.addEventListener('toggle', () => {
+            try { localStorage.setItem(KEY, el.open ? '1' : '0'); } catch (e) {}
+        });
+    } catch (e) {}
+})();
+</script>
+{% endblock %}

@@ -104,6 +104,12 @@ class Config:
     # Run long-horizon AI tasks in background threads (disable in tests)
     AI_TASKS_ASYNC = True
 
+    # Run automation workflow executions in background threads
+    AUTOMATION_ASYNC = True
+
+    # Automation module schedule-trigger thread (checks due workflows)
+    AUTOMATION_SCHEDULER = True
+
 
 class TestConfig(Config):
     SECRET_KEY = "test-secret-key"
@@ -117,6 +123,8 @@ class TestConfig(Config):
     SYNC_ASYNC = False
     HASHTAG_ASYNC = False
     AI_TASKS_ASYNC = False
+    AUTOMATION_ASYNC = False
+    AUTOMATION_SCHEDULER = False
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")

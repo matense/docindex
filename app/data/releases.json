@@ -1,0 +1,74 @@
+{
+  "releases": [
+    {
+      "version": "0.1.2",
+      "date": "2026-10-12",
+      "title": "Automation, behaviors & personas",
+      "warning": "The Automation module is in a very early stage — use it with care. Workflows may misbehave, node configs may change between releases, and runs can fail midway. Keep a copy of anything important before letting a workflow modify it.",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Automation module: visual workflow editor with input, AI, transform, logic and output nodes — build pipelines by dragging nodes on a canvas.",
+            "Workflow runs: live run page with progress bar, per-node output popups, execution console, durations (ms/s/m/h) and an inputs & outputs reference section.",
+            "Behaviors & personas are now a core feature: manage reusable AI instructions on the Behaviors page (Profile → Behaviors & personas), including the bundled Agency persona library with per-persona and per-division enable/disable toggles.",
+            "Chat: the workflow open in the Automation editor appears as a context chip (like the current file), so the AI can inspect and edit it directly.",
+            "Chat: background tasks now stream live in the chat that launched them — no need to close and reopen the window.",
+            "Drive: rubber-band (lasso) selection — drag from empty space to select many files and folders at once (hold Ctrl/Cmd to add to the selection)."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Chat context chips now refresh automatically when you navigate, so they always match what is on screen.",
+            "Automation index reorganized: collapsible examples, your workflows, and recent runs with status.",
+            "Persona previews render as formatted markdown instead of raw text."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Drive: multi-select, drag & drop and right-click menus broke after the first page navigation — the page script now survives SPA navigation.",
+            "Indexing: 'database is locked' errors under parallel sync workers are retried instead of crashing the job.",
+            "Chat: the AI can use Automation tools again when the module is enabled (namespaced tools were invisible to the model)."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.1",
+      "date": "2026-10-05",
+      "title": "Trash bin & long-horizon AI tasks",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Trash bin: deleted files land in the trash and can be restored or purged from the profile page.",
+            "Long-horizon background AI tasks with a dock widget, stop button and per-task event stream.",
+            "File version history: uploading or editing creates versions, with text diffs and one-click restore."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1",
+      "date": "2026-08-19",
+      "title": "First public version",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Personal searchable file drive: upload, OCR, full-text search and AI chat over your own files.",
+            "Multiple drives, folders, hashtags, duplicate detection and synced (read-only) local folders.",
+            "Docker and local install scripts, install guide and first-admin-user creation."
+          ]
+        }
+      ]
+    }
+  ]
+}
