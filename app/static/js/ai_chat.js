@@ -203,6 +203,7 @@
         let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
+        let workflowDismissedId = null; // currentWorkflow.id the user hid
         let scopeAllDrives = false; // user removed the drive scope (× on the
         let personaRef = null;    // {key, name, emoji} — sticky per conversation
                                     // drive chip) -> search across ALL drives
@@ -346,6 +347,10 @@
                     chip('badge-secondary', 'fa-eye', captured.context_file_name,
                          'Open on screen when the task started — ' + fixedTitle);
                 }
+                if (captured.workflow_name) {
+                    chip('badge-secondary', 'fa-diagram-project', captured.workflow_name,
+                         'Workflow open in the Automation editor when the task started — ' + fixedTitle);
+                }
                 if (captured.context_cell
                         && !(cellRef && cellRef.cell_id === captured.context_cell.cell_id)) {
                     chip('badge-info', 'fa-table-cells',
@@ -409,6 +414,16 @@
                          'Open on screen — the AI knows this is your current context',
                          () => {
                              contextDismissedId = window.currentFile.id;
+                             renderChips();
+                         });
+                }
+                // Removable chip: the workflow open in the Automation editor.
+                if (window.currentWorkflow
+                        && window.currentWorkflow.id !== workflowDismissedId) {
+                    chip('badge-secondary', 'fa-diagram-project', window.currentWorkflow.name,
+                         'Workflow open in the Automation editor — the AI can inspect and edit it',
+                         () => {
+                             workflowDismissedId = window.currentWorkflow.id;
                              renderChips();
                          });
                 }
@@ -684,6 +699,7 @@
                 emoji: '',
             } : null;
             contextDismissedId = null;
+            workflowDismissedId = null;
             renderChips();
         }
 
@@ -1320,6 +1336,13 @@
                                 ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
                                 : null,
                             persona: personaRef ? personaRef.key : null,
+                            // Automation editor open on this page (if any).
+                            context_workflow_id: (window.currentWorkflow
+                                && window.currentWorkflow.id !== workflowDismissedId)
+                                ? window.currentWorkflow.id : null,
+                            context_workflow_node: (window.currentWorkflow
+                                && window.currentWorkflow.id !== workflowDismissedId)
+                                ? (window.currentWorkflowNode || null) : null,
                         }),
                     });
                     const data = await resp.json().catch(() => ({}));
@@ -1406,10 +1429,12 @@
                         context_cell: bodyCell,
                         persona: bodyPersona,
                         // Automation editor open on this page (if any).
-                        context_workflow_id: window.currentWorkflow
+                        context_workflow_id: (window.currentWorkflow
+                            && window.currentWorkflow.id !== workflowDismissedId)
                             ? window.currentWorkflow.id : null,
-                        context_workflow_node: window.currentWorkflowNode
-                            || null,
+                        context_workflow_node: (window.currentWorkflow
+                            && window.currentWorkflow.id !== workflowDismissedId)
+                            ? (window.currentWorkflowNode || null) : null,
                     }),
                 });
 
@@ -1538,6 +1563,9 @@
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
+        // Re-render on every SPA navigation so the context chips (file,
+        // workflow) follow what is actually on screen.
+        document.addEventListener('spa:navigated', renderChips);
         loadConnections();
         api.focus();
         return api;

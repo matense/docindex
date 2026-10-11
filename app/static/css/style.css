@@ -2512,6 +2512,16 @@ body.show-shortcuts #shortcut-help-panel {
     justify-content: center;
 }
 
+/* Rubber-band (lasso) selection rectangle on the drive page */
+.lasso-rect {
+    position: fixed;
+    border: 1px solid #6366f1;
+    background: rgba(99, 102, 241, 0.10);
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 60;
+}
+
 /* --- AI chat composer --- */
 .ai-composer {
     margin: 0.75rem;

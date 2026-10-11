@@ -49,6 +49,7 @@
     let conversationId = null;
     let attachments = []; // [{id, name}]
     let contextDismissedId = null; // currentFile.id the user hid
+    let workflowDismissedId = null; // currentWorkflow.id the user hid
     let scopeAllDrives = false; // user removed the drive scope (× on the
                                 // drive chip) -> search across ALL drives
     let cellRef = null; // notebook cell dropped into the chat
@@ -322,6 +323,26 @@
             ctx.appendChild(rm);
             chipsEl.appendChild(ctx);
         }
+        // Removable chip: the workflow open in the Automation editor.
+        if (window.currentWorkflow
+                && window.currentWorkflow.id !== workflowDismissedId) {
+            const wf = document.createElement('span');
+            wf.className = 'badge badge-secondary badge-outline gap-1 text-xs';
+            wf.innerHTML = '<i class="fas fa-diagram-project"></i>';
+            wf.appendChild(document.createTextNode(window.currentWorkflow.name));
+            wf.title = 'Workflow open in the Automation editor — the AI can inspect and edit it';
+            const wfRm = document.createElement('button');
+            wfRm.type = 'button';
+            wfRm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+            wfRm.innerHTML = '<i class="fas fa-xmark"></i>';
+            wfRm.title = 'Stop sharing this workflow as context';
+            wfRm.onclick = () => {
+                workflowDismissedId = window.currentWorkflow.id;
+                renderChips();
+            };
+            wf.appendChild(wfRm);
+            chipsEl.appendChild(wf);
+        }
         attachments.forEach((a) => {
             const chip = document.createElement('span');
             chip.className = 'badge badge-primary badge-outline gap-1 text-xs';
@@ -358,6 +379,9 @@
     }
 
     renderChips();  // show the current-context chip if a file is open
+    // Re-render on every SPA navigation so the context chips (file,
+    // workflow) follow what is actually on screen.
+    document.addEventListener('spa:navigated', renderChips);
 
     function renderMarkdown(text) {
         const linked = (text || '').replace(/\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
@@ -703,6 +727,7 @@
             emoji: null,
         } : null;
         contextDismissedId = null;
+        workflowDismissedId = null;
         renderChips();
     }
 
@@ -1099,6 +1124,13 @@
                             ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
                             : null,
                         persona: personaRef ? personaRef.key : null,
+                        // Automation editor open on this page (if any).
+                        context_workflow_id: (window.currentWorkflow
+                            && window.currentWorkflow.id !== workflowDismissedId)
+                            ? window.currentWorkflow.id : null,
+                        context_workflow_node: (window.currentWorkflow
+                            && window.currentWorkflow.id !== workflowDismissedId)
+                            ? (window.currentWorkflowNode || null) : null,
                     }),
                 });
                 const data = await resp.json().catch(() => ({}));
@@ -1153,6 +1185,13 @@
                         : null,
                     // Persona picked for this conversation.
                     persona: personaRef ? personaRef.key : null,
+                    // Automation editor open on this page (if any).
+                    context_workflow_id: (window.currentWorkflow
+                        && window.currentWorkflow.id !== workflowDismissedId)
+                        ? window.currentWorkflow.id : null,
+                    context_workflow_node: (window.currentWorkflow
+                        && window.currentWorkflow.id !== workflowDismissedId)
+                        ? (window.currentWorkflowNode || null) : null,
                 }),
             });
 

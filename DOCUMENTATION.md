@@ -926,7 +926,8 @@ Alt+N new folder, Alt+A toggle AI chat; holding Alt reveals shortcut badges.
 ### `drive.js`
 
 Drive page interactions: multi-select (Ctrl/Cmd+click toggle, Shift+click
-range, Ctrl+A select all visible, Esc or background click clears), cut/paste
+range, rubber-band lasso by dragging from empty background — additive with
+Ctrl/Cmd held, Ctrl+A select all visible, Esc or background click clears), cut/paste
 clipboard (sessionStorage), bulk delete/move via `/selection/*`, file info
 modal (`/file/<id>/info`), rename, and drag & drop:
 
@@ -976,6 +977,12 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   mention autocomplete backed by `/api/search`, drag & drop accepts drive
   files (attach directly) and OS files (upload via `POST /upload` with
   `Accept: application/json`, then attach). Chips show pending attachments.
+- Screen-context chips: the file open in the viewer (`window.currentFile`)
+  and the workflow open in the Automation editor (`window.currentWorkflow`)
+  each appear as a removable chip and are sent as `context_file_id` /
+  `context_workflow_id` (+ `context_workflow_node`); dismissing a chip
+  suppresses its payload field. The chips re-render on every `spa:navigated`
+  event so they always match what is on screen.
 - Drive scope: `$query` opens a drive mention autocomplete (multiple drives
   can be referenced); removing the current-drive chip switches to an
   explicit "All drives" chip, and removing that narrows back. The context

@@ -419,6 +419,7 @@
     // --- above, so they keep working after every SPA re-run of this script. -
     if (!window._driveGlobalBound) {
         window._driveGlobalBound = true;
+        let suppressNextClear = false; // set after a lasso drag ends
 
         document.addEventListener('keydown', (e) => {
             if (!onDrivePage()) return;
@@ -436,9 +437,61 @@
 
         document.addEventListener('click', (e) => {
             if (!onDrivePage()) return;
+            if (suppressNextClear) { suppressNextClear = false; return; }
             if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
                                   'button, a, form, dialog, input, .context-menu')) return;
             clearSelection();
+        });
+
+        // --- Rubber-band (lasso) selection -----------------------------------
+        // Dragging from empty background draws a rectangle; every visible item
+        // it touches joins the selection (additive when Ctrl/Cmd is held).
+        let lasso = null; // { x0, y0, rect, base }
+
+        (document.getElementById('page-content-container') || document)
+            .addEventListener('mousedown', (e) => {
+                if (!onDrivePage() || e.button !== 0) return;
+                if (e.target.closest('[data-file-id], [data-folder-sel-id], #drive-toolbar, ' +
+                                     '.breadcrumbs, .view-switch, thead, button, a, form, ' +
+                                     'dialog, input, textarea, select, summary, .context-menu')) return;
+                lasso = { x0: e.clientX, y0: e.clientY, rect: null,
+                          base: (e.ctrlKey || e.metaKey) ? new Map(S.selected) : new Map() };
+            });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!lasso) return;
+            const w = Math.abs(e.clientX - lasso.x0), h = Math.abs(e.clientY - lasso.y0);
+            if (!lasso.rect) {
+                if (w < 5 && h < 5) return; // ignore micro-drags (plain clicks)
+                const rect = document.createElement('div');
+                rect.className = 'lasso-rect';
+                document.body.appendChild(rect);
+                lasso.rect = rect;
+            }
+            e.preventDefault();
+            const left = Math.min(lasso.x0, e.clientX), top = Math.min(lasso.y0, e.clientY);
+            Object.assign(lasso.rect.style, {
+                left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' });
+            const box = { left, top, right: left + w, bottom: top + h };
+            S.selected.clear();
+            lasso.base.forEach((v, k) => S.selected.set(k, v));
+            visibleItems().forEach((el) => {
+                const r = el.getBoundingClientRect();
+                if (r.left < box.right && r.right > box.left &&
+                    r.top < box.bottom && r.bottom > box.top) {
+                    S.selected.set(itemKey(el), itemEntry(el));
+                }
+            });
+            paint();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!lasso) return;
+            if (lasso.rect) {
+                lasso.rect.remove();
+                suppressNextClear = true; // the trailing click must not clear
+            }
+            lasso = null;
         });
 
         ['scroll', 'resize'].forEach(evt =>
