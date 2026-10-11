@@ -1,7 +1,7 @@
 import json
 import traceback
 
-from flask import (Blueprint, Response, current_app, jsonify, request,
+from flask import (Blueprint, Response, abort, current_app, jsonify, request,
                    stream_with_context)
 from flask_login import current_user, login_required
 
@@ -117,7 +117,26 @@ def _resolve_context(user, data):
     snapshot = {"drive_ids": None, "drive_names": None, "all_drives": False,
                 "file_ids": [], "file_names": [],
                 "context_file_id": None, "context_file_name": None,
-                "context_cell": None}
+                "context_cell": None, "persona": None}
+
+    # Persona injection: a bundled Agency personality the user picked in the
+    # chat selector. It goes FIRST — it defines who the AI is; everything
+    # else (drive scope, files, cells) is context on top. Personas the user
+    # disabled (Behaviors page) are treated as inactive.
+    persona_key = (data.get("persona") or "").strip()
+    if persona_key:
+        from ..services import persona_service
+        persona = persona_service.get_persona(persona_key)
+        if persona and persona_service.is_persona_enabled(user.id,
+                                                          persona_key):
+            vibe = f" — {persona['vibe']}" if persona.get("vibe") else ""
+            notes.append(
+                f'The user activated the persona "{persona["name"]}" '
+                f'({persona["division"]}){vibe}. Adopt this personality, '
+                "expertise and communication style for the whole "
+                "conversation:\n\n" + persona["content"])
+            snapshot["persona"] = persona_key
+            snapshot["persona_name"] = persona["name"]
 
     # Drive scope — resolved first so its note ends up first in the history.
     scope_all_drives = bool(data.get("scope_all_drives"))
@@ -192,6 +211,7 @@ def _resolve_context(user, data):
     except (TypeError, ValueError):
         context_workflow_id = 0
     if context_workflow_id:
+        from ..services import module_service
         try:
             from docindex_module_automation.models import AutomationWorkflow
         except ImportError:
@@ -200,7 +220,8 @@ def _resolve_context(user, data):
             AutomationWorkflow = None
         workflow = (db.session.get(AutomationWorkflow, context_workflow_id)
                     if AutomationWorkflow is not None else None)
-        if workflow is not None and workflow.user_id == user.id:
+        if workflow is not None and workflow.user_id == user.id \
+                and not workflow.ai_hidden:
             node = data.get("context_workflow_node")
             node_txt = ""
             if isinstance(node, dict) and node.get("id"):
@@ -239,6 +260,33 @@ def _resolve_context(user, data):
     snapshot["notes"] = list(notes)
     return {"notes": notes, "attachments": attached, "drives": drives,
             "context": snapshot}
+
+
+@bp.route("/personas")
+@login_required
+def personas():
+    """The bundled Agency persona library (light list, no content).
+
+    Default: only the personas the user has enabled — what the chat persona
+    selector and the Automation editor show. ``?all=1`` returns everything
+    with per-persona ``enabled`` flags (the Behaviors management page)."""
+    from ..services import persona_service
+    if request.args.get("all"):
+        return jsonify({"personas": persona_service.list_personas(
+            user_id=current_user.id)})
+    return jsonify({"personas": persona_service.list_personas(
+        user_id=current_user.id, enabled_only=True)})
+
+
+@bp.route("/personas/<key>")
+@login_required
+def persona_detail(key):
+    """One persona's full content (chat selector / Behaviors page preview)."""
+    from ..services import persona_service
+    persona = persona_service.get_persona(key)
+    if persona is None:
+        abort(404)
+    return jsonify(persona)
 
 
 @bp.route("/conversations")

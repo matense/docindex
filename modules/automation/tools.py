@@ -6,7 +6,7 @@ from app.extensions import db
 from app.services.agent_service import register_tool
 
 from . import engine, runtime
-from .models import AutomationBehavior, AutomationWorkflow
+from .models import AutomationWorkflow
 from .registry import active_node_types
 
 
@@ -17,9 +17,24 @@ def _schema(name, description, properties, required=()):
                        "required": list(required)}}}
 
 
+def _hidden_error():
+    return {"error": "This workflow is hidden from the AI by the user — do "
+                     "not read or mention it. Tell the user they can unhide "
+                     "it with the eye button in the workflow editor "
+                     "toolbar."}
+
+
+def _locked_error():
+    return {"error": "This workflow is LOCKED against AI edits by the "
+                     "user. Do not propose the edits in chat — ask the user "
+                     "to unlock it with the lock button in the workflow "
+                     "editor toolbar, then repeat the request."}
+
+
 def _tool_list(user, args, drive):
+    # ai_hidden workflows are invisible to the assistant entirely.
     workflows = (AutomationWorkflow.query
-                 .filter_by(user_id=user.id)
+                 .filter_by(user_id=user.id, ai_hidden=False)
                  .order_by(AutomationWorkflow.updated_at.desc()).all())
     return {"total": len(workflows),
             "workflows": [{
@@ -27,6 +42,7 @@ def _tool_list(user, args, drive):
                 "description": w.description[:200],
                 "enabled": bool(w.enabled),
                 "interval_minutes": w.interval_minutes,
+                "ai_lock": bool(w.ai_lock),
                 "last_run_at": (w.last_run_at.isoformat()
                                 if w.last_run_at else None),
                 "last_run_status": (w.runs[0].status if w.runs else None),
@@ -42,6 +58,8 @@ def _tool_run(user, args, drive):
                 .filter_by(id=workflow_id, user_id=user.id).first())
     if workflow is None:
         return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
     if runtime.has_active_run(workflow.id):
         return {"error": f"Workflow '{workflow.name}' already has a run in "
                          "progress — wait for it to finish."}
@@ -118,6 +136,9 @@ def _tool_get_workflow(user, args, drive):
                 .filter_by(id=workflow_id, user_id=user.id).first())
     if workflow is None:
         return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    locked = bool(workflow.ai_lock)
     try:
         graph = engine.parse_graph(workflow.graph)
     except engine.WorkflowError:
@@ -136,9 +157,15 @@ def _tool_get_workflow(user, args, drive):
             "config_fields": {f["name"]: (f.get("kind") or "text")
                               for f in spec.get("fields", [])},
         }
-    return {"workflow_id": workflow.id, "name": workflow.name,
-            "description": workflow.description, "graph": graph,
-            "specs": specs}
+    result = {"workflow_id": workflow.id, "name": workflow.name,
+              "description": workflow.description, "graph": graph,
+              "ai_lock": locked, "specs": specs}
+    if locked:
+        result["note"] = ("This workflow is LOCKED against AI edits by the "
+                          "user — do not edit it; ask the user to unlock it "
+                          "with the lock button in the workflow editor "
+                          "toolbar first.")
+    return result
 
 
 def _tool_edit_workflow(user, args, drive):
@@ -150,6 +177,10 @@ def _tool_edit_workflow(user, args, drive):
                 .filter_by(id=workflow_id, user_id=user.id).first())
     if workflow is None:
         return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    if workflow.ai_lock:
+        return _locked_error()
     operations = args.get("operations")
     if not isinstance(operations, list) or not operations:
         return {"error": "operations must be a non-empty list."}
@@ -246,48 +277,6 @@ def _tool_edit_workflow(user, args, drive):
                    "workflow_id": workflow.id}}
 
 
-def _tool_list_behaviors(user, args, drive):
-    items = (AutomationBehavior.query
-             .filter_by(user_id=user.id)
-             .order_by(AutomationBehavior.name).all())
-    return {"total": len(items),
-            "behaviors": [{"id": b.id, "name": b.name, "content": b.content}
-                          for b in items[:100]]}
-
-
-def _tool_save_behavior(user, args, drive):
-    name = (args.get("name") or "").strip()[:120]
-    content = (args.get("content") or "").strip()
-    if not name or not content:
-        return {"error": "name and content are required."}
-    behavior = None
-    if args.get("id") not in (None, ""):
-        try:
-            behavior = (AutomationBehavior.query
-                        .filter_by(id=int(args["id"]), user_id=user.id)
-                        .first())
-        except (TypeError, ValueError):
-            behavior = None
-        if behavior is None:
-            return {"error": f"Behavior {args['id']} not found."}
-    if behavior is None:
-        behavior = (AutomationBehavior.query
-                    .filter_by(user_id=user.id, name=name).first())
-    if behavior is None:
-        behavior = AutomationBehavior(user_id=user.id, name=name,
-                                      content=content)
-        db.session.add(behavior)
-        action = "created"
-    else:
-        behavior.name = name
-        behavior.content = content
-        action = "updated"
-    db.session.commit()
-    return {"ok": True, "id": behavior.id, "name": behavior.name,
-            "note": f"Behavior {action}. It is now available in the "
-                    "behavior field of every AI node."}
-
-
 _REGISTERED = False
 
 
@@ -301,7 +290,10 @@ def register_tools():
         _schema("list_workflows",
                 "List the user's Automation workflows (visual node flows "
                 "that read/transform files and write new ones), with "
-                "schedule and last run status.",
+                "schedule, last run status and the ai_lock flag (a locked "
+                "workflow refuses edit_workflow until the user unlocks it "
+                "in the editor toolbar). Workflows the user hid from the "
+                "AI are not listed at all.",
                 {}),
         _tool_list, label="Listing workflows", module="automation")
     register_tool(
@@ -342,29 +334,6 @@ def register_tools():
                                           "from_port, to, to_port}]}"}},
                 required=("name", "graph")),
         _tool_create, label="Creating workflow", module="automation")
-    register_tool(
-        "list_behaviors",
-        _schema("list_behaviors",
-                "List the user's Automation AI behaviors (reusable system "
-                "prompts picked in the behavior field of AI nodes).",
-                {}),
-        _tool_list_behaviors, label="Listing behaviors", module="automation")
-    register_tool(
-        "save_behavior",
-        _schema("save_behavior",
-                "Create or update an Automation AI behavior (a named, "
-                "reusable system prompt). Pass id to update an existing "
-                "one; without id, a behavior with the same name is updated.",
-                {"name": {"type": "string",
-                          "description": "Short behavior name, e.g. "
-                                         "'Translator'"},
-                 "content": {"type": "string",
-                             "description": "The system prompt text the AI "
-                                            "follows"},
-                 "id": {"type": "integer",
-                        "description": "Existing behavior id (optional)"}},
-                required=("name", "content")),
-        _tool_save_behavior, label="Saving behavior", module="automation")
     register_tool(
         "get_workflow",
         _schema("get_workflow",

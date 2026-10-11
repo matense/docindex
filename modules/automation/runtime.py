@@ -143,18 +143,30 @@ def _execute(run_id, app):
     user = workflow_runs_user(run)
 
     def log(node_id, label, status, summary, ms):
-        entries.append({"node": node_id, "label": label, "status": status,
-                        "summary": summary, "ms": ms})
+        entry = {"node": node_id, "label": label, "status": status,
+                 "summary": summary, "ms": ms}
+        # The engine emits a transient "running" entry when a node starts;
+        # the node's final entry replaces it so the persisted log stays
+        # one-row-per-node (nodes execute sequentially, so the "running"
+        # entry is always the last one when its final entry arrives).
+        if (entries and entries[-1]["node"] == node_id
+                and entries[-1]["status"] == "running"):
+            entries[-1] = entry
+        else:
+            entries.append(entry)
         # Live progress: the run page polls and shows nodes as they finish.
         run.log = json.dumps(entries)
         db.session.commit()
 
     try:
         graph = engine.parse_graph(workflow.graph)
-        _outputs, results, created = engine.execute_graph(
+        outputs, results, created = engine.execute_graph(
             graph, _build_ctx(run, user, app),
             should_stop=should_stop, log=log)
-        run.output = json.dumps({"results": results, "files": created})
+        run.output = json.dumps({
+            "results": results, "files": created,
+            # Per-node output previews — the run page shows them in a popup.
+            "node_outputs": engine.preview_outputs(outputs)})
         run.status = "done"
     except engine._Stopped:
         run.status = "stopped"

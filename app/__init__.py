@@ -39,6 +39,27 @@ def _get_config_with_modules(directory=None, x_arg=None, opts=None):
 migrate.get_config = _get_config_with_modules
 
 
+def format_duration(seconds):
+    """Human duration: '420 ms', '3.25s', '1m 05.34s', '1h 02m 03s'.
+
+    Registered as the ``duration`` Jinja filter — used anywhere a run or
+    task elapsed time is shown."""
+    if seconds is None:
+        return ""
+    ms = max(0, round(float(seconds) * 1000))
+    if ms < 1000:
+        return f"{ms} ms"
+    hours, rem = divmod(ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    secs, millis = divmod(rem, 1000)
+    frac = (f".{millis:03d}".rstrip("0")) if millis else ""
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}{frac}s"
+    return f"{secs}{frac}s"
+
+
 def _sqlite_pragmas(dbapi_conn, _connection_record):
     """Avoid 'database is locked' errors under concurrent requests."""
     cursor = dbapi_conn.cursor()
@@ -50,6 +71,7 @@ def _sqlite_pragmas(dbapi_conn, _connection_record):
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
+    app.add_template_filter(format_duration, "duration")
 
     os.makedirs(app.instance_path, exist_ok=True)
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
@@ -84,13 +106,14 @@ def create_app(config_class=Config):
     def load_user(user_id):
         return db.session.get(User, int(user_id))
 
-    from .routes import ai, auth, drive, search, settings
+    from .routes import ai, auth, behaviors, drive, search, settings
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(drive.bp)
     app.register_blueprint(search.bp)
     app.register_blueprint(ai.bp)
     app.register_blueprint(settings.bp)
+    app.register_blueprint(behaviors.bp)
 
     # Modules: import everything valid under modules/ and register routes
     # (guarded per-request by the persisted enable flag).

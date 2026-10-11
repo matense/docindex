@@ -28,6 +28,11 @@ class AutomationWorkflow(db.Model):
     enabled = db.Column(db.Boolean, nullable=False, default=False)
     interval_minutes = db.Column(db.Integer, nullable=True)
     last_run_at = db.Column(db.DateTime, nullable=True)
+    # AI access flags (editor toolbar): ai_lock blocks AI edits via the
+    # edit_workflow tool; ai_hidden hides the workflow from the AI entirely
+    # (list/get/edit/run tools refuse it).
+    ai_lock = db.Column(db.Boolean, nullable=False, default=False)
+    ai_hidden = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -37,24 +42,6 @@ class AutomationWorkflow(db.Model):
 
     def __repr__(self):
         return f"<AutomationWorkflow {self.id} '{self.name}'>"
-
-
-class AutomationBehavior(db.Model):
-    """A reusable AI behavior (system prompt) the user manages and picks
-    in the AI nodes' behavior field."""
-
-    __tablename__ = "mod_automation_behavior"
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
-                        nullable=False, index=True)
-    name = db.Column(db.String(120), nullable=False)
-    content = db.Column(db.Text, nullable=False, default="")
-    created_at = db.Column(db.DateTime, default=_utcnow)
-    updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
-
-    def __repr__(self):
-        return f"<AutomationBehavior {self.id} '{self.name}'>"
 
 
 class AutomationRun(db.Model):

@@ -330,6 +330,18 @@
         <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
     </a>
 
+    <!-- Behaviors & personas -->
+    <a href="{{ url_for('behaviors.index') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-primary/30 transition-colors">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg flex-shrink-0">
+            <i class="fas fa-masks-theater"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h2 class="font-bold text-lg">Behaviors &amp; personas</h2>
+            <p class="text-xs opacity-50">Reusable AI instructions and the Agency persona library — enable only the ones you use.</p>
+        </div>
+        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
+    </a>
+
     <!-- Admin: registration toggle -->
     {% if current_user.is_admin %}
     <div class="glass-panel rounded-2xl p-6 border border-warning/30">

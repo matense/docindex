@@ -617,6 +617,66 @@ def test_conversation_returns_latest_context(auth_client, app, user):
     assert data["context"]["drive_ids"] is None
 
 
+def test_personas_endpoint_lists_library(auth_client, app, user):
+    """The chat persona selector gets the bundled Agency library as a light
+    list (no content — that ships only into the system note)."""
+    resp = auth_client.get("/ai/personas")
+    assert resp.status_code == 200
+    personas = resp.get_json()["personas"]
+    assert len(personas) > 100
+    assert {"key", "name", "division", "description"} <= set(personas[0])
+    assert "content" not in personas[0]
+
+
+def test_persona_injected_as_first_system_note(auth_client, app, user):
+    """A picked persona becomes the FIRST system note (it defines who the AI
+    is) and is snapshotted onto the conversation context."""
+    from app.services import persona_service
+    _add_conn(auth_client)
+    persona = persona_service.list_personas()[0]
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "persona": persona["key"]})
+    assert messages[0]["role"] == "system"
+    assert 'activated the persona' in messages[0]["content"]
+    assert persona["name"] in messages[0]["content"]
+
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        snap = json.loads(conv.context)
+        assert snap["persona"] == persona["key"]
+        assert snap["persona_name"] == persona["name"]
+
+
+def test_invalid_persona_is_ignored(auth_client, app, user):
+    """An unknown persona key adds no note and is not snapshotted."""
+    _add_conn(auth_client)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "persona": "nope-does-not-exist"})
+    assert not [m for m in messages
+                if m["role"] == "system"
+                and "activated the persona" in m["content"]]
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        assert json.loads(conv.context)["persona"] is None
+
+
+def test_disabled_persona_is_ignored(auth_client, app, user):
+    """A persona the user disabled on the Behaviors page is not injected."""
+    from app.services import persona_service
+    _add_conn(auth_client)
+    persona = persona_service.list_personas()[0]
+    with app.app_context():
+        persona_service.set_persona_enabled(user, persona["key"], False)
+    messages = _chat_capture_payload(auth_client, {
+        "message": "hello", "persona": persona["key"]})
+    assert not [m for m in messages
+                if m["role"] == "system"
+                and "activated the persona" in m["content"]]
+    with app.app_context():
+        conv = ChatConversation.query.one()
+        assert json.loads(conv.context)["persona"] is None
+
+
 def test_chat_persists_compaction_notice(auth_client, app, user):
     """Automatic prompt compaction is visible: a 'notice' message is stored
     in the conversation and streamed to the client."""

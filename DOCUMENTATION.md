@@ -366,6 +366,23 @@ Admin-managed enable/disable state for extension modules (see Module system):
 disabled), `enabled_by` (FK `users.id`), `enabled_at`. Consulted per request
 by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
 
+### `behaviors` (`Behavior`)
+
+Core reusable system prompts (formerly an Automation module feature, migrated
+by `c1a2b3d4e5f6`): `user_id` owner, `name`, `content`, `enabled` (default
+true — disabled behaviors are hidden from pickers and the agent's
+`list_behaviors` tool), timestamps. Managed on `/behaviors` and merged into
+the workflow-editor preset dropdowns via `/behaviors/api/presets`.
+
+### `persona_prefs` (`PersonaPref`)
+
+Per-user enable/disable state for the bundled AI persona library
+(`persona_service`): (`user_id`, `persona_key`) with `enabled` (default true —
+a persona without a row is enabled). Disabled personas are hidden from the
+chat persona selector and are never injected into the system prompt
+(`_resolve_context` treats a disabled persona as invalid). Toggled per card
+or per division (enable/disable all) on `/behaviors`.
+
 ## HTTP surface
 
 - `auth.py`: `GET/POST /login`, `GET/POST /register` (blocked when the
@@ -409,9 +426,19 @@ by the route guard and the agent's tool filter via `ModuleState.is_enabled()`.
   per-drive stats (files, folders, space used, indexed words), AI usage
   (conversations, messages, active connection), a card linking to the trash
   bin (`GET /settings/trash` — deleted files with name search and
-  pagination; restore / delete forever / empty trash) and, for admins only,
+  pagination; restore / delete forever / empty trash), a card linking to the
+  behaviors & personas page (`/behaviors`) and, for admins only,
   `POST /settings/profile/registration` to toggle the
   `registration_enabled` setting.
+- `behaviors.py` (`/behaviors`): dedicated page for core behaviors (your
+  reusable system prompts — create/edit/delete/toggle enabled) and the persona
+  library (per-persona enable/disable toggles, grouped by division, plus a
+  per-division enable/disable-all button — `POST
+  /behaviors/personas/division/<division>/toggle`; the persona preview renders
+  its markdown content). Linked from the profile page (no nav-dock entry).
+  `GET /behaviors/api/presets` (JSON presets for the workflow-editor
+  dropdowns, enabled behaviors only). The legacy
+  `GET /m/automation/behaviors` redirects here.
 
 Ownership is enforced everywhere by filtering on `user_id` (`_get_owned`
 returns 404 for foreign objects; `_get_file` additionally hides trashed
@@ -1133,8 +1160,7 @@ tool + table).
   as the trigger payload), and the AI chat via the namespaced tools
   `automation.list_workflows` / `automation.run_workflow` /
   `automation.get_node_catalog` / `automation.create_workflow` /
-  `automation.get_workflow` / `automation.edit_workflow` /
-  `automation.list_behaviors` / `automation.save_behavior` — so the
+  `automation.get_workflow` / `automation.edit_workflow` — so the
   assistant can design, inspect and edit workflows on request.
   `edit_workflow` applies a list of operations (add_node, update_node —
   config merged, remove_node, connect, disconnect), re-validates the
@@ -1154,8 +1180,9 @@ tool + table).
   carries a plain-language description, accepts/returns chips and a
   concrete example; fields have placeholders, "Examples…" preset
   dropdowns fed by built-in presets and the user's own **behaviors**
-  (reusable system prompts managed on `/m/automation/behaviors`, merged
-  into the dropdown via `/api/behaviors`), and the table/JSON nodes show
+  (reusable system prompts — a core feature managed on `/behaviors`,
+  merged into the dropdown via `/behaviors/api/presets`), and the
+  table/JSON nodes show
   the real columns/keys of the connected file as live hints via
   `/api/file-shape`. The canvas enforces payload-kind connection rules
   (e.g. table inputs only accept table-producing nodes — and from a
@@ -1163,10 +1190,9 @@ tool + table).
   can contribute node types with
   `automation.registry.register_node_type(...)`; types of disabled
   modules are hidden from the palette and fail closed at execution.
-  Tables: `mod_automation_workflow` (graph JSON, schedule fields),
+  Tables: `mod_automation_workflow` (graph JSON, schedule fields) and
   `mod_automation_run` (status, log, output, optional trigger file,
-  answered run params) and `mod_automation_behavior`
-  (user-owned reusable system prompts), with an independent alembic
+  answered run params), with an independent alembic
   branch (`automation`).
 
 ## Testing

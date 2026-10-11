@@ -55,13 +55,23 @@
     let driveRefs = []; // drives picked with $ mentions [{id, name}]
     let driveListCache = null; // /api/drives, fetched on first $ use
     let backgroundMode = false; // send as a long-horizon background task
+    let personaRef = null; // {key, name, emoji} — sticky per conversation
 
     // Long-horizon mode: the next message starts a server-side background
     // task tracked in the bottom dock instead of a live streamed answer.
+    // While armed, an amber banner + recolored send button make it obvious.
     const bgToggle = document.getElementById('aip-bg-toggle');
+    const bgBanner = document.getElementById('aip-bg-banner');
+    const composerForm = document.getElementById('aip-form');
+    const inputPlaceholder = input.placeholder;
     function setBackgroundMode(on) {
         backgroundMode = on;
         bgToggle.classList.toggle('ai-toggle-on', on);
+        bgBanner.classList.toggle('hidden', !on);
+        composerForm.classList.toggle('ai-bg-armed', on);
+        input.placeholder = on
+            ? 'Describe the long-running task… (runs in background)'
+            : inputPlaceholder;
         bgToggle.title = on
             ? 'Background mode ON — the next message starts a long-horizon task on the server'
             : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
@@ -70,9 +80,154 @@
         setBackgroundMode(!backgroundMode);
         input.focus();
     });
+    document.getElementById('aip-bg-off').addEventListener('click', () => {
+        setBackgroundMode(false);
+        input.focus();
+    });
+
+    // --- "+" attach/options menu ------------------------------------------
+    const plusBtn = document.getElementById('aip-plus');
+    const plusMenu = document.getElementById('aip-plus-menu');
+    function closePlusMenu() {
+        plusMenu.classList.add('hidden');
+        plusMenu.classList.remove('flex');
+        plusBtn.classList.remove('open');
+    }
+    plusBtn.addEventListener('click', () => {
+        const opening = plusMenu.classList.contains('hidden');
+        closePlusMenu();
+        if (opening) {
+            plusMenu.classList.remove('hidden');
+            plusMenu.classList.add('flex');
+            plusBtn.classList.add('open');
+        }
+    });
+    // Choosing a menu item closes the menu — except the background toggle,
+    // which stays open so the switch state is visible.
+    plusMenu.addEventListener('click', ev => {
+        if (!ev.target.closest('#aip-bg-toggle')) closePlusMenu();
+    });
+
+    // --- Persona picker: Agency personality/skill for the chat ----------
+    const personaPopup = document.getElementById('aip-persona-popup');
+    const personaSearch = document.getElementById('aip-persona-search');
+    const personaList = document.getElementById('aip-persona-list');
+    let personaCache = null; // light list from /ai/personas (fetched once)
+
+    function hidePersonaPopup() {
+        personaPopup.classList.add('hidden');
+    }
+
+    function renderPersonaList(items) {
+        personaList.innerHTML = '';
+        if (!items.length) {
+            personaList.innerHTML =
+                '<div class="text-center opacity-50 text-xs p-3">No persona matches.</div>';
+            return;
+        }
+        let lastDiv = null;
+        items.forEach(p => {
+            if (p.division !== lastDiv) {
+                lastDiv = p.division;
+                const h = document.createElement('div');
+                h.className = 'text-[10px] font-bold uppercase tracking-wide opacity-40 px-2 pt-2 pb-0.5';
+                h.textContent = p.division;
+                personaList.appendChild(h);
+            }
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'w-full text-left px-2 py-1.5 rounded-lg hover:bg-primary/10 flex items-start gap-2';
+            const emoji = document.createElement('span');
+            emoji.textContent = p.emoji || '🎭';
+            const txt = document.createElement('span');
+            txt.className = 'min-w-0';
+            const nm = document.createElement('span');
+            nm.className = 'block text-xs font-semibold truncate';
+            nm.textContent = p.name;
+            const ds = document.createElement('span');
+            ds.className = 'block text-[10px] opacity-50 leading-snug';
+            ds.textContent = p.description.length > 110
+                ? p.description.slice(0, 110) + '…' : p.description;
+            txt.appendChild(nm);
+            txt.appendChild(ds);
+            row.appendChild(emoji);
+            row.appendChild(txt);
+            row.title = p.vibe || p.description;
+            row.onclick = () => {
+                personaRef = { key: p.key, name: p.name, emoji: p.emoji };
+                hidePersonaPopup();
+                renderChips();
+                input.focus();
+            };
+            personaList.appendChild(row);
+        });
+    }
+
+    function filterPersonaList() {
+        const q = personaSearch.value.trim().toLowerCase();
+        const items = personaCache || [];
+        renderPersonaList(!q ? items : items.filter(p =>
+            p.name.toLowerCase().includes(q)
+            || p.description.toLowerCase().includes(q)
+            || p.division.toLowerCase().includes(q)));
+    }
+
+    document.getElementById('aip-attach-persona').addEventListener('click', () => {
+        if (!personaPopup.classList.contains('hidden')) {
+            hidePersonaPopup();
+            return;
+        }
+        personaPopup.classList.remove('hidden');
+        personaSearch.value = '';
+        const show = () => { filterPersonaList(); personaSearch.focus(); };
+        if (personaCache) {
+            show();
+        } else {
+            personaList.innerHTML =
+                '<div class="text-center opacity-50 text-xs p-3">Loading personas…</div>';
+            fetch('/ai/personas')
+                .then(r => (r.ok ? r.json() : { personas: [] }))
+                .then(data => { personaCache = data.personas || []; show(); })
+                .catch(() => {
+                    personaList.innerHTML =
+                        '<div class="text-center opacity-50 text-xs p-3">Could not load the persona library.</div>';
+                });
+        }
+    });
+    personaSearch.addEventListener('input', filterPersonaList);
+    document.addEventListener('click', ev => {
+        if (!personaPopup.classList.contains('hidden')
+                && !ev.target.closest('#aip-persona-popup')
+                && !ev.target.closest('#aip-attach-persona')) {
+            hidePersonaPopup();
+        }
+        if (!ev.target.closest('#aip-plus-menu')
+                && !ev.target.closest('#aip-plus')) {
+            closePlusMenu();
+        }
+    });
 
     function renderChips() {
         chipsEl.innerHTML = '';
+        // Removable chip: the persona the user picked (sticky for the
+        // whole conversation — survives page reloads via the context
+        // snapshot).
+        if (personaRef) {
+            const pc = document.createElement('span');
+            pc.className = 'badge badge-secondary badge-outline gap-1 text-xs';
+            pc.innerHTML = '<i class="fas fa-masks-theater"></i>';
+            pc.appendChild(document.createTextNode(
+                (personaRef.emoji ? personaRef.emoji + ' ' : '') + personaRef.name));
+            pc.title = 'Persona active — the AI answers with this personality/skill; remove to go back to the default assistant';
+            const rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+            rm.innerHTML = '<i class="fas fa-xmark"></i>';
+            rm.title = 'Remove the persona';
+            rm.onclick = () => { personaRef = null; renderChips(); };
+            pc.appendChild(rm);
+            chipsEl.appendChild(pc);
+        }
         // Removable chip: a notebook cell dropped into the chat.
         if (cellRef) {
             const cr = document.createElement('span');
@@ -224,26 +379,45 @@
     }
 
     function scrollDown(force = false) {
-        if (!force && !autoScroll) return;
+        if (!force && (!autoScroll || asPaused)) return;
         messagesEl.scrollTop = messagesEl.scrollHeight;
+        if (force) { asPaused = false; renderAutoScroll(); }
     }
 
     // Auto-scroll while the AI writes; shared with the chat windows via
     // localStorage so the preference sticks across pages/sessions.
+    // Smart behavior: scrolling UP pauses following (amber dot + "jump"
+    // pill); returning to the bottom resumes. The dedicated header icon is
+    // the user's on/off preference and wins over the pause state.
     let autoScroll = localStorage.getItem('docindex.aiAutoScroll') !== '0';
+    let asPaused = false;
     const autoScrollBtn = document.getElementById('aip-autoscroll');
+    const jumpPill = document.getElementById('aip-jump');
+    function asAtBottom() {
+        return messagesEl.scrollTop + messagesEl.clientHeight
+            >= messagesEl.scrollHeight - 40;
+    }
     function renderAutoScroll() {
         autoScrollBtn.classList.toggle('ai-toggle-on', autoScroll);
-        autoScrollBtn.title = autoScroll
-            ? 'Auto-scroll is ON — the view follows the AI while it writes. Click to pause.'
-            : 'Auto-scroll is OFF — the view stays put while the AI writes. Click to follow.';
+        autoScrollBtn.classList.toggle('ai-as-paused', autoScroll && asPaused);
+        jumpPill.classList.toggle('hidden', !(autoScroll && asPaused));
+        autoScrollBtn.title = !autoScroll
+            ? 'Auto-scroll is OFF — the view stays put while the AI writes. Click to follow.'
+            : asPaused
+                ? 'Auto-scroll paused (you scrolled up) — return to the bottom to resume. Click to disable.'
+                : 'Auto-scroll is ON — scroll up to pause. Click to disable.';
     }
     autoScrollBtn.addEventListener('click', () => {
         autoScroll = !autoScroll;
         localStorage.setItem('docindex.aiAutoScroll', autoScroll ? '1' : '0');
+        if (autoScroll) { asPaused = false; scrollDown(true); }
         renderAutoScroll();
-        if (autoScroll) scrollDown(true);
     });
+    messagesEl.addEventListener('scroll', () => {
+        asPaused = !asAtBottom();
+        renderAutoScroll();
+    });
+    jumpPill.addEventListener('click', () => scrollDown(true));
     renderAutoScroll();
 
     function removeEmptyState() {
@@ -521,6 +695,13 @@
         } : null;
         // "All drives" survives as an explicit scope, shown as its chip.
         scopeAllDrives = !!(c && c.all_drives);
+        // The persona is part of the saved context — reopening the
+        // conversation restores it.
+        personaRef = (c && c.persona) ? {
+            key: c.persona,
+            name: c.persona_name || c.persona,
+            emoji: null,
+        } : null;
         contextDismissedId = null;
         renderChips();
     }
@@ -917,6 +1098,7 @@
                         context_cell: sentCell
                             ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
                             : null,
+                        persona: personaRef ? personaRef.key : null,
                     }),
                 });
                 const data = await resp.json().catch(() => ({}));
@@ -969,6 +1151,8 @@
                     context_cell: cellRef
                         ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
                         : null,
+                    // Persona picked for this conversation.
+                    persona: personaRef ? personaRef.key : null,
                 }),
             });
 
@@ -1063,6 +1247,7 @@
             cellRef = null;
             driveRefs = [];
             scopeAllDrives = false;
+            personaRef = null;
             renderChips();
             hideMentions();
             clearMessages();

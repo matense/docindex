@@ -363,6 +363,10 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
                 log(nid, label, "skipped", "branch not taken", 0)
             continue
 
+        # Live progress: a transient "running" entry the sink replaces
+        # with the final one when the node ends (see runtime.log).
+        if log:
+            log(nid, label, "running", "", 0)
         try:
             node_ctx["_outputs"] = outputs  # for {{ node_id }} resolution
             produced = executor(node_ctx, node["config"], inputs)
@@ -403,6 +407,23 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
             raise WorkflowError(f"{label}: unexpected error: {exc}")
 
     return outputs, results, created
+
+
+def preview_outputs(outputs, limit=4000):
+    """Per-node text previews of a run's outputs: {node_id: {port: text}}.
+
+    Used by the editor preview (live "View output") and stored on each run
+    so the run page can show every node's output in a popup. Payloads are
+    rendered with as_text and truncated to ``limit`` chars per port."""
+    previews = {}
+    for nid, ports in outputs.items():
+        shown = {}
+        for port, payload in (ports or {}).items():
+            if payload is not None:
+                shown[port] = as_text(payload)[:limit]
+        if shown:
+            previews[nid] = shown
+    return previews
 
 
 class _Stopped(Exception):

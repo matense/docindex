@@ -33,7 +33,7 @@
                 <span class="text-xs opacity-50 flex-1">
                     {{ r.created_at.strftime('%d %b %Y %H:%M:%S') if r.created_at }}
                     {% if r.finished_at and r.started_at %}
-                    · {{ ((r.finished_at - r.started_at).total_seconds())|round(1) }}s
+                    · {{ ((r.finished_at - r.started_at).total_seconds())|duration }}
                     {% endif %}
                 </span>
                 {% if r.error %}

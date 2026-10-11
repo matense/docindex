@@ -38,7 +38,10 @@ def extract_text(stored_file):
     try:
         return _dispatch_builtin(ext, path, stored_file)
     except Exception as exc:
-        current_app.logger.warning(
+        # Not a warning: synced folders legitimately contain odd files (test
+        # fixtures, renamed files) and the fallback handles them — a warning
+        # here would flood the user's error log with non-errors.
+        current_app.logger.info(
             ".%s extractor failed for %r (%s: %s) — trying fallbacks",
             ext, stored_file.name, type(exc).__name__, exc)
         return _fallback_extract(path, ext)

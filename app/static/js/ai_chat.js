@@ -96,28 +96,55 @@
 
         // Auto-scroll while the AI writes; shared with the AI page via
         // localStorage so the preference sticks across windows/sessions.
+        // Smart behavior: scrolling UP pauses following (amber dot + "jump"
+        // pill); returning to the bottom resumes. The dedicated icon is the
+        // user's on/off preference and wins over the pause state.
         let autoScroll = localStorage.getItem('docindex.aiAutoScroll') !== '0';
+        let asPaused = false;
+        const jumpPill = el.querySelector('.acw-jump');
+        function asAtBottom() {
+            return messagesEl.scrollTop + messagesEl.clientHeight
+                >= messagesEl.scrollHeight - 40;
+        }
         function renderAutoScroll() {
             autoScrollBtn.classList.toggle('ai-toggle-on', autoScroll);
-            autoScrollBtn.title = autoScroll
-                ? 'Auto-scroll is ON — the view follows the AI while it writes. Click to pause.'
-                : 'Auto-scroll is OFF — the view stays put while the AI writes. Click to follow.';
+            autoScrollBtn.classList.toggle('ai-as-paused', autoScroll && asPaused);
+            jumpPill.classList.toggle('hidden', !(autoScroll && asPaused));
+            autoScrollBtn.title = !autoScroll
+                ? 'Auto-scroll is OFF — the view stays put while the AI writes. Click to follow.'
+                : asPaused
+                    ? 'Auto-scroll paused (you scrolled up) — return to the bottom to resume. Click to disable.'
+                    : 'Auto-scroll is ON — scroll up to pause. Click to disable.';
         }
         autoScrollBtn.addEventListener('click', () => {
             autoScroll = !autoScroll;
             localStorage.setItem('docindex.aiAutoScroll', autoScroll ? '1' : '0');
+            if (autoScroll) { asPaused = false; scrollDown(true); }
             renderAutoScroll();
-            if (autoScroll) scrollDown(true);
         });
+        messagesEl.addEventListener('scroll', () => {
+            asPaused = !asAtBottom();
+            renderAutoScroll();
+        });
+        jumpPill.addEventListener('click', () => scrollDown(true));
         renderAutoScroll();
 
         // Long-horizon mode: send the message as a background task instead of
         // a live chat answer — the agent runs on the server and reports to the
-        // bottom dock when done.
+        // bottom dock when done. While armed, the composer shows an amber
+        // banner + recolored send button so the state is unmistakable.
         const bgToggle = el.querySelector('.acw-bg-toggle');
+        const bgBanner = el.querySelector('.acw-bg-banner');
+        const composerForm = el.querySelector('.acw-form');
+        const inputPlaceholder = input.placeholder;
         function setBackgroundMode(on) {
             backgroundMode = on;
             bgToggle.classList.toggle('ai-toggle-on', on);
+            bgBanner.classList.toggle('hidden', !on);
+            composerForm.classList.toggle('ai-bg-armed', on);
+            input.placeholder = on
+                ? 'Describe the long-running task… (runs in background)'
+                : inputPlaceholder;
             bgToggle.title = on
                 ? 'Background mode ON — the next message starts a long-horizon task on the server'
                 : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
@@ -126,6 +153,50 @@
             setBackgroundMode(!backgroundMode);
             input.focus();
         });
+        el.querySelector('.acw-bg-off').addEventListener('click', () => {
+            setBackgroundMode(false);
+            input.focus();
+        });
+
+        // --- "+" attach/options menu + header "⋯" menu ---------------------
+        const plusBtn = el.querySelector('.acw-plus');
+        const plusMenu = el.querySelector('.acw-plus-menu');
+        const moreBtn = el.querySelector('.acw-more');
+        const moreMenu = el.querySelector('.acw-more-menu');
+        function closePlusMenu() {
+            plusMenu.classList.add('hidden');
+            plusMenu.classList.remove('flex');
+            plusBtn.classList.remove('open');
+        }
+        function closeMoreMenu() {
+            moreMenu.classList.add('hidden');
+            moreMenu.classList.remove('flex');
+        }
+        plusBtn.addEventListener('click', () => {
+            const opening = plusMenu.classList.contains('hidden');
+            closePlusMenu();
+            closeMoreMenu();
+            if (opening) {
+                plusMenu.classList.remove('hidden');
+                plusMenu.classList.add('flex');
+                plusBtn.classList.add('open');
+            }
+        });
+        moreBtn.addEventListener('click', () => {
+            const opening = moreMenu.classList.contains('hidden');
+            closePlusMenu();
+            closeMoreMenu();
+            if (opening) {
+                moreMenu.classList.remove('hidden');
+                moreMenu.classList.add('flex');
+            }
+        });
+        // Choosing a menu item closes the menu — except the background
+        // toggle, which stays open so the switch state is visible.
+        plusMenu.addEventListener('click', ev => {
+            if (!ev.target.closest('.acw-bg-toggle')) closePlusMenu();
+        });
+        moreMenu.addEventListener('click', closeMoreMenu);
 
         // --- Per-window state ---
         let conversationId = null;
@@ -133,6 +204,7 @@
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
         let scopeAllDrives = false; // user removed the drive scope (× on the
+        let personaRef = null;    // {key, name, emoji} — sticky per conversation
                                     // drive chip) -> search across ALL drives
         let cellRef = null; // notebook cell dropped into the chat
         let driveRefs = []; // drives picked with $ mentions [{id, name}]
@@ -283,6 +355,20 @@
                     if (attachments.some(a => a.id === capFileIds[i])) return;
                     chip('badge-primary', 'fa-paperclip', name, fixedTitle);
                 });
+                if (captured.persona && !personaRef) {
+                    chip('badge-secondary', 'fa-masks-theater',
+                         captured.persona_name || captured.persona, fixedTitle);
+                }
+            }
+
+            // Removable chip: the persona the user picked (sticky for the
+            // whole conversation — survives page reloads via the context
+            // snapshot).
+            if (personaRef) {
+                chip('badge-secondary', 'fa-masks-theater',
+                     (personaRef.emoji ? personaRef.emoji + ' ' : '') + personaRef.name,
+                     'Persona active — the AI answers with this personality/skill; remove to go back to the default assistant',
+                     () => { personaRef = null; renderChips(); });
             }
 
             // Removable chip: a notebook cell dropped into the chat.
@@ -358,8 +444,9 @@
         }
 
         function scrollDown(force = false) {
-            if (!force && !autoScroll) return;
+            if (!force && (!autoScroll || asPaused)) return;
             messagesEl.scrollTop = messagesEl.scrollHeight;
+            if (force) { asPaused = false; renderAutoScroll(); }
         }
 
         function addMessage(role, content, meta = {}) {
@@ -589,6 +676,13 @@
             } : null;
             // "All drives" survives as an explicit scope, shown as its chip.
             scopeAllDrives = !!(c && c.all_drives);
+            // The persona is part of the saved context — reopening the
+            // conversation brings it back.
+            personaRef = (c && c.persona) ? {
+                key: c.persona,
+                name: c.persona_name || c.persona,
+                emoji: '',
+            } : null;
             contextDismissedId = null;
             renderChips();
         }
@@ -815,6 +909,109 @@
             }
             input.focus();
             input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+
+        // --- Persona picker: Agency personality/skill for the chat --------
+        const personaPopup = el.querySelector('.acw-persona-popup');
+        const personaSearch = el.querySelector('.acw-persona-search');
+        const personaList = el.querySelector('.acw-persona-list');
+        let personaCache = null;  // light list from /ai/personas (fetched once)
+
+        function hidePersonaPopup() {
+            personaPopup.classList.add('hidden');
+        }
+
+        function renderPersonaList(items) {
+            personaList.innerHTML = '';
+            if (!items.length) {
+                personaList.innerHTML =
+                    '<div class="text-center opacity-50 text-xs p-3">No persona matches.</div>';
+                return;
+            }
+            let lastDiv = null;
+            items.forEach(p => {
+                if (p.division !== lastDiv) {
+                    lastDiv = p.division;
+                    const h = document.createElement('div');
+                    h.className = 'text-[10px] font-bold uppercase tracking-wide opacity-40 px-2 pt-2 pb-0.5';
+                    h.textContent = p.division;
+                    personaList.appendChild(h);
+                }
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'w-full text-left px-2 py-1.5 rounded-lg hover:bg-primary/10 flex items-start gap-2';
+                const emoji = document.createElement('span');
+                emoji.textContent = p.emoji || '🎭';
+                const txt = document.createElement('span');
+                txt.className = 'min-w-0';
+                const nm = document.createElement('span');
+                nm.className = 'block text-xs font-semibold truncate';
+                nm.textContent = p.name;
+                const ds = document.createElement('span');
+                ds.className = 'block text-[10px] opacity-50 leading-snug';
+                ds.textContent = p.description.length > 110
+                    ? p.description.slice(0, 110) + '…' : p.description;
+                txt.appendChild(nm);
+                txt.appendChild(ds);
+                row.appendChild(emoji);
+                row.appendChild(txt);
+                row.title = p.vibe || p.description;
+                row.onclick = () => {
+                    personaRef = { key: p.key, name: p.name, emoji: p.emoji };
+                    hidePersonaPopup();
+                    renderChips();
+                    input.focus();
+                };
+                personaList.appendChild(row);
+            });
+        }
+
+        function filterPersonaList() {
+            const q = personaSearch.value.trim().toLowerCase();
+            const items = personaCache || [];
+            renderPersonaList(!q ? items : items.filter(p =>
+                p.name.toLowerCase().includes(q)
+                || p.description.toLowerCase().includes(q)
+                || p.division.toLowerCase().includes(q)));
+        }
+
+        el.querySelector('.acw-attach-persona').addEventListener('click', () => {
+            if (!personaPopup.classList.contains('hidden')) {
+                hidePersonaPopup();
+                return;
+            }
+            personaPopup.classList.remove('hidden');
+            personaSearch.value = '';
+            const show = () => { filterPersonaList(); personaSearch.focus(); };
+            if (personaCache) {
+                show();
+            } else {
+                personaList.innerHTML =
+                    '<div class="text-center opacity-50 text-xs p-3">Loading personas…</div>';
+                fetch('/ai/personas')
+                    .then(r => (r.ok ? r.json() : { personas: [] }))
+                    .then(data => { personaCache = data.personas || []; show(); })
+                    .catch(() => {
+                        personaList.innerHTML =
+                            '<div class="text-center opacity-50 text-xs p-3">Could not load the persona library.</div>';
+                    });
+            }
+        });
+        personaSearch.addEventListener('input', filterPersonaList);
+        document.addEventListener('click', ev => {
+            if (!personaPopup.classList.contains('hidden')
+                    && !ev.target.closest('.acw-persona-popup')
+                    && !ev.target.closest('.acw-attach-persona')) {
+                hidePersonaPopup();
+            }
+            if (!ev.target.closest('.acw-plus-menu')
+                    && !ev.target.closest('.acw-plus')) {
+                closePlusMenu();
+            }
+            if (!ev.target.closest('.acw-more-menu')
+                    && !ev.target.closest('.acw-more')) {
+                closeMoreMenu();
+            }
         });
 
         input.addEventListener('input', () => {
@@ -1122,6 +1319,7 @@
                             context_cell: sentCell
                                 ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
                                 : null,
+                            persona: personaRef ? personaRef.key : null,
                         }),
                     });
                     const data = await resp.json().catch(() => ({}));
@@ -1157,6 +1355,9 @@
                 // explicitly added (chips above) are merged in.
                 const captured = (taskMode && taskMode.context) ? taskMode.context : null;
                 let bodyAttachments, bodyContextFile, bodyAllDrives, bodyDriveIds, bodyCell;
+                // A persona the user picks now overrides the captured one.
+                const bodyPersona = personaRef ? personaRef.key
+                    : (captured ? captured.persona || null : null);
                 if (captured) {
                     bodyAttachments = [...new Set([
                         ...(captured.file_ids || []),
@@ -1203,6 +1404,7 @@
                         scope_all_drives: bodyAllDrives,
                         scope_drive_ids: bodyDriveIds,
                         context_cell: bodyCell,
+                        persona: bodyPersona,
                         // Automation editor open on this page (if any).
                         context_workflow_id: window.currentWorkflow
                             ? window.currentWorkflow.id : null,
@@ -1260,6 +1462,7 @@
             cellRef = null;
             driveRefs = [];
             scopeAllDrives = false;
+            personaRef = null;
             exitTaskMode();
             renderChips();
             hideMentions();

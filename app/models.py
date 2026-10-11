@@ -382,3 +382,47 @@ class ModuleState(db.Model):
     def is_enabled(name):
         s = db.session.get(ModuleState, name)
         return bool(s and s.enabled)
+
+
+class Behavior(db.Model):
+    """A user-made reusable AI instruction ("system prompt").
+
+    Core feature: picked in the chat (persona) and in the Automation AI
+    nodes' behavior field. ``enabled`` hides it from pickers without
+    deleting it (nodes that saved its text keep their copy)."""
+
+    __tablename__ = "behaviors"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    content = db.Column(db.Text, nullable=False, default="")
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self):
+        return f"<Behavior {self.id} '{self.name}'>"
+
+
+class PersonaPref(db.Model):
+    """Per-user enable/disable flag for a bundled persona (Agency library).
+    Personas are enabled by default; a row exists only once the user
+    toggles one."""
+
+    __tablename__ = "persona_prefs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    persona_key = db.Column(db.String(160), nullable=False)
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "persona_key",
+                            name="uq_persona_pref_user_key"),
+    )
+
+    def __repr__(self):
+        return f"<PersonaPref {self.user_id} {self.persona_key}={self.enabled}>"

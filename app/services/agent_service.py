@@ -279,6 +279,51 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_behaviors",
+            "description": (
+                "List the user's enabled behaviors — reusable AI instructions "
+                "(system prompts) managed on the Behaviors page and picked in "
+                "Automation AI nodes. Disabled behaviors are not listed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_behavior",
+            "description": (
+                "Create or update one of the user's behaviors (a named, "
+                "reusable AI instruction / system prompt). Pass id to update "
+                "an existing one; without id, a behavior with the same name "
+                "is updated, otherwise a new one is created (enabled)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short behavior name, e.g. 'Translator'",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The instruction text the AI follows",
+                    },
+                    "id": {
+                        "type": "integer",
+                        "description": "Existing behavior id (optional)",
+                    },
+                },
+                "required": ["name", "content"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are the assistant of DocIndex, a personal file drive.
@@ -810,6 +855,30 @@ def _tool_list_drives(user, drive=None):
     }
 
 
+def _tool_list_behaviors(user):
+    """The user's enabled behaviors (reusable AI instructions)."""
+    from . import behavior_service
+    items = behavior_service.list_behaviors(user.id, enabled_only=True)
+    return {"total": len(items),
+            "behaviors": [{"id": b.id, "name": b.name, "content": b.content}
+                          for b in items[:100]]}
+
+
+def _tool_save_behavior(user, name, content, behavior_id=None):
+    from . import behavior_service
+    name = (name or "").strip()[:120]
+    content = (content or "").strip()
+    if not name or not content:
+        return {"error": "name and content are required."}
+    behavior, action = behavior_service.save_by_name_or_id(
+        user.id, name, content, behavior_id)
+    if behavior is None:
+        return {"error": f"Behavior {behavior_id} not found."}
+    return {"ok": True, "id": behavior.id, "name": behavior.name,
+            "note": f"Behavior {action}. It is now available (enabled) in "
+                    "the behavior field of every Automation AI node."}
+
+
 TOOL_HANDLERS = {
     "search_files": lambda user, args, drive: _tool_search_files(
         user, args.get("query", ""), drive,
@@ -829,6 +898,9 @@ TOOL_HANDLERS = {
         user, args.get("file_id"), args.get("hashtags") or []),
     "list_hashtags": lambda user, args, drive: _tool_list_hashtags(user, drive),
     "list_drives": lambda user, args, drive: _tool_list_drives(user, drive),
+    "list_behaviors": lambda user, args, drive: _tool_list_behaviors(user),
+    "save_behavior": lambda user, args, drive: _tool_save_behavior(
+        user, args.get("name"), args.get("content"), args.get("id")),
 }
 
 _STEP_LABELS = {
@@ -841,6 +913,8 @@ _STEP_LABELS = {
     "set_hashtags": "Saved hashtags",
     "list_hashtags": "Listed hashtags",
     "list_drives": "Listed drives",
+    "list_behaviors": "Listed behaviors",
+    "save_behavior": "Saved behavior",
 }
 
 # ---------------------------------------------------------------------------
@@ -852,10 +926,16 @@ _TOOL_REGISTRY = {}
 
 def register_tool(name, definition, handler, label=None, module=None):
     """Register an AI tool. Module tools must pass ``module`` and are only
-    offered to the model while that module is enabled."""
+    offered to the model while that module is enabled.
+
+    The definition sent to the model is normalized to the FULL namespaced
+    name ("<module>.<tool>") — the model calls back exactly the name it was
+    offered, so a plain name here would make every call "Unknown tool"."""
     full = f"{module}.{name}" if module else name
     if full in _TOOL_REGISTRY:
         raise ValueError(f"AI tool '{full}' is already registered")
+    definition = {**definition,
+                  "function": {**definition["function"], "name": full}}
     _TOOL_REGISTRY[full] = {
         "definition": definition,
         "handler": handler,

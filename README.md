@@ -294,3 +294,12 @@ installations compatible.
 ## License
 
 [MIT](LICENSE)
+
+### Third-party attributions
+
+The built-in **persona library** (AI personalities available in the chat and in
+workflow AI nodes) bundles content from
+[The Agency / agency-agents](https://github.com/msitarzewski/agency-agents),
+© 2025 AgentLand Contributors, released under the
+[MIT license](licenses/AGENCY-AGENTS-LICENSE.txt). See [NOTICE.md](NOTICE.md)
+for details.

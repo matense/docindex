@@ -10,7 +10,7 @@ from app.extensions import db
 from app.models import Drive, Folder, StoredFile
 
 from . import engine, examples, nodes, runtime
-from .models import AutomationBehavior, AutomationRun, AutomationWorkflow
+from .models import AutomationRun, AutomationWorkflow
 from .registry import active_node_types, palette
 
 bp = Blueprint("automation", __name__,
@@ -43,8 +43,12 @@ def index():
     workflows = (AutomationWorkflow.query
                  .filter_by(user_id=current_user.id)
                  .order_by(AutomationWorkflow.updated_at.desc()).all())
+    recent_runs = (AutomationRun.query
+                   .filter_by(user_id=current_user.id)
+                   .order_by(AutomationRun.id.desc()).limit(10).all())
     return render_template("automation/list.html", workflows=workflows,
-                           examples=examples.EXAMPLES)
+                           examples=examples.EXAMPLES,
+                           recent_runs=recent_runs)
 
 
 @bp.post("/examples/<key>/use")
@@ -64,6 +68,10 @@ def example_use(key):
                                           .order_by(AutomationWorkflow
                                                     .updated_at.desc()).all()),
                                examples=examples.EXAMPLES,
+                               recent_runs=(AutomationRun.query
+                                            .filter_by(user_id=current_user.id)
+                                            .order_by(AutomationRun.id.desc())
+                                            .limit(10).all()),
                                example_error=f"Cannot use "
                                              f"'{example['name']}': {exc}"), 400
     workflow = AutomationWorkflow(
@@ -168,6 +176,20 @@ def duplicate(workflow_id):
     db.session.add(clone)
     db.session.commit()
     return redirect(url_for("automation.editor", workflow_id=clone.id))
+
+
+@bp.post("/<int:workflow_id>/ai-flags")
+def ai_flags(workflow_id):
+    """Toggle the AI access flags (lock / hide) from the editor toolbar."""
+    workflow = _owned_workflow(workflow_id)
+    data = request.get_json(silent=True) or {}
+    if "ai_lock" in data:
+        workflow.ai_lock = bool(data["ai_lock"])
+    if "ai_hidden" in data:
+        workflow.ai_hidden = bool(data["ai_hidden"])
+    db.session.commit()
+    return jsonify({"ok": True, "ai_lock": bool(workflow.ai_lock),
+                    "ai_hidden": bool(workflow.ai_hidden)})
 
 
 @bp.post("/<int:workflow_id>/run")
@@ -309,63 +331,12 @@ def api_notebook_cells():
 
 
 # ---------------------------------------------------------------------------
-# Behaviors library — reusable AI system prompts
+# Behaviors moved to core (/behaviors) — keep the old URL as a redirect.
 # ---------------------------------------------------------------------------
 
 @bp.get("/behaviors")
 def behaviors():
-    items = (AutomationBehavior.query
-             .filter_by(user_id=current_user.id)
-             .order_by(AutomationBehavior.name).all())
-    return render_template("automation/behaviors.html", behaviors=items)
-
-
-@bp.post("/behaviors/create")
-def behavior_create():
-    name = (request.form.get("name") or "").strip()[:120]
-    content = (request.form.get("content") or "").strip()
-    if not name or not content:
-        abort(400, "A behavior needs a name and its instructions.")
-    db.session.add(AutomationBehavior(user_id=current_user.id,
-                                      name=name, content=content))
-    db.session.commit()
-    return redirect(url_for("automation.behaviors"))
-
-
-@bp.post("/behaviors/<int:behavior_id>/update")
-def behavior_update(behavior_id):
-    behavior = db.session.get(AutomationBehavior, behavior_id)
-    if behavior is None or behavior.user_id != current_user.id:
-        abort(404)
-    name = (request.form.get("name") or "").strip()[:120]
-    content = (request.form.get("content") or "").strip()
-    if not name or not content:
-        abort(400, "A behavior needs a name and its instructions.")
-    behavior.name = name
-    behavior.content = content
-    db.session.commit()
-    return redirect(url_for("automation.behaviors"))
-
-
-@bp.post("/behaviors/<int:behavior_id>/delete")
-def behavior_delete(behavior_id):
-    behavior = db.session.get(AutomationBehavior, behavior_id)
-    if behavior is None or behavior.user_id != current_user.id:
-        abort(404)
-    db.session.delete(behavior)
-    db.session.commit()
-    return redirect(url_for("automation.behaviors"))
-
-
-@bp.get("/api/behaviors")
-def api_behaviors():
-    """The user's behaviors as preset options for the AI nodes' behavior
-    field (merged into the "Examples…" dropdown by the editor)."""
-    items = (AutomationBehavior.query
-             .filter_by(user_id=current_user.id)
-             .order_by(AutomationBehavior.name).all())
-    return jsonify({"behaviors": [{"label": b.name, "value": b.content}
-                                  for b in items]})
+    return redirect(url_for("behaviors.index"))
 
 
 @bp.post("/<int:workflow_id>/preview")
@@ -384,6 +355,8 @@ def preview(workflow_id):
             raise engine.WorkflowError("Nothing to execute.")
 
         def log(nid, label, status, summary, ms):
+            if status == "running":
+                return  # preview is synchronous — no live progress entries
             entries.append({"node": nid, "label": label, "status": status,
                             "summary": summary, "ms": ms})
 
@@ -393,14 +366,7 @@ def preview(workflow_id):
     except engine.WorkflowError as exc:
         return jsonify({"error": str(exc), "log": entries}), 400
     # Per-node output previews so the editor can show "View output".
-    previews = {}
-    for nid, ports in outputs.items():
-        shown = {}
-        for port, payload in (ports or {}).items():
-            if payload is not None:
-                shown[port] = engine.as_text(payload)[:4000]
-        if shown:
-            previews[nid] = shown
+    previews = engine.preview_outputs(outputs)
     return jsonify({"ok": True, "log": entries, "results": results,
                     "files": created, "outputs": previews})
 
@@ -430,14 +396,93 @@ def run_detail(run_id):
 @bp.get("/runs/<int:run_id>/status")
 def run_status(run_id):
     run = _owned_run(run_id)
+    log_entries = json.loads(run.log) if run.log else []
+    # Progress + pipeline: the graph's nodes in execution order, so the run
+    # page can show the executed nodes (with their times), the one running
+    # now and the ones still pending, plus an overall percentage.
+    total = 0
+    pipeline = []
+    graph = {"nodes": [], "edges": []}
+    if run.workflow is not None:
+        try:
+            graph = engine.parse_graph(run.workflow.graph)
+            nodes_by_id, _edges, order = engine.validate_graph(
+                graph, active_node_types())
+            registry = active_node_types()
+            total = len(order)
+            pipeline = [
+                {"node": nid,
+                 "label": registry[nodes_by_id[nid]["type"]]["spec"]
+                          .get("label", nodes_by_id[nid]["type"]),
+                 "type": nodes_by_id[nid]["type"]}
+                for nid in order]
+        except engine.WorkflowError:
+            total = len(graph["nodes"]) if graph["nodes"] else 0
+    finished = sum(1 for e in log_entries if e.get("status") != "running")
+    current = next((e for e in reversed(log_entries)
+                    if e.get("status") == "running"), None)
+    if run.status == "done":
+        percent = 100
+    elif total:
+        percent = min(99, round(finished / total * 100))
+    else:
+        percent = 0
+    output = json.loads(run.output) if run.output else None
     return jsonify({
         "id": run.id, "status": run.status, "error": run.error,
-        "log": json.loads(run.log) if run.log else [],
-        "output": json.loads(run.output) if run.output else None,
+        "log": log_entries,
+        "output": output,
+        # Per-node output previews (runs done before this field existed
+        # simply don't have it — the popup then says "not captured").
+        "node_outputs": (output or {}).get("node_outputs") or {},
+        "inputs": _run_inputs(run, graph["nodes"]),
+        "progress": {
+            "total": total, "finished": finished, "percent": percent,
+            "current": ({"node": current["node"], "label": current["label"]}
+                        if current else None),
+        },
+        "pipeline": pipeline,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": (run.finished_at.isoformat()
                         if run.finished_at else None),
     })
+
+
+def _run_inputs(run, graph_nodes):
+    """Files/objects the run consumed: the trigger file, files picked in
+    the run form (input.param of kind file) and static input.file nodes.
+    Returns [{file_id, name, via}] — files deleted or foreign are skipped."""
+    inputs, seen = [], set()
+
+    def add(file_id, via):
+        try:
+            fid = int(file_id)
+        except (TypeError, ValueError):
+            return
+        if fid in seen:
+            return
+        stored = db.session.get(StoredFile, fid)
+        if stored is None or stored.user_id != run.user_id:
+            return
+        seen.add(fid)
+        inputs.append({"file_id": fid, "name": stored.name, "via": via})
+
+    add(run.trigger_file_id, "trigger")
+    params = {}
+    if run.params:
+        try:
+            params = json.loads(run.params)
+        except ValueError:
+            params = {}
+    for node in graph_nodes or []:
+        ntype = node.get("type")
+        config = node.get("config") or {}
+        if ntype == "input.file" and config.get("file_id"):
+            add(config["file_id"], f"node {node.get('id')}")
+        elif ntype == "input.param" and config.get("kind") == "file":
+            label = config.get("label") or config.get("param") or "input"
+            add(params.get(config.get("param")), f"input: {label}")
+    return inputs
 
 
 @bp.post("/runs/<int:run_id>/stop")

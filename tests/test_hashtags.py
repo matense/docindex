@@ -249,6 +249,34 @@ def test_get_all_tags_scoped_to_user(auth_client, app, user):
         assert hashtag_service.get_all_tags(other) == []
 
 
+def test_get_all_tags_multi_drive_scope(auth_client, app, user):
+    """`drive` may be a list (multi-drive chat context) — regression for
+    AttributeError: 'list' object has no attribute 'id'."""
+    _upload(auth_client, "d1.txt", b"one")
+    _upload(auth_client, "d2.txt", b"two")
+    with app.app_context():
+        files = StoredFile.query.order_by(StoredFile.id).all()
+        user_obj = db.session.get(User, user)
+        drive2 = Drive(name="Second", user_id=user)
+        db.session.add(drive2)
+        db.session.flush()
+        files[1].drive_id = drive2.id
+        db.session.flush()
+        hashtag_service.set_tags(files[0], ["first"], source="user")
+        hashtag_service.set_tags(files[1], ["second"], source="user")
+        drive1 = db.session.get(Drive, files[0].drive_id)
+
+        assert hashtag_service.get_all_tags(user_obj, [drive1, drive2]) == \
+            [("first", 1), ("second", 1)]
+        assert hashtag_service.get_all_tags(user_obj, [drive2]) == [("second", 1)]
+        # Explicit empty scope matches nothing.
+        assert hashtag_service.get_all_tags(user_obj, []) == []
+        # The agent tool accepts the list too.
+        result = agent_service.TOOL_HANDLERS["list_hashtags"](
+            user_obj, {}, [drive1, drive2])
+        assert {r["tag"] for r in result} == {"first", "second"}
+
+
 def test_agent_tool_list_hashtags(auth_client, app, user):
     _upload(auth_client, "agent1.txt", b"alpha")
     _upload(auth_client, "agent2.txt", b"beta")

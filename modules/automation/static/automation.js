@@ -531,15 +531,22 @@
         });
         sel.addEventListener('change', () => {
             const picked = presets.find(p => p.label === sel.value);
-            if (picked) apply(picked.value);
-            sel.value = '';
+            // behavior:/persona: values belong to attachBehaviorPresets —
+            // leave sel.value alone so its listener can still read it.
+            if (picked) {
+                apply(picked.value);
+                sel.value = '';
+            }
         });
         return sel;
     }
 
     // Fields with presets_source: 'behaviors' get the user's behavior
-    // library appended to their examples dropdown (fetched once, cached).
+    // library AND the bundled Agency persona library appended to their
+    // examples dropdown (each fetched once, cached). Persona content is
+    // fetched on demand — the library is far too big to inline.
     let behaviorsCache = null;
+    let personasCache = null;
 
     function attachBehaviorPresets(sel, apply) {
         const fill = items => {
@@ -554,23 +561,51 @@
                 o.textContent = p.label;
                 sel.appendChild(o);
             });
-            sel.addEventListener('change', () => {
-                if (!sel.value.startsWith('behavior:')) return;
+        };
+        const fillPersonas = items => {
+            if (!items.length) return;
+            const sep = document.createElement('option');
+            sep.disabled = true;
+            sep.textContent = '— Persona library (Agency) —';
+            sel.appendChild(sep);
+            items.forEach(p => {
+                const o = document.createElement('option');
+                o.value = 'persona:' + p.key;
+                o.textContent = (p.emoji ? p.emoji + ' ' : '')
+                    + p.name + ' · ' + p.division;
+                sel.appendChild(o);
+            });
+        };
+        sel.addEventListener('change', () => {
+            if (sel.value.startsWith('behavior:')) {
+                const items = behaviorsCache || [];
                 const picked = items.find(
                     p => 'behavior:' + p.label === sel.value);
                 if (picked) apply(picked.value);
                 sel.value = '';
-            });
-        };
-        if (behaviorsCache) {
-            fill(behaviorsCache);
-            return;
-        }
+            } else if (sel.value.startsWith('persona:')) {
+                const key = sel.value.slice('persona:'.length);
+                sel.value = '';
+                fetch(root.dataset.personasUrl + '/' + encodeURIComponent(key))
+                    .then(r => (r.ok ? r.json() : null))
+                    .then(p => { if (p) apply(p.content); })
+                    .catch(() => {});
+            } else {
+                sel.value = '';
+            }
+        });
         fetch(root.dataset.behaviorsUrl)
             .then(r => (r.ok ? r.json() : { behaviors: [] }))
             .then(data => {
                 behaviorsCache = data.behaviors || [];
                 fill(behaviorsCache);
+            })
+            .catch(() => {});
+        fetch(root.dataset.personasUrl)
+            .then(r => (r.ok ? r.json() : { personas: [] }))
+            .then(data => {
+                personasCache = data.personas || [];
+                fillPersonas(personasCache);
             })
             .catch(() => {});
     }
@@ -1794,6 +1829,36 @@
         });
         document.getElementById('wf-console-clear').addEventListener('click', () => {
             document.getElementById('wf-console-body').innerHTML = '';
+        });
+
+        // AI access flags (lock edits / hide entirely) — same pattern as
+        // the notebook toolbar; persisted via the ai-flags endpoint.
+        async function toggleAiFlag(btn, flag, icons) {
+            const on = !btn.classList.contains('btn-active');
+            const resp = await fetch(root.dataset.flagsUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [flag]: on }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok) {
+                window.uiAlert('Could not update the AI access flags.',
+                               { title: 'Automation' });
+                return;
+            }
+            const state = !!data[flag];
+            btn.classList.toggle('btn-active', state);
+            btn.classList.toggle('text-warning', state);
+            btn.querySelector('i').className =
+                'fas ' + (state ? icons[0] : icons[1]);
+            window.uiToast(state ? 'AI restriction enabled.'
+                                 : 'AI restriction removed.', 'success');
+        }
+        document.getElementById('wf-ai-lock').addEventListener('click', e => {
+            toggleAiFlag(e.currentTarget, 'ai_lock', ['fa-lock', 'fa-lock-open']);
+        });
+        document.getElementById('wf-ai-hide').addEventListener('click', e => {
+            toggleAiFlag(e.currentTarget, 'ai_hidden', ['fa-eye-slash', 'fa-eye']);
         });
 
         document.getElementById('wf-save').addEventListener('click', async () => {

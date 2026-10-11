@@ -532,6 +532,75 @@ def test_start_run_records_node_errors(app, user, enabled):
         assert "not valid JSON" in (run.error or "")
 
 
+def test_engine_emits_running_before_final_entry(app, user):
+    """Each node logs a transient 'running' entry before its final one."""
+    events = []
+    with app.app_context():
+        engine.execute_graph(_text_graph(), _ctx(app, user),
+                             node_types=NODE_TYPES,
+                             log=lambda *a: events.append(a))
+    seq = [(nid, status) for nid, _label, status, _s, _ms in events]
+    assert seq == [("n1", "running"), ("n1", "done"),
+                   ("n2", "running"), ("n2", "done")]
+
+
+def test_run_status_reports_progress_and_pipeline(auth_client, app, user,
+                                                  enabled):
+    wf_id = _workflow(app, user, _text_graph("progress check"))
+    resp = auth_client.post(f"/m/automation/{wf_id}/run")
+    assert resp.status_code == 200
+    run_id = resp.get_json()["run_id"]
+    data = auth_client.get(f"/m/automation/runs/{run_id}/status").get_json()
+    assert data["status"] == "done"
+    # Synchronous run: everything finished, no transient entries left.
+    assert data["progress"]["percent"] == 100
+    assert data["progress"]["total"] == 2
+    assert data["progress"]["finished"] == 2
+    assert data["progress"]["current"] is None
+    assert [n["node"] for n in data["pipeline"]] == ["n1", "n2"]
+    assert all(e["status"] != "running" for e in data["log"])
+
+
+def test_run_captures_node_outputs(auth_client, app, user, enabled):
+    """Each run stores per-node output previews for the popup."""
+    wf_id = _workflow(app, user, _text_graph("captured output"))
+    resp = auth_client.post(f"/m/automation/{wf_id}/run")
+    assert resp.status_code == 200
+    data = auth_client.get(
+        f"/m/automation/runs/{resp.get_json()['run_id']}/status").get_json()
+    assert data["node_outputs"]["n1"]["out"] == "captured output"
+    assert data["node_outputs"]["n2"]["out"] == "captured output"
+
+
+def test_run_status_lists_input_files(auth_client, app, user, enabled):
+    """The inputs section references the trigger/static files used."""
+    file_id = _make_file(app, user, "input-data.txt", "some data")
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.file", "x": 0, "y": 0,
+         "config": {"file_id": file_id}},
+        {"id": "n2", "type": "output.result", "x": 0, "y": 0, "config": {}},
+    ], "edges": [{"from": "n1", "from_port": "out",
+                  "to": "n2", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/run")
+    assert resp.status_code == 200
+    data = auth_client.get(
+        f"/m/automation/runs/{resp.get_json()['run_id']}/status").get_json()
+    assert data["status"] == "done"
+    assert data["inputs"] == [
+        {"file_id": file_id, "name": "input-data.txt", "via": "node n1"}]
+
+
+def test_format_duration():
+    from app import format_duration
+    assert format_duration(None) == ""
+    assert format_duration(0.42) == "420 ms"
+    assert format_duration(3.25) == "3.25s"
+    assert format_duration(12) == "12s"
+    assert format_duration(65.34) == "1m 05.34s"
+    assert format_duration(3723) == "1h 02m 03s"
+
+
 def test_stop_marks_queued_run(app, user, enabled):
     wf_id = _workflow(app, user, _text_graph())
     with app.app_context():
@@ -661,6 +730,21 @@ def test_list_and_create_flow(auth_client, app, user, enabled):
         wf = models.AutomationWorkflow.query.filter_by(
             name="Daily report").one()
         assert wf.user_id == user
+
+
+def test_index_shows_sections_and_recent_runs(auth_client, app, user,
+                                              enabled):
+    wf_id = _workflow(app, user, _text_graph("index page"))
+    resp = auth_client.post(f"/m/automation/{wf_id}/run")
+    assert resp.status_code == 200
+    resp = auth_client.get("/m/automation/")
+    assert resp.status_code == 200
+    html = resp.data.decode()
+    # Collapsible examples gallery, workflows section and recent runs.
+    assert 'id="automation-examples"' in html
+    assert "Your workflows" in html
+    assert "Recent runs" in html
+    assert "Test flow" in html  # workflow name in the recent runs list
 
 
 def test_editor_page_renders(auth_client, app, user, enabled):
@@ -1514,75 +1598,30 @@ def test_run_endpoint_validates_file_param(auth_client, app, user, enabled):
 
 
 # ---------------------------------------------------------------------------
-# Behaviors — F2
+# Behaviors moved to core (/behaviors) — the old module URL redirects.
+# CRUD/toggle/preset coverage lives in tests/test_behaviors.py.
 # ---------------------------------------------------------------------------
 
-def test_behaviors_crud_routes(auth_client, app, user, enabled):
-    assert auth_client.get("/m/automation/behaviors").status_code == 200
-    resp = auth_client.post("/m/automation/behaviors/create",
-                            data={"name": "Translator",
-                                  "content": "Answer only in English."})
+def test_legacy_behaviors_url_redirects(auth_client, app, user, enabled):
+    resp = auth_client.get("/m/automation/behaviors")
     assert resp.status_code == 302
-    with app.app_context():
-        behavior = models.AutomationBehavior.query.filter_by(
-            name="Translator").one()
-        assert behavior.user_id == user
-        bid = behavior.id
-    resp = auth_client.post(f"/m/automation/behaviors/{bid}/update",
-                            data={"name": "Translator",
-                                  "content": "Answer only in French."})
-    assert resp.status_code == 302
-    with app.app_context():
-        assert db.session.get(
-            models.AutomationBehavior, bid).content == "Answer only in French."
-    resp = auth_client.post(f"/m/automation/behaviors/{bid}/delete")
-    assert resp.status_code == 302
-    with app.app_context():
-        assert db.session.get(models.AutomationBehavior, bid) is None
+    assert resp.headers["Location"].endswith("/behaviors/")
 
 
-def test_behavior_routes_enforce_ownership(auth_client, app, user, enabled):
+def test_module_tools_offer_namespaced_names(app, user, enabled):
+    """Regression: tool definitions offered to the model must carry the full
+    namespaced name — the model calls back exactly the name it was offered,
+    so a plain name ('get_workflow') makes every call 'Unknown tool'."""
+    from app.services import agent_service
     with app.app_context():
-        other = User(username="other2", email="other2@x.com")
-        other.set_password("x")
-        db.session.add(other)
-        db.session.flush()
-        foreign = models.AutomationBehavior(user_id=other.id, name="F",
-                                            content="foreign")
-        db.session.add(foreign)
-        db.session.commit()
-        fid = foreign.id
-    assert auth_client.post(f"/m/automation/behaviors/{fid}/update",
-                            data={"name": "F", "content": "y"}
-                            ).status_code == 404
-    assert auth_client.post(
-        f"/m/automation/behaviors/{fid}/delete").status_code == 404
-
-
-def test_api_behaviors_returns_presets(auth_client, app, user, enabled):
-    with app.app_context():
-        db.session.add(models.AutomationBehavior(
-            user_id=user, name="Analyst", content="Be concise."))
-        db.session.commit()
-    resp = auth_client.get("/m/automation/api/behaviors")
-    assert resp.get_json() == {"behaviors": [
-        {"label": "Analyst", "value": "Be concise."}]}
-
-
-def test_behavior_tools(app, user, enabled):
-    with app.app_context():
-        user_obj = db.session.get(User, user)
-        created = tools._tool_save_behavior(
-            user_obj, {"name": "Poet", "content": "Rhyme."}, None)
-        assert created["ok"]
-        updated = tools._tool_save_behavior(
-            user_obj, {"name": "Poet", "content": "Rhyme hard."}, None)
-        assert "updated" in updated["note"] and updated["id"] == created["id"]
-        listing = tools._tool_list_behaviors(user_obj, {}, None)
-        assert listing["total"] == 1
-        assert listing["behaviors"][0]["content"] == "Rhyme hard."
-        assert "error" in tools._tool_save_behavior(
-            user_obj, {"name": "", "content": ""}, None)
+        defs, handlers, _ = agent_service._active_tools()
+    names = [d["function"]["name"] for d in defs]
+    assert "automation.get_workflow" in names
+    assert "automation.edit_workflow" in names
+    assert "automation.list_workflows" in names
+    assert "get_workflow" not in names  # plain names must never leak
+    for d in defs:  # every offered tool is dispatchable
+        assert d["function"]["name"] in handlers
 
 
 # ---------------------------------------------------------------------------
@@ -2011,3 +2050,135 @@ def test_editor_exposes_graph_url_and_workflow_context(auth_client, app,
     assert resp.status_code == 200
     assert f"/m/automation/{wf_id}/graph".encode() in resp.data
     assert b"window.currentWorkflow" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# AI access flags (lock / hide) — notebook-style
+# ---------------------------------------------------------------------------
+
+def test_list_workflows_hides_hidden_and_shows_lock(app, user, enabled):
+    _workflow(app, user, _text_graph(), name="Plain")
+    _workflow(app, user, _text_graph(), name="Locked", ai_lock=True)
+    _workflow(app, user, _text_graph(), name="Secret", ai_hidden=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        listing = tools._tool_list(user_obj, {}, None)
+        names = {w["name"] for w in listing["workflows"]}
+        assert names == {"Plain", "Locked"}  # hidden workflow not listed
+        by_name = {w["name"]: w for w in listing["workflows"]}
+        assert by_name["Locked"]["ai_lock"] is True
+        assert by_name["Plain"]["ai_lock"] is False
+
+
+def test_hidden_workflow_refuses_all_ai_tools(app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph(), ai_hidden=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        for call in (
+                lambda: tools._tool_get_workflow(
+                    user_obj, {"workflow_id": wf_id}, None),
+                lambda: tools._tool_edit_workflow(
+                    user_obj, {"workflow_id": wf_id,
+                               "operations": [{"op": "remove_node",
+                                               "id": "n1"}]}, None),
+                lambda: tools._tool_run(
+                    user_obj, {"workflow_id": wf_id}, None)):
+            result = call()
+            assert "error" in result
+            assert "hidden from the AI" in result["error"]
+
+
+def test_locked_workflow_refuses_edits_but_not_reads(app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph("locked"), ai_lock=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_edit_workflow(user_obj, {
+            "workflow_id": wf_id,
+            "operations": [{"op": "remove_node", "id": "n1"}]}, None)
+        assert "error" in result
+        assert "LOCKED" in result["error"]
+        # Reads still work and surface the lock up front.
+        got = tools._tool_get_workflow(user_obj, {"workflow_id": wf_id}, None)
+        assert got["ai_lock"] is True
+        assert "LOCKED" in got["note"]
+        # Graph untouched.
+        graph = json.loads(
+            db.session.get(models.AutomationWorkflow, wf_id).graph)
+        assert [n["id"] for n in graph["nodes"]] == ["n1", "n2"]
+
+
+def test_ai_flags_route_toggles_and_enforces_ownership(
+        auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph())
+    resp = auth_client.post(f"/m/automation/{wf_id}/ai-flags",
+                            json={"ai_lock": True})
+    assert resp.status_code == 200
+    assert resp.get_json()["ai_lock"] is True
+    resp = auth_client.post(f"/m/automation/{wf_id}/ai-flags",
+                            json={"ai_hidden": True})
+    assert resp.get_json()["ai_hidden"] is True
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert wf.ai_lock and wf.ai_hidden
+    # Other users get 404.
+    with app.app_context():
+        other = User(username="other4", email="other4@x.com")
+        other.set_password("x")
+        db.session.add(other)
+        db.session.commit()
+        other_id = other.id
+    auth_client.get("/logout")
+    auth_client.post("/login", data={"username": "other4",
+                                     "password": "x"})
+    resp = auth_client.post(f"/m/automation/{wf_id}/ai-flags",
+                            json={"ai_lock": False})
+    assert resp.status_code == 404
+
+
+def _add_ai_conn(client):
+    return client.post("/settings/ai/add", data={
+        "name": "Test Conn", "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test", "model": "gpt-4o-mini", "vision_model": "",
+        "is_active": "on"}, follow_redirects=True)
+
+
+def _chat_capture(auth_client, payload):
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages") or args[0]
+        return {"role": "assistant", "content": "done"}
+
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=fake_completion):
+        resp = auth_client.post("/ai/chat", json=payload)
+        resp.data  # consume the stream inside the patch
+    assert resp.status_code == 200
+    return captured["messages"]
+
+
+def test_chat_open_workflow_context(auth_client, app, user, enabled):
+    """Opening a workflow in the editor and chatting: the agent gets a system
+    note identifying the workflow (regression: module_service import)."""
+    _add_ai_conn(auth_client)
+    wf_id = _workflow(app, user, _text_graph(), name="Flow on screen")
+    messages = _chat_capture(auth_client, {
+        "message": "add a node to this workflow",
+        "context_workflow_id": wf_id})
+    notes = [m for m in messages
+             if m["role"] == "system" and "automation workflow" in m["content"]]
+    assert notes
+    assert f"[id {wf_id}]" in notes[0]["content"]
+    assert "Flow on screen" in notes[0]["content"]
+
+
+def test_chat_hidden_workflow_adds_no_context_note(
+        auth_client, app, user, enabled):
+    """AI-hidden workflows stay invisible even as the open-editor context."""
+    _add_ai_conn(auth_client)
+    wf_id = _workflow(app, user, _text_graph(), ai_hidden=True)
+    messages = _chat_capture(auth_client, {
+        "message": "hi", "context_workflow_id": wf_id})
+    assert not [m for m in messages
+                if m["role"] == "system"
+                and "automation workflow" in m["content"]]
