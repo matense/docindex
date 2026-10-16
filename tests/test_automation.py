@@ -1362,6 +1362,52 @@ def test_folder_crud_and_move(auth_client, app, user, enabled):
             is None
 
 
+def test_folder_move_rejects_cycles(auth_client, app, user, enabled):
+    AutomationFolder = models.AutomationFolder
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "A"}, follow_redirects=True)
+    with app.app_context():
+        a_id = AutomationFolder.query.filter_by(name="A").one().id
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "B", "parent_id": a_id}, follow_redirects=True)
+    with app.app_context():
+        b_id = AutomationFolder.query.filter_by(name="B").one().id
+    # Into itself / into its own descendant → 400, unchanged.
+    assert auth_client.post(f"/m/automation/folders/{a_id}/move",
+                            data={"parent_id": a_id}).status_code == 400
+    assert auth_client.post(f"/m/automation/folders/{a_id}/move",
+                            data={"parent_id": b_id}).status_code == 400
+    with app.app_context():
+        assert db.session.get(AutomationFolder, a_id).parent_id is None
+    # Valid: B back to root, A into B.
+    auth_client.post(f"/m/automation/folders/{b_id}/move", data={})
+    auth_client.post(f"/m/automation/folders/{a_id}/move",
+                     data={"parent_id": b_id}, follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(AutomationFolder, a_id).parent_id == b_id
+
+
+def test_folders_cleanup_removes_only_empty(auth_client, app, user, enabled):
+    AutomationFolder = models.AutomationFolder
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "Empty1"}, follow_redirects=True)
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "Keep"}, follow_redirects=True)
+    with app.app_context():
+        keep_id = AutomationFolder.query.filter_by(name="Keep").one().id
+    wf_id = _workflow(app, user, _text_graph("x"), name="Stays")
+    auth_client.post(f"/m/automation/{wf_id}/move",
+                     data={"folder_id": keep_id}, follow_redirects=True)
+    auth_client.post("/m/automation/folders/cleanup", follow_redirects=True)
+    with app.app_context():
+        assert AutomationFolder.query.filter_by(name="Empty1").count() == 0
+        assert db.session.get(AutomationFolder, keep_id) is not None
+        assert db.session.get(models.AutomationWorkflow, wf_id).folder_id \
+            == keep_id
+    resp = auth_client.get("/m/automation/")
+    assert resp.status_code == 200
+
+
 def test_folder_ai_tools_organize(app, user, enabled):
     with app.app_context():
         user_obj = db.session.get(User, user)

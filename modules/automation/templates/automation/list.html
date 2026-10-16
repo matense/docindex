@@ -76,7 +76,9 @@
     </details>
 
 {% macro wf_row(w) -%}
-            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap group">
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap group wf-row"
+                 draggable="true" data-wf-id="{{ w.id }}" data-wf-name="{{ w.name }}">
+                <i class="fas fa-grip-vertical opacity-30 cursor-grab flex-shrink-0" title="Drag onto a folder to move"></i>
                 <a href="{{ url_for('automation.editor', workflow_id=w.id) }}"
                    class="flex items-center gap-3 flex-1 min-w-0 group">
                     <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
@@ -145,8 +147,9 @@
 
 {% macro tree_folder(f) -%}
             {% if not visible or f.id in visible %}
-            <details class="automation-tree" open>
-                <summary class="flex items-center gap-2 py-2 px-4 hover:bg-base-content/[0.03] cursor-pointer transition-colors">
+            <details class="automation-tree" open data-folder-block="{{ f.id }}">
+                <summary class="flex items-center gap-2 py-2 px-4 hover:bg-base-content/[0.03] cursor-pointer transition-colors wf-folder-drop"
+                         data-folder-id="{{ f.id }}" title="Drop automations here · right-click for actions">
                     <i class="fas fa-folder text-warning"></i>
                     <span class="font-semibold text-sm">{{ f.name }}</span>
                     <span class="badge badge-ghost badge-xs">{{ folder_counts.get(f.id, 0) }}</span>
@@ -190,14 +193,22 @@
                 <button type="submit" class="btn btn-ghost btn-xs" title="Search"><i class="fas fa-magnifying-glass"></i></button>
                 {% if q %}<a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-xs" title="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
             </form>
-            <form method="POST" action="{{ url_for('automation.folder_create') }}" class="flex gap-1">
+            <form method="POST" action="{{ url_for('automation.folder_create') }}" class="flex gap-1" id="wf-new-folder-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="text" name="name" placeholder="New folder…" maxlength="120" required
-                       class="input input-bordered input-xs w-32">
+                       class="input input-bordered input-xs w-28" id="wf-new-folder-name">
                 <button type="submit" class="btn btn-outline btn-xs gap-1" title="New folder"><i class="fas fa-plus"></i></button>
             </form>
+            <form method="POST" action="{{ url_for('automation.folders_cleanup') }}"
+                  data-confirm="Delete every empty folder (no automations, no subfolders)?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Delete all empty folders">
+                    <i class="fas fa-broom text-warning"></i><span class="hidden lg:inline">Clean up</span>
+                </button>
+            </form>
         </div>
-        <div class="divide-y divide-base-content/5" id="automation-tree">
+        <div class="px-5 py-1 text-[10px] opacity-40">Drag automations onto folders to organize · right-click for actions</div>
+        <div class="divide-y divide-base-content/5 wf-drop-root" id="automation-tree" data-folder-id="">
         {% if workflows or folders %}
             {% for w in wf_by_folder.get(None, []) %}{{ wf_row(w) }}{% endfor %}
             {% for f in folders %}{{ tree_folder(f) }}{% endfor %}
@@ -230,12 +241,163 @@
                     {% endfor %}
                 </select>
                 <input type="text" name="name" placeholder="Name…" maxlength="120" required
-                       class="input input-bordered input-xs w-28">
+                       class="input input-bordered input-xs w-28" id="wf-new-subfolder-name">
                 <button type="submit" class="btn btn-outline btn-xs gap-1" title="Create subfolder"><i class="fas fa-plus"></i></button>
             </form>
         </div>
         {% endif %}
     </div>
+
+<!-- Automation tree context menu (right-click) -->
+<div id="wf-tree-menu" class="wf-context-menu hidden"></div>
+
+<script>
+(function () {
+    const tree = document.getElementById('automation-tree');
+    if (!tree) return;
+    const csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+    const menu = document.getElementById('wf-tree-menu');
+    const BASE = {{ url_for('automation.index')|tojson }};
+
+    function postForm(url, fields) {
+        const f = document.createElement('form');
+        f.method = 'POST'; f.action = url; f.style.display = 'none';
+        const c = document.createElement('input');
+        c.type = 'hidden'; c.name = 'csrf_token'; c.value = csrf;
+        f.appendChild(c);
+        Object.entries(fields || {}).forEach(([k, v]) => {
+            const i = document.createElement('input');
+            i.type = 'hidden'; i.name = k; i.value = v;
+            f.appendChild(i);
+        });
+        document.body.appendChild(f);
+        f.requestSubmit();
+    }
+
+    // --- Drag & drop: automations and folders onto folders (or the root) ---
+    let drag = null;
+    tree.querySelectorAll('[data-folder-block] > summary').forEach(s => { s.draggable = true; });
+    tree.addEventListener('dragstart', (e) => {
+        if (e.target.closest && e.target.closest('select, input, button, a, form')) return;
+        const wf = e.target.closest ? e.target.closest('[data-wf-id]') : null;
+        if (wf) { drag = { kind: 'wf', id: wf.dataset.wfId }; }
+        else {
+            const sum = e.target.closest ? e.target.closest('[data-folder-block] > summary') : null;
+            if (sum && !e.target.closest('.dropdown')) {
+                drag = { kind: 'folder', id: sum.parentElement.dataset.folderBlock };
+            }
+        }
+        if (!drag) return;
+        if (e.dataTransfer) {
+            e.dataTransfer.setData('text/plain', drag.kind + ':' + drag.id);
+            e.dataTransfer.effectAllowed = 'move';
+        }
+    });
+    tree.addEventListener('dragend', () => {
+        drag = null;
+        tree.querySelectorAll('.wf-drop-hover').forEach(el => el.classList.remove('wf-drop-hover'));
+    });
+    function dropTarget(el) {
+        return el && el.closest ? el.closest('.wf-folder-drop, .wf-drop-root') : null;
+    }
+    tree.addEventListener('dragover', (e) => {
+        const t = dropTarget(e.target);
+        if (!t || !drag) return;
+        const fid = t.dataset.folderId || '';
+        if (drag.kind === 'folder') {
+            if (fid !== '' && (fid === drag.id || t.closest('[data-folder-block="' + drag.id + '"]'))) return;
+        }
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        t.classList.add('wf-drop-hover');
+    });
+    tree.addEventListener('dragleave', (e) => {
+        const t = dropTarget(e.target);
+        if (t) t.classList.remove('wf-drop-hover');
+    });
+    tree.addEventListener('drop', (e) => {
+        const t = dropTarget(e.target);
+        if (!t || !drag) return;
+        e.preventDefault();
+        t.classList.remove('wf-drop-hover');
+        const fid = t.dataset.folderId || '';
+        if (drag.kind === 'wf') {
+            postForm(BASE + drag.id + '/move', { folder_id: fid === '' ? '-1' : fid });
+        } else {
+            postForm(BASE + 'folders/' + drag.id + '/move', { parent_id: fid });
+        }
+        drag = null;
+    });
+
+    // --- Right-click context menu ---
+    function closeMenu() { menu.classList.add('hidden'); menu.innerHTML = ''; }
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+    function item(label, icon, fn) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'wf-context-item';
+        b.innerHTML = '<i class="fas ' + icon + '"></i> ';
+        b.appendChild(document.createTextNode(label));
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); closeMenu(); fn(); });
+        menu.appendChild(b);
+    }
+    function openMenu(x, y) {
+        menu.classList.remove('hidden');
+        const w = 230;
+        menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 8)) + 'px';
+        menu.style.top = Math.max(4, y) + 'px';
+        const over = menu.getBoundingClientRect().bottom - window.innerHeight;
+        if (over > 0) menu.style.top = Math.max(4, y - over - 8) + 'px';
+    }
+    function focusNewFolder(parentId) {
+        const nameInput = document.getElementById(parentId ? 'wf-new-subfolder-name' : 'wf-new-folder-name');
+        if (nameInput) {
+            if (parentId) {
+                const sel = nameInput.closest('form').querySelector('select[name="parent_id"]');
+                if (sel) sel.value = String(parentId);
+            }
+            nameInput.scrollIntoView({ block: 'nearest' });
+            nameInput.focus();
+        }
+    }
+    tree.addEventListener('contextmenu', (e) => {
+        const wfRow = e.target.closest ? e.target.closest('[data-wf-id]') : null;
+        const folderBlock = e.target.closest ? e.target.closest('[data-folder-block]') : null;
+        const inFolder = folderBlock && (!wfRow || !folderBlock.contains(wfRow));
+        e.preventDefault();
+        closeMenu();
+        if (wfRow) {
+            const id = wfRow.dataset.wfId;
+            item('Open', 'fa-arrow-right', () => { window.location.href = BASE + id; });
+            const dup = wfRow.querySelector('form[action*="/duplicate"]');
+            if (dup) item('Duplicate', 'fa-clone', () => dup.requestSubmit());
+            const del = wfRow.querySelector('form[action*="/delete"]');
+            if (del) item('Delete…', 'fa-trash-can', () => del.requestSubmit());
+            item('Move to Unsorted', 'fa-inbox', () => postForm(BASE + id + '/move', { folder_id: '-1' }));
+        } else if (inFolder) {
+            const fid = folderBlock.dataset.folderBlock;
+            item('New subfolder here', 'fa-folder-plus', () => focusNewFolder(fid));
+            item('Rename folder…', 'fa-pen', () => {
+                const det = folderBlock.querySelector(':scope > summary details.dropdown');
+                if (det) { det.open = true; const inp = det.querySelector('input[name="name"]'); if (inp) { inp.focus(); inp.select(); } }
+            });
+            const del = folderBlock.querySelector(':scope > summary form[action*="/delete"]');
+            if (del) item('Delete folder…', 'fa-trash-can', () => del.requestSubmit());
+            item('Expand / collapse', 'fa-arrows-up-down', () => { folderBlock.open = !folderBlock.open; });
+        } else {
+            item('New folder…', 'fa-folder-plus', () => focusNewFolder(null));
+            item('New automation…', 'fa-plus', () => {
+                const m = document.getElementById('wf-new-modal');
+                if (m) m.showModal();
+            });
+            item('Expand all', 'fa-angles-down', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = true));
+            item('Collapse all', 'fa-angles-up', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = false));
+        }
+        if (menu.children.length) openMenu(e.clientX, e.clientY);
+    });
+})();
+</script>
     <!-- Recent runs across all workflows -->
     <div class="glass-panel rounded-2xl overflow-hidden">
         <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2">

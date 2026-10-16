@@ -851,6 +851,63 @@
 .wf-console-muted .wf-console-msg { opacity: 0.45; }
 
 
+/* Automation tree: drag-and-drop + right-click context menu. */
+.wf-drop-hover {
+    outline: 2px dashed oklch(var(--p) / 0.7);
+    outline-offset: -2px;
+    border-radius: 10px;
+    background: oklch(var(--p) / 0.06);
+}
+
+.wf-row[draggable="true"] {
+    cursor: grab;
+}
+
+.wf-row[draggable="true"]:active {
+    cursor: grabbing;
+}
+
+#wf-tree-menu {
+    position: fixed;
+    z-index: 70;
+    width: 230px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    background: color-mix(in srgb, var(--fallback-b1, oklch(var(--b1))) 94%, transparent);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+#wf-tree-menu.hidden {
+    display: none;
+}
+
+.wf-context-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    font-size: 13px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.wf-context-item:hover {
+    background: oklch(var(--p) / 0.12);
+}
+
+.wf-context-item > i {
+    width: 16px;
+    text-align: center;
+    opacity: 0.6;
+}
+
 /* Drawflow's built-in delete "X" is redundant — nodes are removed via
    the right-click context menu instead. */
 .drawflow .drawflow-delete {

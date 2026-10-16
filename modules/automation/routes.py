@@ -2,7 +2,7 @@
 
 import json
 
-from flask import (Blueprint, abort, current_app, jsonify, redirect,
+from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
                    render_template, request, url_for)
 from flask_login import current_user, login_required
 
@@ -150,6 +150,73 @@ def folder_delete(folder_id):
     db.session.delete(folder)
     db.session.commit()
     return redirect(url_for("automation.index"))
+
+
+@bp.post("/folders/<int:folder_id>/move")
+def folder_move(folder_id):
+    """Move a folder into another (or back to root)."""
+    folder = _owned_folder(folder_id)
+    parent_id = request.form.get("parent_id", type=int)
+    if not parent_id:
+        folder.parent_id = None
+        db.session.commit()
+        return redirect(_clean_next())
+    if parent_id == folder.id:
+        abort(400, "A folder cannot contain itself.")
+    parent = _owned_folder(parent_id)
+    # Cycle guard: the target must not be a descendant of the folder.
+    cur = parent
+    while cur is not None:
+        if cur.id == folder.id:
+            abort(400, "Cannot move a folder into one of its own subfolders.")
+        cur = cur.parent
+    depth = 1
+    cur = parent
+    while cur is not None and depth < 10:
+        cur = cur.parent
+        depth += 1
+    if depth >= 10:
+        abort(400, "Folders cannot nest deeper than 10 levels.")
+    folder.parent_id = parent.id
+    db.session.commit()
+    return redirect(_clean_next())
+
+
+@bp.post("/folders/cleanup")
+def folders_cleanup():
+    """Delete every folder that is empty (no workflows, no subfolders)."""
+    mine = AutomationFolder.query.filter_by(user_id=current_user.id).all()
+    removed = 0
+    changed = True
+    while changed:
+        changed = False
+        children = {f.parent_id for f in AutomationFolder.query
+                    .filter_by(user_id=current_user.id)
+                    .filter(AutomationFolder.parent_id.isnot(None)).all()}
+        counts = dict(
+            db.session.query(AutomationWorkflow.folder_id,
+                             db.func.count(AutomationWorkflow.id))
+            .filter(AutomationWorkflow.user_id == current_user.id)
+            .group_by(AutomationWorkflow.folder_id).all())
+        for f in AutomationFolder.query.filter_by(
+                user_id=current_user.id).all():
+            if counts.get(f.id, 0) == 0 and f.id not in children:
+                db.session.delete(f)
+                removed += 1
+                changed = True
+        if changed:
+            db.session.commit()
+    flash(f"Removed {removed} empty folder(s)." if removed else
+          "No empty folders to remove.",
+          "success" if removed else "info")
+    return redirect(url_for("automation.index"))
+
+
+def _clean_next():
+    """Safe redirect target for folder moves (same page only)."""
+    nxt = request.form.get("next") or url_for("automation.index")
+    return nxt if nxt.startswith("/") and not nxt.startswith("//") \
+        else url_for("automation.index")
 
 
 @bp.post("/<int:workflow_id>/move")
