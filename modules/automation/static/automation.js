@@ -287,15 +287,38 @@
                 'input_' + portIndex(toSpec.inputs || [], edge.to_port));
         });
         // Drawflow positions the SVG wires from getBoundingClientRect();
-        // right after start() the layout is not settled yet, so the wires
-        // stay missing until the user drags a node. Redraw every node's
-        // connections once the browser has painted.
-        const redraw = () => Object.keys(idMap).forEach(id => {
-            try { editor.updateConnectionNodes('node-' + idMap[id]); }
-            catch { /* node removed meanwhile */ }
-        });
-        requestAnimationFrame(() => requestAnimationFrame(redraw));
-        setTimeout(redraw, 120);  // fallback if rAF fires before CSS/fonts
+        // on a fresh page load the layout is NOT settled yet when nodes are
+        // added (Tailwind CDN compiles styles async, webfonts pop in late),
+        // so a single early redraw leaves wires detached. Redraw repeatedly
+        // until everything has settled.
+        scheduleRedraws();
+    }
+
+    let _redrawTimers = [];
+
+    function redrawAllConnections() {
+        try {
+            if (!editor || !editor.drawflow) return;
+            const dd = editor.drawflow.drawflow || {};
+            const mod = dd[editor.module || 'Home'] || {};
+            const data = mod.data || {};
+            Object.keys(data).forEach(dfId => {
+                try { editor.updateConnectionNodes('node-' + dfId); } catch { /* gone */ }
+            });
+        } catch { /* editor not ready */ }
+    }
+
+    function scheduleRedraws() {
+        _redrawTimers.forEach(clearTimeout);
+        _redrawTimers = [];
+        const run = () => redrawAllConnections();
+        requestAnimationFrame(() => requestAnimationFrame(run));
+        // Spread over ~2.5s: covers Tailwind CDN compile + font swap.
+        [150, 500, 1200, 2500].forEach(ms => _redrawTimers.push(setTimeout(run, ms)));
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(run).catch(() => {});
+        }
+    }
     }
 
     function exportGraph() {
@@ -2169,6 +2192,25 @@
             graph = JSON.parse(window.automationEditorData.graphRaw || '{}');
         } catch { /* empty canvas */ }
         loadGraph(graph.nodes ? graph : { nodes: [], edges: [] });
+        scheduleRedraws();
+
+        // Layout can still shift after load (async styles, window resize,
+        // SPA navigation): recompute wire geometry when it does.
+        const canvasEl = document.getElementById('drawflow');
+        if (canvasEl && !canvasEl._wfRO && window.ResizeObserver) {
+            let t = null;
+            const ro = new ResizeObserver(() => {
+                clearTimeout(t);
+                t = setTimeout(() => redrawAllConnections(), 150);
+            });
+            ro.observe(canvasEl);
+            canvasEl._wfRO = ro;
+        }
+        if (!window._wfLoadHook) {
+            window._wfLoadHook = true;
+            window.addEventListener('load', () =>
+                setTimeout(() => redrawAllConnections(), 350));
+        }
 
         // Double-click (or the pencil icon) opens the configuration popup;
         // single click stays free for selecting/dragging.
