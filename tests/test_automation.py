@@ -2150,6 +2150,26 @@ def test_table_union_and_except(app, user):
                  "config": {"mode": "distinct"}}], "edges": []}, app, user)
 
 
+def test_table_pivot_widens_rows(app, user):
+    fid = _make_file(app, user, "sales.csv",
+                     "region,quarter,sales\nN,Q1,10\nN,Q2,20\nS,Q1,5\n")
+    with app.app_context():
+        outputs, _, _ = _execute(_table_file_graph(
+            fid, "transform.table_pivot",
+            {"index": ["region"], "pivot_column": "quarter",
+             "value_column": "sales", "agg": "sum"}), app, user)
+        table = outputs["t"]["out"]["data"]
+        assert table["columns"][0] == "region"
+        by_region = {r[0]: r for r in table["rows"]}
+        assert by_region["N"][1] == 10 and by_region["N"][2] == 20
+        assert by_region["S"][1] == 5
+        with pytest.raises(engine.WorkflowError, match="Pick at least one"):
+            _execute(_table_file_graph(
+                fid, "transform.table_pivot",
+                {"index": [], "pivot_column": "quarter",
+                 "value_column": "sales", "agg": "sum"}), app, user)
+
+
 def test_table_sort_descending(app, user):
     fid = _make_file(app, user, "n.csv", "name,v\na,3\nb,1\nc,2\n")
     with app.app_context():

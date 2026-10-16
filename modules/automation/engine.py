@@ -271,6 +271,10 @@ _REQUIRED_CONFIG = {
     "input.drive": (("param", "Give this drive input a parameter name."),),
     "input.param": (("param", "Give this run input a parameter name."),),
     "transform.table_join": (("keys", "Add at least one match column pair."),),
+    "transform.table_pivot": (
+        ("index", "Pick at least one row column."),
+        ("pivot_column", "Pick the column whose values become new columns."),
+        ("value_column", "Pick the value column to aggregate.")),
     "docindex.search_files": (("query", "Type a search query."),),
     "transform.template": (("template", "Write the template (use {{ n1 }} refs)."),),
     "transform.table_filter": (("conditions", "Add at least one condition."),),

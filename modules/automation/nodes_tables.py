@@ -131,6 +131,46 @@ def _exec_table_except(ctx, config, inputs):
     return p_table(**df_to_table(out))
 
 
+def _exec_table_pivot(ctx, config, inputs):
+    payload = inputs.get("in")
+    if payload is None:
+        raise WorkflowError("No input — connect a table to pivot.")
+    df = table_to_df(as_table(payload))
+    index = [c for c in (config.get("index") or []) if c]
+    pivot_col = (config.get("pivot_column") or "").strip()
+    value_col = (config.get("value_column") or "").strip()
+    if not index:
+        raise WorkflowError("Pick at least one row column.")
+    if not pivot_col:
+        raise WorkflowError("Pick the column whose values become new columns.")
+    if not value_col:
+        raise WorkflowError("Pick the value column.")
+    for col in index + [pivot_col, value_col]:
+        _require_column(df, col, "Pivot")
+    func = _AGG_FUNCS.get(config.get("agg") or "sum")
+    if func is None:
+        raise WorkflowError(f"Unknown aggregation '{config.get('agg')}'.")
+    try:
+        out = df.pivot_table(index=index, columns=pivot_col,
+                             values=value_col, aggfunc=func)
+    except Exception as exc:
+        raise WorkflowError(f"The pivot failed: {exc}")
+    out = out.reset_index()
+    # Blank missing cells (NaN would render as "nan" downstream).
+    import pandas as _pd
+    for col in out.columns:
+        out[col] = ["" if _pd.isna(v) else v for v in out[col]]
+    # Flatten MultiIndex columns ("value | colval") when they occur.
+    out.columns = [str(c) if not isinstance(c, tuple)
+                   else " | ".join(str(p) for p in c if str(p) not in ("", str(value_col)))
+                   or str(c[-1])
+                   for c in out.columns]
+    out = out.reset_index(drop=True)
+    ctx["log"](f"{len(df)} rows → {len(out)} row(s), "
+                f"{len(out.columns)} column(s) pivoted on '{pivot_col}'")
+    return p_table(**df_to_table(out))
+
+
 def _exec_table_sort(ctx, config, inputs):
     payload = inputs.get("in")
     if payload is None:
@@ -304,6 +344,35 @@ def register_table_nodes():
                          {"value": "desc", "label": "Descending"}],
              "default": "asc"},
         ]}, _exec_table_sort)
+
+    register_node_type("transform.table_pivot", {
+        "label": "Pivot table", "icon": "fa-table-cells",
+        "category": "Data",
+        "description": "Turns row values into columns: pick row columns, "
+                       "one column whose values become the new columns, "
+                       "and a value column to aggregate.",
+        "example": "Rows (region, quarter, sales) → one row per region "
+                   "with Q1..Q4 columns.",
+        "inputs": [{"name": "in", "kind": "table"}],
+        "outputs": [{"name": "out", "kind": "table"}],
+        "fields": [
+            {"name": "index", "label": "Row columns", "kind": "column_list",
+             "required": True, "default": [],
+             "help": "Stay as rows — one output row per unique combination."},
+            {"name": "pivot_column", "label": "Columns from",
+             "kind": "column", "required": True, "default": "",
+             "help": "Each distinct value becomes a new column."},
+            {"name": "value_column", "label": "Values from",
+             "kind": "column", "required": True, "default": "",
+             "help": "The numbers to aggregate into the new columns."},
+            {"name": "agg", "label": "Aggregate with", "kind": "select",
+             "options": [{"value": "sum", "label": "Sum"},
+                         {"value": "count", "label": "Count"},
+                         {"value": "avg", "label": "Average"},
+                         {"value": "min", "label": "Minimum"},
+                         {"value": "max", "label": "Maximum"}],
+             "default": "sum"},
+        ]}, _exec_table_pivot)
 
     register_node_type("transform.table_dedupe", {
         "label": "Remove duplicates", "icon": "fa-clone",

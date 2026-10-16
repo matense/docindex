@@ -185,6 +185,11 @@
                 return c.column
                     ? truncate(`${c.column} ${c.direction === 'desc' ? '↓' : '↑'}`, 26)
                     : 'no column';
+            case 'transform.table_pivot': {
+                const idx = (c.index || []).filter(Boolean);
+                if (!c.pivot_column || !c.value_column) return 'not configured';
+                return truncate(`[${idx.join(', ') || '…'}] ${c.pivot_column} → ${c.value_column} (${c.agg || 'sum'})`, 34);
+            }
             case 'transform.table_dedupe': {
                 const cols = (c.columns || []).filter(Boolean);
                 return cols.length ? truncate(`on ${cols.join(', ')}`, 26)
