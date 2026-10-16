@@ -1007,6 +1007,21 @@
     }
 }
 
+/* Fit-on-screen: tall regions scroll internally instead of pushing the
+   whole page into a global vertical scroll (desktop). Mobile keeps the
+   natural page flow. */
+@media (min-width: 1280px) {
+    .automation-tree-scroll {
+        max-height: calc(100vh - 400px);
+        overflow-y: auto;
+    }
+}
+
+.automation-runs-scroll {
+    max-height: 420px;
+    overflow-y: auto;
+}
+
 /* Drawflow's built-in delete "X" is redundant — nodes are removed via
    the right-click context menu instead. */
 .drawflow .drawflow-delete {

@@ -1,22 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Automation - DocIndex{% endblock %}
+{% block page_container_class %}p-3 md:p-4 pb-24 h-full{% endblock %}
 {% block content %}
-<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+<div class="mx-auto w-full max-w-6xl flex flex-col gap-3 h-full min-h-0" id="automation-page">
 
-    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
-        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+    <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3 flex-wrap">
+        <span class="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center flex-shrink-0">
             <i class="fas fa-diagram-project"></i>
         </span>
         <div class="flex-1 min-w-0">
-            <h1 class="text-xl font-bold">Automation</h1>
-            <p class="text-xs opacity-50">
-                Visual workflows: chain files, transforms, AI prompts and logic into
-                flows that run manually, on a schedule, or from the AI chat.
+            <h1 class="text-lg font-bold leading-tight">Automation</h1>
+            <p class="text-[11px] opacity-50 truncate hidden sm:block">
+                Visual workflows that run manually, on a schedule, or from the AI chat.
             </p>
         </div>
-        <a href="{{ url_for('behaviors.index') }}" class="btn btn-outline btn-sm gap-1"
+        <a href="{{ url_for('behaviors.index') }}" class="btn btn-outline btn-xs gap-1"
            title="Reusable AI instructions for the AI nodes (core library)">
-            <i class="fas fa-masks-theater"></i> Behaviors
+            <i class="fas fa-masks-theater"></i><span class="hidden md:inline">Behaviors</span>
         </a>
         <button type="button" class="btn btn-primary btn-sm gap-1"
                 onclick="document.getElementById('wf-new-modal').showModal()">
@@ -30,13 +30,21 @@
     </div>
     {% endif %}
 
-    <div class="alert alert-warning text-xs py-2.5 rounded-xl">
+    <div class="alert alert-warning text-xs py-2 px-3 rounded-xl" id="automation-early-note">
         <i class="fas fa-triangle-exclamation flex-shrink-0"></i>
-        <span><strong>Early stage:</strong> Automation is in a very early stage —
-        use it with care. Workflows may misbehave, node configs may change
-        between releases, and runs can fail midway. Keep a copy of anything
-        important before letting a workflow modify it.</span>
+        <span class="flex-1"><strong>Early stage:</strong> workflows may misbehave — keep a copy of anything important.</span>
+        <button type="button" class="btn btn-ghost btn-xs" title="Dismiss" onclick="(function(){document.getElementById('automation-early-note').remove();try{localStorage.setItem('docindex.automation.earlyHide','1');}catch(e){}})()"><i class="fas fa-xmark"></i></button>
     </div>
+    <script>
+    (function () {
+        try {
+            if (localStorage.getItem('docindex.automation.earlyHide') === '1') {
+                var n = document.getElementById('automation-early-note');
+                if (n) n.remove();
+            }
+        } catch (e) {}
+    })();
+    </script>
 
     <!-- Examples gallery (collapsible — state remembered per browser) -->
     <details id="automation-examples" class="glass-panel rounded-2xl group"
@@ -156,7 +164,7 @@
                 </div>
             </details>
         </div>
-        <div class="divide-y divide-base-content/5 wf-drop-root" id="automation-tree" data-folder-id="">
+        <div class="divide-y divide-base-content/5 wf-drop-root automation-tree-scroll" id="automation-tree" data-folder-id="">
         {% if workflows or folders %}
             {% for w in wf_by_folder.get(None, []) %}{{ wf_row(w) }}{% endfor %}
             {% for f in folders %}{{ tree_folder(f) }}{% endfor %}
@@ -541,7 +549,7 @@
             {% if recent_runs %}<span class="badge badge-ghost badge-sm">last {{ recent_runs|length }}</span>{% endif %}
         </div>
         {% if recent_runs %}
-        <div class="divide-y divide-base-content/5">
+        <div class="divide-y divide-base-content/5 automation-runs-scroll">
             {% for r in recent_runs %}
             {% set rfailed = r.status in ('error', 'interrupted') %}
             {% set ractive = r.status in ('running', 'queued') %}
