@@ -15,7 +15,7 @@ MIGRATIONS_DIR = os.path.join(
 
 # App version — bump on every release and tag it (see CONTRIBUTING.md);
 # shown in the user menu and on the release notes page (/settings/releases).
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 # Aggregate module migrations (independent alembic roots under
 # modules/<name>/migrations/versions) into every flask-migrate command.
