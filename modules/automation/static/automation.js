@@ -62,6 +62,16 @@
                     ? 'asks' : 'static';
                 return `${mode} · ${truncate(name, 18)}`;
             }
+            case 'input.drive': {
+                const name = c.param || 'unnamed';
+                const mode = String(c.ask || 'yes') !== 'no'
+                    ? 'asks' : 'static';
+                const drive = (window.automationEditorData.drives || [])
+                    .find(d => String(d.id) === String(c.drive_id));
+                const where = drive ? ` · ${truncate(drive.name, 14)}`
+                    : (String(c.ask || 'yes') === 'no' ? ' · no drive' : '');
+                return `${mode} · ${truncate(name, 14)}${where}`;
+            }
             case 'transform.read_files':
                 return 'reads up to ' + (c.max_chars || 6000) + ' chars/file';
             case 'notebook.input': {
@@ -440,7 +450,7 @@
     // Friendly names for payload kinds, used in the per-node help chips.
     const KIND_LABELS = {
         text: 'text', json: 'JSON data', table: 'a table (rows & columns)',
-        files: 'a list of files', any: 'anything',
+        files: 'a list of files', drive: 'a drive', any: 'anything',
     };
 
     function kindLabel(kind) {
@@ -1166,18 +1176,76 @@
             input.type = 'number';
             input.className = 'input input-bordered input-sm w-full';
         } else if (field.kind === 'drive') {
-            input = document.createElement('select');
-            input.className = 'select select-bordered select-sm w-full';
-            const blank = document.createElement('option');
-            blank.value = ''; blank.textContent = '— pick a drive —';
-            input.appendChild(blank);
-            (window.automationEditorData.drives || []).forEach(d => {
-                const o = document.createElement('option');
-                o.value = d.id;
-                o.textContent = d.name + (d.is_synced ? ' (read-only)' : '');
-                if (d.is_synced) o.disabled = true;
-                input.appendChild(o);
+            // Drive picker with a "Custom…" escape hatch: type {{ nX }} to
+            // use the drive answered by a Drive picker node at run time.
+            const buildSelect = () => {
+                const sel = document.createElement('select');
+                sel.className = 'select select-bordered select-sm w-full';
+                const blank = document.createElement('option');
+                blank.value = ''; blank.textContent = '— pick a drive —';
+                sel.appendChild(blank);
+                (window.automationEditorData.drives || []).forEach(d => {
+                    const o = document.createElement('option');
+                    o.value = d.id;
+                    o.textContent = d.name + (d.is_synced ? ' (read-only)' : '');
+                    sel.appendChild(o);
+                });
+                const custom = document.createElement('option');
+                custom.value = '__custom__';
+                custom.textContent = 'Custom value / {{ ref }}…';
+                sel.appendChild(custom);
+                return sel;
+            };
+            const toCustom = currentVal => {
+                const t = document.createElement('input');
+                t.type = 'text';
+                t.className = 'input input-bordered input-sm w-full font-mono';
+                t.placeholder = '{{ n1 }} or drive id';
+                t.value = (currentVal && currentVal !== '__custom__')
+                    ? currentVal : '';
+                const refs = exportGraph().nodes
+                    .filter(n => n.id !== 'n' + nodeId)
+                    .map(n => '{{ ' + n.id + ' }}');
+                if (refs.length) attachDatalist(
+                    t, refs, `wf-refs-${nodeId}-${field.name}`);
+                t.addEventListener('input', () => {
+                    t.dataset.field = field.name;
+                    updateConfig(nodeId, field.name, t.value);
+                });
+                t.dataset.field = field.name;
+                input = t;
+                wrap.dataset.fieldInput = 'custom';
+                return t;
+            };
+            input = buildSelect();
+            input.addEventListener('change', () => {
+                if (input.value === '__custom__') {
+                    const t = toCustom('');
+                    input.replaceWith(t);
+                    input = t;
+                    t.focus();
+                    return;
+                }
+                updateConfig(nodeId, field.name, input.value);
             });
+            wrap.appendChild(fieldHead(field));
+            {
+                const known = new Set(
+                    (window.automationEditorData.drives || [])
+                        .map(d => String(d.id)));
+                const cur = value != null ? String(value) : '';
+                if (cur !== '' && !known.has(cur)) {
+                    // Previously saved {{ ref }} or unknown id: custom input.
+                    const t = toCustom(cur);
+                    wrap.appendChild(t);
+                    input = t;
+                } else {
+                    input.value = value != null ? value : '';
+                    wrap.appendChild(input);
+                }
+            }
+            if (field.help) wrap.appendChild(helpSpan(field.help));
+            return wrap;
         } else if (field.kind === 'notebook') {
             input = document.createElement('select');
             input.className = 'select select-bordered select-sm w-full';
@@ -1570,10 +1638,6 @@
         // Done validates this node's required fields first: empty required
         // fields are highlighted and the popup stays open.
         const doneBtn = document.getElementById('wf-config-done');
-        const cancelBtn = document.getElementById('wf-config-cancel');
-        if (cancelBtn) {
-            cancelBtn.onclick = () => modal.close();
-        }
         if (doneBtn) {
             doneBtn.onclick = () => {
                 const missing = (spec.fields || []).filter(f =>
@@ -2076,14 +2140,23 @@
                 wfConsoleLog('could not save the workflow.', 'error');
             }
         });
-        // input.param nodes with "ask at run time" — the Run button opens
-        // a small form first when the workflow wants answers.
+        // input.param AND input.drive nodes with "ask at run time" — the
+        // Run button opens a small form first when the workflow wants
+        // answers.
         function askedParams() {
             return exportGraph().nodes
-                .filter(n => n.type === 'input.param'
+                .filter(n => (n.type === 'input.param' || n.type === 'input.drive')
                     && String((n.config || {}).ask || 'yes') !== 'no')
                 .map(n => {
                     const c = n.config || {};
+                    if (n.type === 'input.drive') {
+                        return {
+                            param: (c.param || '').trim(),
+                            label: (c.label || '').trim() || (c.param || '').trim(),
+                            kind: 'drive',
+                            required: !c.drive_id,
+                        };
+                    }
                     const kind = c.kind || 'text';
                     const hasStatic = kind === 'file'
                         ? !!c.file_id
@@ -2149,6 +2222,20 @@
                     input = document.createElement('textarea');
                     input.className = 'textarea textarea-bordered textarea-sm w-full';
                     input.rows = 3;
+                    wrap.appendChild(input);
+                } else if (spec.kind === 'drive') {
+                    input = document.createElement('select');
+                    input.className = 'select select-bordered select-sm w-full';
+                    const blank = document.createElement('option');
+                    blank.value = '';
+                    blank.textContent = '— pick a drive —';
+                    input.appendChild(blank);
+                    (window.automationEditorData.drives || []).forEach(d => {
+                        const o = document.createElement('option');
+                        o.value = d.id;
+                        o.textContent = d.name;
+                        input.appendChild(o);
+                    });
                     wrap.appendChild(input);
                 } else {
                     input = document.createElement('input');

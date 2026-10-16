@@ -346,19 +346,31 @@ def run(workflow_id):
         return jsonify({"error": "Missing run parameters: "
                                  + ", ".join(missing)}), 400
     for spec in nodes.run_param_specs(graph):
-        if spec["kind"] != "file" or spec["param"] not in params:
+        if spec["param"] not in params:
             continue
-        try:
-            fid = int(params[spec["param"]])
-        except (TypeError, ValueError):
-            return jsonify({"error": f"Run parameter '{spec['label']}' is "
-                                     "not a valid file."}), 400
-        stored = db.session.get(StoredFile, fid)
-        if (stored is None or stored.user_id != current_user.id
-                or stored.deleted_at is not None):
-            return jsonify({"error": f"The file for '{spec['label']}' does "
-                                     "not exist (or is in the trash)."}), 404
-        params[spec["param"]] = str(fid)
+        if spec["kind"] == "file":
+            try:
+                fid = int(params[spec["param"]])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"Run parameter '{spec['label']}' is "
+                                         "not a valid file."}), 400
+            stored = db.session.get(StoredFile, fid)
+            if (stored is None or stored.user_id != current_user.id
+                    or stored.deleted_at is not None):
+                return jsonify({"error": f"The file for '{spec['label']}' does "
+                                         "not exist (or is in the trash)."}), 404
+            params[spec["param"]] = str(fid)
+        elif spec["kind"] == "drive":
+            try:
+                did = int(params[spec["param"]])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"Run parameter '{spec['label']}' is "
+                                         "not a valid drive."}), 400
+            drive = db.session.get(Drive, did)
+            if drive is None or drive.user_id != current_user.id:
+                return jsonify({"error": f"The drive for '{spec['label']}' "
+                                         "does not exist."}), 404
+            params[spec["param"]] = str(did)
     active = runtime.start_run(workflow, current_user, trigger="manual",
                                trigger_file_id=trigger_file_id,
                                params=params or None)

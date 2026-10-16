@@ -9,10 +9,12 @@ Graph format (canonical JSON stored on the workflow):
 
 Data between nodes travels in typed payload envelopes::
 
-    {"kind": "text"|"json"|"table"|"files", "data": ...}
+    {"kind": "text"|"json"|"table"|"files"|"drive", "data": ...}
 
 ``table`` data is {"columns": [...], "rows": [[...]]}; ``files`` data is a
-list of {"file_id", "name"} drive references. Executors convert between
+list of {"file_id", "name"} drive references; ``drive`` data is
+{"id", "name"} — produced by input.drive and usable as {{ ref }} inside
+any Drive field of a save/folder node. Executors convert between
 kinds with the ``as_*`` helpers, which raise WorkflowError with a clear
 message when the conversion is impossible.
 
@@ -58,6 +60,10 @@ def p_files(files):
     return {"kind": "files", "data": list(files)}
 
 
+def p_drive(drive_id, name=""):
+    return {"kind": "drive", "data": {"id": int(drive_id), "name": name}}
+
+
 def as_text(payload):
     kind, data = payload["kind"], payload["data"]
     if kind == "text":
@@ -69,12 +75,16 @@ def as_text(payload):
         return table_to_csv(data)
     if kind == "files":
         return "\n".join(f.get("name", "") for f in data)
+    if kind == "drive":
+        return data.get("name", "") if isinstance(data, dict) else str(data)
     return str(data)
 
 
 def as_json(payload):
     kind, data = payload["kind"], payload["data"]
     if kind == "json":
+        return data
+    if kind == "drive":
         return data
     if kind == "text":
         try:
@@ -83,6 +93,15 @@ def as_json(payload):
             raise WorkflowError("Expected JSON data, but the text is not "
                                 "valid JSON.")
     raise WorkflowError(f"Cannot use a {kind} payload as JSON data.")
+
+
+def as_drive_id(payload):
+    """A drive payload (or id) → integer drive id."""
+    kind, data = payload["kind"], payload["data"]
+    if kind == "drive" and isinstance(data, dict) and "id" in data:
+        return int(data["id"])
+    raise WorkflowError(f"Cannot use a {kind} payload as a drive — connect "
+                        "a Drive picker node or pick a drive.")
 
 
 def as_table(payload):
@@ -249,6 +268,8 @@ def parse_graph(raw):
 # this to understand and fix workflows without executing them.
 _REQUIRED_CONFIG = {
     "input.file": (("file_id", "Pick a file (Browse drives)."),),
+    "input.drive": (("param", "Give this drive input a parameter name."),),
+    "input.param": (("param", "Give this run input a parameter name."),),
     "input.param": (("param", "Give this input a parameter name."),),
     "docindex.search_files": (("query", "Type a search query."),),
     "transform.template": (("template", "Write the template (use {{ n1 }} refs)."),),
@@ -388,10 +409,11 @@ def validate_graph(graph, node_types=None):
         node.setdefault("config", {})
         nodes_by_id[nid] = node
 
-    # input.param names must be unique — they key the run form answers.
+    # input.param / input.drive names must be unique — they key the run form
+    # answers.
     param_names = {}
     for node in graph["nodes"]:
-        if node.get("type") != "input.param":
+        if node.get("type") not in ("input.param", "input.drive"):
             continue
         pname = (node["config"].get("param") or "").strip()
         if not pname:

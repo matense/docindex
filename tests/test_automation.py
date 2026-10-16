@@ -60,8 +60,11 @@ def _ctx(app=None, user_id=None):
     return {"user": user, "app": app}
 
 
-def _execute(graph, app=None, user_id=None):
-    return engine.execute_graph(graph, _ctx(app, user_id),
+def _execute(graph, app=None, user_id=None, params=None):
+    ctx = _ctx(app, user_id)
+    if params is not None:
+        ctx["params"] = params
+    return engine.execute_graph(graph, ctx,
                                 node_types=NODE_TYPES)
 
 
@@ -124,6 +127,58 @@ def test_validate_detects_cycles():
         {"from": "b", "from_port": "out", "to": "a", "to_port": "in"}]}
     with pytest.raises(engine.WorkflowError, match="cycle"):
         engine.validate_graph(graph, NODE_TYPES)
+
+
+def test_drive_input_static_and_asked(app, user, enabled):
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        # Static drive: no params needed.
+        outputs, _, _ = _execute({"nodes": [
+            {"id": "n1", "type": "input.drive",
+             "config": {"param": "target", "drive_id": drive_id,
+                        "ask": "no"}}], "edges": []}, app, user)
+        assert outputs["n1"]["out"]["kind"] == "drive"
+        assert outputs["n1"]["out"]["data"]["id"] == drive_id
+        # Asked at run time: answered via params.
+        outputs, _, _ = _execute(
+            {"nodes": [
+                {"id": "n1", "type": "input.drive",
+                 "config": {"param": "target", "ask": "yes"}}],
+             "edges": []}, app, user, params={"target": drive_id})
+        assert outputs["n1"]["out"]["data"]["id"] == drive_id
+        # Missing answer with no static fallback errors.
+        with pytest.raises(engine.WorkflowError, match="was not provided"):
+            _execute({"nodes": [
+                {"id": "n1", "type": "input.drive",
+                 "config": {"param": "target", "ask": "yes"}}],
+                "edges": []}, app, user)
+
+
+def test_save_file_accepts_drive_ref(app, user, enabled):
+    drive_id = _drive(app, user)
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.drive",
+         "config": {"param": "target", "drive_id": drive_id, "ask": "no"}},
+        {"id": "t", "type": "input.text",
+         "config": {"content": "hi", "format": "text"}},
+        {"id": "o", "type": "output.save_file",
+         "config": {"name": "ref.txt", "drive_id": "{{ n1 }}"}},
+    ], "edges": [
+        {"from": "t", "from_port": "out", "to": "o", "to_port": "in"}]}
+    with app.app_context():
+        outputs, _, created = _execute(graph, app, user)
+        assert created and created[0]["name"] == "ref.txt"
+        assert db.session.get(StoredFile, created[0]["file_id"]).drive_id \
+            == drive_id
+        # run_param_specs exposes the drive question for the run form + AI.
+        specs = nodes.run_param_specs(
+            {"nodes": graph["nodes"], "edges": []})
+        assert specs == []  # ask=no → static, no question
+        graph["nodes"][0]["config"].update({"ask": "yes", "drive_id": ""})
+        specs = nodes.run_param_specs(
+            {"nodes": graph["nodes"], "edges": []})
+        assert specs[0]["kind"] == "drive" and specs[0]["required"]
 
 
 def test_validate_rejects_unknown_type():

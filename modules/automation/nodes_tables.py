@@ -145,7 +145,7 @@ def _exec_save_table(ctx, config, inputs):
         blob = buf.getvalue()
     else:
         blob = table_to_csv(df_to_table(df)).encode("utf-8")
-    return _save_blob_to_drive(ctx, config, blob, name)
+    return _save_blob_to_drive(ctx, config, blob, name, ctx["_outputs"])
 
 
 def register_table_nodes():
@@ -266,7 +266,8 @@ def register_table_nodes():
              "default": "csv"},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not a synced drive)."},
+             "help": "Must be writable (not a synced drive). Or pick "
+                     "Custom and type {{ nX }} for a Drive picker node."},
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "advanced": True, "default": "",
              "placeholder": "Reports/2026",

@@ -15,9 +15,9 @@ from app.models import Drive, Folder, StoredFile
 from app.services import (ai_service, file_service, indexing_service,
                           search_service)
 
-from .engine import (WorkflowError, as_files, as_json, as_table, as_text,
-                     p_files, p_json, p_table, p_text, render_template,
-                     table_to_csv)
+from .engine import (WorkflowError, as_drive_id, as_files, as_json, as_table,
+                      as_text, p_drive, p_files, p_json, p_table, p_text,
+                      render_template, table_to_csv)
 from .registry import register_node_type
 
 _OPS = ("equals", "not_equals", "contains", "not_contains", "gt", "lt",
@@ -271,6 +271,66 @@ def _exec_input_file(ctx, config, inputs):
                              log=ctx["log"])
 
 
+def resolve_drive_id(ctx, config, outputs, field="drive_id"):
+    """Drive for a save/folder node: a picked drive id OR a {{ ref }} to an
+    input.drive node (rendered against upstream outputs). Returns the Drive
+    row or raises WorkflowError."""
+    raw = config.get(field)
+    if isinstance(raw, str) and "{{" in raw:
+        raw = render_template(raw, outputs)
+    try:
+        drive_id = int(raw)
+    except (TypeError, ValueError):
+        # A {{ drive node }} ref renders as {"id": N, ...} JSON.
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            drive_id = int(data["id"]) if isinstance(data, dict) else None
+            if drive_id is None:
+                raise ValueError
+        except (TypeError, ValueError, KeyError):
+            drive_id = None
+    if drive_id is None:
+        raise WorkflowError("Pick a drive (or reference one with "
+                            "{{ nX }} from a Drive picker node).")
+    drive = db.session.get(Drive, drive_id)
+    if drive is None or drive.user_id != ctx["user"].id:
+        raise WorkflowError("The selected drive does not exist.")
+    return drive
+
+
+def _exec_input_drive(ctx, config, inputs):
+    """Drive picker run parameter: the drive answered in the run form
+    (user or AI), or the static drive below for schedules and triggers."""
+    name = (config.get("param") or "").strip()
+    if not name:
+        raise WorkflowError("Give this drive input a parameter name.")
+    ask = str(config.get("ask", "yes")) != "no"
+    provided = (ctx.get("params") or {}).get(name)
+    if ask and provided not in (None, ""):
+        try:
+            drive_id = int(provided)
+        except (TypeError, ValueError):
+            raise WorkflowError(f"Run parameter '{name}' is not a drive.")
+        drive = db.session.get(Drive, drive_id)
+        if drive is None or drive.user_id != ctx["user"].id:
+            raise WorkflowError(f"Run parameter '{name}': that drive does "
+                                "not exist (or is not yours).")
+        ctx["log"](f"drive parameter '{name}' → '{drive.name}'")
+        return p_drive(drive.id, drive.name)
+    try:
+        drive_id = int(config.get("drive_id"))
+    except (TypeError, ValueError):
+        drive_id = None
+    drive = db.session.get(Drive, drive_id) if drive_id else None
+    if drive is None or drive.user_id != ctx["user"].id:
+        if ask:
+            raise WorkflowError(f"Run parameter '{name}' was not provided.")
+        raise WorkflowError(
+            f"Drive parameter '{name}' has no drive — pick a static drive.")
+    ctx["log"](f"using drive '{drive.name}'")
+    return p_drive(drive.id, drive.name)
+
+
 def _exec_input_param(ctx, config, inputs):
     """Run parameter: the value asked in the run form, or the static
     default when nobody answers (schedules, triggers, AI runs)."""
@@ -306,13 +366,15 @@ def run_param_specs(graph):
     start without an answer."""
     specs = []
     for node in graph.get("nodes", []):
-        if node.get("type") != "input.param":
+        if node.get("type") not in ("input.param", "input.drive"):
             continue
         config = node.get("config") or {}
         if str(config.get("ask", "yes")) == "no":
             continue
-        kind = config.get("kind") or "text"
-        if kind == "file":
+        if node.get("type") == "input.drive":
+            kind, has_static = "drive", config.get("drive_id") not in (
+                None, "")
+        elif (kind := config.get("kind") or "text") == "file":
             has_static = bool(config.get("file_id"))
         else:
             has_static = bool(str(config.get("default") or "").strip())
@@ -545,15 +607,9 @@ def _exec_text_split(ctx, config, inputs):
     return p_json({"chunks": chunks, "count": len(chunks)})
 
 
-def _exec_folder_list(ctx, config, inputs):
+def _exec_folder_list(ctx, config, inputs, outputs=None):
     """List files in a drive folder as a files payload (no content read)."""
-    try:
-        drive_id = int(config.get("drive_id"))
-    except (TypeError, ValueError):
-        raise WorkflowError("Pick a drive.")
-    drive = db.session.get(Drive, drive_id)
-    if drive is None or drive.user_id != ctx["user"].id:
-        raise WorkflowError("The selected drive does not exist.")
+    drive = resolve_drive_id(ctx, config, outputs or {}, field="drive_id")
     folder_id = config.get("folder_id")
     if folder_id not in (None, ""):
         try:
@@ -578,7 +634,7 @@ def _exec_folder_list(ctx, config, inputs):
     return p_files(files)
 
 
-def _exec_copy_file(ctx, config, inputs):
+def _exec_copy_file(ctx, config, inputs, outputs=None):
     """Copy one trigger/file payload to another drive (keeps content)."""
     if "in" not in inputs:
         raise WorkflowError("No input — connect a file or file list.")
@@ -594,13 +650,7 @@ def _exec_copy_file(ctx, config, inputs):
     stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
     if stored is None or stored.user_id != ctx["user"].id:
         raise WorkflowError("The file does not exist.")
-    try:
-        drive_id = int(config.get("drive_id"))
-    except (TypeError, ValueError):
-        raise WorkflowError("Pick a target drive.")
-    drive = db.session.get(Drive, drive_id)
-    if drive is None or drive.user_id != ctx["user"].id:
-        raise WorkflowError("The target drive does not exist.")
+    drive = resolve_drive_id(ctx, config, outputs or {})
     if drive.is_synced:
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
     import uuid as _uuid
@@ -920,8 +970,11 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
     name = render_template(config.get("name", ""), outputs).strip()
     if not name:
         raise WorkflowError("Configure a name for the new notebook.")
+    notebook_drive_id = config.get("drive_id")
+    if isinstance(notebook_drive_id, str) and "{{" in notebook_drive_id:
+        notebook_drive_id = render_template(notebook_drive_id, outputs)
     try:
-        drive_id = int(config.get("drive_id"))
+        drive_id = int(notebook_drive_id)
     except (TypeError, ValueError):
         raise WorkflowError("Pick a drive for the new notebook.")
     drive = db.session.get(Drive, drive_id)
@@ -941,7 +994,7 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
 # Output nodes
 # --------------------------------------------------------------------------
 
-def _save_blob_to_drive(ctx, config, blob, name):
+def _save_blob_to_drive(ctx, config, blob, name, outputs=None):
     """Shared tail of the save nodes: validate name/drive/folder, persist,
     index, and record the created file."""
     if not name:
@@ -949,13 +1002,7 @@ def _save_blob_to_drive(ctx, config, blob, name):
     if "/" in name or "\\" in name:
         raise WorkflowError("The file name cannot contain path separators.")
 
-    try:
-        drive_id = int(config.get("drive_id"))
-    except (TypeError, ValueError):
-        raise WorkflowError("Configure a target drive.")
-    drive = db.session.get(Drive, drive_id)
-    if drive is None or drive.user_id != ctx["user"].id:
-        raise WorkflowError("The target drive does not exist.")
+    drive = resolve_drive_id(ctx, config, outputs or {})
     if drive.is_synced:
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced) — "
                             "pick a writable drive.")
@@ -1000,7 +1047,7 @@ def _exec_save_file(ctx, config, inputs, outputs):
     else:
         raise WorkflowError(f"Cannot save a {kind} payload as a file.")
 
-    return _save_blob_to_drive(ctx, config, blob, name)
+    return _save_blob_to_drive(ctx, config, blob, name, outputs)
 
 
 def _exec_result(ctx, config, inputs):
@@ -1105,6 +1152,36 @@ def register_defaults():
              "show_when": {"field": "kind", "equals": "file"},
              "help": "Used when nobody answers or asking is off."},
         ]}, _exec_input_param)
+
+    register_node_type("input.drive", {
+        "label": "Drive input", "icon": "fa-hard-drive",
+        "category": "Input",
+        "description": "A drive the workflow asks for when it runs — pick "
+                       "it in the run form (or let the AI pass it). Use "
+                       "{{ nX }} with this node's id inside any Drive "
+                       "field of a save/folder node to write there.",
+        "example": "Ask which drive, then save the report into it.",
+        "inputs": [], "outputs": [{"name": "out", "kind": "drive"}],
+        "fields": [
+            {"name": "param", "label": "Parameter name", "kind": "text",
+             "required": True, "default": "", "placeholder": "e.g. target",
+             "help": "Unique within the workflow — reference its drive as "
+                     "{{ nX }} in Drive fields (replace nX with this "
+                     "node's id)."},
+            {"name": "label", "label": "Question shown in the run form",
+             "kind": "text", "default": "",
+             "placeholder": "e.g. Which drive should I save to?"},
+            {"name": "drive_id", "label": "Static drive", "kind": "drive",
+             "default": "",
+             "help": "Used when nobody answers (schedules, triggers, AI) "
+                     "or when asking is off."},
+            {"name": "ask", "label": "Ask at run time", "kind": "select",
+             "advanced": True,
+             "options": [{"value": "yes", "label": "Yes — ask every run"},
+                         {"value": "no", "label": "No — always use the "
+                                                  "static drive"}],
+             "default": "yes"},
+        ]}, _exec_input_drive)
 
     register_node_type("docindex.search_files", {
         "label": "Search files", "icon": "fa-magnifying-glass",
@@ -1272,7 +1349,8 @@ def register_defaults():
             {"name": "extension", "label": "Only extension (optional)",
              "kind": "text", "advanced": True, "default": "",
              "placeholder": "pdf"},
-        ]}, _exec_folder_list)
+        ]}, lambda ctx, config, inputs: _exec_folder_list(
+            ctx, config, inputs, ctx["_outputs"]))
 
     register_node_type("output.copy_file", {
         "label": "Copy file to drive", "icon": "fa-copy",
@@ -1285,8 +1363,9 @@ def register_defaults():
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not synced)."},
-        ]}, _exec_copy_file)
+             "help": "Must be writable (not synced). {{ n1 }} refs work."},
+        ]}, lambda ctx, config, inputs: _exec_copy_file(
+            ctx, config, inputs, ctx["_outputs"]))
 
     register_node_type("input.http", {
         "label": "Fetch URL (GET)", "icon": "fa-globe",
@@ -1466,7 +1545,8 @@ def register_defaults():
              "help": "Supports {{ node_id }} references."},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not a synced drive)."},
+             "help": "Must be writable (not a synced drive). Or pick "
+                     "Custom and type {{ nX }} for a Drive picker node."},
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "advanced": True, "default": "",
              "placeholder": "Reports/2026",
@@ -1534,7 +1614,8 @@ def register_defaults():
             {"name": "drive_id", "label": "Drive (for the new notebook)",
              "kind": "drive", "default": "",
              "show_when": {"field": "notebook_id", "empty": True},
-             "help": "Must be writable (not a synced drive)."},
+             "help": "Must be writable (not a synced drive). Or pick "
+                     "Custom and type {{ nX }} for a Drive picker node."},
         ]}, lambda ctx, config, inputs: _exec_notebook_output(
             ctx, config, inputs, ctx["_outputs"]), module="notebooks")
 
