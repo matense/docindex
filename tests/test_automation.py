@@ -1196,6 +1196,78 @@ def test_notebook_nodes_gated_by_module(app):
     assert "input.trigger" in active  # automation core is always active
 
 
+def test_folder_crud_and_move(auth_client, app, user, enabled):
+    AutomationFolder = models.AutomationFolder
+    # Create top-level + nested folders.
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "Marketing"}, follow_redirects=True)
+    with app.app_context():
+        root = AutomationFolder.query.filter_by(name="Marketing").one()
+        root_id = root.id
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "Social", "parent_id": root_id},
+                     follow_redirects=True)
+    with app.app_context():
+        sub = AutomationFolder.query.filter_by(name="Social").one()
+        assert sub.parent_id == root_id
+        sub_id = sub.id
+    # Move a workflow in, rename, delete (children up, workflows to root).
+    wf_id = _workflow(app, user, _text_graph("x"), name="Move me")
+    auth_client.post(f"/m/automation/{wf_id}/move",
+                     data={"folder_id": sub_id}, follow_redirects=True)
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert wf.folder_id == sub_id
+        # Search finds it; folder filter scopes it.
+        assert tools._tool_list(db.session.get(User, user),
+                                {"query": "move me"}, None)["total"] == 1
+        assert tools._tool_list(db.session.get(User, user),
+                                {"folder_id": root_id}, None)["total"] == 0
+    auth_client.post(f"/m/automation/folders/{sub_id}/rename",
+                     data={"name": "Socials"}, follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(AutomationFolder, sub_id).name == "Socials"
+    # Delete the parent: child moves up, no orphans.
+    auth_client.post(f"/m/automation/folders/{root_id}/delete",
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(AutomationFolder, sub_id).parent_id is None
+        assert db.session.get(models.AutomationWorkflow, wf_id).folder_id \
+            == sub_id
+    # Delete the sub folder: workflow falls back to root.
+    auth_client.post(f"/m/automation/folders/{sub_id}/delete",
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(models.AutomationWorkflow, wf_id).folder_id \
+            is None
+
+
+def test_folder_ai_tools_organize(app, user, enabled):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        created = tools._tool_create_folder(user_obj, {"name": "AI"}, None)
+        assert created["ok"] is True
+        fid = created["folder_id"]
+        listed = tools._tool_folders(user_obj, {}, None)
+        assert any(f["name"] == "AI" for f in listed["folders"])
+        wf_id = _workflow(app, user, _text_graph("organize me"),
+                          name="organize me")
+        moved = tools._tool_move_workflow(
+            user_obj, {"workflow_id": wf_id, "folder_id": fid}, None)
+        assert moved["ok"] is True and moved["folder_id"] == fid
+        found = tools._tool_list(user_obj, {"query": "organize"}, None)
+        assert found["total"] == 1
+        assert found["workflows"][0]["folder"] == "AI"
+        # Search misses, unsorted scope excludes it.
+        assert tools._tool_list(user_obj, {"query": "zzz-no-match"},
+                                None)["total"] == 0
+        assert tools._tool_list(user_obj, {"folder_id": -1},
+                                None)["total"] == 0
+        back = tools._tool_move_workflow(
+            user_obj, {"workflow_id": wf_id, "folder_id": None}, None)
+        assert back["ok"] is True and back["folder_id"] is None
+
+
 def test_notebook_output_updates_specific_cell(app, user, notebooks_enabled):
     drive_id = _drive(app, user)
     with app.app_context():

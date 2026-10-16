@@ -10,7 +10,7 @@ from app.extensions import db
 from app.models import Drive, Folder, StoredFile
 
 from . import engine, examples, nodes, runtime
-from .models import AutomationRun, AutomationWorkflow
+from .models import AutomationFolder, AutomationRun, AutomationWorkflow
 from .registry import active_node_types, palette
 
 bp = Blueprint("automation", __name__,
@@ -38,17 +38,128 @@ def _writable_drives():
                       .order_by(Drive.name).all())]
 
 
+def _owned_folder(folder_id):
+    folder = db.session.get(AutomationFolder, folder_id)
+    if folder is None or folder.user_id != current_user.id:
+        abort(404)
+    return folder
+
+
+def _folder_tree():
+    """Nested folders of the user as [{id, name, parent_id, depth}]."""
+    folders = (AutomationFolder.query
+               .filter_by(user_id=current_user.id)
+               .order_by(AutomationFolder.name).all())
+    by_id = {f.id: f for f in folders}
+    ordered = []
+
+    def visit(fid, depth):
+        for f in folders:
+            if (f.parent_id or None) == fid:
+                ordered.append({"id": f.id, "name": f.name,
+                                "parent_id": f.parent_id, "depth": depth})
+                visit(f.id, depth + 1)
+    visit(None, 0)
+    # Orphans whose parent is missing (should not happen) still listed.
+    seen = {o["id"] for o in ordered}
+    for f in folders:
+        if f.id not in seen:
+            ordered.append({"id": f.id, "name": f.name,
+                            "parent_id": f.parent_id, "depth": 0})
+    return ordered, by_id
+
+
 @bp.get("/")
 def index():
-    workflows = (AutomationWorkflow.query
-                 .filter_by(user_id=current_user.id)
-                 .order_by(AutomationWorkflow.updated_at.desc()).all())
+    q = (request.args.get("q") or "").strip()
+    folder_filter = request.args.get("folder", type=int)
+    query = AutomationWorkflow.query.filter_by(user_id=current_user.id)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(db.or_(
+            AutomationWorkflow.name.ilike(like),
+            AutomationWorkflow.description.ilike(like)))
+    if folder_filter == -1:
+        query = query.filter(AutomationWorkflow.folder_id.is_(None))
+    elif folder_filter:
+        query = query.filter_by(folder_id=folder_filter)
+    workflows = query.order_by(
+        AutomationWorkflow.updated_at.desc()).all()
     recent_runs = (AutomationRun.query
                    .filter_by(user_id=current_user.id)
                    .order_by(AutomationRun.id.desc()).limit(10).all())
+    folders, _by_id = _folder_tree()
+    counts = dict(
+        db.session.query(AutomationWorkflow.folder_id,
+                         db.func.count(AutomationWorkflow.id))
+        .filter(AutomationWorkflow.user_id == current_user.id)
+        .group_by(AutomationWorkflow.folder_id).all())
     return render_template("automation/list.html", workflows=workflows,
                            examples=examples.EXAMPLES,
-                           recent_runs=recent_runs)
+                           recent_runs=recent_runs, folders=folders,
+                           folder_counts=counts, q=q,
+                           folder_filter=folder_filter)
+
+
+@bp.post("/folders/create")
+def folder_create():
+    name = (request.form.get("name") or "").strip()[:120]
+    if not name:
+        abort(400, "The folder needs a name.")
+    parent_id = request.form.get("parent_id", type=int)
+    parent = None
+    if parent_id:
+        parent = _owned_folder(parent_id)
+    folder = AutomationFolder(user_id=current_user.id, name=name,
+                              parent_id=parent.id if parent else None)
+    # Guard against absurd nesting depth (UI tree renders recursively).
+    depth, cur = 0, parent
+    while cur is not None and depth < 10:
+        cur = cur.parent
+        depth += 1
+    if depth >= 10:
+        abort(400, "Folders cannot nest deeper than 10 levels.")
+    db.session.add(folder)
+    db.session.commit()
+    return redirect(url_for("automation.index"))
+
+
+@bp.post("/folders/<int:folder_id>/rename")
+def folder_rename(folder_id):
+    folder = _owned_folder(folder_id)
+    name = (request.form.get("name") or "").strip()[:120]
+    if not name:
+        abort(400, "The folder needs a name.")
+    folder.name = name
+    db.session.commit()
+    return redirect(url_for("automation.index"))
+
+
+@bp.post("/folders/<int:folder_id>/delete")
+def folder_delete(folder_id):
+    folder = _owned_folder(folder_id)
+    # Children move up one level; workflows move to root.
+    for child in folder.children:
+        child.parent_id = folder.parent_id
+    AutomationWorkflow.query.filter_by(
+        folder_id=folder.id).update({"folder_id": None})
+    db.session.delete(folder)
+    db.session.commit()
+    return redirect(url_for("automation.index"))
+
+
+@bp.post("/<int:workflow_id>/move")
+def move(workflow_id):
+    """Move a workflow into a folder (or back to root)."""
+    workflow = _owned_workflow(workflow_id)
+    folder_id = request.form.get("folder_id", type=int)
+    if folder_id in (None, 0, -1):
+        workflow.folder_id = None
+    else:
+        folder = _owned_folder(folder_id)
+        workflow.folder_id = folder.id
+    db.session.commit()
+    return redirect(request.form.get("next") or url_for("automation.index"))
 
 
 @bp.post("/examples/<key>/use")

@@ -9,6 +9,33 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+class AutomationFolder(db.Model):
+    """A user-owned folder grouping workflows — a simple tree (parent_id).
+
+    Workflows with folder_id NULL live at the root ("Unsorted").
+    """
+
+    __tablename__ = "mod_automation_folder"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False, default="New folder")
+    parent_id = db.Column(db.Integer,
+                          db.ForeignKey("mod_automation_folder.id"),
+                          nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+
+    children = db.relationship(
+        "AutomationFolder", backref=db.backref("parent", remote_side=[id]),
+        lazy="select")
+    workflows = db.relationship("AutomationWorkflow", backref="folder",
+                                lazy="select")
+
+    def __repr__(self):
+        return f"<AutomationFolder {self.id} '{self.name}'>"
+
+
 class AutomationWorkflow(db.Model):
     """A user-owned workflow: a DAG of nodes plus its schedule trigger."""
 
@@ -33,6 +60,10 @@ class AutomationWorkflow(db.Model):
     # (list/get/edit/run tools refuse it).
     ai_lock = db.Column(db.Boolean, nullable=False, default=False)
     ai_hidden = db.Column(db.Boolean, nullable=False, default=False)
+    # Organizer tree: NULL = root ("Unsorted").
+    folder_id = db.Column(db.Integer,
+                          db.ForeignKey("mod_automation_folder.id"),
+                          nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
 

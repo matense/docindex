@@ -6,7 +6,7 @@ from app.extensions import db
 from app.services.agent_service import register_tool
 
 from . import engine, runtime
-from .models import AutomationWorkflow
+from .models import AutomationFolder, AutomationWorkflow
 from .registry import active_node_types
 
 
@@ -33,9 +33,43 @@ def _locked_error():
 
 def _tool_list(user, args, drive):
     # ai_hidden workflows are invisible to the assistant entirely.
-    workflows = (AutomationWorkflow.query
-                 .filter_by(user_id=user.id, ai_hidden=False)
-                 .order_by(AutomationWorkflow.updated_at.desc()).all())
+    # Optional: query filters by name/description, folder_id scopes to one
+    # folder (-1 = unsorted root).
+    query = (AutomationWorkflow.query
+             .filter_by(user_id=user.id, ai_hidden=False))
+    q = (args.get("query") or "").strip() if isinstance(args, dict) else ""
+    if q:
+        like = f"%{q}%"
+        query = query.filter(db.or_(
+            AutomationWorkflow.name.ilike(like),
+            AutomationWorkflow.description.ilike(like)))
+    folder_id = (args.get("folder_id") if isinstance(args, dict) else None)
+    if folder_id == -1:
+        query = query.filter(AutomationWorkflow.folder_id.is_(None))
+    elif folder_id not in (None, ""):
+        try:
+            query = query.filter_by(folder_id=int(folder_id))
+        except (TypeError, ValueError):
+            return {"error": "folder_id must be an integer (-1 = unsorted)."}
+    workflows = query.order_by(
+        AutomationWorkflow.updated_at.desc()).all()
+    folders = {f.id: f.name for f in AutomationFolder.query
+               .filter_by(user_id=user.id).all()}
+    return {"total": len(workflows),
+            "workflows": [{
+                "id": w.id, "name": w.name,
+                "description": w.description[:200],
+                "folder_id": w.folder_id,
+                "folder": folders.get(w.folder_id),
+                "enabled": bool(w.enabled),
+                "interval_minutes": w.interval_minutes,
+                "ai_lock": bool(w.ai_lock),
+                "last_run_at": (w.last_run_at.isoformat()
+                                if w.last_run_at else None),
+                "last_run_status": (w.runs[0].status if w.runs else None),
+            } for w in workflows[:100]],
+            "folders": [{"id": i, "name": n}
+                        for i, n in sorted(folders.items())]}
     return {"total": len(workflows),
             "workflows": [{
                 "id": w.id, "name": w.name,
@@ -224,6 +258,9 @@ def _tool_get_workflow(user, args, drive):
                     "log": log[-20:]}
     result = {"workflow_id": workflow.id, "name": workflow.name,
               "description": workflow.description, "graph": graph,
+              "folder_id": workflow.folder_id,
+              "folder": (workflow.folder.name
+                         if workflow.folder is not None else None),
               "enabled": bool(workflow.enabled),
               "interval_minutes": workflow.interval_minutes,
               "ai_lock": locked, "specs": specs, "last_run": last_run}
@@ -418,6 +455,93 @@ def _fix_hint(error, log):
                 "fix its settings with edit_workflow, then re-run.")
     return ("Read the workflow with get_workflow (it includes last_run), "
             "fix the failing step with edit_workflow, then run again.")
+
+
+def _tool_folders(user, args, drive):
+    folders = (AutomationFolder.query
+               .filter_by(user_id=user.id)
+               .order_by(AutomationFolder.name).all())
+    counts = dict(
+        db.session.query(AutomationWorkflow.folder_id,
+                         db.func.count(AutomationWorkflow.id))
+        .filter(AutomationWorkflow.user_id == user.id)
+        .group_by(AutomationWorkflow.folder_id).all())
+    by_id = {f.id: f for f in folders}
+    items = []
+    for f in folders:
+        parts, cur = [f.name], f.parent
+        while cur is not None:
+            parts.append(cur.name)
+            cur = cur.parent
+        items.append({"id": f.id, "name": f.name,
+                      "path": "/".join(reversed(parts)),
+                      "parent_id": f.parent_id,
+                      "workflows": counts.get(f.id, 0)})
+    items.sort(key=lambda x: x["path"].lower())
+    return {"folders": items,
+            "unsorted": counts.get(None, 0)}
+
+
+def _tool_create_folder(user, args, drive):
+    name = ((args.get("name") or "") if isinstance(args, dict) else ""
+            ).strip()[:120]
+    if not name:
+        return {"error": "name is required."}
+    parent_id = (args.get("parent_id") if isinstance(args, dict) else None)
+    parent = None
+    if parent_id not in (None, ""):
+        try:
+            parent = AutomationFolder.query.filter_by(
+                id=int(parent_id), user_id=user.id).first()
+        except (TypeError, ValueError):
+            parent = None
+        if parent is None:
+            return {"error": f"Parent folder {parent_id} not found."}
+    folder = AutomationFolder(user_id=user.id, name=name,
+                              parent_id=parent.id if parent else None)
+    # Guard nesting depth.
+    depth, cur = 0, parent
+    while cur is not None and depth < 10:
+        cur = cur.parent
+        depth += 1
+    if depth >= 10:
+        return {"error": "Folders cannot nest deeper than 10 levels."}
+    db.session.add(folder)
+    db.session.commit()
+    return {"ok": True, "folder_id": folder.id, "name": folder.name}
+
+
+def _tool_move_workflow(user, args, drive):
+    try:
+        workflow_id = int(args.get("workflow_id"))
+    except (TypeError, ValueError):
+        return {"error": "workflow_id must be an integer."}
+    workflow = (AutomationWorkflow.query
+                .filter_by(id=workflow_id, user_id=user.id).first())
+    if workflow is None:
+        return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    folder_id = (args.get("folder_id") if isinstance(args, dict) else None)
+    if folder_id in (None, "", 0, -1):
+        workflow.folder_id = None
+    else:
+        try:
+            folder = AutomationFolder.query.filter_by(
+                id=int(folder_id), user_id=user.id).first()
+        except (TypeError, ValueError):
+            folder = None
+        if folder is None:
+            return {"error": f"Folder {folder_id} not found."}
+        workflow.folder_id = folder.id
+    db.session.commit()
+    if workflow.ai_lock:
+        return {"ok": True, "workflow_id": workflow.id,
+                "folder_id": workflow.folder_id,
+                "note": "Moved. (Locked workflows still refuse content "
+                        "edits, but organizing into folders is allowed.)"}
+    return {"ok": True, "workflow_id": workflow.id,
+            "folder_id": workflow.folder_id}
 
 
 def _tool_validate(user, args, drive):
@@ -628,11 +752,16 @@ def register_tools():
         _schema("list_workflows",
                 "List the user's Automation workflows (visual node flows "
                 "that read/transform files and write new ones), with "
-                "schedule, last run status and the ai_lock flag (a locked "
-                "workflow refuses edit_workflow until the user unlocks it "
-                "in the editor toolbar). Workflows the user hid from the "
-                "AI are not listed at all.",
-                {}),
+                "folder, schedule, last run status and the ai_lock flag (a "
+                "locked workflow refuses edit_workflow until the user "
+                "unlocks it in the editor toolbar). Workflows the user hid "
+                "from the AI are not listed at all. Optional query searches "
+                "names/descriptions; folder_id scopes to one folder "
+                "(-1 = unsorted root).",
+                {"query": {"type": "string",
+                           "description": "Search names/descriptions"},
+                 "folder_id": {"type": "integer",
+                               "description": "Only this folder (-1 = root)"}}),
         _tool_list, label="Listing workflows", module="automation")
     register_tool(
         "run_workflow",
@@ -740,6 +869,36 @@ def register_tools():
                                  "description": "The workflow id"}},
                 required=("workflow_id",)),
         _tool_validate, label="Validating workflow", module="automation")
+    register_tool(
+        "list_folders",
+        _schema("list_folders",
+                "List the user's automation folders (organizer tree) with "
+                "workflow counts, plus how many workflows are unsorted.",
+                {}),
+        _tool_folders, label="Listing folders", module="automation")
+    register_tool(
+        "create_folder",
+        _schema("create_folder",
+                "Create an automation folder to organize workflows "
+                "(optionally nested with parent_id).",
+                {"name": {"type": "string",
+                          "description": "Folder name"},
+                 "parent_id": {"type": "integer",
+                               "description": "Parent folder (optional)"}},
+                required=("name",)),
+        _tool_create_folder, label="Creating folder", module="automation")
+    register_tool(
+        "move_workflow",
+        _schema("move_workflow",
+                "Move a workflow into a folder (organize the user's "
+                "automations). Use folder_id null/0/-1 for the unsorted "
+                "root. Works even on AI-locked workflows.",
+                {"workflow_id": {"type": "integer",
+                                 "description": "The workflow id"},
+                 "folder_id": {"type": "integer",
+                               "description": "Target folder (null = root)"}},
+                required=("workflow_id",)),
+        _tool_move_workflow, label="Moving workflow", module="automation")
     register_tool(
         "set_schedule",
         _schema("set_schedule",

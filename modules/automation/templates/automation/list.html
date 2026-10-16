@@ -75,12 +75,75 @@
         </div>
     </details>
 
-    <!-- Your workflows -->
-    <div class="glass-panel rounded-2xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2">
+    <!-- Your workflows: search + folder tree -->
+    <div class="flex flex-col md:flex-row gap-4 items-stretch">
+        <aside class="glass-panel rounded-2xl p-4 md:w-60 flex-shrink-0 flex flex-col gap-1.5 self-start w-full">
+            <div class="text-[10px] uppercase tracking-wide opacity-50 px-1">Folders</div>
+            <a href="{{ url_for('automation.index', q=q) }}"
+               class="btn btn-ghost btn-sm justify-start gap-2 {{ 'btn-active' if not folder_filter else '' }}">
+                <i class="fas fa-layer-group text-primary/60"></i> All
+            </a>
+            <a href="{{ url_for('automation.index', q=q, folder=-1) }}"
+               class="btn btn-ghost btn-sm justify-start gap-2 {{ 'btn-active' if folder_filter == -1 else '' }}">
+                <i class="fas fa-inbox text-primary/60"></i> Unsorted
+                <span class="badge badge-ghost badge-xs ml-auto">{{ folder_counts.get(None, 0) }}</span>
+            </a>
+            {% for f in folders %}
+            <div class="flex items-center gap-1">
+                <a href="{{ url_for('automation.index', q=q, folder=f.id) }}"
+                   class="btn btn-ghost btn-sm justify-start gap-2 flex-1 min-w-0 {{ 'btn-active' if folder_filter == f.id else '' }}"
+                   style="padding-left: calc(0.5rem + {{ f.depth }} * 1rem)" title="{{ f.name }}">
+                    <i class="fas fa-folder text-warning/70"></i>
+                    <span class="truncate">{{ f.name }}</span>
+                    <span class="badge badge-ghost badge-xs ml-auto">{{ folder_counts.get(f.id, 0) }}</span>
+                </a>
+                <details class="dropdown dropdown-end">
+                    <summary class="btn btn-ghost btn-xs" title="Rename or delete folder"><i class="fas fa-ellipsis-vertical"></i></summary>
+                    <div class="dropdown-content z-10 card glass-panel p-3 shadow-xl flex flex-col gap-2 w-56">
+                        <form method="POST" action="{{ url_for('automation.folder_rename', folder_id=f.id) }}" class="flex gap-1">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="text" name="name" value="{{ f.name }}" maxlength="120" required
+                                   class="input input-bordered input-xs flex-1 min-w-0">
+                            <button type="submit" class="btn btn-primary btn-xs" title="Rename"><i class="fas fa-check"></i></button>
+                        </form>
+                        <form method="POST" action="{{ url_for('automation.folder_delete', folder_id=f.id) }}"
+                              data-confirm="Delete folder &quot;{{ f.name }}&quot;? Its workflows move back to Unsorted.">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-ghost btn-xs text-error gap-1 w-full justify-start">
+                                <i class="fas fa-trash-can"></i> Delete folder
+                            </button>
+                        </form>
+                    </div>
+                </details>
+            </div>
+            {% endfor %}
+            <form method="POST" action="{{ url_for('automation.folder_create') }}" class="flex flex-col gap-1.5 mt-2 pt-2 border-t border-base-content/10">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="text" name="name" placeholder="New folder…" maxlength="120" required
+                       class="input input-bordered input-sm w-full">
+                {% if folders %}
+                <select name="parent_id" class="select select-bordered select-xs w-full" title="Parent folder">
+                    <option value="">Top level</option>
+                    {% for f in folders %}
+                    <option value="{{ f.id }}">{{ '—' * f.depth }} {{ f.name }}</option>
+                    {% endfor %}
+                </select>
+                {% endif %}
+                <button type="submit" class="btn btn-outline btn-sm gap-1"><i class="fas fa-plus"></i> New folder</button>
+            </form>
+        </aside>
+        <div class="glass-panel rounded-2xl overflow-hidden flex-1 min-w-0">
+        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2 flex-wrap">
             <i class="fas fa-diagram-project text-primary/60 text-xs"></i>
-            <span class="text-[10px] uppercase tracking-wide opacity-50 flex-1">Your workflows</span>
+            <span class="text-[10px] uppercase tracking-wide opacity-50">Your workflows</span>
             {% if workflows %}<span class="badge badge-ghost badge-sm">{{ workflows|length }}</span>{% endif %}
+            <form method="GET" action="{{ url_for('automation.index') }}" class="flex gap-1 ml-auto flex-1 min-w-40 max-w-xs">
+                {% if folder_filter %}<input type="hidden" name="folder" value="{{ folder_filter }}">{% endif %}
+                <input type="text" name="q" value="{{ q or '' }}" placeholder="Search automations…"
+                       class="input input-bordered input-xs flex-1 min-w-0">
+                <button type="submit" class="btn btn-ghost btn-xs" title="Search"><i class="fas fa-magnifying-glass"></i></button>
+                {% if q %}<a href="{{ url_for('automation.index', folder=folder_filter) }}" class="btn btn-ghost btn-xs" title="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
+            </form>
         </div>
         {% if workflows %}        <div class="divide-y divide-base-content/5">
             {% for w in workflows %}
@@ -97,6 +160,7 @@
                             {% if w.ai_hidden %}<span class="badge badge-warning badge-xs ml-1" title="Hidden from the AI">AI: hidden</span>{% endif %}
                         </span>
                         <span class="text-[11px] opacity-45 flex items-center gap-3 mt-0.5 flex-wrap">
+                            {% if w.folder_id %}<span><i class="fas fa-folder mr-1"></i>{{ folders|selectattr('id', 'equalto', w.folder_id)|map(attribute='name')|first }}</span>{% endif %}
                             {% if w.interval_minutes %}
                             <span><i class="fas fa-clock mr-1"></i>Auto · every {{ w.interval_minutes }} min · {{ 'On' if w.enabled else 'Off' }}</span>
                             {% else %}
@@ -136,6 +200,17 @@
                             <i class="fas fa-trash-can"></i> Delete
                         </button>
                     </form>
+                    <form method="POST" action="{{ url_for('automation.move', workflow_id=w.id) }}" title="Move to folder">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="next" value="{{ url_for('automation.index', q=q, folder=folder_filter) }}">
+                        <select name="folder_id" class="select select-bordered select-xs max-w-32" onchange="this.form.submit()"
+                                title="Move to folder">
+                            <option value="-1" {{ 'selected' if not w.folder_id }}>📥 Unsorted</option>
+                            {% for f in folders %}
+                            <option value="{{ f.id }}" {{ 'selected' if w.folder_id == f.id }}>{{ '—' * f.depth }} {{ f.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </form>
                 </div>
             </div>
             {% endfor %}
@@ -143,14 +218,21 @@
         {% else %}
         <div class="text-center py-14">
             <i class="fas fa-diagram-project text-4xl mb-3 block opacity-50"></i>
+            {% if q %}
+            <p class="font-semibold">No automations match “{{ q }}”.</p>
+            <p class="text-xs mt-1 opacity-50">Try a different search — or clear it to see everything.</p>
+            <a href="{{ url_for('automation.index', folder=folder_filter) }}" class="btn btn-ghost btn-sm mt-4">Clear search</a>
+            {% else %}
             <p class="font-semibold">No workflows yet.</p>
             <p class="text-xs mt-1 opacity-50">Start from an example above — or create a blank one.</p>
             <button type="button" class="btn btn-primary btn-sm mt-4"
                     onclick="document.getElementById('wf-new-modal').showModal()">
                 <i class="fas fa-plus"></i> New automation
             </button>
+            {% endif %}
         </div>
         {% endif %}
+        </div>
     </div>
 
     <!-- Recent runs across all workflows -->
