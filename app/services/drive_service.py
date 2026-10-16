@@ -37,19 +37,41 @@ def get_current_drive(user):
 
     if drive is None:
         drive = _create_drive(user, DEFAULT_DRIVE_NAME)
+        # Only commit when we actually created/migrated something — every
+        # page view calls this via inject_globals, and a write transaction
+        # per page churns SQLite WAL + cookies.
+        orphaned_files = (StoredFile.query
+                          .filter_by(user_id=user.id, drive_id=None)
+                          .filter(StoredFile.deleted_at.is_(None)))
+        if orphaned_files.count():
+            orphaned_files.update({StoredFile.drive_id: drive.id},
+                                  synchronize_session=False)
+        orphaned_folders = Folder.query.filter_by(user_id=user.id, drive_id=None)
+        if orphaned_folders.count():
+            orphaned_folders.update({Folder.drive_id: drive.id},
+                                    synchronize_session=False)
+        if session.get("drive_id") != drive.id:
+            session["drive_id"] = drive.id
+        db.session.commit()
+        return drive
 
-    # Files/folders that predate the drives feature belong to the first drive.
-    orphaned_files = (StoredFile.query
-                      .filter_by(user_id=user.id, drive_id=None)
-                      .filter(StoredFile.deleted_at.is_(None)))
-    if orphaned_files.count():
-        orphaned_files.update({StoredFile.drive_id: drive.id})
-    orphaned_folders = Folder.query.filter_by(user_id=user.id, drive_id=None)
-    if orphaned_folders.count():
-        orphaned_folders.update({Folder.drive_id: drive.id})
-
-    session["drive_id"] = drive.id
-    db.session.commit()
+    # Migrate pre-drives orphans only when they exist (two cheap COUNTs, no
+    # write when clean).
+    changed = False
+    if (StoredFile.query.filter_by(user_id=user.id, drive_id=None)
+            .filter(StoredFile.deleted_at.is_(None)).count()):
+        (StoredFile.query.filter_by(user_id=user.id, drive_id=None)
+         .filter(StoredFile.deleted_at.is_(None))
+         .update({StoredFile.drive_id: drive.id}, synchronize_session=False))
+        changed = True
+    if Folder.query.filter_by(user_id=user.id, drive_id=None).count():
+        (Folder.query.filter_by(user_id=user.id, drive_id=None)
+         .update({Folder.drive_id: drive.id}, synchronize_session=False))
+        changed = True
+    if session.get("drive_id") != drive.id:
+        session["drive_id"] = drive.id
+    if changed:
+        db.session.commit()
     return drive
 
 

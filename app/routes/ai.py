@@ -295,12 +295,30 @@ def conversations():
     convs = (ChatConversation.query
              .filter_by(user_id=current_user.id)
              .order_by(ChatConversation.updated_at.desc()).all())
+    # Latest assistant model per conversation without loading every message
+    # (N+1): one grouped query for the newest assistant row each.
+    conv_ids = [c.id for c in convs]
+    latest_model = {}
+    if conv_ids:
+        rows = (db.session.query(ChatMessage.conversation_id,
+                                 ChatMessage.model)
+                .filter(ChatMessage.conversation_id.in_(conv_ids),
+                        ChatMessage.role == "assistant")
+                .order_by(ChatMessage.conversation_id,
+                          ChatMessage.id.desc()).all())
+        seen = set()
+        for cid, model in rows:
+            # rows are newest-first per conversation only if grouped; take
+            # the first assistant model seen per conversation in reverse id
+            # order — cheap and avoids loading full message bodies.
+            if cid not in seen:
+                seen.add(cid)
+                latest_model[cid] = model
     return jsonify([
         {"id": c.id, "title": c.title,
          "updated_at": c.updated_at.isoformat() if c.updated_at else None,
          # The model shown is the one that wrote the latest assistant reply.
-         "model": next((m.model for m in reversed(c.messages)
-                        if m.role == "assistant" and m.model), None)}
+         "model": latest_model.get(c.id)}
         for c in convs
     ])
 
@@ -452,6 +470,10 @@ def chat():
     attachment_ids = data.get("attachments") or []
     if not question and not attachment_ids:
         return jsonify({"error": "Empty message."}), 400
+    if len(question) > 20000:
+        return jsonify({"error": "Message is too long (max 20000 characters)."}), 400
+    if len(attachment_ids) > 20:
+        return jsonify({"error": "Too many attachments (max 20)."}), 400
 
     ctx = _resolve_context(current_user, data)
     attached = ctx["attachments"]

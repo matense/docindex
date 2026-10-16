@@ -81,6 +81,14 @@ def start_task(user, message, ctx=None, app=None):
     message = (message or "").strip()
     if not message:
         raise ValueError("Empty message.")
+    if len(message) > 20000:
+        raise ValueError("Message is too long (max 20000 characters).")
+    # Per-user concurrency cap: unbounded threads + AI spend otherwise.
+    active = (AITask.query.filter_by(user_id=user.id)
+              .filter(AITask.status.in_(("queued", "running"))).count())
+    if active >= 3:
+        raise ValueError("You already have 3 background tasks running — "
+                         "stop or wait for one to finish first.")
 
     display = message
     if ctx and ctx["context"].get("file_names"):

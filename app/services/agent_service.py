@@ -1084,6 +1084,12 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
     config = ai_service.config_for(user)
     if max_steps is None:
         max_steps = config.get("max_steps") or current_app.config.get("AI_MAX_STEPS", 16)
+    # Clamp: negative/zero would run zero steps, huge values run away cost.
+    try:
+        max_steps = int(max_steps)
+    except (TypeError, ValueError):
+        max_steps = 16
+    max_steps = max(1, min(max_steps, 128))
     system = SYSTEM_PROMPT
     if drive is not None:
         drives = list(drive) if isinstance(drive, (list, tuple)) else [drive]

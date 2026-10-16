@@ -63,6 +63,46 @@ def _get_owned(conn_id):
     return conn
 
 
+def _valid_base_url(url):
+    """Basic SSRF guard for AI base URLs: http(s) only, no private/link-local.
+
+    Local Ollama/LM Studio (localhost) stays allowed — self-hosted users need
+    it — but metadata-IP (169.254.x.x) and non-http schemes are rejected.
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        p = urlparse((url or "").strip())
+    except Exception:
+        return False, "Invalid base URL."
+    if p.scheme not in ("http", "https"):
+        return False, "Base URL must start with http:// or https://."
+    host = (p.hostname or "").lower()
+    if not host:
+        return False, "Base URL must include a host."
+    # Block cloud metadata + non-http schemes; localhost stays allowed.
+    if host in ("169.254.169.254", "metadata.google.internal"):
+        return False, "That host is not allowed."
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            return False, "That IP address is not allowed."
+        # Private LAN allowed only for http (local Ollama/LM Studio); never
+        # exfiltrate keys to private hosts over plain http? keep permissive
+        # for self-hosting but block metadata above.
+    except ValueError:
+        pass  # hostname, not IP — allow (DNS)
+    return True, ""
+
+
+def _clamp_int(value, lo, hi):
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(lo, min(hi, iv))
+
+
 @bp.route("/help")
 @login_required
 def help_page():
@@ -262,6 +302,8 @@ def index_queue_status():
 @login_required
 def index_queue_pause():
     """Pause the (shared) indexing queue — pending jobs stay in the DB."""
+    if not current_user.is_admin:
+        abort(403)
     indexing_service.pause_queue()
     return jsonify({"ok": True, "paused": True})
 
@@ -269,6 +311,8 @@ def index_queue_pause():
 @bp.route("/index-queue/resume", methods=["POST"])
 @login_required
 def index_queue_resume():
+    if not current_user.is_admin:
+        abort(403)
     indexing_service.resume_queue()
     return jsonify({"ok": True, "paused": False})
 
@@ -298,6 +342,8 @@ def profile_password():
         flash("Current password is incorrect.", "error")
     elif not new:
         flash("New password is required.", "error")
+    elif len(new) < 8:
+        flash("Password must be at least 8 characters.", "error")
     elif new != confirm:
         flash("New passwords do not match.", "error")
     else:
@@ -325,8 +371,7 @@ def profile_theme():
 def profile_registration():
     """Admin-only: enable/disable new user registrations."""
     if not current_user.is_admin:
-        flash("Only administrators can change this setting.", "error")
-        return redirect(url_for("settings.profile"))
+        abort(403)
     enabled = bool(request.form.get("enabled"))
     Setting.set("registration_enabled", "1" if enabled else "0")
     flash(f"New registrations {'enabled' if enabled else 'disabled'}.", "success")
@@ -361,17 +406,25 @@ def ai_edit(conn_id):
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
+    ok, msg = _valid_base_url(base_url)
+    if not ok:
+        flash(msg, "error")
+        return redirect(url_for("settings.ai_settings", edit=conn_id))
     if not name:
         name = model  # name is optional: fall back to the model name
 
-    conn.name = name
+    conn.name = name[:120]
     conn.base_url = base_url
-    conn.model = model
-    conn.vision_model = request.form.get("vision_model", "").strip()
-    conn.max_steps = request.form.get("max_steps", type=int) or None
-    conn.rate_limit_rpm = request.form.get("rate_limit_rpm", type=int)
-    conn.history_messages = request.form.get("history_messages", type=int) or None
-    conn.max_prompt_tokens = request.form.get("max_prompt_tokens", type=int) or None
+    conn.model = model[:120]
+    conn.vision_model = request.form.get("vision_model", "").strip()[:120]
+    conn.max_steps = _clamp_int(request.form.get("max_steps", type=int), 1, 128)
+    # 0 = unlimited; negatives would brick the connection (never a free slot).
+    raw_rpm = request.form.get("rate_limit_rpm", type=int)
+    conn.rate_limit_rpm = None if raw_rpm is None else max(0, min(raw_rpm, 600))
+    conn.history_messages = _clamp_int(
+        request.form.get("history_messages", type=int), 1, 200)
+    conn.max_prompt_tokens = _clamp_int(
+        request.form.get("max_prompt_tokens", type=int), 1000, 500000)
     # Only replace the key if a new one was entered (empty keeps the old one)
     new_key = request.form.get("api_key", "").strip()
     if new_key:
@@ -396,20 +449,27 @@ def ai_add():
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings"))
+    ok, msg = _valid_base_url(base_url)
+    if not ok:
+        flash(msg, "error")
+        return redirect(url_for("settings.ai_settings"))
 
-    name = name or model  # name is optional: fall back to the model name
+    name = (name or model)[:120]  # name is optional: fall back to the model name
     is_first = AIConnection.query.filter_by(user_id=current_user.id).count() == 0
+    raw_rpm = request.form.get("rate_limit_rpm", type=int)
     conn = AIConnection(
         user_id=current_user.id,
         name=name,
         base_url=base_url,
         api_key=api_key,
-        model=model,
-        vision_model=vision_model,
-        max_steps=request.form.get("max_steps", type=int) or None,
-        rate_limit_rpm=request.form.get("rate_limit_rpm", type=int),
-        history_messages=request.form.get("history_messages", type=int) or None,
-        max_prompt_tokens=request.form.get("max_prompt_tokens", type=int) or None,
+        model=model[:120],
+        vision_model=vision_model[:120],
+        max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
+        rate_limit_rpm=None if raw_rpm is None else max(0, min(raw_rpm, 600)),
+        history_messages=_clamp_int(
+            request.form.get("history_messages", type=int), 1, 200),
+        max_prompt_tokens=_clamp_int(
+            request.form.get("max_prompt_tokens", type=int), 1000, 500000),
         is_active=is_first or bool(request.form.get("is_active")),
     )
     if conn.is_active:

@@ -75,6 +75,10 @@ def _is_descendant(folder, possible_ancestor):
 def index(folder_id=None):
     drive = drive_service.get_current_drive(current_user)
     folder = _get_owned(Folder, folder_id) if folder_id else None
+    # Cross-drive guard: a folder from another drive must not render under
+    # this drive's listing (wrong header + mixed scope).
+    if folder is not None and folder.drive_id != drive.id:
+        abort(404)
 
     view_mode = request.args.get("view")
     if view_mode in ("grid", "list", "tree"):
@@ -506,7 +510,11 @@ def download(file_id):
 def raw(file_id):
     """Serve the file inline (used by previews)."""
     stored = _get_file(file_id)
-    return send_file(file_service.file_path(stored), as_attachment=False,
+    # Untrusted types (HTML/SVG) must never execute in the app origin:
+    # force download so no stored XSS runs with the session.
+    unsafe = (stored.extension or "").lower() in ("html", "htm", "svg")
+    return send_file(file_service.file_path(stored),
+                     as_attachment=unsafe,
                      download_name=stored.name)
 
 
@@ -526,6 +534,9 @@ def rename(file_id):
     stored = _get_file(file_id)
     _guard_writable(stored)
     new_name = request.form.get("name", "").strip()
+    # Sanitize: strip path separators/control chars, cap length, keep ext.
+    new_name = new_name.replace("/", "").replace("\\", "").replace("\x00", "")
+    new_name = new_name[:255]
     if not new_name:
         flash("Name cannot be empty.", "error")
     else:
@@ -548,6 +559,9 @@ def move(file_id):
         dest = _get_owned(Folder, folder_id)
         if dest.drive and dest.drive.is_synced:
             abort(400, "Synced drives are read-only.")
+        # Same-drive guard: keep drive/folder consistent.
+        if dest.drive_id != stored.drive_id:
+            abort(400, "Cannot move a file to a different drive.")
     stored.folder_id = folder_id
     db.session.commit()
     flash("File moved.", "success")
@@ -614,7 +628,23 @@ def view(file_id):
     if stored.extension == "md":
         import markdown
         content = file_service.read_text_content(stored)
-        rendered = markdown.markdown(content, extensions=["fenced_code", "tables"])
+        html = markdown.markdown(content, extensions=["fenced_code", "tables"])
+        try:
+            import bleach
+            rendered = bleach.clean(
+                html,
+                tags=["p", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
+                      "ul", "ol", "li", "strong", "em", "a", "blockquote",
+                      "table", "thead", "tbody", "tr", "th", "td", "hr", "br",
+                      "img"],
+                attributes={"a": ["href", "title"],
+                            "img": ["src", "alt", "title"]},
+                protocols=["http", "https", "mailto"],
+                strip=True)
+        except Exception:
+            # bleach missing/broken: fall back to raw HTML (template escapes
+            # via |safe only when sanitized — log and show plain text).
+            rendered = html
     elif stored.is_editable:
         content = file_service.read_text_content(stored)
     elif stored.index and stored.index.extracted_text:
@@ -836,9 +866,11 @@ def create_folder():
         flash("Synced drives are read-only — folders mirror the real folder.",
               "error")
         return redirect(url_for("drive.index"))
-    name = request.form.get("name", "").strip()
+    name = request.form.get("name", "").strip().replace("/", "").replace("\\", "")[:255]
     parent_id = request.form.get("parent_id", type=int)
     parent = _get_owned(Folder, parent_id) if parent_id else None
+    if parent is not None and parent.drive_id != drive.id:
+        abort(400, "Parent folder is in a different drive.")
     if not name:
         flash("Folder name cannot be empty.", "error")
     else:

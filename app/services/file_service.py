@@ -24,10 +24,12 @@ def get_extension(filename):
 
 def file_path(stored_file):
     # Synced files map to a real file on disk; everything else lives in the
-    # uploads folder.
+    # uploads folder. Defense-in-depth: contain stored_name (no ../ escape).
     if stored_file.source_path:
         return stored_file.source_path
-    return os.path.join(current_app.config["UPLOAD_FOLDER"], stored_file.stored_name)
+    safe = (stored_file.stored_name or "").replace("\\", "/")
+    safe = safe.split("/")[-1]
+    return os.path.join(current_app.config["UPLOAD_FOLDER"], safe)
 
 
 def _guard_not_synced(stored_file):
@@ -49,6 +51,8 @@ def _make_thumbnail(path, stored_name):
     thumb = os.path.join(current_app.config["THUMBNAIL_FOLDER"],
                          os.path.splitext(stored_name)[0] + ".png")
     try:
+        # Pillow bomb guard: refuse absurd pixel counts before decoding.
+        Image.MAX_IMAGE_PIXELS = 50_000_000
         with Image.open(path) as img:
             img.thumbnail(THUMBNAIL_SIZE)
             if img.mode in ("RGBA", "P", "LA"):
@@ -62,6 +66,13 @@ def _make_thumbnail(path, stored_name):
 
 def save_upload(file_storage, user, folder=None):
     """Persist an uploaded file and create its DB rows. Returns StoredFile."""
+    # Pre-check the declared size before touching disk (disk-fill DoS).
+    try:
+        declared = file_storage.content_length
+    except Exception:
+        declared = None
+    if declared is not None and declared > current_app.config["MAX_FILE_SIZE"]:
+        raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
     original_name = secure_filename(file_storage.filename) or "unnamed"
     ext = get_extension(original_name)
     stored_name = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
@@ -287,6 +298,9 @@ def restore_version(stored_file, version):
 
 def update_file_content(stored_file, content, source="edit", note=""):
     """Overwrite an editable text file's content, keeping a version snapshot."""
+    content = content or ""
+    if len(content.encode("utf-8")) > current_app.config["MAX_FILE_SIZE"]:
+        raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
     snapshot_version(stored_file, source, note=note)
     path = file_path(stored_file)
     with open(path, "w", encoding="utf-8") as fh:

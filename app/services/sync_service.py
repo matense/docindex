@@ -236,13 +236,43 @@ def validate_path(path):
     path = (path or "").strip().strip('"')
     if not path:
         return None, "A folder path is required."
-    abs_path = os.path.abspath(path)
+    abs_path = os.path.realpath(os.path.abspath(path))
     if not os.path.exists(abs_path):
         return None, f'"{path}" does not exist on this machine.'
     if not os.path.isdir(abs_path):
         return None, f'"{path}" is not a folder.'
     if not os.access(abs_path, os.R_OK):
         return None, f'"{path}" is not readable by the server.'
+    try:
+        basedir = os.path.realpath(os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..")))
+        blocked = {
+            os.path.realpath(p) for p in (
+                "/etc", "/proc", "/sys", "/root", "/boot",
+                os.path.join(basedir, "instance"),
+                os.path.join(basedir, "uploads"),
+                os.path.join(basedir, "venv"),
+                os.path.join(basedir, ".git"),
+            ) if os.path.exists(p)
+        }
+        for win in (os.environ.get("SystemRoot", r"C:\Windows"),
+                    os.environ.get("ProgramFiles", r"C:\Program Files")):
+            if win and os.path.isdir(win):
+                blocked.add(os.path.realpath(win))
+    except Exception:
+        blocked = set()
+    if abs_path in blocked:
+        return None, "That system folder cannot be synced."
+    for b in blocked:
+        if abs_path.startswith(b + os.sep):
+            return None, "That system folder cannot be synced."
+    allowed = os.environ.get("SYNC_ALLOWED_ROOTS", "")
+    roots = [os.path.realpath(os.path.abspath(r.strip()))
+             for r in allowed.split(";") if r.strip()]
+    if roots and not any(abs_path == r or abs_path.startswith(r + os.sep)
+                         for r in roots):
+        return None, ("That folder is outside the allowed sync roots. "
+                      "Ask the administrator to set SYNC_ALLOWED_ROOTS.")
     return abs_path, None
 
 
