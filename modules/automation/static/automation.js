@@ -175,6 +175,12 @@
                     ? truncate(`${c.left_on} = ${c.right_on} (${c.how || 'inner'})`, 30)
                     : 'not configured';
             }
+        case 'transform.table_union':
+            return c.mode === 'all' ? 'keep everything' : 'no repeats';
+        case 'transform.table_except': {
+            const cols = (c.columns || []).filter(Boolean);
+            return cols.length ? truncate(`minus on ${cols.join(', ')}`, 26) : 'minus whole rows';
+        }
             case 'transform.table_sort':
                 return c.column
                     ? truncate(`${c.column} ${c.direction === 'desc' ? '↓' : '↑'}`, 26)

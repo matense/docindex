@@ -2121,6 +2121,35 @@ def test_table_join_diagnose_flags_empty(app, user):
                for i in result["issues"])
 
 
+def test_table_union_and_except(app, user):
+    left = _make_file(app, user, "a.csv", "id,name\n1,Ana\n2,Rui\n")
+    right = _make_file(app, user, "b.csv", "id,name\n2,Rui\n3,Zé\n")
+
+    def run(node_type, config):
+        graph = _table_file_graph(
+            left, node_type, config,
+            extra_node={"id": "g", "type": "input.file",
+                        "config": {"file_id": str(right)}},
+            extra_edge={"from": "g", "from_port": "out", "to": "t",
+                        "to_port": "in2"})
+        outputs, _, _ = _execute(graph, app, user)
+        return outputs["t"]["out"]["data"]
+
+    with app.app_context():
+        distinct = run("transform.table_union", {"mode": "distinct"})
+        assert sorted(r[0] for r in distinct["rows"]) == [1, 2, 3]
+        everything = run("transform.table_union", {"mode": "all"})
+        assert len(everything["rows"]) == 4
+        diff = run("transform.table_except", {"columns": ["id"]})
+        assert [r[0] for r in diff["rows"]] == [1]
+        whole = run("transform.table_except", {"columns": []})
+        assert [r[0] for r in whole["rows"]] == [1]
+        with pytest.raises(engine.WorkflowError, match="both inputs"):
+            _execute({"nodes": [
+                {"id": "t", "type": "transform.table_union",
+                 "config": {"mode": "distinct"}}], "edges": []}, app, user)
+
+
 def test_table_sort_descending(app, user):
     fid = _make_file(app, user, "n.csv", "name,v\na,3\nb,1\nc,2\n")
     with app.app_context():

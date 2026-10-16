@@ -87,6 +87,50 @@ def _exec_table_join(ctx, config, inputs):
     return p_table(**df_to_table(out))
 
 
+def _exec_table_union(ctx, config, inputs):
+    left_p, right_p = inputs.get("in1"), inputs.get("in2")
+    if left_p is None or right_p is None:
+        raise WorkflowError("Connect a table to both inputs (in1 and in2).")
+    left, right = table_to_df(as_table(left_p)), table_to_df(as_table(right_p))
+    mode = config.get("mode") or "distinct"
+    if mode not in ("all", "distinct"):
+        raise WorkflowError(f"Unknown union mode '{mode}'.")
+    import pandas as pd
+    cols = list(dict.fromkeys(list(left.columns) + list(right.columns)))
+    out = pd.concat([left.reindex(columns=cols),
+                     right.reindex(columns=cols)], ignore_index=True)
+    if out.isnull().values.any():
+        out = out.fillna("")
+    if mode == "distinct":
+        out = out.drop_duplicates().reset_index(drop=True)
+    ctx["log"](f"{len(left)} + {len(right)} rows → {len(out)} ({mode})")
+    return p_table(**df_to_table(out))
+
+
+def _exec_table_except(ctx, config, inputs):
+    left_p, right_p = inputs.get("in1"), inputs.get("in2")
+    if left_p is None or right_p is None:
+        raise WorkflowError("Connect a table to both inputs (in1 and in2).")
+    left, right = table_to_df(as_table(left_p)), table_to_df(as_table(right_p))
+    subset = [c for c in (config.get("columns") or []) if c]
+    if subset:
+        for col in subset:
+            _require_column(left, col, "Minus (left)")
+            _require_column(right, col, "Minus (right)")
+        on = subset
+    else:
+        on = [c for c in left.columns if c in right.columns]
+        if not on:
+            raise WorkflowError("The tables share no columns — pick the "
+                                "columns to compare.")
+    out = (left.merge(right[on].drop_duplicates(), on=on, how="left",
+                      indicator=True))
+    out = out[out["_merge"] == "left_only"].drop(columns=["_merge"])
+    ctx["log"](f"{len(left)} rows → {len(out)} kept "
+                f"(minus on {', '.join(on)})")
+    return p_table(**df_to_table(out))
+
+
 def _exec_table_sort(ctx, config, inputs):
     payload = inputs.get("in")
     if payload is None:
@@ -186,8 +230,8 @@ def register_table_nodes():
     register_node_type("transform.table_join", {
         "label": "Join tables", "icon": "fa-link",
         "category": "Data",
-        "description": "Combines two tables side by side by matching a "
-                       "column — like a VLOOKUP across the whole table.",
+        "description": "Combines two tables side by side by matching one or "
+                       "more columns — like a VLOOKUP across the whole table.",
         "example": "orders.customer_id = customers.id, left join — every "
                    "order with its customer data.",
         "inputs": [{"name": "in1", "kind": "table"},
@@ -210,6 +254,39 @@ def register_table_nodes():
                  {"value": "outer", "label": "Everything (outer)"}],
              "default": "inner"},
         ]}, _exec_table_join)
+
+    register_node_type("transform.table_union", {
+        "label": "Union tables", "icon": "fa-layer-group",
+        "category": "Data",
+        "description": "Stacks two tables on top of each other — every row "
+                       "from both, in one table.",
+        "example": "January sales + February sales → one table with everything.",
+        "inputs": [{"name": "in1", "kind": "table"},
+                   {"name": "in2", "kind": "table"}],
+        "outputs": [{"name": "out", "kind": "table"}],
+        "fields": [
+            {"name": "mode", "label": "Duplicates", "kind": "select",
+             "options": [
+                 {"value": "distinct", "label": "Remove repeats (union)"},
+                 {"value": "all", "label": "Keep everything (union all)"}],
+             "default": "distinct",
+             "help": "Distinct drops fully identical rows."},
+        ]}, _exec_table_union)
+
+    register_node_type("transform.table_except", {
+        "label": "Subtract tables (minus)", "icon": "fa-table-list",
+        "category": "Data",
+        "description": "Keeps the rows of the first table that do NOT "
+                       "appear in the second — the difference of the two.",
+        "example": "All customers minus unsubscribed → still subscribed.",
+        "inputs": [{"name": "in1", "kind": "table"},
+                   {"name": "in2", "kind": "table"}],
+        "outputs": [{"name": "out", "kind": "table"}],
+        "fields": [
+            {"name": "columns", "label": "Compare these columns",
+             "kind": "column_list", "default": [],
+             "help": "Empty = compare whole rows."},
+        ]}, _exec_table_except)
 
     register_node_type("transform.table_sort", {
         "label": "Sort rows", "icon": "fa-arrow-down-wide-short",
