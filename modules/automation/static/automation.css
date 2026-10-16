@@ -558,6 +558,77 @@
     margin-top: 8px;
 }
 
+/* ------------------------------------------------------------------
+   Responsive, roomy popup sizing. Modals scale with the viewport instead
+   of the fixed max-w-lg box: comfortable on desktop, full-width on
+   phones. Form area uses viewport height so long node configs scroll
+   inside the popup, not the page.
+   ------------------------------------------------------------------ */
+#wf-config-modal .modal-box {
+    width: min(96vw, 760px);
+    max-width: 760px;
+    max-height: 92vh;
+}
+
+#wf-preview-modal .modal-box,
+#wf-output-modal .modal-box,
+#node-output-modal .modal-box {
+    width: min(96vw, 880px);
+    max-width: 880px;
+    max-height: 92vh;
+}
+
+#wf-params-modal .modal-box,
+#wf-file-modal .modal-box {
+    width: min(96vw, 660px);
+    max-width: 660px;
+    max-height: 92vh;
+}
+
+#wf-config-form {
+    max-height: min(62vh, 560px) !important;
+}
+
+@media (max-width: 640px) {
+    #wf-config-modal .modal-box,
+    #wf-preview-modal .modal-box,
+    #wf-output-modal .modal-box,
+    #node-output-modal .modal-box,
+    #wf-params-modal .modal-box,
+    #wf-file-modal .modal-box {
+        width: 100vw;
+        max-width: 100vw;
+        margin: 0;
+        border-radius: 16px 16px 0 0;
+    }
+}
+
+/* Roomier inputs: taller touch-friendly controls with breathing room. */
+.wf-field {
+    gap: 9px;
+    padding: 14px 16px;
+}
+
+.wf-field > .input,
+.wf-field > .select {
+    min-height: 2.75rem;
+    font-size: 13.5px;
+}
+
+.wf-field > .textarea {
+    font-size: 13.5px;
+    line-height: 1.6;
+    min-height: 7rem;
+}
+
+.wf-field-label {
+    font-size: 13px;
+}
+
+.wf-field-help {
+    font-size: 12.5px;
+}
+
 /* Footer tip: how to reference this node from other nodes. */
 .wf-ref-tip {
     display: flex;
