@@ -122,8 +122,8 @@ def drive_id_list(drive):
     if drive is None:
         return None
     if isinstance(drive, (list, tuple)):
-        return [d.id for d in drive]
-    return [drive.id]
+        return [d.id for d in drive if d is not None and hasattr(d, "id")]
+    return [drive.id] if hasattr(drive, "id") else None
 
 
 def _drive_sql(column, drive, params, prefix="did"):
@@ -162,7 +162,12 @@ def _fts_candidates(terms, user, drive, limit):
 
 
 def _terms(query):
-    return [t for t in re.split(r"\s+", query.strip()) if t][:8]
+    # Drop pure-operator tokens ("*", '"', "AND", ...) — they have no plain
+    # words, would build an invalid MATCH ('"*"*') and match literal '*' in
+    # the ILIKE fallback. Lone "*" therefore returns [] (no results) instead
+    # of crashing or matching nothing useful.
+    return [t for t in re.split(r"\s+", query.strip())
+            if t and re.search(r"\w", t)][:8]
 
 
 def _score(stored_file, index, terms):
@@ -405,7 +410,12 @@ def _advanced_base(user, query, filters):
     """
     where, params = _advanced_clauses(user, **filters)
     terms = _plain_terms(query)
-    if query and fts_available():
+    # Queries with no plain words (e.g. "*", "", only AND/OR/NOT or column
+    # scopes) must never reach FTS MATCH: '*' alone raises
+    # "unknown special query" and matching everything via FTS is meaningless.
+    # Fall through to the ILIKE path with no LIKE clauses = match-all filters
+    # (e.g. count all .csv files).
+    if query and fts_available() and terms:
         base = ("FROM file_fts JOIN files ON files.id = file_fts.rowid "
                 "LEFT JOIN file_index fi ON fi.file_id = files.id "
                 f"WHERE file_fts MATCH :match AND {where}")

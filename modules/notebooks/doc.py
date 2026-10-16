@@ -232,6 +232,16 @@ def _guard_writable(stored):
 
 def create_notebook(user, drive, name, folder=None, cells=None):
     """Create a notebook file in a (non-synced) drive. Returns StoredFile."""
+    # Defensive: agent multi-drive context is a list — callers should resolve
+    # to one writable drive first (see tools._tool_create), but never crash
+    # with "'list' object has no attribute 'is_synced'".
+    if isinstance(drive, (list, tuple)):
+        candidates = list(drive)
+        drive = next((d for d in candidates
+                      if not getattr(d, "is_synced", False)), None)
+        if drive is None:
+            raise ValueError("All drives in context are synced (read-only) — "
+                             "pick a writable drive.")
     _guard_writable_drive(drive)
     title = (name or "").strip() or "Untitled notebook"
     doc = {"version": 1, "title": title,
@@ -249,6 +259,10 @@ def create_notebook(user, drive, name, folder=None, cells=None):
 
 
 def _guard_writable_drive(drive):
+    # Defensive against list scope leaking in (multi-drive chat context).
+    if isinstance(drive, (list, tuple)):
+        raise ValueError("A single target drive is required — pick one with "
+                         "drive_id.")
     if drive.is_synced:
         raise ValueError("Synced drives are read-only — notebooks cannot be "
                          "created there.")

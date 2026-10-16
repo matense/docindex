@@ -21,14 +21,18 @@ depends_on = None
 
 
 def upgrade():
-    with op.batch_alter_table("mod_automation_workflow") as batch:
-        batch.add_column(sa.Column("ai_lock", sa.Boolean(), nullable=False,
-                                   server_default=sa.false()))
-        batch.add_column(sa.Column("ai_hidden", sa.Boolean(), nullable=False,
-                                   server_default=sa.false()))
+    # NOTE: plain ADD COLUMN (no batch mode). batch_alter_table reflects the
+    # whole table including its FK to users.id, which fails on fresh installs
+    # when the automation branch upgrades before the core users table exists
+    # (NoSuchTableError: users). ADD COLUMN needs no reflection.
+    op.add_column("mod_automation_workflow",
+                  sa.Column("ai_lock", sa.Boolean(), nullable=False,
+                            server_default=sa.false()))
+    op.add_column("mod_automation_workflow",
+                  sa.Column("ai_hidden", sa.Boolean(), nullable=False,
+                            server_default=sa.false()))
 
 
 def downgrade():
-    with op.batch_alter_table("mod_automation_workflow") as batch:
-        batch.drop_column("ai_hidden")
-        batch.drop_column("ai_lock")
+    op.drop_column("mod_automation_workflow", "ai_hidden")
+    op.drop_column("mod_automation_workflow", "ai_lock")

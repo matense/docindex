@@ -308,16 +308,28 @@ def enqueue_index(file_ids):
 
 
 def _claim_next_job():
-    """Atomically claim the oldest pending job; returns the job id or None."""
-    with _claim_lock:
-        job = (IndexJob.query.filter_by(status="pending")
-               .order_by(IndexJob.id).first())
-        if not job:
-            return None
-        job.status = "running"
-        job.attempts += 1
-        db.session.commit()
-        return job.id
+    """Atomically claim the oldest pending job; returns the job id or None.
+
+    Retries transient 'database is locked' with backoff — concurrent web
+    requests + drainers contend on SQLite's single writer.
+    """
+    for attempt in range(5):
+        try:
+            with _claim_lock:
+                job = (IndexJob.query.filter_by(status="pending")
+                       .order_by(IndexJob.id).first())
+                if not job:
+                    return None
+                job.status = "running"
+                job.attempts += 1
+                db.session.commit()
+                return job.id
+        except OperationalError as exc:
+            db.session.rollback()
+            if "locked" not in str(exc).lower() or attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+    return None
 
 
 def _commit_quiet(app, what):
@@ -460,15 +472,25 @@ def recover_interrupted(app):
     """Startup recovery: requeue jobs a crash left "running", purge finished
     jobs older than 24h, and spin drainers if work remains."""
     with app.app_context():
-        stale = IndexJob.query.filter_by(status="running")
-        stale.update({"status": "pending"}, synchronize_session=False)
-        cutoff = utcnow() - timedelta(hours=24)
-        (IndexJob.query
-         .filter(IndexJob.status.in_(("done", "error")),
-                 IndexJob.updated_at < cutoff)
-         .delete(synchronize_session=False))
-        db.session.commit()
-        pending = IndexJob.query.filter_by(status="pending").count()
+        try:
+            stale = IndexJob.query.filter_by(status="running")
+            stale.update({"status": "pending"}, synchronize_session=False)
+            cutoff = utcnow() - timedelta(hours=24)
+            (IndexJob.query
+             .filter(IndexJob.status.in_(("done", "error")),
+                     IndexJob.updated_at < cutoff)
+             .delete(synchronize_session=False))
+            db.session.commit()
+            pending = IndexJob.query.filter_by(status="pending").count()
+        except OperationalError as exc:
+            # Fresh database before migrations: index_jobs does not exist yet.
+            # The startup auto-upgrade creates it; nothing to recover.
+            if "no such table" in str(exc).lower():
+                db.session.rollback()
+                app.logger.info("Index queue recovery skipped (tables not "
+                                "created yet).")
+                return
+            raise
     if pending and app.config.get("INDEX_ASYNC", True):
         # INDEX_ASYNC=False (tests): no real threads — pending jobs are
         # processed inline by the callers instead.

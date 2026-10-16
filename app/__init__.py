@@ -68,8 +68,12 @@ def _sqlite_pragmas(dbapi_conn, _connection_record):
     """Avoid 'database is locked' errors under concurrent requests."""
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
+
+
+_sqlite_listener_registered = False
 
 
 def create_app(config_class=Config):
@@ -89,7 +93,12 @@ def create_app(config_class=Config):
 
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
-            event.listens_for(db.engine, "connect")(_sqlite_pragmas)
+            # Register once: create_app() runs per test, and listeners
+            # accumulate on the same engine otherwise.
+            global _sqlite_listener_registered
+            if not _sqlite_listener_registered:
+                event.listens_for(db.engine, "connect")(_sqlite_pragmas)
+                _sqlite_listener_registered = True
 
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every

@@ -20,6 +20,7 @@ import queue
 import threading
 
 from flask import current_app
+from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import AITask, ChatConversation, ChatMessage, Drive, User, utcnow
@@ -153,7 +154,16 @@ def active_tasks(user):
 def recover_interrupted(app):
     """On startup, tasks still queued/running belong to a dead process."""
     with app.app_context():
-        stale = AITask.query.filter(AITask.status.in_(("queued", "running"))).all()
+        try:
+            stale = AITask.query.filter(AITask.status.in_(("queued", "running"))).all()
+        except OperationalError as exc:
+            # Fresh database before migrations: ai_tasks does not exist yet.
+            if "no such table" in str(exc).lower():
+                db.session.rollback()
+                app.logger.info("AI task recovery skipped (tables not "
+                                "created yet).")
+                return
+            raise
         for task in stale:
             task.status = "interrupted"
             task.error = "The server restarted while this task was running."
