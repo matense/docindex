@@ -238,8 +238,10 @@ EXAMPLES = [
                  "config": {"param": "topic", "label": "Which topic?",
                             "kind": "text", "ask": "yes", "default": ""}},
                 {"id": "n2", "type": "logic.condition", "x": 340, "y": 120,
-                 "config": {"left": "{{ n1 }}", "op": "contains",
-                            "right": "urgent"}},
+                 "config": {"conditions": [
+                     {"column": "{{ n1 }}", "op": "contains",
+                      "value": "urgent"}],
+                            "match": "all"}},
                 {"id": "n3", "type": "transform.template", "x": 620, "y": 40,
                  "config": {"template": "URGENT: {{ n1 }}"}},
                 {"id": "n4", "type": "transform.template", "x": 620, "y": 220,

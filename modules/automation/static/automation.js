@@ -134,6 +134,15 @@
                     lte: '≤', empty: 'is empty', not_empty: 'not empty',
                     in: 'in', not_in: 'not in',
                 };
+                const conds = Array.isArray(c.conditions) && c.conditions.length
+                    ? c.conditions : null;
+                if (conds) {
+                    const joined = conds
+                        .map(x => [x.column || '—', OPS[x.op] || x.op || '?', x.value || '']
+                            .filter(Boolean).join(' '))
+                        .join(c.match === 'any' ? ' OR ' : ' AND ');
+                    return truncate(joined, 34) || 'not configured';
+                }
                 const op = OPS[c.op] || c.op || '?';
                 const right = ['empty', 'not_empty'].includes(c.op)
                     ? '' : (c.right || '');
@@ -733,7 +742,7 @@
                 } else {
                     colInput = document.createElement('input');
                     colInput.type = 'text';
-                    colInput.placeholder = 'column';
+                    colInput.placeholder = field.column_placeholder || 'column';
                     colInput.className = 'input input-bordered input-xs wf-cond-col';
                 }
                 colInput.value = cond.column || '';
@@ -867,7 +876,7 @@
                 } else {
                     colInput = document.createElement('input');
                     colInput.type = 'text';
-                    colInput.placeholder = 'column';
+                    colInput.placeholder = field.column_placeholder || 'column';
                     colInput.className = 'input input-bordered input-xs wf-cond-col';
                 }
                 colInput.value = pick.column || '';

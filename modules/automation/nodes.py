@@ -841,12 +841,32 @@ def _exec_ai_agent(ctx, config, inputs, outputs):
 # --------------------------------------------------------------------------
 
 def _exec_condition(ctx, config, inputs, outputs):
-    left = render_template(config.get("left", ""), outputs)
-    right = render_template(config.get("right", ""), outputs)
-    op = config.get("op") or "equals"
-    taken = _compare(left, op, right)
-    ctx["log"](f"'{left}' {op} '{right}' → {taken}")
-    passthrough = inputs.get("in") or p_text(left)
+    conds = [c for c in (config.get("conditions") or [])
+             if isinstance(c, dict)]
+    if "conditions" in config:
+        # New multi-condition mode: every row counts.
+        if not conds:
+            raise WorkflowError("Add at least one condition.")
+        match_any = (config.get("match") or "all") == "any"
+        # Multiple conditions in one go (AND/OR via the match selector).
+        match_any = (config.get("match") or "all") == "any"
+        hits = [_compare(render_template(c.get("column", ""), outputs),
+                         c.get("op") or "equals",
+                         render_template(c.get("value", ""), outputs))
+                for c in conds]
+        taken = any(hits) if match_any else all(hits)
+        ctx["log"](f"{len(hits)} condition(s) "
+                    f"({'any' if match_any else 'all'}) → {taken}")
+        passthrough = inputs.get("in") or p_text(
+            render_template(conds[0].get("column", ""), outputs))
+    else:
+        # Legacy single left/op/right (kept working for old graphs).
+        left = render_template(config.get("left", ""), outputs)
+        right = render_template(config.get("right", ""), outputs)
+        op = config.get("op") or "equals"
+        taken = _compare(left, op, right)
+        ctx["log"](f"'{left}' {op} '{right}' → {taken}")
+        passthrough = inputs.get("in") or p_text(left)
     return {"true": passthrough if taken else None,
             "false": None if taken else passthrough}
 
@@ -1501,22 +1521,33 @@ def register_defaults():
 
     register_node_type("logic.condition", {
         "label": "Condition", "icon": "fa-code-fork", "category": "Logic",
-        "description": "Sends the data down the true or the false branch, "
-                       "depending on a comparison. Type a value or pick a "
-                       "{{ n1 }} reference — the dropdowns suggest the "
-                       "other nodes of this workflow.",
+        "description": "Sends the data down the true or the false branch: "
+                       "add one or several comparisons (match all of them, "
+                       "or any). Values accept {{ n1 }} references — the "
+                       "dropdowns suggest the other nodes of this workflow.",
+        "example": "status is one of (paid, pending) AND total is greater "
+                   "than 100 → true branch.",
         "inputs": [{"name": "in", "kind": "any"}],
         "outputs": [{"name": "true", "kind": "any"},
                     {"name": "false", "kind": "any"}],
         "fields": [
-            {"name": "left", "label": "Compare this", "kind": "ref_or_text",
-             "required": True, "default": "", "placeholder": "value or {{ n1 }}",
-             "help": "A fixed value, or {{ node_id }} for another node's "
-                     "output."},
-            {"name": "op", "label": "Operator", "kind": "select",
+            {"name": "conditions", "label": "Conditions",
+             "kind": "conditions", "required": True,
+             "options": list(_OPS_OPTIONS),
+             "column_placeholder": "value or {{ n1 }}",
+             "help": "Add one row per comparison — they combine with the "
+                     "match selector (ALL = every row must match, ANY = at "
+                     "least one). Values accept {{ nX }} refs."},
+            {"name": "left", "label": "Compare this (legacy)", "kind": "ref_or_text",
+             "advanced": True, "default": "", "placeholder": "value or {{ n1 }}",
+             "help": "Old single-condition field — kept for existing "
+                     "workflows. New setups use Conditions above."},
+            {"name": "op", "label": "Operator (legacy)", "kind": "select",
+             "advanced": True,
              "options": list(_OPS_OPTIONS), "default": "equals"},
-            {"name": "right", "label": "To this", "kind": "ref_or_text",
-             "default": "", "placeholder": "value to compare against",
+            {"name": "right", "label": "To this (legacy)", "kind": "ref_or_text",
+             "advanced": True, "default": "",
+             "placeholder": "value to compare against",
              "show_when": {"field": "op",
                            "not_in": ["empty", "not_empty"]}},
         ]}, lambda ctx, config, inputs: _exec_condition(

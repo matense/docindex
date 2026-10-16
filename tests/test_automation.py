@@ -274,6 +274,71 @@ def test_condition_routes_false_branch():
     assert [r["node"] for r in results] == ["no"]
 
 
+def _multi_condition_graph(conds, match="all"):
+    graph = _condition_graph()
+    for node in graph["nodes"]:
+        if node["id"] == "cond":
+            node["config"] = {"conditions": conds, "match": match}
+    return graph
+
+
+def test_condition_multiple_all():
+    graph = _multi_condition_graph([
+        {"column": "yes", "op": "equals", "value": "yes"},
+        {"column": "abc", "op": "contains", "value": "a"},
+    ])
+    outputs, _, _ = _execute(graph)
+    assert outputs["cond"]["true"]["data"] == "payload"
+    graph = _multi_condition_graph([
+        {"column": "yes", "op": "equals", "value": "yes"},
+        {"column": "zzz", "op": "equals", "value": "nope"},
+    ])
+    outputs, _, _ = _execute(graph)
+    assert outputs["cond"]["true"] is None
+    assert outputs["cond"]["false"]["data"] == "payload"
+
+
+def test_condition_multiple_any():
+    graph = _multi_condition_graph([
+        {"column": "zzz", "op": "equals", "value": "nope"},
+        {"column": "abc", "op": "contains", "value": "a"},
+    ], match="any")
+    outputs, _, _ = _execute(graph)
+    assert outputs["cond"]["true"]["data"] == "payload"
+    graph = _multi_condition_graph([
+        {"column": "zzz", "op": "equals", "value": "nope"},
+        {"column": "yyy", "op": "equals", "value": "nope"},
+    ], match="any")
+    outputs, _, _ = _execute(graph)
+    assert outputs["cond"]["true"] is None
+
+
+def test_condition_empty_conditions_errors():
+    graph = _condition_graph()
+    for node in graph["nodes"]:
+        if node["id"] == "cond":
+            node["config"] = {"conditions": [], "match": "all"}
+    with pytest.raises(engine.WorkflowError, match="at least one condition"):
+        _execute(graph)
+
+
+def test_condition_legacy_still_works_and_validates():
+    # Old graphs with only left/op/right keep running and diagnosing clean.
+    graph = _condition_graph(left="{{ n1 }}", right="x")
+    graph["nodes"][0]["id"] = "n1"
+    for edge in graph["edges"]:
+        if edge["from"] == "src":
+            edge["from"] = "n1"
+    graph["nodes"][0]["config"] = {"content": "x", "format": "text"}
+    result = engine.diagnose_graph(graph, NODE_TYPES)
+    assert result["ok"] is True
+    empty = _condition_graph(left="", right="")
+    result = engine.diagnose_graph(empty, NODE_TYPES)
+    assert result["ok"] is False
+    assert any(i["node"] == "cond" and i["field"] == "conditions"
+               for i in result["issues"])
+
+
 def test_merge_picks_arriving_branch():
     graph = _condition_graph()
     graph["nodes"].append({"id": "join", "type": "logic.merge", "config": {}})

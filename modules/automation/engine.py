@@ -356,6 +356,13 @@ def diagnose_graph(graph, node_types=None):
             _issue(nid, ntype, "notebook_id", "error",
                     "Pick a notebook or name a new one.")
 
+        # logic.condition needs conditions (new) or a legacy left value.
+        if ntype == "logic.condition" and not (
+                config.get("conditions")
+                or (config.get("left") or "").strip()):
+            _issue(nid, ntype, "conditions", "error",
+                    "Add at least one condition.")
+
         # Dangling {{ refs }} to nodes that do not exist.
         for ref in _referenced_nodes([node]).get(nid, ()):
             if ref not in ids:
