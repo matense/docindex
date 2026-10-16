@@ -25,12 +25,14 @@
     }
 
     function nodeHtml(type, spec) {
-        return `<div class="wf-node-card wf-cat-${spec.category || 'Input'}">` +
+        return `<div class="wf-node-card wf-cat-${spec.category || 'Input'}" data-type="${esc(type)}">` +
+            `<span class="wf-node-status" aria-hidden="true"></span>` +
             `<span class="wf-node-ico"><i class="fas ${spec.icon || 'fa-cube'}"></i></span>` +
             `<span class="min-w-0 flex-1">` +
             `<span class="wf-node-label block">${esc(spec.label || type)}</span>` +
             `<span class="wf-node-summary block"></span>` +
             `</span>` +
+            `<span class="wf-node-kind"></span>` +
             `<i class="fas fa-pen wf-node-edit" title="Double-click to configure"></i>` +
             `</div>`;
     }
@@ -166,6 +168,23 @@
                 const where = drive ? ` → ${drive.name}` : '';
                 return (c.name || 'table') + where;
             }
+            case 'transform.text_split':
+                return `${c.mode === 'lines' ? 'lines' : 'chars'} / ${c.size || 4000}`;
+            case 'input.folder_list': {
+                const drive = (window.automationEditorData.drives || [])
+                    .find(d => String(d.id) === String(c.drive_id));
+                const where = drive ? drive.name : 'no drive';
+                const ext = c.extension ? ` · .${c.extension}` : '';
+                return truncate(`${where}${ext}`, 26);
+            }
+            case 'output.copy_file': {
+                const drive = (window.automationEditorData.drives || [])
+                    .find(d => String(d.id) === String(c.drive_id));
+                return drive ? `copy → ${drive.name}` : 'no target drive';
+            }
+            case 'input.http':
+                return c.url ? truncate(c.url.replace(/^https?:\/\//, ''), 26)
+                    : 'no URL';
             default:
                 return '';
         }
@@ -184,8 +203,17 @@
         const data = nodeData(dfId);
         if (!data) return;
         const summary = el.querySelector('.wf-node-summary');
+        const text = configSummary(data.type, data.config);
         if (summary) {
-            summary.textContent = configSummary(data.type, data.config);
+            summary.textContent = text;
+        }
+        const card = el.querySelector('.wf-node-card');
+        if (card) {
+            const needs = /not configured|no file|no query|no prompt|empty|pick a|select/i.test(text || '');
+            card.classList.toggle('is-missing', !!needs);
+            const kind = ((specByType[data.type] || {}).outputs || [])[0];
+            const kindEl = el.querySelector('.wf-node-kind');
+            if (kindEl) kindEl.textContent = kind ? kind.kind || '' : '';
         }
     }
 

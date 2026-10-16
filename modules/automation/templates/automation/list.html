@@ -65,6 +65,9 @@
                     <span class="min-w-0">
                         <span class="block font-semibold text-sm group-hover/ex:text-primary transition-colors">{{ ex.name }}</span>
                         <span class="block text-[11px] opacity-50 mt-1 leading-snug">{{ ex.description }}</span>
+                        {% if ex.needs %}
+                        <span class="block mt-1.5 text-[10px] opacity-60">Needs: {{ ex.needs|join(', ') }}</span>
+                        {% endif %}
                     </span>
                 </button>
             </form>

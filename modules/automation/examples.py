@@ -2,7 +2,8 @@
 
 Each entry is a ready-made graph the user can instantiate with one click
 and then adjust in the editor. Node positions (x/y) lay the chain out
-left-to-right.
+left-to-right. ``needs`` lists what the user must still pick (ai, drive,
+file, notebook) — shown as a hint on the example card.
 """
 
 EXAMPLES = [
@@ -10,6 +11,7 @@ EXAMPLES = [
         "key": "translate-file",
         "name": "Translate a file",
         "icon": "fa-language",
+        "needs": ["ai", "drive"],
         "description": "Right-click any file in a drive → Run workflow. "
                        "The file is translated and saved next to your "
                        "documents.",
@@ -40,6 +42,7 @@ EXAMPLES = [
         "key": "summarize-to-notebook",
         "name": "Summarize a file into a notebook",
         "icon": "fa-book-medical",
+        "needs": ["ai", "notebook"],
         "description": "Triggered from a file: an AI summary is appended "
                        "to a notebook you pick (or a new one).",
         "graph": {
@@ -68,6 +71,7 @@ EXAMPLES = [
         "key": "research-digest",
         "name": "Research digest (scheduled)",
         "icon": "fa-newspaper",
+        "needs": ["ai", "notebook"],
         "description": "Searches your drives for a topic, reads the "
                        "matches and writes a digest notebook. Enable the "
                        "schedule in the editor to run it periodically.",
@@ -103,6 +107,7 @@ EXAMPLES = [
         "key": "filter-spreadsheet",
         "name": "Filter a spreadsheet (no AI)",
         "icon": "fa-filter",
+        "needs": ["file", "drive"],
         "description": "Reads an Excel/CSV file, keeps the rows that "
                        "match a condition and saves the result as CSV.",
         "graph": {
@@ -129,6 +134,7 @@ EXAMPLES = [
         "key": "caption-images",
         "name": "Caption an image with AI",
         "icon": "fa-image",
+        "needs": ["ai", "drive"],
         "description": "Triggered from an image file: the AI describes it "
                        "in detail and the caption is saved as a text file "
                        "next to your documents.",
@@ -158,6 +164,7 @@ EXAMPLES = [
         "key": "ask-and-report",
         "name": "Ask a question, get a report",
         "icon": "fa-circle-question",
+        "needs": ["file", "ai", "drive"],
         "description": "Uses run inputs: every run asks you a question "
                        "about a spreadsheet, the AI answers from the data "
                        "and the report is saved as a file. Great for "
@@ -196,6 +203,7 @@ EXAMPLES = [
         "key": "json-to-spreadsheet",
         "name": "JSON to spreadsheet (no AI)",
         "icon": "fa-table",
+        "needs": ["file", "drive"],
         "description": "Reads a JSON file, turns it into a table and saves "
                        "it as CSV — the simplest way to handle JSON data.",
         "graph": {
@@ -220,6 +228,7 @@ EXAMPLES = [
         "key": "branch-on-value",
         "name": "Branch on a value (condition)",
         "icon": "fa-code-fork",
+        "needs": ["drive"],
         "description": "Asks a question at run time and saves to a different "
                        "file depending on the answer — the simplest "
                        "condition + merge example.",
@@ -259,6 +268,7 @@ EXAMPLES = [
         "key": "invoice-to-table",
         "name": "Invoice PDF to spreadsheet (AI)",
         "icon": "fa-file-invoice",
+        "needs": ["file", "ai", "drive"],
         "description": "Reads a file, extracts invoice fields as JSON with "
                        "the AI, turns them into a table and saves CSV.",
         "graph": {
@@ -283,6 +293,116 @@ EXAMPLES = [
                  "to": "n3", "to_port": "in"},
                 {"from": "n3", "from_port": "out",
                  "to": "n4", "to_port": "in"},
+            ],
+        },
+    },
+    {
+        "key": "folder-digest",
+        "name": "Summarize a whole folder (AI)",
+        "icon": "fa-folder-open",
+        "needs": ["ai", "drive"],
+        "description": "Lists every file in a folder, reads them all and "
+                       "writes one AI summary file. No per-file picking.",
+        "graph": {
+            "nodes": [
+                {"id": "n1", "type": "input.folder_list", "x": 60, "y": 120,
+                 "config": {"drive_id": "", "folder_id": "",
+                            "extension": ""}},
+                {"id": "n2", "type": "transform.read_files",
+                 "x": 340, "y": 120, "config": {"max_chars": 4000}},
+                {"id": "n3", "type": "ai.prompt", "x": 620, "y": 120,
+                 "config": {
+                     "prompt": "Summarize every file below: one line per "
+                               "file, then the 5 key points across all of "
+                               "them.",
+                     "system": "You are a precise summarizer."}},
+                {"id": "n4", "type": "output.save_file", "x": 900, "y": 120,
+                 "config": {"name": "folder-summary.md", "drive_id": "",
+                            "folder": ""}},
+            ],
+            "edges": [
+                {"from": "n1", "from_port": "out",
+                 "to": "n2", "to_port": "in"},
+                {"from": "n2", "from_port": "out",
+                 "to": "n3", "to_port": "in"},
+                {"from": "n3", "from_port": "out",
+                 "to": "n4", "to_port": "in"},
+            ],
+        },
+    },
+    {
+        "key": "api-to-file",
+        "name": "Fetch a public API to a file (no AI)",
+        "icon": "fa-globe",
+        "needs": ["drive"],
+        "description": "GETs JSON or text from a public URL and saves it "
+                       "as a file. Runs on schedule for periodic snapshots.",
+        "graph": {
+            "nodes": [
+                {"id": "n1", "type": "input.http", "x": 60, "y": 120,
+                 "config": {"url": "https://api.github.com/zen"}},
+                {"id": "n2", "type": "output.save_file", "x": 340, "y": 120,
+                 "config": {"name": "api-response.txt", "drive_id": "",
+                            "folder": ""}},
+            ],
+            "edges": [
+                {"from": "n1", "from_port": "out",
+                 "to": "n2", "to_port": "in"},
+            ],
+        },
+    },
+    {
+        "key": "spreadsheet-cleanup",
+        "name": "Clean a spreadsheet (no AI)",
+        "icon": "fa-broom",
+        "needs": ["file", "drive"],
+        "description": "Dedupes rows, sorts by a column and saves the clean "
+                       "table as CSV or Excel.",
+        "graph": {
+            "nodes": [
+                {"id": "n1", "type": "input.file", "x": 60, "y": 120,
+                 "config": {"file_id": ""}},
+                {"id": "n2", "type": "transform.table_dedupe",
+                 "x": 340, "y": 120, "config": {"columns": []}},
+                {"id": "n3", "type": "transform.table_sort",
+                 "x": 620, "y": 120,
+                 "config": {"column": "", "direction": "asc"}},
+                {"id": "n4", "type": "output.save_table", "x": 900, "y": 120,
+                 "config": {"name": "clean.csv", "format": "csv",
+                            "drive_id": "", "folder": ""}},
+            ],
+            "edges": [
+                {"from": "n1", "from_port": "out",
+                 "to": "n2", "to_port": "in"},
+                {"from": "n2", "from_port": "out",
+                 "to": "n3", "to_port": "in"},
+                {"from": "n3", "from_port": "out",
+                 "to": "n4", "to_port": "in"},
+            ],
+        },
+    },
+    {
+        "key": "ocr-to-text",
+        "name": "Scan image to text (OCR, no AI)",
+        "icon": "fa-font",
+        "needs": ["file", "drive"],
+        "description": "Extracts the visible text from a scanned image or "
+                       "photo with OCR and saves it as text.",
+        "graph": {
+            "nodes": [
+                {"id": "n1", "type": "input.file", "x": 60, "y": 120,
+                 "config": {"file_id": ""}},
+                {"id": "n2", "type": "transform.ocr_image",
+                 "x": 340, "y": 120, "config": {"file_id": ""}},
+                {"id": "n3", "type": "output.save_file", "x": 620, "y": 120,
+                 "config": {"name": "scan.txt", "drive_id": "",
+                            "folder": ""}},
+            ],
+            "edges": [
+                {"from": "n1", "from_port": "out",
+                 "to": "n2", "to_port": "in"},
+                {"from": "n2", "from_port": "out",
+                 "to": "n3", "to_port": "in"},
             ],
         },
     },
