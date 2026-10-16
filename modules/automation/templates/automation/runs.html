@@ -8,48 +8,94 @@
             <i class="fas fa-clock-rotate-left"></i>
         </span>
         <div class="flex-1 min-w-0">
-            <h1 class="text-xl font-bold truncate">{{ workflow.name }} — runs</h1>
-            <p class="text-xs opacity-50">Every execution, newest first. Click one for the per-node log.</p>
+            <h1 class="text-xl font-bold truncate">History — {{ workflow.name }}</h1>
+            <p class="text-xs opacity-50">Every execution, newest first. Click one for the step-by-step log.</p>
         </div>
-        <a href="{{ url_for('automation.editor', workflow_id=workflow.id) }}" class="btn btn-outline btn-primary btn-sm gap-1">
-            <i class="fas fa-pen"></i> Editor
+        <a href="{{ url_for('automation.editor', workflow_id=workflow.id) }}" class="btn btn-primary btn-sm gap-1" title="Open the editor to run again">
+            <i class="fas fa-play"></i> Run
+        </a>
+        <a href="{{ url_for('automation.editor', workflow_id=workflow.id) }}" class="btn btn-outline btn-sm gap-1">
+            <i class="fas fa-pen"></i> Edit
         </a>
         <a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-sm gap-1">
-            <i class="fas fa-arrow-left"></i> Workflows
+            <i class="fas fa-arrow-left"></i> Automations
         </a>
     </div>
 
     <div class="glass-panel rounded-2xl overflow-hidden">
         {% if runs %}
-        <div class="divide-y divide-base-content/5">
+        <div class="px-4 py-2.5 border-b border-base-content/10 flex items-center gap-2 flex-wrap" id="runs-filter">
+            <span class="text-[10px] uppercase tracking-wide opacity-50">Show:</span>
+            {% for f in [('all','All'),('done','Done'),('failed','Failed'),('active','Running')] %}
+            <button type="button" data-filter="{{ f[0] }}"
+                    class="btn btn-ghost btn-xs gap-1 runs-filter-btn {{ 'btn-active' if f[0] == 'all' }}">{{ f[1] }}</button>
+            {% endfor %}
+        </div>
+        <div class="divide-y divide-base-content/5" id="runs-list">
             {% for r in runs %}
-            <a href="{{ url_for('automation.run_detail', run_id=r.id) }}"
-               class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap group">
-                <span class="badge {{ 'badge-success' if r.status == 'done' else ('badge-error' if r.status in ('error', 'interrupted') else ('badge-warning' if r.status in ('running', 'queued') else 'badge-ghost')) }} gap-1">
-                    {% if r.status in ('running', 'queued') %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
-                    {{ r.status }}
-                </span>
-                <span class="badge badge-ghost badge-xs">{{ r.trigger }}</span>
-                <span class="text-xs opacity-50 flex-1">
-                    {{ r.created_at.strftime('%d %b %Y %H:%M:%S') if r.created_at }}
-                    {% if r.finished_at and r.started_at %}
-                    · {{ ((r.finished_at - r.started_at).total_seconds())|duration }}
+            {% set failed = r.status in ('error', 'interrupted') %}
+            {% set active = r.status in ('running', 'queued') %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-3 flex-wrap group"
+                 data-status="{{ 'failed' if failed else ('active' if active else r.status) }}">
+                <a href="{{ url_for('automation.run_detail', run_id=r.id) }}"
+                   class="flex items-center gap-3 flex-1 min-w-0">
+                    <span class="badge {{ 'badge-success' if r.status == 'done' else ('badge-error' if failed else ('badge-warning' if active else 'badge-ghost')) }} gap-1">
+                        {% if active %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
+                        {% if r.status == 'done' %}Done{% elif failed %}Failed{% elif r.status == 'queued' %}Waiting{% elif r.status == 'running' %}Running{% elif r.status == 'stopped' %}Stopped{% else %}{{ r.status }}{% endif %}
+                    </span>
+                    <span class="badge badge-ghost badge-xs" title="How this run started">{% if r.trigger == 'manual' %}Started by you{% elif r.trigger == 'schedule' %}Automatic{% elif r.trigger == 'ai' %}By AI chat{% else %}{{ r.trigger }}{% endif %}</span>
+                    <span class="text-xs opacity-50 flex-1">
+                        {{ r.created_at.strftime('%d %b %Y %H:%M:%S') if r.created_at }}
+                        {% if r.finished_at and r.started_at %}
+                        · {{ ((r.finished_at - r.started_at).total_seconds())|duration }}
+                        {% endif %}
+                    </span>
+                    {% if r.error %}
+                    <span class="text-xs text-error truncate max-w-64" title="{{ r.error }}">Failed: {{ r.error }}</span>
                     {% endif %}
-                </span>
-                {% if r.error %}
-                <span class="text-xs text-error truncate max-w-64">{{ r.error }}</span>
+                    <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 transition-all"></i>
+                </a>
+                {% if failed %}
+                <form method="POST" action="{{ url_for('automation.run_retry', run_id=r.id) }}" class="inline flex-shrink-0">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Run again with the same inputs">
+                        <i class="fas fa-rotate-right"></i> Retry
+                    </button>
+                </form>
                 {% endif %}
-                <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 transition-all"></i>
-            </a>
+            </div>
             {% endfor %}
         </div>
         {% else %}
-        <div class="text-center py-14 opacity-50">
-            <i class="fas fa-clock-rotate-left text-4xl mb-3 block"></i>
+        <div class="text-center py-14">
+            <i class="fas fa-clock-rotate-left text-4xl mb-3 block opacity-50"></i>
             <p class="font-semibold">No runs yet.</p>
-            <p class="text-xs mt-1">Use Run in the editor to execute this workflow.</p>
+            <p class="text-xs mt-1 opacity-50">Open the editor and press Run to execute this automation.</p>
+            <a href="{{ url_for('automation.editor', workflow_id=workflow.id) }}" class="btn btn-primary btn-sm mt-4">
+                <i class="fas fa-pen"></i> Open editor
+            </a>
         </div>
         {% endif %}
     </div>
 </div>
+
+<script>
+(function () {
+    // Filter chips.
+    const btns = document.querySelectorAll('.runs-filter-btn');
+    const rows = document.querySelectorAll('#runs-list > div[data-status]');
+    btns.forEach(b => b.addEventListener('click', () => {
+        btns.forEach(x => x.classList.remove('btn-active'));
+        b.classList.add('btn-active');
+        const f = b.dataset.filter;
+        rows.forEach(r => {
+            r.style.display = (f === 'all' || r.dataset.status === f) ? '' : 'none';
+        });
+    }));
+    // Auto-refresh while any run is active.
+    if (document.querySelector('#runs-list > div[data-status="active"]')) {
+        setTimeout(() => window.location.reload(), 5000);
+    }
+})();
+</script>
 {% endblock %}

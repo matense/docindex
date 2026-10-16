@@ -163,11 +163,14 @@
         {% if recent_runs %}
         <div class="divide-y divide-base-content/5">
             {% for r in recent_runs %}
+            {% set rfailed = r.status in ('error', 'interrupted') %}
+            {% set ractive = r.status in ('running', 'queued') %}
+            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-3 flex-wrap group">
             <a href="{{ url_for('automation.run_detail', run_id=r.id) }}"
-               class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 flex-wrap group">
-                <span class="badge {{ 'badge-success' if r.status == 'done' else ('badge-error' if r.status in ('error', 'interrupted') else ('badge-warning' if r.status in ('running', 'queued') else 'badge-ghost')) }} gap-1">
-                    {% if r.status in ('running', 'queued') %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
-                    {{ r.status }}
+               class="flex items-center gap-3 flex-1 min-w-0">
+                <span class="badge {{ 'badge-success' if r.status == 'done' else ('badge-error' if rfailed else ('badge-warning' if ractive else 'badge-ghost')) }} gap-1">
+                    {% if ractive %}<i class="fas fa-circle-notch fa-spin"></i>{% endif %}
+                    {% if r.status == 'done' %}Done{% elif rfailed %}Failed{% elif r.status == 'queued' %}Waiting{% elif r.status == 'running' %}Running{% elif r.status == 'stopped' %}Stopped{% else %}{{ r.status }}{% endif %}
                 </span>
                 <span class="font-semibold text-sm truncate max-w-56 group-hover:text-primary transition-colors">
                     {{ r.workflow.name if r.workflow else '(deleted workflow)' }}
@@ -180,10 +183,19 @@
                     {% endif %}
                 </span>
                 {% if r.error %}
-                <span class="text-xs text-error truncate max-w-64">{{ r.error }}</span>
+                <span class="text-xs text-error truncate max-w-64" title="{{ r.error }}">Failed: {{ r.error }}</span>
                 {% endif %}
                 <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 transition-all"></i>
             </a>
+            {% if rfailed %}
+            <form method="POST" action="{{ url_for('automation.run_retry', run_id=r.id) }}" class="inline flex-shrink-0">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Run again with the same inputs">
+                    <i class="fas fa-rotate-right"></i> Retry
+                </button>
+            </form>
+            {% endif %}
+            </div>
             {% endfor %}
         </div>
         {% else %}
