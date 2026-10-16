@@ -63,11 +63,42 @@ def _tool_run(user, args, drive):
     if runtime.has_active_run(workflow.id):
         return {"error": f"Workflow '{workflow.name}' already has a run in "
                          "progress — wait for it to finish."}
-    run = runtime.start_run(workflow, user, trigger="ai")
+    # Optional run parameters (input.param) and trigger file (input.trigger):
+    # without these the AI could never run parameterized workflows.
+    params = args.get("params")
+    if params is not None and not isinstance(params, dict):
+        return {"error": "params must be an object {name: value}."}
+    trigger_file_id = args.get("trigger_file_id")
+    if trigger_file_id not in (None, ""):
+        try:
+            trigger_file_id = int(trigger_file_id)
+        except (TypeError, ValueError):
+            return {"error": "trigger_file_id must be an integer."}
+        from app.models import StoredFile
+        stored = db.session.get(StoredFile, trigger_file_id)
+        if (stored is None or stored.user_id != user.id
+                or stored.deleted_at is not None):
+            return {"error": "The trigger file does not exist (or is in the trash)."}
+    else:
+        trigger_file_id = None
+    # Validate required params up front (same rules as the manual run form).
+    from . import nodes as _nodes
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return {"error": f"The workflow is broken: {exc}."}
+    missing = [s["label"] for s in _nodes.run_param_specs(graph)
+               if s["required"] and (not params or s["param"] not in params)]
+    if missing:
+        return {"error": "Missing run parameters: " + ", ".join(missing) +
+                         ". Pass them in params."}
+    run = runtime.start_run(workflow, user, trigger="ai",
+                            trigger_file_id=trigger_file_id,
+                            params=params or None)
     return {"run_id": run.id, "status": run.status,
+            "url": f"/m/automation/runs/{run.id}",
             "note": f"Workflow '{workflow.name}' started in the background; "
-                    "its per-node log and outputs are on the workflow's "
-                    "runs page."}
+                    "use automation.get_run_status to poll it."}
 
 
 def _tool_node_catalog(user, args, drive):
@@ -79,20 +110,33 @@ def _tool_node_catalog(user, args, drive):
             "label": spec.get("label", type_name),
             "category": spec.get("category", ""),
             "description": spec.get("description", ""),
-            "inputs": [p["name"] for p in spec.get("inputs", [])],
-            "outputs": [p["name"] for p in spec.get("outputs", [])],
-            "config_fields": {f["name"]: (f.get("kind") or "text")
-                              for f in spec.get("fields", [])},
-            "config_help": {f["name"]: f.get("help", "")
-                            for f in spec.get("fields", [])
-                            if f.get("help")},
+            "example": spec.get("description", "") and spec.get("example", ""),
+            "inputs": [{"name": p["name"], "kind": p.get("kind", "any")}
+                       for p in spec.get("inputs", [])],
+            "outputs": [{"name": p["name"], "kind": p.get("kind", "any")}
+                        for p in spec.get("outputs", [])],
+            "config_fields": [
+                {"name": f["name"], "kind": f.get("kind") or "text",
+                 "label": f.get("label", f["name"]),
+                 "default": f.get("default", ""),
+                 "options": f.get("options", []),
+                 "placeholder": f.get("placeholder", ""),
+                 "help": f.get("help", "")}
+                for f in spec.get("fields", [])
+            ],
         })
     return {"node_types": catalog,
             "graph_format": {
                 "nodes": [{"id": "n1 (unique string)", "type": "node type",
                            "x": 0, "y": 0, "config": {"field": "value"}}],
                 "edges": [{"from": "n1", "from_port": "out",
-                           "to": "n2", "to_port": "in"}]}}
+                           "to": "n2", "to_port": "in"}]},
+            "hints": [
+                "Match port kinds: files->files/text via read_files, "
+                "table->table only, json->json/table via json_to_table.",
+                "merge needs in1/in2, condition outputs true/false.",
+                "save nodes need a writable drive_id (not synced).",
+            ]}
 
 
 def _tool_create(user, args, drive):
@@ -152,14 +196,33 @@ def _tool_get_workflow(user, args, drive):
             continue
         spec = entry["spec"]
         specs[type_name] = {
-            "inputs": [p["name"] for p in spec.get("inputs", [])],
-            "outputs": [p["name"] for p in spec.get("outputs", [])],
-            "config_fields": {f["name"]: (f.get("kind") or "text")
-                              for f in spec.get("fields", [])},
+            "inputs": [{"name": p["name"], "kind": p.get("kind", "any")}
+                       for p in spec.get("inputs", [])],
+            "outputs": [{"name": p["name"], "kind": p.get("kind", "any")}
+                        for p in spec.get("outputs", [])],
+            "config_fields": [
+                {"name": f["name"], "kind": f.get("kind") or "text",
+                 "label": f.get("label", f["name"]),
+                 "default": f.get("default", ""),
+                 "options": f.get("options", [])}
+                for f in spec.get("fields", [])
+            ],
         }
+    # Last run for diagnose-fix loop.
+    last_run = None
+    if workflow.runs:
+        r = workflow.runs[0]
+        try:
+            log = json.loads(r.log) if r.log else []
+        except ValueError:
+            log = []
+        last_run = {"id": r.id, "status": r.status, "error": r.error,
+                    "log": log[-20:]}
     result = {"workflow_id": workflow.id, "name": workflow.name,
               "description": workflow.description, "graph": graph,
-              "ai_lock": locked, "specs": specs}
+              "enabled": bool(workflow.enabled),
+              "interval_minutes": workflow.interval_minutes,
+              "ai_lock": locked, "specs": specs, "last_run": last_run}
     if locked:
         result["note"] = ("This workflow is LOCKED against AI edits by the "
                           "user — do not edit it; ask the user to unlock it "
@@ -277,6 +340,78 @@ def _tool_edit_workflow(user, args, drive):
                    "workflow_id": workflow.id}}
 
 
+def _tool_get_run(user, args, drive):
+    from .models import AutomationRun
+    try:
+        run_id = int(args.get("run_id"))
+    except (TypeError, ValueError):
+        return {"error": "run_id must be an integer."}
+    run = (AutomationRun.query
+           .filter_by(id=run_id, user_id=user.id).first())
+    if run is None:
+        return {"error": f"Run {run_id} not found."}
+    if run.workflow is not None and run.workflow.ai_hidden:
+        return _hidden_error()
+    try:
+        log = json.loads(run.log) if run.log else []
+    except ValueError:
+        log = []
+    try:
+        output = json.loads(run.output) if run.output else None
+    except ValueError:
+        output = None
+    return {"run_id": run.id, "workflow_id": run.workflow_id,
+            "status": run.status, "error": run.error,
+            "log": log[-30:], "output": output,
+            "url": f"/m/automation/runs/{run.id}"}
+
+
+def _tool_stop_run(user, args, drive):
+    from .models import AutomationRun
+    try:
+        run_id = int(args.get("run_id"))
+    except (TypeError, ValueError):
+        return {"error": "run_id must be an integer."}
+    run = runtime.stop_run(user, run_id)
+    if run is None:
+        return {"error": f"Run {run_id} not found."}
+    return {"ok": True, "run_id": run.id, "status": run.status}
+
+
+def _tool_set_schedule(user, args, drive):
+    try:
+        workflow_id = int(args.get("workflow_id"))
+    except (TypeError, ValueError):
+        return {"error": "workflow_id must be an integer."}
+    workflow = (AutomationWorkflow.query
+                .filter_by(id=workflow_id, user_id=user.id).first())
+    if workflow is None:
+        return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    if workflow.ai_lock:
+        return _locked_error()
+    enabled = args.get("enabled")
+    if not isinstance(enabled, bool):
+        return {"error": "enabled must be a boolean."}
+    interval = args.get("interval_minutes")
+    if enabled:
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError):
+            return {"error": "interval_minutes must be a positive integer."}
+        if interval < 1:
+            return {"error": "interval_minutes must be >= 1."}
+        workflow.interval_minutes = interval
+    else:
+        workflow.interval_minutes = None
+    workflow.enabled = enabled
+    db.session.commit()
+    return {"ok": True, "workflow_id": workflow.id,
+            "enabled": bool(workflow.enabled),
+            "interval_minutes": workflow.interval_minutes}
+
+
 _REGISTERED = False
 
 
@@ -300,9 +435,15 @@ def register_tools():
         "run_workflow",
         _schema("run_workflow",
                 "Start a background run of one of the user's Automation "
-                "workflows (use list_workflows first to find the id).",
+                "workflows (use list_workflows first to find the id). "
+                "Pass params for input.param nodes and trigger_file_id for "
+                "input.trigger workflows. Poll get_run_status afterwards.",
                 {"workflow_id": {"type": "integer",
-                                 "description": "The workflow id"}},
+                                 "description": "The workflow id"},
+                 "params": {"type": "object",
+                            "description": "{param_name: value} for Run inputs"},
+                 "trigger_file_id": {"type": "integer",
+                                     "description": "File the run starts from"}},
                 required=("workflow_id",)),
         _tool_run, label="Starting workflow", module="automation")
     register_tool(
@@ -364,3 +505,34 @@ def register_tools():
                                 "items": {"type": "object"}}},
                 required=("workflow_id", "operations")),
         _tool_edit_workflow, label="Editing workflow", module="automation")
+    register_tool(
+        "get_run_status",
+        _schema("get_run_status",
+                "Poll an Automation run: status (queued/running/done/error/"
+                "stopped), per-node log tail and outputs. Call after "
+                "run_workflow until status is done/error.",
+                {"run_id": {"type": "integer",
+                            "description": "The run id"}},
+                required=("run_id",)),
+        _tool_get_run, label="Checking run", module="automation")
+    register_tool(
+        "stop_run",
+        _schema("stop_run",
+                "Stop a running Automation run.",
+                {"run_id": {"type": "integer",
+                            "description": "The run id"}},
+                required=("run_id",)),
+        _tool_stop_run, label="Stopping run", module="automation")
+    register_tool(
+        "set_schedule",
+        _schema("set_schedule",
+                "Enable/disable a workflow's automatic schedule. "
+                "interval_minutes is required when enabled=true.",
+                {"workflow_id": {"type": "integer",
+                                 "description": "The workflow id"},
+                 "enabled": {"type": "boolean",
+                             "description": "Run automatically?"},
+                 "interval_minutes": {"type": "integer",
+                                       "description": "Every N minutes"}},
+                required=("workflow_id", "enabled")),
+        _tool_set_schedule, label="Setting schedule", module="automation")

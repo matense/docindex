@@ -1948,7 +1948,8 @@ def test_get_workflow_tool_inlines_specs(app, user, enabled):
         assert len(result["graph"]["nodes"]) == 2
         # The types in use come with their port/config field specs.
         assert "input.text" in result["specs"]
-        assert result["specs"]["input.text"]["outputs"] == ["out"]
+        assert result["specs"]["input.text"]["outputs"] == [
+            {"name": "out", "kind": "text"}]
         assert "error" in tools._tool_get_workflow(
             user_obj, {"workflow_id": 999}, None)
 

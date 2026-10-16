@@ -272,6 +272,7 @@ def validate_graph(graph, node_types=None):
     implicit = _referenced_nodes(graph["nodes"])
     edges = []
     deps = {nid: set() for nid in nodes_by_id}
+    seen_targets = set()
     for edge in graph["edges"]:
         src, dst = edge.get("from"), edge.get("to")
         if src not in nodes_by_id or dst not in nodes_by_id:
@@ -280,14 +281,31 @@ def validate_graph(graph, node_types=None):
             raise WorkflowError(f"Node '{src}' connects to itself.")
         src_spec = node_types[nodes_by_id[src]["type"]]["spec"]
         dst_spec = node_types[nodes_by_id[dst]["type"]]["spec"]
-        out_ports = [p["name"] for p in src_spec.get("outputs", [])]
-        in_ports = [p["name"] for p in dst_spec.get("inputs", [])]
+        out_ports = {p["name"]: p.get("kind", "any")
+                     for p in src_spec.get("outputs", [])}
+        in_ports = {p["name"]: p.get("kind", "any")
+                    for p in dst_spec.get("inputs", [])}
         if edge.get("from_port") not in out_ports:
             raise WorkflowError(
                 f"Node '{src}' has no output port '{edge.get('from_port')}'.")
         if edge.get("to_port") not in in_ports:
             raise WorkflowError(
                 f"Node '{dst}' has no input port '{edge.get('to_port')}'.")
+        # Port-kind check: any accepts all, otherwise exact match.
+        skind = out_ports[edge["from_port"]] or "any"
+        dkind = in_ports[edge["to_port"]] or "any"
+        if skind != "any" and dkind != "any" and skind != dkind:
+            raise WorkflowError(
+                f"Cannot connect '{src}' ({skind}) to '{dst}' ({dkind}) — "
+                f"insert a conversion step (e.g. read_files, json_to_table).")
+        # Fan-in guard: two edges into the same input port would silently
+        # overwrite (last wins).
+        target = (dst, edge["to_port"])
+        if target in seen_targets:
+            raise WorkflowError(
+                f"Input '{edge['to_port']}' of node '{dst}' already has a "
+                f"connection — one wire per input.")
+        seen_targets.add(target)
         edges.append({"from": src, "from_port": edge["from_port"],
                       "to": dst, "to_port": edge["to_port"]})
         deps[dst].add(src)

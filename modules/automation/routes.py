@@ -144,7 +144,11 @@ def save(workflow_id):
                             if data.get("description") is not None
                             else workflow.description)
     enabled = data.get("enabled")
-    workflow.enabled = bool(enabled)
+    # Checkbox/JSON: "false"/"0"/0/False must not become True via bool().
+    if isinstance(enabled, str):
+        workflow.enabled = enabled.lower() not in ("", "0", "false", "no", "off")
+    else:
+        workflow.enabled = bool(enabled)
     interval = data.get("interval_minutes")
     try:
         interval = int(interval) if interval not in (None, "", 0, "0") else None

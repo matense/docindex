@@ -340,7 +340,10 @@ def _exec_search_files(ctx, config, inputs):
     query = (config.get("query") or "").strip()
     if not query:
         raise WorkflowError("Configure a search query.")
-    limit = max(1, min(int(config.get("limit") or 10), 50))
+    try:
+        limit = max(1, min(int(config.get("limit") or 10), 50))
+    except (TypeError, ValueError):
+        raise WorkflowError("Max results must be a number (1-50).")
     hits = search_service.search_files(query, ctx["user"], limit=limit)
     files = [{"file_id": h["file"].id, "name": h["file"].name} for h in hits]
     ctx["log"](f"{len(files)} file(s) matched '{query}'")
@@ -358,8 +361,11 @@ def _exec_template(ctx, config, outputs, inputs):
 def _exec_json_path(ctx, config, inputs, outputs):
     source = inputs.get("in")
     if source is None and (config.get("source") or "").strip():
-        source = p_json(json.loads(render_template(config["source"], outputs)
-                                   or "null"))
+        try:
+            source = p_json(json.loads(render_template(config["source"], outputs)
+                                       or "null"))
+        except ValueError:
+            raise WorkflowError("The source is not valid JSON.")
     if source is None:
         raise WorkflowError("No input — connect a node or set the source.")
     data = as_json(source)
