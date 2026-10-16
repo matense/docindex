@@ -233,9 +233,12 @@ def _resolve_context(user, data):
                 f"[id {workflow.id}] \"{workflow.name}\" open in the "
                 f"Automation editor.{node_txt} When they ask for changes "
                 "to \"this workflow\" or a node, use automation.get_workflow "
-                "to read the current graph and automation.edit_workflow to "
+                "to read the current graph (it includes a diagnosis of "
+                "every problem) and automation.edit_workflow to "
                 "apply the edits — the editor canvas refreshes "
-                "automatically.")
+                "automatically. Use automation.validate_workflow to check "
+                "the workflow without running it, and automation.get_run_status "
+                "after runs (failures carry a fix_hint).")
             snapshot["workflow_id"] = workflow.id
             snapshot["workflow_name"] = workflow.name
 

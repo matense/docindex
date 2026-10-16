@@ -1308,6 +1308,24 @@ def test_validate_tool_without_running(app, user, enabled):
     assert result["workflow_id"] == wf_id
 
 
+def test_validate_flags_stale_drive_and_file(app, user, enabled):
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.file", "x": 0, "y": 0,
+         "config": {"file_id": "999999"}},
+        {"id": "n2", "type": "output.save_file", "x": 0, "y": 0,
+         "config": {"name": "o.txt", "drive_id": "999999", "folder": ""}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "n2", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_validate(user_obj, {"workflow_id": wf_id}, None)
+    assert result["ok"] is False
+    fields = {(i["node"], i["field"]) for i in result["issues"]}
+    assert ("n1", "file_id") in fields
+    assert ("n2", "drive_id") in fields
+
+
 def test_get_run_error_carries_fix_hint(app, user, enabled):
     graph = {"nodes": [
         {"id": "n1", "type": "input.file", "x": 0, "y": 0, "config": {}},

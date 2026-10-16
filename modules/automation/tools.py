@@ -438,11 +438,98 @@ def _tool_validate(user, args, drive):
                 "note": "Fix with edit_workflow, then validate again."}
     result = engine.diagnose_graph(graph, active_node_types())
     result["workflow_id"] = workflow.id
+    # Ownership-aware checks (need the DB): referenced drives, files and
+    # notebooks really exist, belong to the user, and save targets are
+    # writable. Pure-graph diagnose cannot see these.
+    try:
+        result["issues"].extend(_reference_issues(user, graph))
+        result["ok"] = not any(i["severity"] == "error"
+                               for i in result["issues"])
+    except Exception:  # noqa: BLE001 - reference checks are best-effort
+        pass
     result["note"] = ("All clear — safe to run." if result["ok"]
                       else "Fix the error issues with edit_workflow "
                            "(field names match the editor), then validate "
                            "again — no run needed.")
     return result
+
+
+def _reference_issues(user, graph):
+    """Issues about referenced drives/files/notebooks (existence + access)."""
+    from app.models import Drive, Folder, StoredFile
+    issues = []
+    drives = {d.id: d for d in
+              Drive.query.filter_by(user_id=user.id).all()}
+    for node in graph.get("nodes", []):
+        nid, ntype = node.get("id"), node.get("type")
+        config = node.get("config") or {}
+        for field in ("drive_id",):
+            raw = (config.get(field) or "").strip() \
+                if isinstance(config.get(field), str) \
+                else config.get(field)
+            if raw in (None, ""):
+                continue
+            try:
+                did = int(raw)
+            except (TypeError, ValueError):
+                issues.append({"node": nid, "type": ntype, "field": field,
+                               "severity": "error",
+                               "message": "The drive selection is invalid — "
+                                          "pick a drive again."})
+                continue
+            drive = drives.get(did)
+            if drive is None:
+                issues.append({"node": nid, "type": ntype, "field": field,
+                               "severity": "error",
+                               "message": "The selected drive no longer "
+                                          "exists — pick another."})
+            elif drive.is_synced and ntype in (
+                    "output.save_file", "output.save_table",
+                    "output.copy_file", "notebook.output"):
+                issues.append({"node": nid, "type": ntype, "field": field,
+                               "severity": "error",
+                               "message": f"Drive '{drive.name}' is read-only "
+                                          "(synced) — pick a writable drive."})
+        for field in ("file_id",):
+            raw = config.get(field)
+            if raw in (None, ""):
+                continue
+            try:
+                fid = int(raw)
+            except (TypeError, ValueError):
+                issues.append({"node": nid, "type": ntype, "field": field,
+                               "severity": "error",
+                               "message": "The file selection is invalid — "
+                                          "pick the file again."})
+                continue
+            stored = db.session.get(StoredFile, fid)
+            if (stored is None or stored.user_id != user.id
+                    or stored.deleted_at is not None):
+                issues.append({"node": nid, "type": ntype, "field": field,
+                               "severity": "error",
+                               "message": "The selected file no longer "
+                                          "exists (or is in the trash) — "
+                                          "pick another."})
+        if ntype == "input.folder_list":
+            raw = config.get("folder_id")
+            if raw not in (None, ""):
+                try:
+                    fid = int(raw)
+                except (TypeError, ValueError):
+                    issues.append({"node": nid, "type": ntype,
+                                   "field": "folder_id",
+                                   "severity": "error",
+                                   "message": "The folder selection is "
+                                              "invalid — pick it again."})
+                    continue
+                folder = db.session.get(Folder, fid)
+                if folder is None or folder.user_id != user.id:
+                    issues.append({"node": nid, "type": ntype,
+                                   "field": "folder_id",
+                                   "severity": "error",
+                                   "message": "The selected folder no longer "
+                                              "exists — pick another."})
+    return issues
 
 
 def _tool_stop_run(user, args, drive):
