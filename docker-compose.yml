@@ -10,6 +10,11 @@ services:
       - docindex_data:/app/instance
       - docindex_uploads:/app/uploads
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # If your AI server (Ollama, LM Studio) runs on the host machine,
     # use http://host.docker.internal:<port>/v1 as AI_BASE_URL instead of localhost.
 

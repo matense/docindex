@@ -151,12 +151,13 @@ def get_task(user, task_id):
 
 def active_tasks(user):
     """Tasks shown in the dock: running/queued, plus finished ones the user
-    has not dismissed yet (the notification badge state)."""
+    has not dismissed yet (the notification badge state). Capped to avoid
+    unbounded dock payloads."""
     return (AITask.query
             .filter(AITask.user_id == user.id)
             .filter(db.or_(AITask.status.in_(("queued", "running")),
                            AITask.notified.is_(False)))
-            .order_by(AITask.created_at).all())
+            .order_by(AITask.created_at.desc()).limit(20).all())
 
 
 def recover_interrupted(app):

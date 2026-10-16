@@ -176,7 +176,9 @@ def test_edit_connection(auth_client, app):
         assert conn.base_url == "http://new.local/v1"
         assert conn.model == "new-model"
         assert conn.vision_model == "new-vision"
-        assert conn.api_key == "sk-test"  # unchanged: empty key keeps the old one
+        from app.services import ai_service as _ai
+        # Keys are encrypted at rest; empty edit keeps the old (decrypted) one.
+        assert _ai.decrypt_api_key(conn.api_key) == "sk-test"
 
 
 def test_cannot_edit_other_users_connection(auth_client, app):

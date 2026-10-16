@@ -161,17 +161,35 @@ def create_app(config_class=Config):
 
     @app.context_processor
     def inject_globals():
+        from flask import g as _g
         from flask_login import current_user as cu
         from .services import ai_service, drive_service, module_service
-        enabled = ai_service.is_enabled(cu) if cu.is_authenticated else False
-        current_drive = drive_service.get_current_drive(cu) if cu.is_authenticated else None
+        if cu.is_authenticated:
+            # Per-request cache: base template calls this once, but SPA
+            # partials + widgets can trigger it multiple times per request.
+            if not hasattr(_g, "_docindex_globals"):
+                _g._docindex_globals = {
+                    "ai_enabled": ai_service.is_enabled(cu),
+                    "current_drive": drive_service.get_current_drive(cu),
+                    "module_nav": module_service.nav_items(),
+                    "user_drives": drive_service.list_drives(cu),
+                }
+            cached = _g._docindex_globals
+            return {
+                "ai_enabled": cached["ai_enabled"],
+                "app_name": "DocIndex",
+                "app_version": APP_VERSION,
+                "current_drive": cached["current_drive"],
+                "module_nav": cached["module_nav"],
+                "user_drives": cached["user_drives"],
+            }
         return {
-            "ai_enabled": enabled,
+            "ai_enabled": False,
             "app_name": "DocIndex",
             "app_version": APP_VERSION,
-            "current_drive": current_drive,
-            "module_nav": module_service.nav_items() if cu.is_authenticated else [],
-            "user_drives": drive_service.list_drives(cu) if cu.is_authenticated else [],
+            "current_drive": None,
+            "module_nav": [],
+            "user_drives": [],
         }
 
     return app

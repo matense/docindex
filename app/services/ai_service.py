@@ -74,7 +74,7 @@ def config_for(user=None):
             return {
                 "enabled": True,
                 "base_url": conn.base_url.rstrip("/"),
-                "api_key": conn.api_key or "",
+                "api_key": decrypt_api_key(conn.api_key or ""),
                 "model": conn.model,
                 "vision_model": conn.vision_model or conn.model,
                 "timeout": current_app.config.get("AI_REQUEST_TIMEOUT", 120),
@@ -109,6 +109,49 @@ def _headers(cfg):
     if cfg["api_key"]:
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
     return headers
+
+
+def _fernet():
+    """Fernet over SECRET_KEY (SHA256-derived). None when unusable."""
+    try:
+        import hashlib as _hl
+        from cryptography.fernet import Fernet as _Fernet
+        import base64 as _b64
+        from flask import current_app as _ca
+        secret = (_ca.config.get("SECRET_KEY") or "").encode()
+        if not secret:
+            return None
+        digest = _hl.sha256(secret).digest()
+        return _Fernet(_b64.urlsafe_b64encode(digest))
+    except Exception:
+        return None
+
+
+def encrypt_api_key(plain):
+    """Encrypt an API key for storage (prefix enc:). Plaintext passthrough on failure."""
+    plain = plain or ""
+    if not plain or plain.startswith("enc:"):
+        return plain
+    try:
+        f = _fernet()
+        if f is None:
+            return plain
+        return "enc:" + f.encrypt(plain.encode()).decode()
+    except Exception:
+        return plain
+
+
+def decrypt_api_key(stored):
+    """Decrypt a stored key; legacy plaintext returns as-is."""
+    if not stored or not stored.startswith("enc:"):
+        return stored or ""
+    try:
+        f = _fernet()
+        if f is None:
+            return ""
+        return f.decrypt(stored[4:].encode()).decode()
+    except Exception:
+        return ""
 
 
 def chat_completion(messages, model=None, tools=None, tool_choice=None, config=None,

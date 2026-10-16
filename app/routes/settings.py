@@ -424,7 +424,7 @@ def ai_edit(conn_id):
     # Only replace the key if a new one was entered (empty keeps the old one)
     new_key = request.form.get("api_key", "").strip()
     if new_key:
-        conn.api_key = new_key
+        conn.api_key = ai_service.encrypt_api_key(new_key)
     if request.form.get("is_active"):
         AIConnection.query.filter_by(user_id=current_user.id).update({"is_active": False})
         conn.is_active = True
@@ -457,7 +457,7 @@ def ai_add():
         user_id=current_user.id,
         name=name,
         base_url=base_url,
-        api_key=api_key,
+        api_key=ai_service.encrypt_api_key(api_key),
         model=model[:120],
         vision_model=vision_model[:120],
         max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
@@ -545,7 +545,8 @@ def ai_test_existing(conn_id):
     conn = _get_owned(conn_id)
     if not conn:
         return jsonify({"ok": False, "message": "Connection not found."}), 404
-    ok, message = ai_service.test_connection(conn.base_url, conn.api_key)
+    ok, message = ai_service.test_connection(
+        conn.base_url, ai_service.decrypt_api_key(conn.api_key or ""))
     return jsonify({"ok": ok, "message": message})
 
 
@@ -561,7 +562,7 @@ def ai_models():
     if not api_key and conn_id:
         conn = _get_owned(conn_id)
         if conn:
-            api_key = conn.api_key
+            api_key = ai_service.decrypt_api_key(conn.api_key or "")
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
     try:
