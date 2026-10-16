@@ -46,59 +46,63 @@ def _owned_folder(folder_id):
 
 
 def _folder_tree():
-    """Nested folders of the user as [{id, name, parent_id, depth}]."""
-    folders = (AutomationFolder.query
-               .filter_by(user_id=current_user.id)
-               .order_by(AutomationFolder.name).all())
-    by_id = {f.id: f for f in folders}
-    ordered = []
+    """Top-level folders of the user (children via the .children rel)."""
+    all_folders = (AutomationFolder.query
+                   .filter_by(user_id=current_user.id)
+                   .order_by(AutomationFolder.name).all())
+    by_id = {f.id: f for f in all_folders}
+    top = [f for f in all_folders if f.parent_id is None]
+    flat = []
 
     def visit(fid, depth):
-        for f in folders:
+        for f in all_folders:
             if (f.parent_id or None) == fid:
-                ordered.append({"id": f.id, "name": f.name,
-                                "parent_id": f.parent_id, "depth": depth})
+                flat.append({"id": f.id, "name": f.name, "depth": depth})
                 visit(f.id, depth + 1)
     visit(None, 0)
-    # Orphans whose parent is missing (should not happen) still listed.
-    seen = {o["id"] for o in ordered}
-    for f in folders:
-        if f.id not in seen:
-            ordered.append({"id": f.id, "name": f.name,
-                            "parent_id": f.parent_id, "depth": 0})
-    return ordered, by_id
+    return top, by_id, flat
 
 
 @bp.get("/")
 def index():
     q = (request.args.get("q") or "").strip()
-    folder_filter = request.args.get("folder", type=int)
     query = AutomationWorkflow.query.filter_by(user_id=current_user.id)
     if q:
         like = f"%{q}%"
         query = query.filter(db.or_(
             AutomationWorkflow.name.ilike(like),
             AutomationWorkflow.description.ilike(like)))
-    if folder_filter == -1:
-        query = query.filter(AutomationWorkflow.folder_id.is_(None))
-    elif folder_filter:
-        query = query.filter_by(folder_id=folder_filter)
     workflows = query.order_by(
         AutomationWorkflow.updated_at.desc()).all()
     recent_runs = (AutomationRun.query
                    .filter_by(user_id=current_user.id)
                    .order_by(AutomationRun.id.desc()).limit(10).all())
-    folders, _by_id = _folder_tree()
+    folders, by_id, flat_folders = _folder_tree()
     counts = dict(
         db.session.query(AutomationWorkflow.folder_id,
                          db.func.count(AutomationWorkflow.id))
         .filter(AutomationWorkflow.user_id == current_user.id)
         .group_by(AutomationWorkflow.folder_id).all())
+    # Group workflows by folder for the single tree section.
+    wf_by_folder = {}
+    for w in workflows:
+        wf_by_folder.setdefault(w.folder_id, []).append(w)
+    # When searching, only folders on the path to a match stay visible.
+    visible = None
+    if q:
+        visible = set()
+        for w in workflows:
+            fid = w.folder_id
+            while fid is not None and fid not in visible:
+                visible.add(fid)
+                parent = by_id.get(fid)
+                fid = parent.parent_id if parent else None
     return render_template("automation/list.html", workflows=workflows,
                            examples=examples.EXAMPLES,
                            recent_runs=recent_runs, folders=folders,
+                           flat_folders=flat_folders,
                            folder_counts=counts, q=q,
-                           folder_filter=folder_filter)
+                           wf_by_folder=wf_by_folder, visible=visible)
 
 
 @bp.post("/folders/create")

@@ -797,7 +797,7 @@ def test_index_shows_sections_and_recent_runs(auth_client, app, user,
     html = resp.data.decode()
     # Collapsible examples gallery, workflows section and recent runs.
     assert 'id="automation-examples"' in html
-    assert "Your workflows" in html
+    assert "Your automations" in html
     assert "Recent runs" in html
     assert "Test flow" in html  # workflow name in the recent runs list
 
