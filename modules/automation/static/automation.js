@@ -1941,9 +1941,10 @@
                 esc(data.error || 'Execution failed.');
             container.appendChild(err);
         }
-        (data.log || []).forEach(entry => {
+        (data.log || []).forEach((entry, i) => {
             const row = document.createElement('div');
             row.className = 'wf-preview-log-row';
+            row.style.animationDelay = Math.min(i * 45, 450) + 'ms';
             row.innerHTML = statusIcon(entry.status) +
                 `<span class="flex-1 min-w-0 truncate">${esc(entry.label || entry.node)}</span>` +
                 `<span class="text-[10px] opacity-40 whitespace-nowrap">${entry.ms || 0} ms</span>`;
@@ -1976,6 +1977,8 @@
     async function runUpToNode(dfId) {
         const graph = ancestorsOf(dfId, exportGraph());
         wfConsoleOpen();
+        clearNodeStates();
+        setLive(true);
         wfConsoleLog(`run up to node n${dfId} — ${graph.nodes.length} node(s)…`);
         const body = document.getElementById('wf-preview-body');
         body.innerHTML = '<div class="text-xs opacity-40 text-center py-6">' +
@@ -1993,6 +1996,11 @@
                     nodeOutputs[nid.replace(/^n/, '')] = ports;
                 });
             }
+            // Replay the run on the canvas: wires flow while live, then each
+            // node lights up in execution order with its final state.
+            const replayMs = replayRun((data.log || []).filter(e => e.status === 'done' || e.status === 'error'));
+            setTimeout(() => setLive(false), replayMs + 400);
+            setTimeout(fadeOkBadges, replayMs + 4500);
             (data.log || []).forEach(entry => {
                 const kind = entry.status === 'error' ? 'error'
                     : entry.status === 'skipped' ? 'muted' : 'success';
@@ -2009,9 +2017,79 @@
             }
             renderPreview(body, data, resp.ok);
         } catch {
+            setLive(false);
+            clearNodeStates();
             wfConsoleLog('Could not reach the server.', 'error');
             renderPreview(body, { error: 'Could not reach the server.' }, false);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Live preview animations: flowing wires + per-node status replay.
+    // ------------------------------------------------------------------
+    function setLive(on) {
+        const canvas = document.getElementById('drawflow');
+        if (canvas) canvas.classList.toggle('wf-live', !!on);
+    }
+
+    function nodeCard(nid) {
+        const el = document.getElementById('node-' + String(nid || '').replace(/^n/, ''));
+        return el ? el.querySelector('.wf-node-card') : null;
+    }
+
+    function markNode(nid, state, label) {
+        const card = nodeCard(nid);
+        if (!card) return;
+        card.classList.remove('wf-live-running', 'wf-live-ok', 'wf-live-err');
+        const old = card.querySelector('.wf-run-badge');
+        if (old) old.remove();
+        if (!state) return;
+        card.classList.add('wf-live-' + state);
+        const badge = document.createElement('span');
+        badge.className = 'wf-run-badge wf-run-' + state;
+        badge.title = label || state;
+        badge.innerHTML = state === 'running'
+            ? '<i class="fas fa-circle-notch fa-spin"></i>'
+            : state === 'ok' ? '<i class="fas fa-check"></i>' : '<i class="fas fa-xmark"></i>';
+        card.appendChild(badge);
+    }
+
+    function clearNodeStates() {
+        document.querySelectorAll('.wf-node-card.wf-live-running, ' +
+            '.wf-node-card.wf-live-ok, .wf-node-card.wf-live-err')
+            .forEach(card => {
+                card.classList.remove('wf-live-running', 'wf-live-ok', 'wf-live-err');
+                const badge = card.querySelector('.wf-run-badge');
+                if (badge) badge.remove();
+            });
+    }
+
+    function fadeOkBadges() {
+        // Passing states disappear; errors stay pinned until the next run.
+        document.querySelectorAll('.wf-node-card.wf-live-ok, .wf-node-card.wf-live-running')
+            .forEach(card => {
+                card.classList.remove('wf-live-ok', 'wf-live-running');
+                const badge = card.querySelector('.wf-run-badge');
+                if (badge) badge.remove();
+            });
+        const canvas = document.getElementById('drawflow');
+        if (canvas) canvas.classList.remove('wf-live');
+    }
+
+    function replayRun(entries) {
+        // Light each node up in execution order, briefly showing "running"
+        // first so fast runs still read as a sequence. Returns the total
+        // replay time in ms so callers can stop the wire flow afterwards.
+        let delay = 0;
+        entries.forEach(entry => {
+            const nid = entry.node;
+            const final = entry.status === 'error' ? 'err' : 'ok';
+            const label = entry.label || entry.node;
+            setTimeout(() => markNode(nid, 'running', label), delay);
+            setTimeout(() => markNode(nid, final, label), delay + 200);
+            delay += 300;
+        });
+        return delay + 200;
     }
 
     // ------------------------------------------------------------------

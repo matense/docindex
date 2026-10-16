@@ -83,7 +83,7 @@
                 <span id="run-percent" class="font-bold font-mono">0%</span>
             </span>
         </div>
-        <progress id="run-progress" class="progress progress-primary w-full" value="0" max="100"></progress>
+        <div class="wf-run-progress" role="progressbar" aria-label="Run progress"><div id="run-progress" class="wf-run-progress-fill is-active" style="width: 0%"></div></div>
     </div>
 
     <!-- Pipeline: executed nodes (with times + output popup), the running
@@ -232,14 +232,15 @@
     // --- Progress bar + current node ------------------------------------
     function renderProgress(p, status) {
         p = p || { total: 0, finished: 0, percent: 0, current: null };
-        bar.value = p.percent;
+        bar.style.width = Math.max(0, Math.min(100, p.percent)) + '%';
         pctEl.textContent = p.percent + '%';
         fracEl.textContent = p.total ? `${p.finished}/${p.total} nodes` : '';
-        bar.className = 'progress w-full ' +
-            (status === 'done' ? 'progress-success'
-             : (status === 'error' || status === 'interrupted') ? 'progress-error'
-             : status === 'stopped' ? 'progress-warning'
-             : 'progress-primary');
+        const active = ACTIVE.has(status);
+        bar.className = 'wf-run-progress-fill' +
+            (status === 'done' ? ' is-done'
+             : (status === 'error' || status === 'interrupted') ? ' is-error'
+             : status === 'stopped' ? ' is-stopped'
+             : active ? ' is-active' : '');
         curEl.innerHTML = '';
         if (ACTIVE.has(status)) {
             if (p.current) {
@@ -299,6 +300,7 @@
             const clickable = hasOutput && e && e.status !== 'running';
             const row = el('div', 'px-4 py-2.5 flex items-center gap-3 text-sm' +
                 (st === 'pending' ? ' opacity-45' : '') +
+                (st === 'running' ? ' wf-row-running' : '') +
                 (clickable ? ' cursor-pointer hover:bg-base-content/[0.04] transition-colors' : ''));
             row.appendChild(el('i', `fas ${ICONS[st] || ICONS.pending} w-4`));
             row.appendChild(el('span', 'font-semibold', r.label));
