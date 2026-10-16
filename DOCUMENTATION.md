@@ -33,15 +33,16 @@ streamed to the browser as NDJSON.
 ## Project layout
 
 ```
-pdo-app/
+docindex/
 ├── run.py                  # dev entry point: create_app() + app.run()
-├── create_admin.py         # CLI: create a user/admin interactively
+├── create_admin.py         # CLI: create the first admin user
 ├── config.py               # Config / TestConfig classes, env var loading
-├── requirements.txt
+├── requirements.txt        # prod deps (pinned); requirements-dev.txt adds pytest
 ├── Dockerfile, docker-compose.yml
 ├── instance/               # SQLite DB (gitignored runtime data)
-├── uploads/                # files/ and thumbnails/ on disk
-├── migrations/             # Flask-Migrate / Alembic
+├── uploads/                # files/, thumbnails/ and versions/ on disk
+├── migrations/             # Flask-Migrate / Alembic (core) + modules/*/migrations
+├── modules/                # extension modules (automation, notebooks, hello)
 ├── app/
 │   ├── __init__.py         # create_app() factory
 │   ├── extensions.py       # db, migrate, login_manager, csrf
@@ -51,6 +52,7 @@ pdo-app/
 │   │   ├── drive.py        # drive browser, upload, file & folder ops
 │   │   ├── search.py       # /search page + /api/search instant search
 │   │   ├── ai.py           # /ai/chat NDJSON stream + conversations API
+│   │   ├── behaviors.py    # /behaviors library + personas
 │   │   └── settings.py     # /settings/ai connections + /settings/profile
 │   ├── services/
 │   │   ├── drive_service.py      # multi-drive support, current-drive session
@@ -59,13 +61,14 @@ pdo-app/
 │   │   ├── search_service.py     # FTS5 search + advanced agent search
 │   │   ├── hashtag_service.py    # hashtags: storage, AI gen, bulk drive jobs
 │   │   ├── ai_service.py         # OpenAI-compatible HTTP client, config
-│   │   └── agent_service.py      # agentic tool-calling loop
+│   │   ├── agent_service.py      # agentic tool-calling loop
+│   │   ├── ai_task_service.py    # background tasks, sync_service, module/log, ...
 │   ├── templates/          # Jinja: base.html + auth/ drive/ search/
-│   │                       #   settings/ components/
+│   │                       #   settings/ behaviors/ components/
 │   └── static/
 │       ├── css/style.css
-│       └── js/             # spa.js, main.js, drive.js, ai_chat.js, ai_page.js
-└── tests/                  # pytest suite
+│       └── js/             # spa/ui/main/drive/ai_chat/ai_page/sync+tasks widgets
+└── tests/                  # pytest suite (~525 tests)
 ```
 
 ## Application factory and entry points

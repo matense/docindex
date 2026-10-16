@@ -388,8 +388,12 @@
         const linked = (text || '').replace(/\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view" class="link link-primary">$1</a>');
         if (window.marked) {
+            let html = marked.parse(linked, { breaks: true });
+            if (window.DOMPurify) {
+                html = DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+            }
             const div = document.createElement('div');
-            div.innerHTML = marked.parse(linked, { breaks: true });
+            div.innerHTML = html;
             // Syntax-highlight fenced code blocks.
             if (window.hljs) {
                 div.querySelectorAll('pre code').forEach(block => {

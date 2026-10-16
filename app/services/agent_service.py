@@ -930,9 +930,18 @@ def register_tool(name, definition, handler, label=None, module=None):
 
     The definition sent to the model is normalized to the FULL namespaced
     name ("<module>.<tool>") — the model calls back exactly the name it was
-    offered, so a plain name here would make every call "Unknown tool"."""
+    offered, so a plain name here would make every call "Unknown tool".
+
+    Idempotent: re-registering the same name from the same module (second
+    create_app in tests, dev reloader) is a no-op instead of crashing the
+    module load."""
     full = f"{module}.{name}" if module else name
     if full in _TOOL_REGISTRY:
+        # Module tools reload on every create_app (tests, dev reloader):
+        # same module re-registering is a no-op. Core duplicates and
+        # cross-module collisions still raise.
+        if module is not None and _TOOL_REGISTRY[full].get("module") == module:
+            return
         raise ValueError(f"AI tool '{full}' is already registered")
     definition = {**definition,
                   "function": {**definition["function"], "name": full}}

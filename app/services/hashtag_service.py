@@ -180,6 +180,7 @@ class _HashtagJob:
     """Progress/state of one bulk tagging run (in-memory only)."""
 
     def __init__(self, drive_id, drive_name):
+        import time as _time
         self.drive_id = drive_id
         self.drive_name = drive_name
         self.state = "running"      # running | paused | done | cancelled | error
@@ -189,9 +190,15 @@ class _HashtagJob:
         self.stats = {"tagged": 0, "skipped": 0, "failed": 0}
         self.error = None
         self.thread = None
+        self.ended_at = None
         self._resume = threading.Event()
         self._resume.set()          # cleared while paused
         self._cancelled = False
+
+    def finish(self, state):
+        import time as _time
+        self.state = state
+        self.ended_at = _time.monotonic()
 
     @property
     def percent(self):
@@ -225,10 +232,22 @@ class _HashtagJob:
 
 _jobs = {}  # drive_id -> _HashtagJob
 _jobs_lock = threading.Lock()
+_JOB_TTL = 3600
+
+
+def _evict_finished():
+    import time as _time
+    now = _time.monotonic()
+    dead = [k for k, j in _jobs.items()
+            if j.state in ("done", "cancelled", "error")
+            and j.ended_at is not None and now - j.ended_at > _JOB_TTL]
+    for k in dead:
+        _jobs.pop(k, None)
 
 
 def get_status(drive_id):
     with _jobs_lock:
+        _evict_finished()
         job = _jobs.get(drive_id)
         return job.as_dict() if job else None
 
@@ -309,17 +328,17 @@ def _job_worker(drive_id, workers, overwrite, job, app):
         try:
             drive = db.session.get(Drive, drive_id)
             if drive is None:
-                job.state = "cancelled"
+                job.finish("cancelled")
                 return
             run_job(drive, job=job, workers=workers, overwrite=overwrite, app=app)
-            job.state = "done"
+            job.finish("done")
         except _HashtagCancelled:
             db.session.rollback()
-            job.state = "cancelled"
+            job.finish("cancelled")
         except Exception as exc:  # noqa: BLE001 - report to the widget
             db.session.rollback()
             app.logger.exception("Hashtag job failed for drive %s", drive_id)
-            job.state = "error"
+            job.finish("error")
             job.error = str(exc)[:500]
 
 
@@ -334,7 +353,8 @@ def run_job(drive, job=None, workers=1, overwrite=False, app=None):
     if not ai_service.is_enabled(user):
         raise ValueError("AI is not configured. Add a connection in AI Settings.")
 
-    files = (StoredFile.query
+    from sqlalchemy.orm import selectinload
+    files = (StoredFile.query.options(selectinload(StoredFile.index))
              .filter_by(drive_id=drive.id)
              .filter(StoredFile.deleted_at.is_(None))
              .order_by(StoredFile.id).all())
@@ -350,7 +370,8 @@ def run_job(drive, job=None, workers=1, overwrite=False, app=None):
     if job:
         job.total = len(todo)
 
-    queue = list(f.id for f in todo)
+    from collections import deque
+    queue = deque(f.id for f in todo)
     names = {f.id: f.name for f in todo}
     lock = threading.Lock()
 
@@ -361,7 +382,7 @@ def run_job(drive, job=None, workers=1, overwrite=False, app=None):
             with lock:
                 if not queue:
                     return
-                file_id = queue.pop(0)
+                file_id = queue.popleft()
                 if job:
                     job.current = names.get(file_id, "")
             try:

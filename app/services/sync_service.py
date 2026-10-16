@@ -40,6 +40,7 @@ class _SyncJob:
     """Progress/state of one sync run (in-memory only)."""
 
     def __init__(self, drive_id, drive_name):
+        import time as _time
         self.drive_id = drive_id
         self.drive_name = drive_name
         self.state = "running"      # running | paused | done | cancelled | error
@@ -49,9 +50,15 @@ class _SyncJob:
         self.stats = {"added": 0, "updated": 0, "removed": 0, "skipped": 0}
         self.error = None
         self.thread = None
+        self.ended_at = None        # monotonic() when reaching a terminal state
         self._resume = threading.Event()
         self._resume.set()          # cleared while paused
         self._cancelled = False
+
+    def finish(self, state):
+        import time as _time
+        self.state = state
+        self.ended_at = _time.monotonic()
 
     @property
     def percent(self):
@@ -85,10 +92,22 @@ class _SyncJob:
 
 _jobs = {}  # drive_id -> _SyncJob
 _jobs_lock = threading.Lock()
+_JOB_TTL = 3600  # evict finished jobs after 1h (memory leak guard)
+
+
+def _evict_finished():
+    import time as _time
+    now = _time.monotonic()
+    dead = [k for k, j in _jobs.items()
+            if j.state in ("done", "cancelled", "error")
+            and j.ended_at is not None and now - j.ended_at > _JOB_TTL]
+    for k in dead:
+        _jobs.pop(k, None)
 
 
 def get_status(drive_id):
     with _jobs_lock:
+        _evict_finished()
         job = _jobs.get(drive_id)
         return job.as_dict() if job else None
 
@@ -167,17 +186,17 @@ def _sync_worker(drive_id, job, app):
         try:
             drive = db.session.get(Drive, drive_id)
             if drive is None:
-                job.state = "cancelled"
+                job.finish("cancelled")
                 return
             sync_drive(drive, job=job)
-            job.state = "done"
+            job.finish("done")
         except _SyncCancelled:
             db.session.rollback()
-            job.state = "cancelled"
+            job.finish("cancelled")
         except Exception as exc:  # noqa: BLE001 - report to the widget
             db.session.rollback()
             app.logger.exception("Sync failed for drive %s", drive_id)
-            job.state = "error"
+            job.finish("error")
             job.error = str(exc)[:500]
 
 

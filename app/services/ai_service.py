@@ -136,9 +136,15 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
             json=payload,
             headers=_headers(cfg),
             timeout=cfg["timeout"],
+            allow_redirects=False,
         )
     except requests.RequestException as exc:
         raise AIError(f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
+
+    if resp.status_code in (301, 302, 303, 307, 308):
+        resp.close()
+        raise AIError("AI backend redirected the request — refusing to follow "
+                      "redirects (SSRF guard). Check the base URL.")
 
     if resp.status_code == 429:
         retry = resp.headers.get("Retry-After")
@@ -196,10 +202,16 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
             json=payload,
             headers=_headers(cfg),
             timeout=cfg["timeout"],
+            allow_redirects=False,
             stream=True,
         )
     except requests.RequestException as exc:
         raise AIError(f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
+
+    if resp.status_code in (301, 302, 303, 307, 308):
+        resp.close()
+        raise AIError("AI backend redirected the request — refusing to follow "
+                      "redirects (SSRF guard). Check the base URL.")
 
     if resp.status_code == 429:
         resp.close()
@@ -297,9 +309,12 @@ def list_models(base_url, api_key):
     cfg = {"base_url": base_url.rstrip("/"), "api_key": api_key or "", "timeout": 15}
     try:
         resp = requests.get(f"{cfg['base_url']}/models",
-                            headers=_headers(cfg), timeout=cfg["timeout"])
+                            headers=_headers(cfg), timeout=cfg["timeout"],
+                            allow_redirects=False)
     except requests.RequestException as exc:
         return False, f"Cannot reach {cfg['base_url']}: {exc}"
+    if resp.status_code in (301, 302, 303, 307, 308):
+        return False, "Provider redirected — refusing to follow (check base URL)."
     if resp.status_code != 200:
         return False, f"Provider returned {resp.status_code}: {resp.text[:200]}"
     try:
@@ -326,13 +341,27 @@ def caption_image(path, config=None, block=False, instruction=None):
     connection's per-minute limit is reached (user-initiated requests).
     ``instruction`` replaces the default caption prompt (automation's
     Caption-image node lets the user steer the description).
+
+    Images are downscaled to ~1024px before base64 (16MB -> ~21MB JSON
+    otherwise): cheaper, faster, fewer timeouts.
     """
     cfg = config or _env_config()
-    with open(path, "rb") as fh:
-        b64 = base64.b64encode(fh.read()).decode("ascii")
-
-    ext = path.rsplit(".", 1)[-1].lower()
-    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(ext, f"image/{ext}")
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(path) as img:
+            img.thumbnail((1024, 1024))
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, "JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        mime = "image/jpeg"
+    except Exception:
+        with open(path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        ext = path.rsplit(".", 1)[-1].lower()
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(ext, f"image/{ext}")
 
     messages = [
         {
