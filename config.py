@@ -66,39 +66,50 @@ class Config:
     TESSERACT_LANGS = os.environ.get("TESSERACT_LANGS", "eng+por")
 
     # AI (OpenAI-compatible endpoint: Ollama, LM Studio, OpenAI API, ...)
+    def _int_env(key, default, lo=None, hi=None):
+        try:
+            v = int(os.environ.get(key, str(default)))
+        except (TypeError, ValueError):
+            v = default
+        if lo is not None:
+            v = max(lo, v)
+        if hi is not None:
+            v = min(hi, v)
+        return v
+
     AI_ENABLED = os.environ.get("AI_ENABLED", "false").lower() in ("1", "true", "yes")
     AI_BASE_URL = os.environ.get("AI_BASE_URL", "http://localhost:11434/v1")
     AI_API_KEY = os.environ.get("AI_API_KEY", "")
     AI_MODEL = os.environ.get("AI_MODEL", "llama3.1")
     AI_VISION_MODEL = os.environ.get("AI_VISION_MODEL", "")  # falls back to AI_MODEL
-    AI_MAX_STEPS = int(os.environ.get("AI_MAX_STEPS", "16"))
-    AI_RATE_LIMIT_RPM = int(os.environ.get("AI_RATE_LIMIT_RPM", "30"))
+    AI_MAX_STEPS = _int_env("AI_MAX_STEPS", 16, 1, 128)
+    AI_RATE_LIMIT_RPM = _int_env("AI_RATE_LIMIT_RPM", 30, 0, 600)
     # How many past user/assistant chat messages are sent to the model.
-    AI_HISTORY_MESSAGES = int(os.environ.get("AI_HISTORY_MESSAGES", "20"))
+    AI_HISTORY_MESSAGES = _int_env("AI_HISTORY_MESSAGES", 20, 1, 200)
     # Prompt budget in estimated tokens (chars/4). When a chat run would
     # exceed it, the oldest messages are dropped until it fits.
-    AI_MAX_PROMPT_TOKENS = int(os.environ.get("AI_MAX_PROMPT_TOKENS", "60000"))
-    AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "300"))
+    AI_MAX_PROMPT_TOKENS = _int_env("AI_MAX_PROMPT_TOKENS", 60000, 1000, 500000)
+    AI_REQUEST_TIMEOUT = _int_env("AI_REQUEST_TIMEOUT", 300, 5, 900)
     # Max words per AI-generated hashtag (user-added tags are not limited).
-    AI_HASHTAG_MAX_WORDS = int(os.environ.get("AI_HASHTAG_MAX_WORDS", "6"))
+    AI_HASHTAG_MAX_WORDS = _int_env("AI_HASHTAG_MAX_WORDS", 6, 1, 20)
     # Token-by-token streaming for chat. Set to false if your provider breaks
     # with streamed tool calls (a non-streaming fallback is tried anyway).
     AI_STREAMING = os.environ.get("AI_STREAMING", "true").lower() in ("1", "true", "yes")
     # Long-horizon background tasks: much larger step budget than interactive
     # chat, and the dock widget poll interval for their status.
-    AI_TASK_MAX_STEPS = int(os.environ.get("AI_TASK_MAX_STEPS", "64"))
-    AI_TASK_WIDGET_POLL_MS = int(os.environ.get("AI_TASK_WIDGET_POLL_MS", "3000"))
+    AI_TASK_MAX_STEPS = _int_env("AI_TASK_MAX_STEPS", 64, 1, 256)
+    AI_TASK_WIDGET_POLL_MS = _int_env("AI_TASK_WIDGET_POLL_MS", 3000, 1000, 30000)
 
     # Search / indexing
     # FTS5 full-text search (BM25 ranking). Falls back to ILIKE when off or
     # when the SQLite build lacks FTS5.
     SEARCH_FTS = os.environ.get("SEARCH_FTS", "true").lower() in ("1", "true", "yes")
     # Background drainers processing the persistent index queue (index_jobs).
-    INDEX_WORKERS = int(os.environ.get("INDEX_WORKERS", "2"))
+    INDEX_WORKERS = _int_env("INDEX_WORKERS", 2, 1, 8)
 
     # Central error log (error_logs table, /settings/logs): keep the newest N
     # rows, older ones are pruned automatically.
-    ERROR_LOG_KEEP = int(os.environ.get("ERROR_LOG_KEEP", "2000"))
+    ERROR_LOG_KEEP = _int_env("ERROR_LOG_KEEP", 2000, 100, 50000)
 
     # Index files in a background thread on upload (disable in tests)
     INDEX_ASYNC = True

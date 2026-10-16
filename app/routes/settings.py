@@ -302,8 +302,6 @@ def index_queue_status():
 @login_required
 def index_queue_pause():
     """Pause the (shared) indexing queue — pending jobs stay in the DB."""
-    if not current_user.is_admin:
-        abort(403)
     indexing_service.pause_queue()
     return jsonify({"ok": True, "paused": True})
 
@@ -311,8 +309,6 @@ def index_queue_pause():
 @bp.route("/index-queue/resume", methods=["POST"])
 @login_required
 def index_queue_resume():
-    if not current_user.is_admin:
-        abort(403)
     indexing_service.resume_queue()
     return jsonify({"ok": True, "paused": False})
 

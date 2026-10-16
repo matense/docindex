@@ -87,5 +87,8 @@ def test_info_endpoint_stats_checksum_duplicates(auth_client, app):
 def test_duplicate_badge_shown_on_drive_page(auth_client, app):
     _upload(auth_client, "one.txt", b"dup content")
     _upload(auth_client, "two.txt", b"dup content")
+    # Grid (default) shows a clone icon; list view shows the "dupe" badge.
     resp = auth_client.get("/")
+    assert b"fa-clone" in resp.data
+    resp = auth_client.get("/?view=list")
     assert b"dupe" in resp.data

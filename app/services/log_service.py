@@ -65,11 +65,6 @@ def log_event(level, source, message, detail=None, path=None, user_id=None):
 
 def _prune():
     keep = int(current_app.config.get("ERROR_LOG_KEEP", 2000))
-    # Prune probabilistically (every ~20 rows) — counting + deleting on
-    # every single warning costs 2 extra queries under load.
-    import random
-    if random.randint(1, 20) != 1:
-        return
     total = db.session.query(ErrorLog.id).count()
     if total <= keep:
         return

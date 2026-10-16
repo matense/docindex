@@ -39,24 +39,24 @@
 {%- endmacro %}
 
 {% macro file_actions(f) -%}
-    <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Download" onclick="event.stopPropagation()">
-        <i class="fas fa-download"></i>
+    <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Download" aria-label="Download {{ f.name }}" onclick="event.stopPropagation()">
+        <i class="fas fa-download" aria-hidden="true"></i>
     </a>
     {% if not f.is_synced %}
         {% if f.extension in editable_exts %}
-        <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit">
-            <i class="fas fa-pen"></i>
+        <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit" aria-label="Edit {{ f.name }}">
+            <i class="fas fa-pen" aria-hidden="true"></i>
         </a>
         {% endif %}
-        <button class="btn btn-circle btn-xs btn-ghost" title="Rename"
+        <button class="btn btn-circle btn-xs btn-ghost" title="Rename" aria-label="Rename {{ f.name }}"
                 data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
                 onclick="event.stopPropagation(); renameFile(Number(this.dataset.fileId), this.dataset.fileName)">
-            <i class="fas fa-i-cursor"></i>
+            <i class="fas fa-i-cursor" aria-hidden="true"></i>
         </button>
     {% endif %}
-    <button class="btn btn-circle btn-xs btn-ghost" title="Info"
+    <button class="btn btn-circle btn-xs btn-ghost" title="Info" aria-label="Info for {{ f.name }}"
             onclick="event.stopPropagation(); showFileInfo({{ f.id }})">
-        <i class="fas fa-circle-info"></i>
+        <i class="fas fa-circle-info" aria-hidden="true"></i>
     </button>
     {% if not f.is_synced %}
     <form method="POST" action="{{ url_for('drive.delete', file_id=f.id) }}" class="inline"
