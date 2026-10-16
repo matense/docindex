@@ -464,6 +464,14 @@ def sync_drive(drive, job=None):
                     thumbnails.append((path, stored.stored_name))
                 stats["added"] += 1
             else:
+                # Size-first: same size + known checksum = assume unchanged
+                # (avoids re-hashing 10k files every sync; content changes
+                # with identical size are rare and caught on next size change
+                # or reindex).
+                if size == stored.size and stored.checksum:
+                    if job:
+                        job.processed += 1
+                    continue
                 checksum = _sha256_of(path)
                 if checksum != stored.checksum or size != stored.size:
                     updates.append((stored, checksum, size))

@@ -33,7 +33,7 @@ def index():
 @login_required
 def create():
     name = (request.form.get("name") or "").strip()[:120]
-    content = (request.form.get("content") or "").strip()
+    content = (request.form.get("content") or "").strip()[:20000]
     if not name or not content:
         abort(400, "A behavior needs a name and its instructions.")
     behavior_service.create_behavior(current_user.id, name, content)
@@ -45,7 +45,7 @@ def create():
 def update(behavior_id):
     behavior = _owned_behavior(behavior_id)
     name = (request.form.get("name") or "").strip()[:120]
-    content = (request.form.get("content") or "").strip()
+    content = (request.form.get("content") or "").strip()[:20000]
     if not name or not content:
         abort(400, "A behavior needs a name and its instructions.")
     behavior_service.update_behavior(behavior, name, content)
@@ -64,8 +64,9 @@ def delete(behavior_id):
 def toggle(behavior_id):
     behavior = _owned_behavior(behavior_id)
     data = request.get_json(silent=True) or {}
-    enabled = behavior_service.set_enabled(
-        behavior, bool(data.get("enabled")))
+    if "enabled" not in data or not isinstance(data["enabled"], bool):
+        abort(400, "Missing boolean 'enabled'.")
+    enabled = behavior_service.set_enabled(behavior, data["enabled"])
     return jsonify({"ok": True, "enabled": enabled})
 
 
@@ -73,8 +74,10 @@ def toggle(behavior_id):
 @login_required
 def persona_toggle(key):
     data = request.get_json(silent=True) or {}
+    if "enabled" not in data or not isinstance(data["enabled"], bool):
+        abort(400, "Missing boolean 'enabled'.")
     enabled = persona_service.set_persona_enabled(
-        current_user.id, key, bool(data.get("enabled")))
+        current_user.id, key, data["enabled"])
     if enabled is None:
         abort(404)
     return jsonify({"ok": True, "enabled": enabled})

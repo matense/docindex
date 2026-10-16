@@ -264,19 +264,33 @@ def logs_export():
         abort(403)
     query, _level, _source, _q = _filtered_logs(request.args)
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["id", "created_at", "level", "source", "path",
-                     "user_id", "message", "detail"])
-    for log in query.all():
-        writer.writerow([
-            log.id,
-            log.created_at.isoformat() if log.created_at else "",
-            log.level, log.source, log.path or "", log.user_id or "",
-            log.message, log.detail or "",
-        ])
+    def _safe(v):
+        s = "" if v is None else str(v)
+        # CSV formula injection: Excel executes =,+,-,@ prefixes.
+        if s[:1] in ("=", "+", "-", "@"):
+            s = "'" + s
+        return s
+
+    def _generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "created_at", "level", "source", "path",
+                         "user_id", "message", "detail"])
+        yield buf.getvalue()
+        # Stream in chunks (no unbounded .all() OOM on 100k rows).
+        for log in query.yield_per(500):
+            buf.seek(0)
+            buf.truncate(0)
+            writer.writerow([
+                log.id,
+                log.created_at.isoformat() if log.created_at else "",
+                log.level, log.source, _safe(log.path), log.user_id or "",
+                _safe(log.message), _safe(log.detail or ""),
+            ])
+            yield buf.getvalue()
+    from flask import stream_with_context
     filename = "docindex-error-logs-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".csv"
-    return Response(buf.getvalue(), mimetype="text/csv",
+    return Response(stream_with_context(_generate()), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
