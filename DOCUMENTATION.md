@@ -423,7 +423,11 @@ or per division (enable/disable all) on `/behaviors`.
 - `settings.py` (`/settings/profile`): user profile page — account card,
   email update (`POST /settings/profile/email`), password change
   (`POST /settings/profile/password`, requires the current password),
-  per-drive stats (files, folders, space used, indexed words), AI usage
+  per-drive stats (files, folders, space used; indexed words are NOT part of
+  the page render — summing `file_index.word_count` over large synced drives
+  costs ~300ms, so the template leaves `data-word-stats` placeholders and
+  fetches them lazily from `GET /settings/profile/word-stats`, one grouped
+  query returning `{drive_id: words}`), AI usage
   (conversations, messages, active connection), a card linking to the trash
   bin (`GET /settings/trash` — deleted files with name search and
   pagination; restore / delete forever / empty trash), a card linking to the

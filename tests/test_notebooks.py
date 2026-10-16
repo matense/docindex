@@ -296,6 +296,33 @@ def test_ai_tools_refuse_synced_drive(app, user, enabled):
         assert "error" in result
 
 
+def test_ai_tools_multi_drive_list_context(app, user, enabled):
+    """Chat context can be a list of drives ($ mentions): tools must not
+    treat it as a single Drive (regression: 'list' object has no attribute
+    'is_synced')."""
+    synced_id = _drive(app, user, synced=True)
+    writable_id = _drive(app, user)
+    nb_id = _create(app, user, writable_id, name="In writable")
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drives = [db.session.get(Drive, synced_id),
+                  db.session.get(Drive, writable_id)]
+        # create picks the first writable drive in the list
+        result = nb_tools._tool_create(user_obj, {"name": "Multi"}, drives)
+        assert "created" in result
+        assert result["created"]["id"] != nb_id
+        created = db.session.get(StoredFile, result["created"]["id"])
+        assert created.drive_id == writable_id
+        # list filters by every drive in the list without crashing
+        listing = nb_tools._tool_list(user_obj, {}, drives)
+        assert listing["total"] == 2
+        listing = nb_tools._tool_list(user_obj, {}, drives[:1])
+        assert listing["total"] == 0
+        # all-synced list: clear error instead of a crash
+        result = nb_tools._tool_create(user_obj, {"name": "Y"}, drives[:1])
+        assert "error" in result
+
+
 def test_tools_hidden_when_module_disabled(app, user):
     from app.services import agent_service
     with app.app_context():

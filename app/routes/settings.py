@@ -89,7 +89,11 @@ def releases():
 @bp.route("/profile")
 @login_required
 def profile():
-    """User profile: account details, per-drive stats and AI usage."""
+    """User profile: account details, per-drive stats and AI usage.
+
+    Per-drive word totals are NOT computed here — aggregating
+    FileIndex.word_count costs ~300ms on large drives, so the page fills
+    them in asynchronously from /settings/profile/word-stats."""
     drive_stats = []
     drives = (Drive.query.filter_by(user_id=current_user.id)
               .order_by(Drive.created_at).all())
@@ -99,16 +103,11 @@ def profile():
             func.coalesce(func.sum(StoredFile.size), 0))
             .filter(StoredFile.drive_id == d.id,
                     StoredFile.deleted_at.is_(None)).first())
-        total_words = (db.session.query(func.coalesce(func.sum(FileIndex.word_count), 0))
-                       .join(StoredFile, FileIndex.file_id == StoredFile.id)
-                       .filter(StoredFile.drive_id == d.id,
-                               StoredFile.deleted_at.is_(None)).scalar())
         drive_stats.append({
             "drive": d,
             "file_count": file_count,
             "folder_count": Folder.query.filter_by(drive_id=d.id).count(),
             "total_size": total_size,
-            "total_words": total_words,
             "sync_stats": (json.loads(d.last_sync_stats)
                            if d.last_sync_stats else None),
         })
@@ -130,6 +129,22 @@ def profile():
                                         .count()),
                            error_count=ErrorLog.query.filter_by(level="error").count(),
                            registration_enabled=Setting.get_bool("registration_enabled", True))
+
+
+@bp.route("/profile/word-stats")
+@login_required
+def profile_word_stats():
+    """Per-drive indexed-word totals as JSON {drive_id: words}.
+
+    One grouped pass over file_index; fetched lazily by the profile page
+    because it is the only expensive stat there."""
+    rows = (db.session.query(StoredFile.drive_id,
+                             func.coalesce(func.sum(FileIndex.word_count), 0))
+            .join(FileIndex, FileIndex.file_id == StoredFile.id)
+            .filter(StoredFile.user_id == current_user.id,
+                    StoredFile.deleted_at.is_(None))
+            .group_by(StoredFile.drive_id).all())
+    return jsonify({str(drive_id): int(words) for drive_id, words in rows})
 
 
 # --------------------------------------------------------------------------

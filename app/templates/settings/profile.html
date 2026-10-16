@@ -184,7 +184,7 @@
                     <span><i class="fas fa-file opacity-40"></i> <strong>{{ s.file_count }}</strong> files</span>
                     <span><i class="fas fa-folder opacity-40"></i> <strong>{{ s.folder_count }}</strong> folders</span>
                     <span><i class="fas fa-hard-drive opacity-40"></i> <strong>{{ human_size(s.total_size) }}</strong></span>
-                    <span><i class="fas fa-align-left opacity-40"></i> <strong>{{ '{:,}'.format(s.total_words) }}</strong> words</span>
+                    <span><i class="fas fa-align-left opacity-40"></i> <strong data-word-stats="{{ s.drive.id }}">…</strong> words</span>
                     <span class="flex-1"></span>
                     {% if s.sync_stats %}
                     <span class="flex items-center gap-x-4 whitespace-nowrap">
@@ -223,7 +223,7 @@
                         <div class="text-xs opacity-50">space used</div>
                     </div>
                     <div class="text-center">
-                        <div class="font-bold">{{ '{:,}'.format(s.total_words) }}</div>
+                        <div class="font-bold" data-word-stats="{{ s.drive.id }}">…</div>
                         <div class="text-xs opacity-50">words indexed</div>
                     </div>
                 </div>
@@ -488,6 +488,23 @@
             window.__indexQueueTimer = null;
         }
     }, 2000);
+})();
+
+// Drive word counts: loaded lazily — summing FileIndex.word_count over large
+// drives is the slowest query on this page, so it must not block rendering.
+(function () {
+    const els = document.querySelectorAll('[data-word-stats]');
+    if (!els.length) return;
+    fetch('/settings/profile/word-stats')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((stats) => {
+            if (!stats) return;
+            els.forEach((el) => {
+                const n = stats[el.dataset.wordStats];
+                el.textContent = (typeof n === 'number') ? n.toLocaleString() : '0';
+            });
+        })
+        .catch(() => { els.forEach((el) => { el.textContent = '—'; }); });
 })();
 </script>
 {% endblock %}

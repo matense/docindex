@@ -7,7 +7,7 @@ whole AI answer is a single restorable block in the notebook's history.
 
 from app.extensions import db
 from app.models import Drive, Folder
-from app.services import hashtag_service
+from app.services import hashtag_service, search_service
 from app.services.agent_service import register_tool
 
 from . import doc as doc_service
@@ -49,8 +49,9 @@ def _notebook_summary(stored):
 
 def _tool_list(user, args, drive):
     notebooks = doc_service.list_notebooks(user.id)
-    if drive is not None:
-        notebooks = [n for n in notebooks if n.drive_id == drive.id]
+    drive_ids = search_service.drive_id_list(drive)
+    if drive_ids is not None:
+        notebooks = [n for n in notebooks if n.drive_id in drive_ids]
     # AI-hidden notebooks are invisible to the assistant entirely.
     notebooks = [n for n in notebooks
                  if not doc_service.ai_error(n)]
@@ -98,7 +99,14 @@ def _tool_create(user, args, drive):
         if target_drive is None or target_drive.user_id != user.id:
             return {"error": "Drive not found."}
     elif drive is not None:
-        target_drive = drive
+        # The chat context can be a list of drives (multi-drive $ mentions):
+        # notebooks need exactly one writable target, so take the first
+        # non-synced drive in scope.
+        candidates = list(drive) if isinstance(drive, (list, tuple)) else [drive]
+        target_drive = next((d for d in candidates if not d.is_synced), None)
+        if target_drive is None and candidates:
+            return {"error": "All drives in context are synced (read-only) — "
+                             "pick a writable drive with drive_id."}
     else:
         target_drive = (Drive.query
                         .filter_by(user_id=user.id, source_path=None)
