@@ -1252,7 +1252,7 @@
             browse.addEventListener('click', () => {
                 openFileBrowser(f => setFile(f.file_id, f.name, f.extension));
             });
-            const head = fieldHead(field, null);
+            const head = fieldHead(field);
             wrap.appendChild(head);
             wrap.appendChild(shown);
             wrap.appendChild(input);
@@ -1321,29 +1321,62 @@
             input.dispatchEvent(new Event('input'));
             input.focus();
         };
-        wrap.appendChild(fieldHead(field, apply));
+        wrap.appendChild(fieldHead(field));
         wrap.appendChild(input);
+        if (field.presets && field.presets.length && apply) {
+            wrap.appendChild(presetPills(field.presets, apply));
+        } else if (field.presets_source === 'behaviors' && apply) {
+            const sel = presetSelect(field.presets || [], apply);
+            attachBehaviorPresets(sel, apply);
+            const behaviorsRow = document.createElement('div');
+            behaviorsRow.className = 'wf-preset-pills';
+            const tag = document.createElement('span');
+            tag.className = 'wf-preset-tag';
+            tag.textContent = 'Styles:';
+            behaviorsRow.appendChild(tag);
+            behaviorsRow.appendChild(sel);
+            wrap.appendChild(behaviorsRow);
+        }
         if (field.help) wrap.appendChild(helpSpan(field.help));
         return wrap;
     }
 
-    // Label row: field name on the left, "Examples…" dropdown on the right.
-    function fieldHead(field, apply) {
+    // Label row: field name (+ Required badge) on the left.
+    function fieldHead(field) {
         const head = document.createElement('div');
         head.className = 'wf-field-head';
         const span = document.createElement('span');
         span.className = 'wf-field-label';
         span.textContent = field.label;
         head.appendChild(span);
-        if (apply && ((field.presets && field.presets.length)
-                      || field.presets_source)) {
-            const sel = presetSelect(field.presets || [], apply);
-            head.appendChild(sel);
-            if (field.presets_source === 'behaviors') {
-                attachBehaviorPresets(sel, apply);
-            }
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
         }
         return head;
+    }
+
+    // "Try:" pills under the control — visible one-click examples instead
+    // of the old tiny dropdown. Behaviors/personas (async) keep a select.
+    function presetPills(presets, apply) {
+        const row = document.createElement('div');
+        row.className = 'wf-preset-pills';
+        const tag = document.createElement('span');
+        tag.className = 'wf-preset-tag';
+        tag.textContent = 'Try:';
+        row.appendChild(tag);
+        presets.slice(0, 5).forEach(p => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'wf-preset-pill';
+            b.textContent = p.label;
+            b.title = p.value;
+            b.addEventListener('click', () => apply(p.value));
+            row.appendChild(b);
+        });
+        return row;
     }
 
     function helpSpan(text) {
@@ -1430,14 +1463,14 @@
         gets.className = 'wf-chip';
         gets.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> ';
         gets.appendChild(document.createTextNode(
-            inKinds.length ? 'Gets: ' + inKinds.join(' + ')
+            inKinds.length ? 'Needs: ' + inKinds.join(' + ')
                            : 'Starting point — needs no input'));
         chips.appendChild(gets);
         const returns = document.createElement('span');
         returns.className = 'wf-chip';
         returns.innerHTML = '<i class="fas fa-arrow-right-from-bracket"></i> ';
         returns.appendChild(document.createTextNode(
-            outKinds.length ? 'Returns: ' + outKinds.join(' + ')
+            outKinds.length ? 'Gives: ' + outKinds.join(' + ')
                             : 'Ends the flow here'));
         chips.appendChild(returns);
         meta.appendChild(chips);

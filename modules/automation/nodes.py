@@ -1023,8 +1023,9 @@ def register_defaults():
         "inputs": [], "outputs": [{"name": "out", "kind": "any"}],
         "fields": [
             {"name": "file_id", "label": "File", "kind": "file",
-             "default": "", "help": "Read-only (synced) drives work fine "
-                                    "as inputs."},
+             "required": True, "default": "",
+             "help": "Read-only (synced) drives work fine "
+                    "as inputs."},
         ]}, _exec_input_file)
 
     register_node_type("input.param", {
@@ -1038,7 +1039,7 @@ def register_defaults():
         "inputs": [], "outputs": [{"name": "out", "kind": "any"}],
         "fields": [
             {"name": "param", "label": "Parameter name", "kind": "text",
-             "default": "", "placeholder": "e.g. question",
+             "required": True, "default": "", "placeholder": "e.g. question",
              "help": "Unique within the workflow — reference it as "
                      "{{ n1 }} from other nodes."},
             {"name": "label", "label": "Question shown in the run form",
@@ -1074,7 +1075,7 @@ def register_defaults():
         "inputs": [], "outputs": [{"name": "out", "kind": "files"}],
         "fields": [
             {"name": "query", "label": "Query", "kind": "text",
-             "default": "", "placeholder": "e.g. invoice 2025",
+             "required": True, "default": "", "placeholder": "e.g. invoice 2025",
              "help": "Full-text search across your drives."},
             {"name": "limit", "label": "Max results", "kind": "number",
              "default": 10},
@@ -1091,7 +1092,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "template", "label": "Template", "kind": "textarea",
-             "default": "", "placeholder": "# Report\n\n{{ n1 }}",
+             "required": True, "default": "", "placeholder": "# Report\n\n{{ n1 }}",
              "presets": [
                  {"label": "Pass a node through unchanged",
                   "value": "{{ n1 }}"},
@@ -1161,7 +1162,8 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "conditions", "label": "Conditions",
-             "kind": "conditions", "options": list(_OPS_OPTIONS),
+             "kind": "conditions", "required": True,
+             "options": list(_OPS_OPTIONS),
              "default": [],
              "help": "Add one row per condition. For 'is one of', write "
                      "the values separated by commas (e.g. paid, pending)."},
@@ -1178,7 +1180,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "picks", "label": "Columns", "kind": "columns",
-             "default": [],
+             "required": True, "default": [],
              "help": "Add one row per column, in the order you want them; "
                      "the rename field is optional."},
         ]}, _exec_table_select)
@@ -1224,7 +1226,7 @@ def register_defaults():
         "inputs": [], "outputs": [{"name": "out", "kind": "files"}],
         "fields": [
             {"name": "drive_id", "label": "Drive", "kind": "drive",
-             "default": ""},
+             "required": True, "default": ""},
             {"name": "folder_id", "label": "Folder", "kind": "folder",
              "return": "id", "default": "",
              "help": "Empty = the drive root."},
@@ -1242,7 +1244,8 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "files"}],
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
-             "default": "", "help": "Must be writable (not synced)."},
+             "required": True, "default": "",
+             "help": "Must be writable (not synced)."},
         ]}, _exec_copy_file)
 
     register_node_type("input.http", {
@@ -1253,7 +1256,8 @@ def register_defaults():
         "example": "https://api.example.com/data.json → JSON data.",
         "inputs": [], "outputs": [{"name": "out", "kind": "any"}],
         "fields": [
-            {"name": "url", "label": "URL", "kind": "text", "default": "",
+            {"name": "url", "label": "URL", "kind": "text",
+             "required": True, "default": "",
              "placeholder": "https://…",
              "help": "Public http(s) only — no localhost/metadata."},
         ]}, lambda ctx, config, inputs: _exec_http_get(
@@ -1269,7 +1273,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "prompt", "label": "Prompt", "kind": "textarea",
-             "default": "",
+             "required": True, "default": "",
              "placeholder": "e.g. Summarize the input in 5 bullet points",
              "presets": [
                  {"label": "Summarize",
@@ -1305,7 +1309,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "prompt", "label": "Task", "kind": "textarea",
-             "default": "",
+             "required": True, "default": "",
              "placeholder": "e.g. Search my files for contracts and "
                             "summarize them",
              "presets": [
@@ -1341,7 +1345,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "json"}],
         "fields": [
             {"name": "prompt", "label": "What to extract", "kind": "textarea",
-             "default": "",
+             "required": True, "default": "",
              "placeholder": "e.g. Extract the invoice number, date and "
                             "total",
              "presets": [
@@ -1387,7 +1391,7 @@ def register_defaults():
                     {"name": "false", "kind": "any"}],
         "fields": [
             {"name": "left", "label": "Compare this", "kind": "ref_or_text",
-             "default": "", "placeholder": "value or {{ n1 }}",
+             "required": True, "default": "", "placeholder": "value or {{ n1 }}",
              "help": "A fixed value, or {{ node_id }} for another node's "
                      "output."},
             {"name": "op", "label": "Operator", "kind": "select",
@@ -1421,7 +1425,8 @@ def register_defaults():
              "default": "output.txt", "placeholder": "report.txt",
              "help": "Supports {{ node_id }} references."},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
-             "default": "", "help": "Must be writable (not a synced drive)."},
+             "required": True, "default": "",
+             "help": "Must be writable (not a synced drive)."},
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "default": "",
              "placeholder": "Reports/2026",
@@ -1444,7 +1449,8 @@ def register_defaults():
         "inputs": [], "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "notebook_id", "label": "Notebook", "kind": "notebook",
-             "default": "", "help": "All cells are flattened into one text."},
+             "required": True, "default": "",
+             "help": "All cells are flattened into one text."},
         ]}, _exec_notebook_input, module="notebooks")
 
     register_node_type("notebook.output", {

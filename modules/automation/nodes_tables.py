@@ -166,7 +166,7 @@ def register_table_nodes():
              "help": "Optional — without groups you get one row for the "
                      "whole table."},
             {"name": "aggs", "label": "Calculations", "kind": "agg_rows",
-             "default": [],
+             "required": True, "default": [],
              "help": "One row per calculation: the column, the function "
                      "and an optional name for the result column."},
         ]}, _exec_table_aggregate)
@@ -183,9 +183,9 @@ def register_table_nodes():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "left_on", "label": "Match column (left / in1)",
-             "kind": "column", "default": "", "port": "in1"},
+             "kind": "column", "required": True, "default": "", "port": "in1"},
             {"name": "right_on", "label": "Match column (right / in2)",
-             "kind": "column", "default": "", "port": "in2"},
+             "kind": "column", "required": True, "default": "", "port": "in2"},
             {"name": "how", "label": "Join type", "kind": "select",
              "options": [
                  {"value": "inner", "label": "Only matching rows (inner)"},
@@ -205,7 +205,7 @@ def register_table_nodes():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "column", "label": "Sort by", "kind": "column",
-             "default": ""},
+             "required": True, "default": ""},
             {"name": "direction", "label": "Direction", "kind": "select",
              "options": [{"value": "asc", "label": "Ascending (A→Z, 0→9)"},
                          {"value": "desc", "label": "Descending"}],
@@ -238,9 +238,10 @@ def register_table_nodes():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "new_column", "label": "New column name",
-             "kind": "text", "default": "", "placeholder": "total"},
+             "kind": "text", "required": True, "default": "",
+             "placeholder": "total"},
             {"name": "formula", "label": "Formula", "kind": "text",
-             "default": "", "placeholder": "price * qty",
+             "required": True, "default": "", "placeholder": "price * qty",
              "help": "Use column names, numbers and + - * / ( ). Columns "
                      "with spaces need backticks: `unit price` * qty."},
         ]}, _exec_table_compute)
@@ -264,7 +265,8 @@ def register_table_nodes():
                          {"value": "xlsx", "label": "Excel (.xlsx)"}],
              "default": "csv"},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
-             "default": "", "help": "Must be writable (not a synced drive)."},
+             "required": True, "default": "",
+             "help": "Must be writable (not a synced drive)."},
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "default": "", "placeholder": "Reports/2026",
              "help": "Pick an existing folder — or leave empty for the drive root."},

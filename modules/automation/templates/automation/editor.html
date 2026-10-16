@@ -159,9 +159,14 @@
         <div id="wf-config-desc" class="wf-config-desc hidden"></div>
         <div id="wf-config-meta" class="mb-3"></div>
         <div id="wf-config-form" class="flex flex-col gap-2.5 max-h-[55vh] overflow-y-auto pr-1"></div>
-        <div class="flex items-center justify-end mt-4">
-            <button type="button" class="btn btn-primary btn-sm"
-                    onclick="document.getElementById('wf-config-modal').close()">Done</button>
+        <div class="flex items-center justify-between mt-4 gap-2 flex-wrap">
+            <span class="text-[11px] opacity-50">Edits apply to the canvas and auto-save.</span>
+            <div class="flex gap-2">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('wf-config-modal').close()">Cancel</button>
+                <button type="button" class="btn btn-primary btn-sm"
+                        onclick="document.getElementById('wf-config-modal').close()">Done ✓</button>
+            </div>
         </div>
     </div>
     <form method="dialog" class="modal-backdrop"><button>close</button></form>

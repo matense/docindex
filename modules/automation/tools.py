@@ -119,6 +119,7 @@ def _tool_node_catalog(user, args, drive):
                 {"name": f["name"], "kind": f.get("kind") or "text",
                  "label": f.get("label", f["name"]),
                  "default": f.get("default", ""),
+                 "required": bool(f.get("required")),
                  "options": f.get("options", []),
                  "placeholder": f.get("placeholder", ""),
                  "help": f.get("help", "")}
@@ -204,6 +205,7 @@ def _tool_get_workflow(user, args, drive):
                 {"name": f["name"], "kind": f.get("kind") or "text",
                  "label": f.get("label", f["name"]),
                  "default": f.get("default", ""),
+                 "required": bool(f.get("required")),
                  "options": f.get("options", [])}
                 for f in spec.get("fields", [])
             ],
