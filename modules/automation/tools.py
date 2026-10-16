@@ -223,6 +223,8 @@ def _tool_get_workflow(user, args, drive):
               "enabled": bool(workflow.enabled),
               "interval_minutes": workflow.interval_minutes,
               "ai_lock": locked, "specs": specs, "last_run": last_run}
+    # Full static vision: every problem at once, no run needed.
+    result["diagnosis"] = engine.diagnose_graph(graph, active_node_types())
     if locked:
         result["note"] = ("This workflow is LOCKED against AI edits by the "
                           "user — do not edit it; ask the user to unlock it "
@@ -329,8 +331,12 @@ def _tool_edit_workflow(user, args, drive):
     try:
         engine.validate_graph(graph, active_node_types())
     except engine.WorkflowError as exc:
+        detail = engine.diagnose_graph(graph, active_node_types())
         return {"error": f"The edits would break the workflow: {exc}. "
-                         "Nothing was saved."}
+                         "Nothing was saved.",
+                "failed_after_op": len(applied),
+                "applied_so_far": applied,
+                "issues": detail["issues"]}
     workflow.graph = json.dumps(graph)
     db.session.commit()
     return {"ok": True, "workflow_id": workflow.id, "applied": applied,
@@ -360,10 +366,81 @@ def _tool_get_run(user, args, drive):
         output = json.loads(run.output) if run.output else None
     except ValueError:
         output = None
-    return {"run_id": run.id, "workflow_id": run.workflow_id,
-            "status": run.status, "error": run.error,
-            "log": log[-30:], "output": output,
-            "url": f"/m/automation/runs/{run.id}"}
+    result = {"run_id": run.id, "workflow_id": run.workflow_id,
+              "status": run.status, "error": run.error,
+              "log": log[-30:], "output": output,
+              "url": f"/m/automation/runs/{run.id}"}
+    if run.status == "error":
+        result["fix_hint"] = _fix_hint(run.error, log)
+        # Static re-check of the current graph: problems the AI can fix
+        # without running again.
+        if run.workflow is not None:
+            try:
+                graph = engine.parse_graph(run.workflow.graph)
+                result["diagnosis"] = engine.diagnose_graph(
+                    graph, active_node_types())
+            except engine.WorkflowError as exc:
+                result["diagnosis"] = {
+                    "ok": False,
+                    "issues": [{"node": None, "type": None, "field": None,
+                                "severity": "error", "message": str(exc)}]}
+    return result
+
+
+def _fix_hint(error, log):
+    """Plain-language fix suggestion for a run failure (AI + user)."""
+    err = (error or "").lower()
+    if "pick a file" in err or "no input" in err:
+        return ("A node has no input: connect an input.file/search node to "
+                "it, or pick a static file in its settings.")
+    if "column" in err and "does not exist" in err:
+        return ("A column name is wrong: open the node's settings and pick "
+                "the column from the dropdown (it lists the real columns).")
+    if "ai is not configured" in err:
+        return ("No AI connection: add one in AI Settings, then retry.")
+    if "drive" in err and ("writable" in err or "read-only" in err):
+        return ("The target drive is read-only (synced): pick a writable "
+                "drive in the save node's settings.")
+    if "missing run parameters" in err:
+        return ("The workflow asks questions at run time: pass them in "
+                "params {name: value}.")
+    if "trigger" in err:
+        return ("This workflow starts from a file: pass trigger_file_id or "
+                "run it from the drive's Run menu.")
+    failed = [e for e in (log or []) if e.get("status") == "error"]
+    if failed:
+        return (f"Step '{failed[-1].get('label')}' failed: "
+                f"{failed[-1].get('summary')}. Read it with get_workflow, "
+                "fix its settings with edit_workflow, then re-run.")
+    return ("Read the workflow with get_workflow (it includes last_run), "
+            "fix the failing step with edit_workflow, then run again.")
+
+
+def _tool_validate(user, args, drive):
+    try:
+        workflow_id = int(args.get("workflow_id"))
+    except (TypeError, ValueError):
+        return {"error": "workflow_id must be an integer."}
+    workflow = (AutomationWorkflow.query
+                .filter_by(id=workflow_id, user_id=user.id).first())
+    if workflow is None:
+        return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return {"ok": False, "workflow_id": workflow.id,
+                "issues": [{"node": None, "type": None, "field": None,
+                            "severity": "error", "message": str(exc)}],
+                "note": "Fix with edit_workflow, then validate again."}
+    result = engine.diagnose_graph(graph, active_node_types())
+    result["workflow_id"] = workflow.id
+    result["note"] = ("All clear — safe to run." if result["ok"]
+                      else "Fix the error issues with edit_workflow "
+                           "(field names match the editor), then validate "
+                           "again — no run needed.")
+    return result
 
 
 def _tool_stop_run(user, args, drive):
@@ -436,6 +513,8 @@ def register_tools():
         _schema("run_workflow",
                 "Start a background run of one of the user's Automation "
                 "workflows (use list_workflows first to find the id). "
+                "Call validate_workflow first — it lists problems without "
+                "running. "
                 "Pass params for input.param nodes and trigger_file_id for "
                 "input.trigger workflows. Poll get_run_status afterwards.",
                 {"workflow_id": {"type": "integer",
@@ -523,6 +602,18 @@ def register_tools():
                             "description": "The run id"}},
                 required=("run_id",)),
         _tool_stop_run, label="Stopping run", module="automation")
+    register_tool(
+        "validate_workflow",
+        _schema("validate_workflow",
+                "Check an Automation workflow WITHOUT running it: returns "
+                "every problem at once (node, field, severity "
+                "error/warning, message). Fix error issues with "
+                "edit_workflow (config field names match), then validate "
+                "again. Call this BEFORE run_workflow and after every edit.",
+                {"workflow_id": {"type": "integer",
+                                 "description": "The workflow id"}},
+                required=("workflow_id",)),
+        _tool_validate, label="Validating workflow", module="automation")
     register_tool(
         "set_schedule",
         _schema("set_schedule",

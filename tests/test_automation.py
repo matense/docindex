@@ -1275,6 +1275,58 @@ def test_all_examples_are_valid_graphs():
         engine.validate_graph(graph, NODE_TYPES)
 
 
+def test_diagnose_clean_graph_ok():
+    result = engine.diagnose_graph(_text_graph("hi"), NODE_TYPES)
+    assert result["ok"] is True
+    assert result["issues"] == []
+
+
+def test_diagnose_lists_every_problem_at_once():
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.file", "x": 0, "y": 0, "config": {}},
+        {"id": "n2", "type": "ai.prompt", "x": 0, "y": 0,
+         "config": {"prompt": "Hi {{ n9 }}", "system": ""}},
+        {"id": "n3", "type": "output.save_file", "x": 0, "y": 0,
+         "config": {"name": "o.txt", "drive_id": "", "folder": ""}},
+    ], "edges": []}
+    result = engine.diagnose_graph(graph, NODE_TYPES)
+    assert result["ok"] is False
+    errors = [i for i in result["issues"] if i["severity"] == "error"]
+    by_node_field = {(i["node"], i["field"]) for i in errors}
+    assert ("n1", "file_id") in by_node_field
+    assert ("n3", "drive_id") in by_node_field
+    assert any(i["node"] == "n2" and "n9" in i["message"]
+               for i in errors)
+
+
+def test_validate_tool_without_running(app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph("hi"))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_validate(user_obj, {"workflow_id": wf_id}, None)
+    assert result["ok"] is True
+    assert result["workflow_id"] == wf_id
+
+
+def test_get_run_error_carries_fix_hint(app, user, enabled):
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.file", "x": 0, "y": 0, "config": {}},
+        {"id": "n2", "type": "output.result", "x": 0, "y": 0, "config": {}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "n2", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        run = runtime.start_run(
+            db.session.get(models.AutomationWorkflow, wf_id),
+            user_obj, trigger="manual")
+        run_id = run.id
+        result = tools._tool_get_run(user_obj, {"run_id": run_id}, None)
+    assert result["status"] == "error"
+    assert "fix_hint" in result and result["fix_hint"]
+    assert result["diagnosis"]["ok"] is False
+
+
 # ---------------------------------------------------------------------------
 # AI tools: catalog + create_workflow
 # ---------------------------------------------------------------------------

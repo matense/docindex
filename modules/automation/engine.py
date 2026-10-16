@@ -241,6 +241,132 @@ def parse_graph(raw):
             "edges": graph.get("edges") or []}
 
 
+# --------------------------------------------------------------------------
+# Static diagnosis: full vision of problems WITHOUT running.
+# --------------------------------------------------------------------------
+
+# Per-type required config (field -> human message when empty). The AI uses
+# this to understand and fix workflows without executing them.
+_REQUIRED_CONFIG = {
+    "input.file": (("file_id", "Pick a file (Browse drives)."),),
+    "input.param": (("param", "Give this input a parameter name."),),
+    "docindex.search_files": (("query", "Type a search query."),),
+    "transform.template": (("template", "Write the template (use {{ n1 }} refs)."),),
+    "transform.table_filter": (("conditions", "Add at least one condition."),),
+    "transform.table_select": (("picks", "Pick at least one column."),),
+    "transform.table_sort": (("column", "Pick the column to sort by."),),
+    "transform.table_join": (
+        ("left_on", "Pick the left match column."),
+        ("right_on", "Pick the right match column.")),
+    "transform.table_aggregate": (("aggs", "Add at least one calculation."),),
+    "transform.table_compute": (
+        ("new_column", "Name the new column."),
+        ("formula", "Write the formula (e.g. price * qty).")),
+    "ai.prompt": (("prompt", "Write the prompt (what should the AI do?)."),),
+    "ai.agent": (("prompt", "Describe the task for the agent."),),
+    "ai.extract_json": (("prompt", "Say what to extract."),),
+    "output.save_file": (("drive_id", "Pick a writable drive."),),
+    "output.save_table": (("drive_id", "Pick a writable drive."),),
+    "output.copy_file": (("drive_id", "Pick a target drive."),),
+    "notebook.input": (("notebook_id", "Pick a notebook."),),
+    "input.folder_list": (("drive_id", "Pick a drive."),),
+    "input.http": (("url", "Type the URL to fetch."),),
+}
+
+
+def diagnose_graph(graph, node_types=None):
+    """Static check of a workflow WITHOUT running it.
+
+    Returns {"ok": bool, "issues": [{node, type, field, severity, message}]}.
+    severity is "error" (will fail) or "warning" (may fail). The AI calls
+    this (via validate_workflow) to see every problem at once, fix them
+    with edit_workflow, and re-check — no run needed.
+    """
+    node_types = node_types if node_types is not None else active_node_types()
+    issues = []
+
+    def _issue(nid, ntype, field, severity, message):
+        issues.append({"node": nid, "type": ntype, "field": field,
+                       "severity": severity, "message": message})
+
+    try:
+        nodes_by_id, edges, _order = validate_graph(graph, node_types)
+    except WorkflowError as exc:
+        issues.append({"node": None, "type": None, "field": None,
+                       "severity": "error", "message": str(exc)})
+        return {"ok": False, "issues": issues}
+
+    inbound = {nid: set() for nid in nodes_by_id}
+    for edge in edges:
+        inbound[edge["to"]].add(edge["to_port"])
+
+    ids = set(nodes_by_id)
+    for nid, node in nodes_by_id.items():
+        ntype = node.get("type")
+        config = node.get("config") or {}
+        spec = node_types[ntype]["spec"]
+
+        # Required config fields.
+        for field, message in _REQUIRED_CONFIG.get(ntype, ()):
+            value = config.get(field)
+            if isinstance(value, str):
+                empty = not value.strip()
+            else:
+                empty = value in (None, "", [], {})
+            # table_filter accepts the legacy column/value shape too.
+            if ntype == "transform.table_filter" and not empty:
+                pass
+            elif ntype == "transform.table_filter" and config.get("column"):
+                continue
+            # table_select accepts legacy columns string too.
+            elif ntype == "transform.table_select" and (
+                    config.get("picks") or config.get("columns")):
+                continue
+            # notebook.output: notebook OR new-name is enough.
+            elif ntype == "notebook.output" and field == "notebook_id":
+                continue
+            if empty:
+                _issue(nid, ntype, field, "error", message)
+
+        # notebook.output needs a target one way or another.
+        if ntype == "notebook.output" and not (
+                (config.get("notebook_id") or "").strip()
+                or (config.get("name") or "").strip()):
+            _issue(nid, ntype, "notebook_id", "error",
+                    "Pick a notebook or name a new one.")
+
+        # Dangling {{ refs }} to nodes that do not exist.
+        for ref in _referenced_nodes([node]).get(nid, ()):
+            if ref not in ids:
+                _issue(nid, ntype, None, "error",
+                        f"Template refers to '{{{{ {ref} }}}}' which does "
+                        "not exist — fix the reference or add the node.")
+
+        # Unconnected inputs (no wire and no template ref covering them).
+        inputs = [p["name"] for p in spec.get("inputs", [])]
+        if inputs:
+            refs = _referenced_nodes([node]).get(nid, set())
+            wired = inbound.get(nid, set())
+            if not wired and not refs:
+                # merge/condition tolerate missing branches at runtime, but
+                # flag it so the AI/user notices.
+                _issue(nid, ntype, None, "warning",
+                        f"Nothing is connected to {nid} "
+                        f"({', '.join(inputs)}) — connect a node or use a "
+                        "{{ nX }} reference.")
+
+    # Trigger-only workflows cannot run manually or on schedule.
+    if any(n.get("type") == "input.trigger"
+           for n in nodes_by_id.values()):
+        _issue(None, None, None, "warning",
+                "This workflow starts from a file (Trigger input) — run it "
+                "from a drive's Run menu or pass trigger_file_id, not "
+                "manually.")
+
+    errors = [i for i in issues if i["severity"] == "error"]
+    return {"ok": not errors, "issues": issues}
+
+
 def validate_graph(graph, node_types=None):
     """Validate the graph; returns (nodes_by_id, edges, topo_order).
 
