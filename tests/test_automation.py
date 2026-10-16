@@ -1131,6 +1131,30 @@ def test_notebook_input_reads_content(app, user, notebooks_enabled):
         assert "old entry" in outputs["n"]["out"]["data"]
 
 
+def test_notebook_input_reads_one_cell(app, user, notebooks_enabled):
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        stored = nb_doc.create_notebook(
+            user_obj, drive, "Log",
+            cells=[nb_doc.new_cell("markdown", "# first"),
+                   nb_doc.new_cell("markdown", "second cell here")])
+        nb_id = stored.id
+        document = nb_doc.load(stored)
+        cell_id = document["cells"][1]["id"]
+        outputs, _, _ = _execute({"nodes": [
+            {"id": "n", "type": "notebook.input",
+             "config": {"notebook_id": nb_id, "cell_id": cell_id}}],
+            "edges": []}, app, user)
+        assert outputs["n"]["out"]["data"] == "second cell here"
+        with pytest.raises(engine.WorkflowError):
+            _execute({"nodes": [
+                {"id": "n", "type": "notebook.input",
+                 "config": {"notebook_id": nb_id, "cell_id": "nope"}}],
+                "edges": []}, app, user)
+
+
 def test_notebook_output_appends_and_creates(app, user, notebooks_enabled):
     drive_id = _drive(app, user)
     with app.app_context():

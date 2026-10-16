@@ -831,9 +831,46 @@ def _exec_notebook_input(ctx, config, inputs):
     stored = doc.get_notebook(notebook_id, ctx["user"].id)
     if stored is None:
         raise WorkflowError(f"Notebook #{notebook_id} does not exist.")
+    cell_id = str(config.get("cell_id") or "").strip()
+    if cell_id:
+        # Read one picked cell instead of the whole notebook.
+        try:
+            document = doc.load(stored)
+        except ValueError as exc:
+            raise WorkflowError(str(exc))
+        _i, cell = doc.find_cell(document, cell_id)
+        if cell is None:
+            raise WorkflowError(
+                f"Cell '{cell_id}' no longer exists in notebook "
+                f"'{stored.name}' — pick another cell.")
+        text = _cell_text(cell)
+        ctx["log"](f"reading one cell from notebook '{stored.name}'")
+        return p_text(text)
     text = doc.extract(stored)
     ctx["log"](f"reading notebook '{stored.name}'")
     return p_text(text)
+
+
+def _cell_text(cell):
+    """One notebook cell flattened to plain text (mirrors doc.extract)."""
+    import re as _re
+    ctype = cell.get("type")
+    if ctype == "separator":
+        return ""
+    if ctype in ("markdown", "code", "heading"):
+        return cell.get("content", "")
+    if ctype == "richtext":
+        stripped = _re.sub(r"<[^>]+>", " ", cell.get("content", ""))
+        return " ".join(stripped.split())
+    if ctype == "todo":
+        return "\n".join(i.get("text", "")
+                         for i in cell.get("meta", {}).get("items", []))
+    if ctype == "table":
+        meta = cell.get("meta", {})
+        lines = [" | ".join(meta.get("headers", []))]
+        lines.extend(" | ".join(r) for r in meta.get("rows", []))
+        return "\n".join(line for line in lines if line.strip(" |"))
+    return cell.get("content", "")
 
 
 def _exec_notebook_output(ctx, config, inputs, outputs):
@@ -1448,12 +1485,19 @@ def register_defaults():
 
     register_node_type("notebook.input", {
         "label": "Notebook input", "icon": "fa-book", "category": "Input",
-        "description": "Reads the content of a notebook as text.",
+        "description": "Reads a notebook as text — the whole thing, or one "
+                       "specific cell you pick.",
+        "example": "The Summary cell of the weekly notebook, straight into "
+                   "an AI prompt.",
         "inputs": [], "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "notebook_id", "label": "Notebook", "kind": "notebook",
              "required": True, "default": "",
-             "help": "All cells are flattened into one text."},
+             "help": "Empty cell below = all cells flattened into one text."},
+            {"name": "cell_id", "label": "Only one specific cell (optional)",
+             "kind": "notebook_cell", "advanced": True, "default": "",
+             "help": "Pick a cell to read just that one instead of the "
+                     "whole notebook."},
         ]}, _exec_notebook_input, module="notebooks")
 
     register_node_type("notebook.output", {

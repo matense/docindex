@@ -531,6 +531,41 @@ def _reference_issues(user, graph):
                                    "severity": "error",
                                    "message": "The selected folder no longer "
                                               "exists — pick another."})
+        if ntype in ("notebook.input", "notebook.output"):
+            cell_id = str(config.get("cell_id") or "").strip()
+            nb_raw = config.get("notebook_id")
+            if cell_id and nb_raw not in (None, ""):
+                try:
+                    import importlib as _il
+                    doc = _il.import_module(
+                        "docindex_module_notebooks.doc")
+                    try:
+                        nb_id = int(nb_raw)
+                    except (TypeError, ValueError):
+                        nb_id = None
+                    stored = (doc.get_notebook(nb_id, user.id)
+                              if nb_id else None)
+                    if stored is None:
+                        issues.append({"node": nid, "type": ntype,
+                                       "field": "notebook_id",
+                                       "severity": "error",
+                                       "message": "The selected notebook no "
+                                                  "longer exists — pick "
+                                                  "another."})
+                    elif doc.find_cell(
+                            doc.load(stored), cell_id)[0] is None:
+                        issues.append({"node": nid, "type": ntype,
+                                       "field": "cell_id",
+                                       "severity": "error",
+                                       "message": "That cell no longer "
+                                                  "exists in the notebook — "
+                                                  "pick another cell."})
+                except engine.WorkflowError as exc:
+                    issues.append({"node": nid, "type": ntype,
+                                   "field": "cell_id",
+                                   "severity": "error", "message": str(exc)})
+                except Exception:  # noqa: BLE001 - best-effort check
+                    pass
     return issues
 
 

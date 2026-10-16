@@ -67,7 +67,8 @@
             case 'notebook.input': {
                 const nb = (window.automationEditorData.notebooks || [])
                     .find(n => String(n.id) === String(c.notebook_id));
-                return nb ? truncate(nb.name, 26) : 'no notebook selected';
+                const base = nb ? truncate(nb.name, 26) : 'no notebook selected';
+                return c.cell_id ? `one cell in ${base}` : base;
             }
             case 'notebook.output': {
                 if (c.notebook_id) {
