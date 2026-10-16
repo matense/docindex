@@ -162,7 +162,7 @@ def register_table_nodes():
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
             {"name": "groups", "label": "Group by", "kind": "column_list",
-             "default": [],
+             "advanced": True, "default": [],
              "help": "Optional — without groups you get one row for the "
                      "whole table."},
             {"name": "aggs", "label": "Calculations", "kind": "agg_rows",
@@ -268,6 +268,7 @@ def register_table_nodes():
              "required": True, "default": "",
              "help": "Must be writable (not a synced drive)."},
             {"name": "folder", "label": "Folder", "kind": "folder",
-             "return": "path", "default": "", "placeholder": "Reports/2026",
+             "return": "path", "advanced": True, "default": "",
+             "placeholder": "Reports/2026",
              "help": "Pick an existing folder — or leave empty for the drive root."},
         ]}, _exec_save_table)

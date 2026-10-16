@@ -1001,6 +1001,7 @@ def register_defaults():
              "help": "Literal text — switch the format below to JSON to feed "
                      "structured data."},
             {"name": "format", "label": "Format", "kind": "select",
+             "advanced": True,
              "options": [{"value": "text", "label": "Plain text"},
                          {"value": "json", "label": "JSON data"}],
              "default": "text"},
@@ -1052,17 +1053,18 @@ def register_defaults():
                          {"value": "file", "label": "File from a drive"}],
              "default": "text"},
             {"name": "ask", "label": "Ask at run time", "kind": "select",
+             "advanced": True,
              "options": [{"value": "yes", "label": "Yes — ask every run"},
                          {"value": "no", "label": "No — always use the "
                                                   "static value"}],
              "default": "yes"},
             {"name": "default", "label": "Static default", "kind": "text",
-             "default": "",
+             "advanced": True, "default": "",
              "show_when": {"field": "kind", "not_in": ["file"]},
              "help": "Used when nobody answers (schedules, triggers, AI) "
                      "or when asking is off."},
             {"name": "file_id", "label": "Static file", "kind": "file",
-             "default": "",
+             "advanced": True, "default": "",
              "show_when": {"field": "kind", "equals": "file"},
              "help": "Used when nobody answers or asking is off."},
         ]}, _exec_input_param)
@@ -1078,7 +1080,7 @@ def register_defaults():
              "required": True, "default": "", "placeholder": "e.g. invoice 2025",
              "help": "Full-text search across your drives."},
             {"name": "limit", "label": "Max results", "kind": "number",
-             "default": 10},
+             "advanced": True, "default": 10},
         ]}, _exec_search_files)
 
     register_node_type("transform.template", {
@@ -1195,7 +1197,7 @@ def register_defaults():
         "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "max_chars", "label": "Max chars per file",
-             "kind": "number", "default": 6000,
+             "kind": "number", "advanced": True, "default": 6000,
              "help": "Longer files are truncated to this size."},
         ]}, _exec_read_files)
 
@@ -1228,10 +1230,11 @@ def register_defaults():
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "required": True, "default": ""},
             {"name": "folder_id", "label": "Folder", "kind": "folder",
-             "return": "id", "default": "",
+             "return": "id", "advanced": True, "default": "",
              "help": "Empty = the drive root."},
             {"name": "extension", "label": "Only extension (optional)",
-             "kind": "text", "default": "", "placeholder": "pdf"},
+             "kind": "text", "advanced": True, "default": "",
+             "placeholder": "pdf"},
         ]}, _exec_folder_list)
 
     register_node_type("output.copy_file", {
@@ -1290,7 +1293,7 @@ def register_defaults():
              "help": "Supports {{ node_id }} references. The connected "
                      "input (file, table, …) is appended automatically."},
             {"name": "system", "label": "Behavior (system prompt)",
-             "kind": "textarea", "default": "",
+             "kind": "textarea", "advanced": True, "default": "",
              "placeholder": "Optional — pick an example on the right or "
                             "write your own",
              "presets": list(_BEHAVIOR_PRESETS),
@@ -1323,7 +1326,7 @@ def register_defaults():
              "help": "The connected input is appended automatically. The "
                      "agent decides which tools to use, step by step."},
             {"name": "system", "label": "Behavior (system prompt)",
-             "kind": "textarea", "default": "",
+             "kind": "textarea", "advanced": True, "default": "",
              "placeholder": "Optional — extra instructions for the agent",
              "presets": list(_BEHAVIOR_PRESETS),
              "presets_source": "behaviors",
@@ -1359,7 +1362,7 @@ def register_defaults():
              "help": "Write it in plain language — the connected input "
                      "(file, table, …) is appended automatically."},
             {"name": "schema", "label": "Shape of the answer (optional)",
-             "kind": "textarea", "default": "",
+             "kind": "textarea", "advanced": True, "default": "",
              "placeholder": '{"number": "...", "total": 0}',
              "presets": [
                  {"label": "Invoice",
@@ -1371,7 +1374,7 @@ def register_defaults():
              "help": "An example of the JSON you want back. Leave empty "
                      "and the AI decides the shape."},
             {"name": "system", "label": "Behavior (system prompt)",
-             "kind": "textarea", "default": "",
+             "kind": "textarea", "advanced": True, "default": "",
              "placeholder": "Optional — pick an example on the right or "
                             "write your own",
              "presets": list(_BEHAVIOR_PRESETS),
@@ -1428,7 +1431,7 @@ def register_defaults():
              "required": True, "default": "",
              "help": "Must be writable (not a synced drive)."},
             {"name": "folder", "label": "Folder", "kind": "folder",
-             "return": "path", "default": "",
+             "return": "path", "advanced": True, "default": "",
              "placeholder": "Reports/2026",
              "help": "Pick an existing folder — or leave empty for the drive root."},
         ]}, lambda ctx, config, inputs: _exec_save_file(
@@ -1470,12 +1473,13 @@ def register_defaults():
              "help": "Pick one to update it, or leave empty to create a "
                      "new notebook."},
             {"name": "mode", "label": "When updating", "kind": "select",
+             "advanced": True,
              "options": [{"value": "append", "label": "Append a new cell"},
                          {"value": "replace", "label": "Replace all cells"}],
              "default": "append",
              "show_when": {"field": "notebook_id"}},
             {"name": "cell_id", "label": "…or update one specific cell",
-             "kind": "notebook_cell", "default": "",
+             "kind": "notebook_cell", "advanced": True, "default": "",
              "show_when": {"field": "notebook_id"},
              "help": "Optional — replaces that cell's content and "
                      "overrides the mode above."},

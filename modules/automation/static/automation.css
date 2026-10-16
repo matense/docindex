@@ -520,6 +520,44 @@
     opacity: 0.8;
 }
 
+/* Missing required field: red ring + shake target for Done validation. */
+.wf-field-error {
+    border-color: oklch(var(--er) / 0.65) !important;
+    box-shadow: 0 0 0 3px oklch(var(--er) / 0.15);
+}
+
+/* Progressive disclosure: optional fields under one expander. */
+.wf-advanced {
+    border: 1px dashed rgba(128, 128, 128, 0.3);
+    border-radius: 12px;
+    padding: 4px 12px 10px;
+}
+
+.wf-advanced > summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0.65;
+    padding: 6px 0;
+    list-style: none;
+}
+
+.wf-advanced > summary::-webkit-details-marker {
+    display: none;
+}
+
+.wf-advanced > summary::before {
+    content: '▸ ';
+}
+
+.wf-advanced[open] > summary::before {
+    content: '▾ ';
+}
+
+.wf-advanced .wf-field {
+    margin-top: 8px;
+}
+
 /* Footer tip: how to reference this node from other nodes. */
 .wf-ref-tip {
     display: flex;

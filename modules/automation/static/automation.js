@@ -641,9 +641,12 @@
     // Filter rows: a list of column/operator/value rows with an AND/OR
     // selector. When a CSV/Excel file is connected upstream, the column
     // becomes a proper dropdown with the file's real columns.
+    // Filter rows: sentence-style — "Where [column] [op] [value], AND/OR".
     function conditionsWidget(field, nodeId) {
         const wrap = document.createElement('div');
         wrap.className = 'wf-field';
+        wrap.dataset.fieldName = field.name;
+        if (field.required) wrap.dataset.required = '1';
 
         const head = document.createElement('div');
         head.className = 'wf-field-head';
@@ -651,6 +654,12 @@
         lbl.className = 'wf-field-label';
         lbl.textContent = field.label || 'Conditions';
         head.appendChild(lbl);
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
+        }
         const matchSel = document.createElement('select');
         matchSel.className = 'wf-preset-select';
         matchSel.title = 'How the conditions combine';
@@ -779,6 +788,7 @@
     function columnsWidget(field, nodeId) {
         const wrap = document.createElement('div');
         wrap.className = 'wf-field';
+        wrap.dataset.fieldName = field.name;
 
         const head = document.createElement('div');
         head.className = 'wf-field-head';
@@ -786,6 +796,12 @@
         lbl.className = 'wf-field-label';
         lbl.textContent = field.label || 'Columns';
         head.appendChild(lbl);
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
+        }
         wrap.appendChild(head);
 
         const rowsEl = document.createElement('div');
@@ -938,6 +954,12 @@
         lbl.className = 'wf-field-label';
         lbl.textContent = field.label || 'Columns';
         head.appendChild(lbl);
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
+        }
         wrap.appendChild(head);
         const rowsEl = document.createElement('div');
         rowsEl.className = 'wf-cond-rows';
@@ -1013,6 +1035,12 @@
         lbl.className = 'wf-field-label';
         lbl.textContent = field.label || 'Calculations';
         head.appendChild(lbl);
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
+        }
         wrap.appendChild(head);
         const rowsEl = document.createElement('div');
         rowsEl.className = 'wf-cond-rows';
@@ -1297,6 +1325,7 @@
             input = document.createElement('input');
             input.type = 'text';
             input.className = 'input input-bordered input-sm w-full';
+            input.placeholder = 'column name (or pick after connecting a file)';
             const host = input;
             fetchUpstreamColumns(nodeId, cols => {
                 if (!cols || !cols.length || !host.isConnected) return;
@@ -1367,7 +1396,7 @@
         tag.className = 'wf-preset-tag';
         tag.textContent = 'Try:';
         row.appendChild(tag);
-        presets.slice(0, 5).forEach(p => {
+        presets.slice(0, 3).forEach(p => {
             const b = document.createElement('button');
             b.type = 'button';
             b.className = 'wf-preset-pill';
@@ -1486,10 +1515,24 @@
         form.innerHTML = '';
         cellWidgetReloaders = [];
         folderWidgetReloaders = [];
-        (spec.fields || []).forEach(field => {
+        const essential = (spec.fields || []).filter(f => !f.advanced);
+        const advanced = (spec.fields || []).filter(f => f.advanced);
+        essential.forEach(field => {
             form.appendChild(fieldWidget(
                 field, (data.config || {})[field.name], dfId));
         });
+        if (advanced.length) {
+            const det = document.createElement('details');
+            det.className = 'wf-advanced';
+            const sum = document.createElement('summary');
+            sum.textContent = `Show advanced (${advanced.length})`;
+            det.appendChild(sum);
+            advanced.forEach(field => {
+                det.appendChild(fieldWidget(
+                    field, (data.config || {})[field.name], dfId));
+            });
+            form.appendChild(det);
+        }
         if (!(spec.fields || []).length) {
             const none = document.createElement('div');
             none.className = 'text-xs opacity-50 text-center py-4 ' +
@@ -1522,6 +1565,38 @@
             configChangeHook = null;
             window.currentWorkflowNode = null;
         }, { once: true });
+
+        // Done validates this node's required fields first: empty required
+        // fields are highlighted and the popup stays open.
+        const doneBtn = document.getElementById('wf-config-done');
+        const cancelBtn = document.getElementById('wf-config-cancel');
+        if (cancelBtn) {
+            cancelBtn.onclick = () => modal.close();
+        }
+        if (doneBtn) {
+            doneBtn.onclick = () => {
+                const missing = (spec.fields || []).filter(f =>
+                    f.required && !String(
+                        ((nodeData(dfId) || {}).config || {})[f.name] ?? ''
+                    ).trim());
+                form.querySelectorAll('.wf-field-error').forEach(
+                    elm => elm.classList.remove('wf-field-error'));
+                if (missing.length) {
+                    missing.forEach(f => {
+                        const elm = form.querySelector(
+                            `[data-field-name="${f.name}"]`);
+                        if (elm) {
+                            elm.classList.add('wf-field-error');
+                            elm.scrollIntoView({ block: 'nearest' });
+                        }
+                    });
+                    window.uiToast(
+                        `Fill in: ${missing.map(f => f.label).join(', ')}`, 'error');
+                    return;
+                }
+                modal.close();
+            };
+        }
 
         modal.showModal();
         applyShapeHints(dfId, type);
