@@ -204,10 +204,19 @@ def _referenced_nodes(graph_nodes):
     deps = {}
     for node in graph_nodes:
         refs = set()
-        for value in (node.get("config") or {}).values():
+
+        def _scan(value):
             if isinstance(value, str):
                 refs.update(m.group(1).split(".")[0]
                             for m in _REF_RE.finditer(value))
+            elif isinstance(value, dict):
+                for v in value.values():
+                    _scan(v)
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    _scan(v)
+
+        _scan(node.get("config") or {})
         refs.discard(node["id"])
         deps[node["id"]] = refs
     return deps
@@ -438,7 +447,19 @@ def preview_outputs(outputs, limit=4000):
         shown = {}
         for port, payload in (ports or {}).items():
             if payload is not None:
-                shown[port] = as_text(payload)[:limit]
+                try:
+                    # Truncate tables before rendering (a 100k-row table
+                    # would OOM as_text before [:limit]).
+                    if payload.get("kind") == "table":
+                        data = payload.get("data") or {}
+                        cols = data.get("columns", [])
+                        rows = (data.get("rows", []) or [])[:50]
+                        text = table_to_csv({"columns": cols, "rows": rows})
+                    else:
+                        text = as_text(payload)
+                except WorkflowError:
+                    text = ""
+                shown[port] = text[:limit]
         if shown:
             previews[nid] = shown
     return previews

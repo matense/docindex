@@ -39,7 +39,8 @@
     </div>
 
     <!-- Examples gallery (collapsible — state remembered per browser) -->
-    <details id="automation-examples" class="glass-panel rounded-2xl group">
+    <details id="automation-examples" class="glass-panel rounded-2xl group"
+             {% if not workflows %}open{% endif %}>
         <summary class="px-6 py-4 cursor-pointer select-none flex items-center gap-3 list-none
                         hover:bg-base-content/[0.03] rounded-2xl transition-colors">
             <span class="w-8 h-8 rounded-lg bg-secondary/15 text-secondary flex items-center justify-center flex-shrink-0">
@@ -89,16 +90,14 @@
                     </span>
                     <span class="min-w-0">
                         <span class="block font-semibold truncate group-hover:text-primary transition-colors">{{ w.name }}
-                            {% if w.ai_lock %}<i class="fas fa-lock text-warning text-[10px] ml-1"
-                               title="Locked against AI edits"></i>{% endif %}
-                            {% if w.ai_hidden %}<i class="fas fa-eye-slash text-warning text-[10px] ml-1"
-                               title="Hidden from the AI"></i>{% endif %}
+                            {% if w.ai_lock %}<span class="badge badge-warning badge-xs ml-1" title="Locked against AI edits">AI: locked</span>{% endif %}
+                            {% if w.ai_hidden %}<span class="badge badge-warning badge-xs ml-1" title="Hidden from the AI">AI: hidden</span>{% endif %}
                         </span>
                         <span class="text-[11px] opacity-45 flex items-center gap-3 mt-0.5 flex-wrap">
                             {% if w.interval_minutes %}
-                            <span><i class="fas fa-clock mr-1"></i>every {{ w.interval_minutes }} min{{ ' (on)' if w.enabled else ' (off)' }}</span>
+                            <span><i class="fas fa-clock mr-1"></i>Auto · every {{ w.interval_minutes }} min · {{ 'On' if w.enabled else 'Off' }}</span>
                             {% else %}
-                            <span><i class="fas fa-hand-pointer mr-1"></i>manual</span>
+                            <span><i class="fas fa-hand-pointer mr-1"></i>Manual run</span>
                             {% endif %}
                             {% if last %}
                             <span>last run
@@ -112,14 +111,18 @@
                     </span>
                 </a>
                 <div class="flex gap-1 flex-shrink-0">
+                    <a href="{{ url_for('automation.editor', workflow_id=w.id) }}"
+                       class="btn btn-primary btn-xs gap-1" title="Open and run">
+                        <i class="fas fa-play"></i> Run
+                    </a>
                     <a href="{{ url_for('automation.runs', workflow_id=w.id) }}"
                        class="btn btn-ghost btn-xs gap-1" title="Run history">
-                        <i class="fas fa-clock-rotate-left"></i> Runs
+                        <i class="fas fa-clock-rotate-left"></i> History
                     </a>
                     <form method="POST" action="{{ url_for('automation.duplicate', workflow_id=w.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Duplicate">
-                            <i class="fas fa-clone"></i>
+                            <i class="fas fa-clone"></i> Copy
                         </button>
                     </form>
                     <form method="POST" action="{{ url_for('automation.delete', workflow_id=w.id) }}"
@@ -127,7 +130,7 @@
                           data-confirm-danger>
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-ghost btn-xs text-error gap-1" title="Delete">
-                            <i class="fas fa-trash-can"></i>
+                            <i class="fas fa-trash-can"></i> Delete
                         </button>
                     </form>
                 </div>
@@ -135,10 +138,14 @@
             {% endfor %}
         </div>
         {% else %}
-        <div class="text-center py-14 opacity-50">
-            <i class="fas fa-diagram-project text-4xl mb-3 block"></i>
+        <div class="text-center py-14">
+            <i class="fas fa-diagram-project text-4xl mb-3 block opacity-50"></i>
             <p class="font-semibold">No workflows yet.</p>
-            <p class="text-xs mt-1">Create one and chain your first nodes on the canvas — or start from an example above.</p>
+            <p class="text-xs mt-1 opacity-50">Start from an example above — or create a blank one.</p>
+            <button type="button" class="btn btn-primary btn-sm mt-4"
+                    onclick="document.getElementById('wf-new-modal').showModal()">
+                <i class="fas fa-plus"></i> New automation
+            </button>
         </div>
         {% endif %}
     </div>
@@ -162,7 +169,7 @@
                 <span class="font-semibold text-sm truncate max-w-56 group-hover:text-primary transition-colors">
                     {{ r.workflow.name if r.workflow else '(deleted workflow)' }}
                 </span>
-                <span class="badge badge-ghost badge-xs">{{ r.trigger }}</span>
+                <span class="badge badge-ghost badge-xs" title="How this run started">{% if r.trigger == 'manual' %}Started by you{% elif r.trigger == 'schedule' %}Automatic{% elif r.trigger == 'ai' %}By AI chat{% else %}{{ r.trigger }}{% endif %}</span>
                 <span class="text-xs opacity-50 flex-1">
                     {{ r.created_at.strftime('%d %b %Y %H:%M:%S') if r.created_at }}
                     {% if r.finished_at and r.started_at %}

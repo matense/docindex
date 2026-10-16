@@ -502,7 +502,10 @@ def _exec_read_files(ctx, config, inputs):
         max_chars = max(200, int(config.get("max_chars") or 6000))
     except (TypeError, ValueError):
         max_chars = 6000
+    # Total cap: 50 files x 6000 chars would blow the prompt — clamp output.
+    max_total = 120000
     parts = []
+    total = 0
     for ref in files:
         payload = load_file_payload(ctx["user"], ref.get("file_id"))
         text = as_text(payload)
@@ -511,8 +514,121 @@ def _exec_read_files(ctx, config, inputs):
             text = text[:max_chars]
             note = " (truncated)"
         parts.append(f"=== {ref.get('name', 'file')}{note} ===\n{text}")
+        total += len(text)
+        if total >= max_total:
+            parts.append(f"... ({len(files) - len(parts)} more file(s) skipped "
+                         f"— total cap {max_total} chars)")
+            break
     ctx["log"](f"{len(parts)} file(s) read")
     return p_text("\n\n".join(parts))
+
+
+def _exec_text_split(ctx, config, inputs):
+    """Split text into chunks (by chars or lines) — poor-man's loop for long
+    documents before per-chunk AI calls."""
+    if "in" not in inputs:
+        raise WorkflowError("No input — connect text first.")
+    text = as_text(inputs["in"])
+    mode = config.get("mode") or "chars"
+    try:
+        size = max(100, int(config.get("size") or 4000))
+    except (TypeError, ValueError):
+        raise WorkflowError("Chunk size must be a number.")
+    if mode == "lines":
+        lines = text.splitlines()
+        chunks = ["\n".join(lines[i:i + size])
+                  for i in range(0, len(lines), size)] or [""]
+    else:
+        chunks = [text[i:i + size] for i in range(0, len(text), size)] or [""]
+    chunks = chunks[:50]  # safety cap
+    ctx["log"](f"{len(chunks)} chunk(s)")
+    return p_json({"chunks": chunks, "count": len(chunks)})
+
+
+def _exec_folder_list(ctx, config, inputs):
+    """List files in a drive folder as a files payload (no content read)."""
+    try:
+        drive_id = int(config.get("drive_id"))
+    except (TypeError, ValueError):
+        raise WorkflowError("Pick a drive.")
+    drive = db.session.get(Drive, drive_id)
+    if drive is None or drive.user_id != ctx["user"].id:
+        raise WorkflowError("The selected drive does not exist.")
+    folder_id = config.get("folder_id")
+    if folder_id not in (None, ""):
+        try:
+            folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            raise WorkflowError("Invalid folder.")
+        folder = db.session.get(Folder, folder_id)
+        if folder is None or folder.drive_id != drive.id:
+            raise WorkflowError("The folder is not in that drive.")
+    else:
+        folder_id = None
+    ext = (config.get("extension") or "").strip().lower().lstrip(".")
+    q = (StoredFile.query
+         .filter_by(drive_id=drive.id, folder_id=folder_id,
+                    user_id=ctx["user"].id)
+         .filter(StoredFile.deleted_at.is_(None))
+         .order_by(StoredFile.name).limit(100))
+    if ext:
+        q = q.filter(StoredFile.extension == ext)
+    files = [{"file_id": f.id, "name": f.name} for f in q.all()]
+    ctx["log"](f"{len(files)} file(s) in folder")
+    return p_files(files)
+
+
+def _exec_copy_file(ctx, config, inputs):
+    """Copy one trigger/file payload to another drive (keeps content)."""
+    if "in" not in inputs:
+        raise WorkflowError("No input — connect a file or file list.")
+    payload = inputs["in"]
+    refs = as_files(payload) if payload["kind"] == "files" else None
+    if refs is None:
+        # Single file content passthrough is not copyable — require files.
+        raise WorkflowError("Connect a file (trigger, file, search, folder).")
+    if len(refs) != 1:
+        raise WorkflowError("Copy one file at a time (got "
+                            f"{len(refs)}). Use a filter first.")
+    import shutil as _sh
+    stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
+    if stored is None or stored.user_id != ctx["user"].id:
+        raise WorkflowError("The file does not exist.")
+    try:
+        drive_id = int(config.get("drive_id"))
+    except (TypeError, ValueError):
+        raise WorkflowError("Pick a target drive.")
+    drive = db.session.get(Drive, drive_id)
+    if drive is None or drive.user_id != ctx["user"].id:
+        raise WorkflowError("The target drive does not exist.")
+    if drive.is_synced:
+        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
+    import uuid as _uuid
+    src = file_service.file_path(stored)
+    ext = stored.extension or ""
+    sname = f"{_uuid.uuid4().hex}.{ext}" if ext else _uuid.uuid4().hex
+    import os as _os
+    dst = _os.path.join(file_service.UPLOAD_FOLDER
+                        if hasattr(file_service, "UPLOAD_FOLDER")
+                        else ctx["app"].config["UPLOAD_FOLDER"], sname)
+    _sh.copyfile(src, dst)
+    import hashlib as _hl
+    h = _hl.sha256()
+    with open(dst, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    copy = StoredFile(name=stored.name, stored_name=sname, extension=ext,
+                      mime_type=stored.mime_type, size=_os.path.getsize(dst),
+                      checksum=h.hexdigest(), folder_id=None,
+                      user_id=ctx["user"].id, drive_id=drive.id)
+    db.session.add(copy)
+    db.session.flush()
+    from app.models import FileIndex
+    db.session.add(FileIndex(file_id=copy.id, status="pending"))
+    db.session.commit()
+    indexing_service.enqueue_index([copy.id])
+    ctx["log"](f"copied to '{drive.name}'")
+    return p_files([{"file_id": copy.id, "name": copy.name}])
 
 
 # --------------------------------------------------------------------------
@@ -1037,6 +1153,54 @@ def register_defaults():
              "kind": "number", "default": 6000,
              "help": "Longer files are truncated to this size."},
         ]}, _exec_read_files)
+
+    register_node_type("transform.text_split", {
+        "label": "Split text into chunks", "icon": "fa-scissors",
+        "category": "Transform",
+        "description": "Splits long text into smaller chunks (JSON "
+                       "{chunks, count}) so each piece fits the AI.",
+        "example": "12000 chars / 4000 → 3 chunks.",
+        "example": "12000 chars / 4000 → 3 chunks.",
+        "inputs": [{"name": "in", "kind": "any"}],
+        "outputs": [{"name": "out", "kind": "json"}],
+        "fields": [
+            {"name": "mode", "label": "Split by", "kind": "select",
+             "options": [{"value": "chars", "label": "Characters"},
+                         {"value": "lines", "label": "Lines"}],
+             "default": "chars"},
+            {"name": "size", "label": "Chunk size", "kind": "number",
+             "default": 4000, "help": "Chars or lines per chunk (max 50)."},
+        ]}, _exec_text_split)
+
+    register_node_type("input.folder_list", {
+        "label": "List folder files", "icon": "fa-folder-open",
+        "category": "Input",
+        "description": "Lists up to 100 files in a drive folder as a file "
+                       "list — chain with Read contents or Copy.",
+        "example": "Reports/ → [report.pdf, notes.txt] as a file list.",
+        "inputs": [], "outputs": [{"name": "out", "kind": "files"}],
+        "fields": [
+            {"name": "drive_id", "label": "Drive", "kind": "drive",
+             "default": ""},
+            {"name": "folder_id", "label": "Folder (optional, id)",
+             "kind": "text", "default": "",
+             "help": "Leave empty for the drive root."},
+            {"name": "extension", "label": "Only extension (optional)",
+             "kind": "text", "default": "", "placeholder": "pdf"},
+        ]}, _exec_folder_list)
+
+    register_node_type("output.copy_file", {
+        "label": "Copy file to drive", "icon": "fa-copy",
+        "category": "Output",
+        "description": "Copies one file (trigger/search result) to another "
+                       "writable drive.",
+        "example": "report.pdf → copy to Work drive.",
+        "inputs": [{"name": "in", "kind": "files"}],
+        "outputs": [{"name": "out", "kind": "files"}],
+        "fields": [
+            {"name": "drive_id", "label": "Target drive", "kind": "drive",
+             "default": "", "help": "Must be writable (not synced)."},
+        ]}, _exec_copy_file)
 
     register_node_type("ai.prompt", {
         "label": "AI prompt", "icon": "fa-wand-magic-sparkles",

@@ -31,6 +31,31 @@ def start_run(workflow, user, trigger="manual", app=None,
     it into the ``trigger`` payload for input.trigger nodes. ``params``
     carries the answers to input.param nodes collected in the run form.
     """
+    # Fail fast on broken graphs (scheduler/AI paths): don't create error
+    # runs for workflows that can't even validate.
+    try:
+        graph = engine.parse_graph(workflow.graph)
+        if not graph["nodes"]:
+            raise engine.WorkflowError("The workflow is empty.")
+        from .registry import active_node_types
+        engine.validate_graph(graph, active_node_types())
+    except engine.WorkflowError as exc:
+        run = AutomationRun(workflow_id=workflow.id, user_id=user.id,
+                            status="error", trigger=trigger,
+                            trigger_file_id=trigger_file_id,
+                            params=json.dumps(params) if params else None,
+                            error=f"Invalid workflow: {exc}",
+                            finished_at=_utcnow())
+        db.session.add(run)
+        db.session.commit()
+        return run
+    # Global cap: max 10 active runs per user (thread + AI cost guard).
+    active = (AutomationRun.query
+              .filter_by(user_id=user.id)
+              .filter(AutomationRun.status.in_(("queued", "running"))).count())
+    if active >= 10:
+        raise engine.WorkflowError("Too many active runs (max 10) — wait for "
+                                   "one to finish.")
     run = AutomationRun(workflow_id=workflow.id, user_id=user.id,
                         status="queued", trigger=trigger,
                         trigger_file_id=trigger_file_id,
