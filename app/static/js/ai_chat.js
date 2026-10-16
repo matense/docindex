@@ -13,6 +13,10 @@
     // Shared stateless helpers
     // ------------------------------------------------------------------
     function renderMarkdown(text) {
+        if (window.DocIndex && window.DocIndex.renderMarkdown) {
+            return window.DocIndex.renderMarkdown(text);
+        }
+        // Fallback (ai_common.js not loaded yet): local copy.
         // Convert [name](file://ID) citations into real download links, then markdown.
         const linked = (text || '').replace(/\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view" class="link link-primary">$1</a>');

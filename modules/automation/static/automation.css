@@ -633,3 +633,22 @@
 .drawflow .drawflow-delete {
     display: none !important;
 }
+
+/* Mobile: stack palette above canvas, horizontal chip scroll. */
+@media (max-width: 767px) {
+    #automation-editor-root .flex.gap-3.items-stretch {
+        flex-direction: column;
+        height: auto !important;
+    }
+    #wf-palette {
+        width: 100% !important;
+        max-height: 220px;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+    #wf-palette .wf-palette-node {
+        min-width: 160px;
+    }
+}

@@ -1300,6 +1300,7 @@
         data.config = data.config || {};
         data.config[field] = value;
         refreshCard(nodeId);
+        markDirty();
         if (configChangeHook) configChangeHook(nodeId, field, value);
     }
 
@@ -1655,7 +1656,7 @@
     // ------------------------------------------------------------------
     // Save / run
     // ------------------------------------------------------------------
-    async function saveGraph() {
+    async function saveGraph(silent) {
         const body = {
             graph: exportGraph(),
             name: document.getElementById('wf-name').value.trim(),
@@ -1663,6 +1664,7 @@
             enabled: document.getElementById('wf-enabled').checked,
             interval_minutes: document.getElementById('wf-interval').value,
         };
+        setSaved('A guardar…');
         const resp = await fetch(root.dataset.saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1670,11 +1672,28 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            window.uiAlert(data.error || 'Could not save the workflow.',
-                           { title: 'Save workflow' });
+            setSaved('Erro ao guardar');
+            if (!silent) {
+                window.uiAlert(data.error || 'Could not save the workflow.',
+                               { title: 'Save workflow' });
+            }
             return false;
         }
+        setSaved('Guardado ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
         return true;
+    }
+
+    let _dirtyTimer = null;
+    function setSaved(text) {
+        const elm = document.getElementById('wf-saved');
+        if (elm) elm.textContent = text;
+    }
+    function markDirty() {
+        setSaved('● Por guardar');
+        if (_dirtyTimer) clearTimeout(_dirtyTimer);
+        _dirtyTimer = setTimeout(async () => {
+            await saveGraph(true);
+        }, 2000);
     }
 
     // ------------------------------------------------------------------
@@ -1695,6 +1714,16 @@
         editor.reroute_curvature = 0.25;
         editor.reroute_curvature_start_end = 0.25;
         editor.start();
+
+        // Autosave triggers: structural changes + header fields.
+        ['nodeCreated', 'nodeRemoved', 'connectionCreated',
+         'connectionRemoved'].forEach(ev => {
+            try { editor.on(ev, () => markDirty()); } catch {}
+        });
+        ['wf-name', 'wf-description', 'wf-interval', 'wf-enabled'].forEach(id => {
+            const elm = document.getElementById(id);
+            if (elm) elm.addEventListener('input', () => markDirty());
+        });
 
         let graph = { nodes: [], edges: [] };
         try {
@@ -1788,8 +1817,7 @@
             return ports[idx] ? ports[idx].kind : 'any';
         }
 
-        editor.on('connectionCreated', info => {
-            const outKind = portKind(info.output_id, info.output_class, true);
+        editor.on('connectionCreated', info => {            const outKind = portKind(info.output_id, info.output_class, true);
             const inKind = portKind(info.input_id, info.input_class, false);
             const reject = message => {
                 editor.removeSingleConnection(

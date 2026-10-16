@@ -385,6 +385,9 @@
     document.addEventListener('spa:navigated', renderChips);
 
     function renderMarkdown(text) {
+        if (window.DocIndex && window.DocIndex.renderMarkdown) {
+            return window.DocIndex.renderMarkdown(text);
+        }
         const linked = (text || '').replace(/\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view" class="link link-primary">$1</a>');
         if (window.marked) {
