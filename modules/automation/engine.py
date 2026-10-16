@@ -270,15 +270,12 @@ _REQUIRED_CONFIG = {
     "input.file": (("file_id", "Pick a file (Browse drives)."),),
     "input.drive": (("param", "Give this drive input a parameter name."),),
     "input.param": (("param", "Give this run input a parameter name."),),
-    "input.param": (("param", "Give this input a parameter name."),),
+    "transform.table_join": (("keys", "Add at least one match column pair."),),
     "docindex.search_files": (("query", "Type a search query."),),
     "transform.template": (("template", "Write the template (use {{ n1 }} refs)."),),
     "transform.table_filter": (("conditions", "Add at least one condition."),),
     "transform.table_select": (("picks", "Pick at least one column."),),
     "transform.table_sort": (("column", "Pick the column to sort by."),),
-    "transform.table_join": (
-        ("left_on", "Pick the left match column."),
-        ("right_on", "Pick the right match column.")),
     "transform.table_aggregate": (("aggs", "Add at least one calculation."),),
     "transform.table_compute": (
         ("new_column", "Name the new column."),
@@ -338,6 +335,12 @@ def diagnose_graph(graph, node_types=None):
             if ntype == "transform.table_filter" and not empty:
                 pass
             elif ntype == "transform.table_filter" and config.get("column"):
+                continue
+            # table_join accepts a legacy single left_on/right_on pair too.
+            elif ntype == "transform.table_join" and not empty:
+                pass
+            elif ntype == "transform.table_join" and (
+                    config.get("left_on") and config.get("right_on")):
                 continue
             # table_select accepts legacy columns string too.
             elif ntype == "transform.table_select" and (

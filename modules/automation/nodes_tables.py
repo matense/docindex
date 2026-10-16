@@ -60,18 +60,30 @@ def _exec_table_join(ctx, config, inputs):
     if left_p is None or right_p is None:
         raise WorkflowError("Connect a table to both inputs (in1 and in2).")
     left, right = table_to_df(as_table(left_p)), table_to_df(as_table(right_p))
-    left_on = (config.get("left_on") or "").strip()
-    right_on = (config.get("right_on") or "").strip()
-    if not left_on or not right_on:
-        raise WorkflowError("Pick the join column on each side.")
-    _require_column(left, left_on, "Join (left)")
-    _require_column(right, right_on, "Join (right)")
+    pairs = [(str(p.get("left", "")).strip(), str(p.get("right", "")).strip())
+             for p in (config.get("keys") or []) if isinstance(p, dict)]
+    pairs = [(a, b) for a, b in pairs if a and b]
+    if not pairs:
+        # Legacy single left_on/right_on (old graphs).
+        left_on = (config.get("left_on") or "").strip()
+        right_on = (config.get("right_on") or "").strip()
+        if left_on and right_on:
+            pairs = [(left_on, right_on)]
+    if not pairs:
+        raise WorkflowError("Add at least one match column pair.")
+    for a, _b in pairs:
+        _require_column(left, a, "Join (left)")
+    for _a, b in pairs:
+        _require_column(right, b, "Join (right)")
     how = config.get("how") or "inner"
     if how not in ("inner", "left", "right", "outer"):
         raise WorkflowError(f"Unknown join type '{how}'.")
+    left_on = [a for a, _ in pairs]
+    right_on = [b for _, b in pairs]
     out = left.merge(right, left_on=left_on, right_on=right_on, how=how)
+    on_desc = ", ".join(f"{a} = {b}" for a, b in pairs)
     ctx["log"](f"{len(left)} × {len(right)} rows → {len(out)} ({how} join "
-               f"on {left_on} = {right_on})")
+                f"on {on_desc})")
     return p_table(**df_to_table(out))
 
 
@@ -182,10 +194,14 @@ def register_table_nodes():
                    {"name": "in2", "kind": "table"}],
         "outputs": [{"name": "out", "kind": "table"}],
         "fields": [
-            {"name": "left_on", "label": "Match column (left / in1)",
-             "kind": "column", "required": True, "default": "", "port": "in1"},
-            {"name": "right_on", "label": "Match column (right / in2)",
-             "kind": "column", "required": True, "default": "", "port": "in2"},
+            {"name": "keys", "label": "Match on", "kind": "join_keys",
+             "required": True, "default": [],
+             "help": "Add one row per key pair — both columns must match "
+                     "for rows to join. Several pairs = composite key."},
+            {"name": "left_on", "label": "Match column, left / in1 (legacy)",
+             "kind": "column", "advanced": True, "default": "", "port": "in1"},
+            {"name": "right_on", "label": "Match column, right / in2 (legacy)",
+             "kind": "column", "advanced": True, "default": "", "port": "in2"},
             {"name": "how", "label": "Join type", "kind": "select",
              "options": [
                  {"value": "inner", "label": "Only matching rows (inner)"},

@@ -165,10 +165,16 @@
                 return truncate(label + more
                     + (by.length ? ` by ${by.join(', ')}` : ''), 30);
             }
-            case 'transform.table_join':
+            case 'transform.table_join': {
+                const keys = Array.isArray(c.keys) ? c.keys.filter(k => k.left || k.right) : [];
+                if (keys.length) {
+                    const joined = keys.map(k => `${k.left || '—'} = ${k.right || '—'}`).join(', ');
+                    return truncate(`${joined} (${c.how || 'inner'})`, 34);
+                }
                 return [c.left_on, '=', c.right_on].every(Boolean)
                     ? truncate(`${c.left_on} = ${c.right_on} (${c.how || 'inner'})`, 30)
                     : 'not configured';
+            }
             case 'transform.table_sort':
                 return c.column
                     ? truncate(`${c.column} ${c.direction === 'desc' ? '↓' : '↑'}`, 26)
@@ -1142,6 +1148,95 @@
         return wrap;
     }
 
+    // Join key pairs: one row per (left column, right column). Left column
+    // offers in1's columns, right offers in2's; both degrade to text inputs
+    // when the connected table is not known yet.
+    function joinKeysWidget(field, nodeId) {
+        const wrap = document.createElement('div');
+        wrap.className = 'wf-field';
+        wrap.dataset.fieldName = field.name;
+        const head = document.createElement('div');
+        head.className = 'wf-field-head';
+        const lbl = document.createElement('span');
+        lbl.className = 'wf-field-label';
+        lbl.textContent = field.label || 'Match on';
+        head.appendChild(lbl);
+        if (field.required) {
+            const req = document.createElement('span');
+            req.className = 'wf-field-required';
+            req.textContent = 'Required';
+            head.appendChild(req);
+        }
+        wrap.appendChild(head);
+        const rowsEl = document.createElement('div');
+        rowsEl.className = 'wf-cond-rows';
+        wrap.appendChild(rowsEl);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-ghost btn-xs gap-1 self-start';
+        addBtn.innerHTML = '<i class="fas fa-plus"></i> Add key pair';
+        wrap.appendChild(addBtn);
+        if (field.help) wrap.appendChild(helpSpan(field.help));
+
+        let leftCols = null, rightCols = null;
+
+        function current() {
+            const pairs = (nodeData(nodeId).config || {})[field.name];
+            return Array.isArray(pairs) && pairs.length
+                ? pairs : [{ left: '', right: '' }];
+        }
+
+        function render() {
+            const pairs = current();
+            rowsEl.innerHTML = '';
+            pairs.forEach((pair, i) => {
+                const row = document.createElement('div');
+                row.className = 'wf-cond-row';
+                const eq = document.createElement('span');
+                eq.className = 'wf-join-eq';
+                eq.textContent = '=';
+                const leftInput = columnControl(leftCols, pair.left, v => {
+                    pairs[i].left = v;
+                    updateConfig(nodeId, field.name, pairs);
+                }, 'left column');
+                const rightInput = columnControl(rightCols, pair.right, v => {
+                    pairs[i].right = v;
+                    updateConfig(nodeId, field.name, pairs);
+                }, 'right column');
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'wf-cond-rm';
+                rm.title = 'Remove key pair';
+                rm.innerHTML = '<i class="fas fa-xmark"></i>';
+                rm.addEventListener('click', () => {
+                    pairs.splice(i, 1);
+                    updateConfig(nodeId, field.name, pairs);
+                    render();
+                });
+                row.append(leftInput, eq, rightInput, rm);
+                rowsEl.appendChild(row);
+            });
+        }
+
+        addBtn.addEventListener('click', () => {
+            const pairs = current();
+            pairs.push({ left: '', right: '' });
+            updateConfig(nodeId, field.name, pairs);
+            render();
+        });
+
+        render();
+        fetchUpstreamColumns(nodeId, cols => {
+            leftCols = cols;
+            render();
+        }, 'in1');
+        fetchUpstreamColumns(nodeId, cols => {
+            rightCols = cols;
+            render();
+        }, 'in2');
+        return wrap;
+    }
+
     function fieldWidget(field, value, nodeId) {
         if (field.kind === 'conditions') {
             return conditionsWidget(field, nodeId);
@@ -1154,6 +1249,9 @@
         }
         if (field.kind === 'agg_rows') {
             return aggRowsWidget(field, nodeId);
+        }
+        if (field.kind === 'join_keys') {
+            return joinKeysWidget(field, nodeId);
         }
         const wrap = document.createElement('div');
         wrap.className = 'wf-field';

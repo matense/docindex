@@ -414,6 +414,14 @@
     background: oklch(var(--er) / 0.1);
 }
 
+/* Join key pairs: compact "=" between the two column pickers. */
+.wf-join-eq {
+    flex-shrink: 0;
+    font-weight: 800;
+    opacity: 0.5;
+    font-size: 12px;
+}
+
 /* Each field is a soft card: label row, control, examples, help. */
 .wf-field {
     display: flex;

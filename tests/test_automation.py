@@ -2078,6 +2078,49 @@ def test_table_join_unknown_column_errors(app, user):
                             "to_port": "in2"}), app, user)
 
 
+def test_table_join_multiple_keys(app, user):
+    left = _make_file(app, user, "orders.csv",
+                      "cid,year,total\n1,2024,50\n1,2025,70\n2,2024,90\n")
+    right = _make_file(app, user, "customers.csv",
+                       "id,year,name\n1,2024,Ana\n1,2025,Rui\n2,2023,Zé\n")
+
+    def run_join(config):
+        graph = _table_file_graph(
+            left, "transform.table_join", config,
+            extra_node={"id": "g", "type": "input.file",
+                        "config": {"file_id": str(right)}},
+            extra_edge={"from": "g", "from_port": "out", "to": "t",
+                        "to_port": "in2"})
+        outputs, _, _ = _execute(graph, app, user)
+        return outputs["t"]["out"]["data"]
+
+    with app.app_context():
+        # Composite key: only rows matching on BOTH columns join.
+        out = run_join({"keys": [{"left": "cid", "right": "id"},
+                                 {"left": "year", "right": "year"}],
+                        "how": "inner"})
+        assert [r[0:3] for r in out["rows"]] == [[1, 2024, 50], [1, 2025, 70]]
+        # Legacy single pair still works.
+        out = run_join({"left_on": "cid", "right_on": "id", "how": "inner"})
+        assert len(out["rows"]) == 5  # 2x2 on id=1 plus id=2 — vs 2 exact with the composite key above
+        # No keys at all is a clear error, not a silent cross join.
+        with pytest.raises(engine.WorkflowError, match="at least one"):
+            run_join({"keys": [], "how": "inner"})
+
+
+def test_table_join_diagnose_flags_empty(app, user):
+    graph = _table_file_graph(
+        1, "transform.table_join", {"keys": [], "how": "inner"},
+        extra_node={"id": "g", "type": "input.file",
+                    "config": {"file_id": "2"}},
+        extra_edge={"from": "g", "from_port": "out", "to": "t",
+                    "to_port": "in2"})
+    result = engine.diagnose_graph(graph, NODE_TYPES)
+    assert result["ok"] is False
+    assert any(i["node"] == "t" and i["field"] == "keys"
+               for i in result["issues"])
+
+
 def test_table_sort_descending(app, user):
     fid = _make_file(app, user, "n.csv", "name,v\na,3\nb,1\nc,2\n")
     with app.app_context():
