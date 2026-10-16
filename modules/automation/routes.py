@@ -347,10 +347,11 @@ def behaviors():
 def preview(workflow_id):
     """Execute a graph fragment (e.g. a node and its ancestors) without
     persisting a run — the editor's right-click "run up to this node".
-    Output nodes really run: save_file writes the file for real."""
+    With dry_run=true, save/output nodes are stubbed (no files written)."""
     _owned_workflow(workflow_id)  # ownership check only
     data = request.get_json(silent=True) or {}
     raw = data.get("graph")
+    dry_run = bool(data.get("dry_run"))
     entries = []
     try:
         graph = engine.parse_graph(raw if isinstance(raw, str)
@@ -364,9 +365,25 @@ def preview(workflow_id):
             entries.append({"node": nid, "label": label, "status": status,
                             "summary": summary, "ms": ms})
 
+        node_types = dict(active_node_types())
+        if dry_run:
+            # Stub side-effecting nodes: report what WOULD be saved.
+            def _dry_save(kind):
+                def _run(ctx, config, inputs):
+                    name = (config.get("name") or "output").strip() or "output"
+                    ctx["log"](f"[dry run] would save '{name}' ({kind})")
+                    return engine.p_text(f"[dry run] {name}")
+                return _run
+            for tname in ("output.save_file", "output.save_table",
+                          "notebook.output"):
+                if tname in node_types:
+                    spec = node_types[tname]["spec"]
+                    node_types[tname] = {"spec": spec,
+                                         "executor": _dry_save(tname),
+                                         "module": node_types[tname]["module"]}
         outputs, results, created = engine.execute_graph(
             graph, {"user": current_user, "app": current_app},
-            node_types=active_node_types(), log=log)
+            node_types=node_types, log=log)
     except engine.WorkflowError as exc:
         return jsonify({"error": str(exc), "log": entries}), 400
     # Per-node output previews so the editor can show "View output".
@@ -495,6 +512,30 @@ def run_stop(run_id):
     if run is None:
         abort(404)
     return jsonify({"ok": True, "status": run.status})
+
+
+@bp.post("/runs/<int:run_id>/retry")
+def run_retry(run_id):
+    """Start a new run with the same workflow + params + trigger file."""
+    run = _owned_run(run_id)
+    workflow = db.session.get(AutomationWorkflow, run.workflow_id)
+    if workflow is None or workflow.user_id != current_user.id:
+        abort(404)
+    if runtime.has_active_run(workflow.id):
+        flash("This workflow already has a run in progress.", "error")
+        return redirect(url_for("automation.run_detail", run_id=run.id))
+    try:
+        params = json.loads(run.params) if run.params else None
+    except ValueError:
+        params = None
+    try:
+        active = runtime.start_run(workflow, current_user, trigger=run.trigger,
+                                   trigger_file_id=run.trigger_file_id,
+                                   params=params)
+    except engine.WorkflowError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("automation.run_detail", run_id=run.id))
+    return redirect(url_for("automation.run_detail", run_id=active.id))
 
 
 @bp.get("/api/browse")

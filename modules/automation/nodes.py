@@ -631,6 +631,49 @@ def _exec_copy_file(ctx, config, inputs):
     return p_files([{"file_id": copy.id, "name": copy.name}])
 
 
+def _exec_http_get(ctx, config, inputs, outputs):
+    """GET JSON/text from a URL (SSRF-guarded, no redirects, size-capped)."""
+    from urllib.parse import urlparse as _up
+    import ipaddress as _ip
+    import requests as _rq
+    raw = render_template(config.get("url", ""), outputs).strip()
+    if not raw:
+        raise WorkflowError("Configure a URL.")
+    try:
+        p = _up(raw)
+    except Exception:
+        raise WorkflowError("Invalid URL.")
+    if p.scheme not in ("http", "https"):
+        raise WorkflowError("URL must start with http:// or https://.")
+    host = (p.hostname or "").lower()
+    if not host or host in ("169.254.169.254", "metadata.google.internal"):
+        raise WorkflowError("That host is not allowed.")
+    try:
+        addr = _ip.ip_address(host)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise WorkflowError("Private/local addresses are not allowed.")
+    except ValueError:
+        pass
+    try:
+        resp = _rq.get(raw, timeout=15, allow_redirects=False,
+                       headers={"User-Agent": "DocIndex-Automation/1.0"})
+    except Exception as exc:
+        raise WorkflowError(f"Request failed: {exc}")
+    if resp.status_code in (301, 302, 303, 307, 308):
+        raise WorkflowError("Redirects are not followed — use the final URL.")
+    if resp.status_code != 200:
+        raise WorkflowError(f"Server returned {resp.status_code}.")
+    body = resp.text[:50000]
+    ctype = resp.headers.get("Content-Type", "")
+    if "json" in ctype:
+        try:
+            import json as _js
+            return p_json(_js.loads(body))
+        except ValueError:
+            pass
+    return p_text(body)
+
+
 # --------------------------------------------------------------------------
 # AI nodes
 # --------------------------------------------------------------------------
@@ -1201,6 +1244,20 @@ def register_defaults():
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "default": "", "help": "Must be writable (not synced)."},
         ]}, _exec_copy_file)
+
+    register_node_type("input.http", {
+        "label": "Fetch URL (GET)", "icon": "fa-globe",
+        "category": "Input",
+        "description": "Fetches JSON or text from a public URL (no "
+                       "redirects, 50k cap). Supports {{ }} refs.",
+        "example": "https://api.example.com/data.json → JSON data.",
+        "inputs": [], "outputs": [{"name": "out", "kind": "any"}],
+        "fields": [
+            {"name": "url", "label": "URL", "kind": "text", "default": "",
+             "placeholder": "https://…",
+             "help": "Public http(s) only — no localhost/metadata."},
+        ]}, lambda ctx, config, inputs: _exec_http_get(
+            ctx, config, inputs, ctx["_outputs"]))
 
     register_node_type("ai.prompt", {
         "label": "AI prompt", "icon": "fa-wand-magic-sparkles",

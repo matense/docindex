@@ -69,7 +69,9 @@
         <!-- Palette -->
         <div class="glass-panel rounded-2xl p-3 w-60 flex-shrink-0 overflow-y-auto flex flex-col gap-1.5"
              id="wf-palette">
-            <div class="text-[10px] uppercase tracking-wide opacity-50 mb-1">Nodes — click or drag to add</div>
+            <div class="text-[10px] uppercase tracking-wide opacity-50 mb-1">Steps — click or drag to add</div>
+            <input type="text" id="wf-palette-search" placeholder="Search steps…"
+                   class="input input-bordered input-xs w-full mb-1" autocomplete="off">
             {% set ns = namespace(cat=None) %}
             {% for node in palette %}
             {% if node.category != ns.cat %}
@@ -214,6 +216,32 @@
 
 <link rel="stylesheet" href="{{ url_for('automation.static', filename='vendor/drawflow.min.css') }}">
 <link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}">
+<script>
+// Palette search (no dependency on automation.js load order).
+(function () {
+    const input = document.getElementById('wf-palette-search');
+    const pal = document.getElementById('wf-palette');
+    if (!input || !pal) return;
+    input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        let currentCat = null, catVisible = false, catEl = null;
+        pal.querySelectorAll('.wf-palette-cat, .wf-palette-node').forEach(elm => {
+            if (elm.classList.contains('wf-palette-cat')) {
+                if (catEl && !catVisible) catEl.style.display = 'none';
+                catEl = elm; catVisible = false;
+                catEl.style.display = '';
+                currentCat = elm;
+            } else {
+                const show = !q || (elm.textContent || '').toLowerCase().includes(q)
+                    || (elm.title || '').toLowerCase().includes(q);
+                elm.style.display = show ? '' : 'none';
+                if (show) catVisible = true;
+            }
+        });
+        if (catEl && !catVisible) catEl.style.display = 'none';
+    });
+})();
+</script>
 <script>
 window.automationEditorData = {
     graphRaw: {{ workflow.graph | tojson }},

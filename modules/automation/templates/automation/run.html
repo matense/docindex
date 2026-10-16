@@ -15,7 +15,7 @@
                 {{ run.workflow.name if run.workflow else 'Workflow' }} — run #{{ run.id }}
             </h1>
             <p class="text-xs opacity-50">
-                {{ run.created_at.strftime('%d %b %Y %H:%M:%S') if run.created_at }} · trigger: {{ run.trigger }}<span id="run-duration"></span>
+                {{ run.created_at.strftime('%d %b %Y %H:%M:%S') if run.created_at }} · {% if run.trigger == 'manual' %}Started by you{% elif run.trigger == 'schedule' %}Automatic schedule{% elif run.trigger == 'ai' %}Started by AI chat{% else %}{{ run.trigger }}{% endif %}<span id="run-duration"></span>
             </p>
             {% if params %}
             <p class="text-xs opacity-60 mt-1 flex items-center gap-1 flex-wrap">
@@ -35,8 +35,18 @@
         <button type="button" id="run-stop" class="btn btn-outline btn-error btn-sm gap-1">
             <i class="fas fa-stop"></i> Stop
         </button>
+        {% elif run.workflow %}
+        <form method="POST" action="{{ url_for('automation.run_retry', run_id=run.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-primary btn-sm gap-1" title="Run again with the same inputs">
+                <i class="fas fa-rotate-right"></i> Run again
+            </button>
+        </form>
         {% endif %}
         {% if run.workflow %}
+        <a href="{{ url_for('automation.editor', workflow_id=run.workflow_id) }}" class="btn btn-ghost btn-sm gap-1" title="Open in editor">
+            <i class="fas fa-pen"></i> Edit
+        </a>
         <a href="{{ url_for('automation.runs', workflow_id=run.workflow_id) }}" class="btn btn-ghost btn-sm gap-1">
             <i class="fas fa-arrow-left"></i> All runs
         </a>
@@ -44,7 +54,21 @@
     </div>
 
     <div id="run-error" class="glass-panel rounded-2xl px-4 py-3 border border-error/30 {{ 'hidden' if not run.error }}">
-        <div class="text-sm text-error"><i class="fas fa-triangle-exclamation mr-1"></i><span id="run-error-text">{{ run.error }}</span></div>
+        <div class="text-sm font-semibold text-error"><i class="fas fa-triangle-exclamation mr-1"></i>What happened</div>
+        <div class="text-sm mt-1"><span id="run-error-text">{{ run.error }}</span></div>
+        {% if run.workflow %}
+        <div class="flex gap-2 mt-3">
+            <a href="{{ url_for('automation.editor', workflow_id=run.workflow_id) }}" class="btn btn-outline btn-sm gap-1">
+                <i class="fas fa-pen"></i> Open step in editor
+            </a>
+            <form method="POST" action="{{ url_for('automation.run_retry', run_id=run.id) }}" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-primary btn-sm gap-1">
+                    <i class="fas fa-rotate-right"></i> Retry
+                </button>
+            </form>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Live progress: current node + overall percentage -->

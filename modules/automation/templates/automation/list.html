@@ -193,22 +193,34 @@
     </div>
 </div>
 
-<!-- New workflow modal -->
+<!-- New workflow modal: wizard — goal first, blank last -->
 <dialog id="wf-new-modal" class="modal">
     <div class="modal-box glass-panel">
-        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New workflow</h3>
-        <p class="text-xs opacity-50 mb-4">A blank canvas — add nodes, connect them, then run the
-        flow manually, on a schedule, or from the AI chat.</p>
-        <form method="POST" action="{{ url_for('automation.create') }}" class="flex flex-col gap-3">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New automation</h3>
+        <p class="text-xs opacity-50 mb-4">What do you want to do? Start from a
+        template — or blank canvas.</p>
+        <div class="grid grid-cols-1 gap-2 mb-4 max-h-[40vh] overflow-y-auto pr-1">
+            {% for ex in examples %}
+            <form method="POST" action="{{ url_for('automation.example_use', key=ex.key) }}" class="flex">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="flex-1 text-left rounded-xl border border-base-content/10 px-3 py-2 hover:border-primary/40 hover:bg-primary/5 transition-colors flex items-center gap-2">
+                    <i class="fas {{ ex.icon }} text-primary/70"></i>
+                    <span class="flex-1 min-w-0"><span class="block text-sm font-semibold truncate">{{ ex.name }}</span></span>
+                    <span class="text-[11px] opacity-50">Use →</span>
+                </button>
+            </form>
+            {% endfor %}
+        </div>
+        <form method="POST" action="{{ url_for('automation.create') }}" class="flex flex-col gap-3 border-t border-base-content/10 pt-3">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="text" name="name" placeholder="e.g. Translate new documents" required
+            <input type="text" name="name" placeholder="Or blank: e.g. Translate new documents" required
                    class="input input-bordered input-sm w-full">
             <input type="text" name="description" placeholder="What does this flow do? (optional)"
                    class="input input-bordered input-sm w-full">
             <div class="modal-action">
                 <button type="button" class="btn btn-ghost btn-sm"
                         onclick="document.getElementById('wf-new-modal').close()">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">Create &amp; open editor</button>
+                <button type="submit" class="btn btn-outline btn-sm">Create blank &amp; open editor</button>
             </div>
         </form>
     </div>
