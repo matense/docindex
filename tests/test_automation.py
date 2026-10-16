@@ -895,6 +895,36 @@ def test_browse_enforces_ownership(auth_client, app, user, enabled):
         f"/m/automation/api/browse?file_id={fid}").status_code == 404
 
 
+def test_folders_endpoint_lists_paths(auth_client, app, user, enabled):
+    drive_id = _drive(app, user)
+    with app.app_context():
+        root = Folder(drive_id=drive_id, name="Docs", user_id=user)
+        db.session.add(root)
+        db.session.flush()
+        sub = Folder(drive_id=drive_id, name="2026", user_id=user,
+                     parent_id=root.id)
+        db.session.add(sub)
+        db.session.commit()
+    resp = auth_client.get(f"/m/automation/api/folders?drive_id={drive_id}")
+    assert resp.status_code == 200
+    paths = [f["path"] for f in resp.get_json()["folders"]]
+    assert paths == ["Docs", "Docs/2026"]
+    assert auth_client.get(
+        "/m/automation/api/folders?drive_id=999999").status_code == 404
+
+
+def test_folder_field_specs_use_picker():
+    specs = {t: e["spec"] for t, e in NODE_TYPES.items()}
+    by_name = {f["name"]: f for f in
+               specs["output.save_file"]["fields"]}
+    assert by_name["drive_id"]["kind"] == "drive"
+    assert by_name["folder"]["kind"] == "folder"
+    picks = {f["name"]: f for f in
+             specs["input.folder_list"]["fields"]}
+    assert picks["drive_id"]["kind"] == "drive"
+    assert picks["folder_id"]["kind"] == "folder"
+
+
 # ---------------------------------------------------------------------------
 # Preview endpoint (editor right-click "run up to this node")
 # ---------------------------------------------------------------------------

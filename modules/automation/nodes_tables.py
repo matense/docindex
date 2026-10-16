@@ -265,7 +265,7 @@ def register_table_nodes():
              "default": "csv"},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "default": "", "help": "Must be writable (not a synced drive)."},
-            {"name": "folder", "label": "Folder path", "kind": "text",
-             "default": "", "placeholder": "Reports/2026",
-             "help": "Optional — must already exist."},
+            {"name": "folder", "label": "Folder", "kind": "folder",
+             "return": "path", "default": "", "placeholder": "Reports/2026",
+             "help": "Pick an existing folder — or leave empty for the drive root."},
         ]}, _exec_save_table)

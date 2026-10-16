@@ -538,6 +538,30 @@ def run_retry(run_id):
     return redirect(url_for("automation.run_detail", run_id=active.id))
 
 
+@bp.get("/api/folders")
+def api_folders():
+    """All folders of a drive as [{id, path}] ordered by path — feeds the
+    editor's folder picker (save nodes, folder listing). Only the user's
+    own drives."""
+    drive_id = request.args.get("drive_id", type=int)
+    drive = db.session.get(Drive, drive_id) if drive_id else None
+    if drive is None or drive.user_id != current_user.id:
+        abort(404)
+    folders = (Folder.query.filter_by(drive_id=drive.id)
+               .order_by(Folder.name).all())
+    by_id = {f.id: f for f in folders}
+    paths = []
+    for f in folders:
+        parts, cur = [], f
+        while cur is not None:
+            parts.append(cur.name)
+            cur = by_id.get(cur.parent_id) if cur.parent_id else None
+        paths.append({"id": f.id, "path": "/".join(reversed(parts))})
+    paths.sort(key=lambda x: x["path"].lower())
+    return jsonify({"drive": {"id": drive.id, "name": drive.name},
+                    "folders": paths})
+
+
 @bp.get("/api/browse")
 def api_browse():
     """Drive/folder/file browser for the editor's file picker.

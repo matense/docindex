@@ -1225,9 +1225,9 @@ def register_defaults():
         "fields": [
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "default": ""},
-            {"name": "folder_id", "label": "Folder (optional, id)",
-             "kind": "text", "default": "",
-             "help": "Leave empty for the drive root."},
+            {"name": "folder_id", "label": "Folder", "kind": "folder",
+             "return": "id", "default": "",
+             "help": "Empty = the drive root."},
             {"name": "extension", "label": "Only extension (optional)",
              "kind": "text", "default": "", "placeholder": "pdf"},
         ]}, _exec_folder_list)
@@ -1422,9 +1422,10 @@ def register_defaults():
              "help": "Supports {{ node_id }} references."},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "default": "", "help": "Must be writable (not a synced drive)."},
-            {"name": "folder", "label": "Folder path", "kind": "text",
-             "default": "", "placeholder": "Reports/2026",
-             "help": "Optional — must already exist."},
+            {"name": "folder", "label": "Folder", "kind": "folder",
+             "return": "path", "default": "",
+             "placeholder": "Reports/2026",
+             "help": "Pick an existing folder — or leave empty for the drive root."},
         ]}, lambda ctx, config, inputs: _exec_save_file(
             ctx, config, inputs, ctx["_outputs"]))
 

@@ -1194,8 +1194,45 @@
             };
             cellWidgetReloaders.push(() => reload());
             reload(value);
-        } else if (field.kind === 'file') {
-            input = document.createElement('input');
+        } else if (field.kind === 'folder') {
+            // Folder picker: existing folders of the node's drive as a
+            // dropdown (drive root = empty). `field.return: "id"` stores
+            // the folder id (folder listing); otherwise stores the path
+            // (save nodes). Reloads when the drive selection changes.
+            input = document.createElement('select');
+            input.className = 'select select-bordered select-sm w-full';
+            const wantId = (field.return || 'path') === 'id';
+            const reloadFolders = async (keep) => {
+                const cfg = (nodeData(nodeId) || {}).config || {};
+                const driveId = cfg.drive_id;
+                input.innerHTML = '';
+                const root = document.createElement('option');
+                root.value = '';
+                root.textContent = driveId
+                    ? '— drive root —'
+                    : '— pick a drive first —';
+                input.appendChild(root);
+                if (!driveId) { input.value = ''; return; }
+                try {
+                    const resp = await fetch(
+                        root.dataset.foldersUrl + '?drive_id=' + driveId);
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    (data.folders || []).forEach(f => {
+                        const o = document.createElement('option');
+                        o.value = wantId ? String(f.id) : f.path;
+                        o.textContent = f.path;
+                        input.appendChild(o);
+                    });
+                    if (keep !== undefined && keep !== null && String(keep) !== '') {
+                        const has = [...input.options].some(o => o.value === String(keep));
+                        if (has) input.value = String(keep);
+                    }
+                } catch { /* keep root option only */ }
+            };
+            folderWidgetReloaders.push(() => reloadFolders(input.value));
+            reloadFolders(value);
+        } else if (field.kind === 'file') {            input = document.createElement('input');
             input.type = 'hidden';
             const shown = document.createElement('div');
             shown.className = 'wf-file-current';
@@ -1321,6 +1358,7 @@
 
     let configChangeHook = null;  // active while the config modal is open
     let cellWidgetReloaders = [];  // notebook_cell selects to refresh
+    let folderWidgetReloaders = [];  // folder selects to refresh on drive change
 
     function updateConfig(nodeId, field, value) {
         const data = nodeData(nodeId);
@@ -1414,6 +1452,7 @@
         const form = document.getElementById('wf-config-form');
         form.innerHTML = '';
         cellWidgetReloaders = [];
+        folderWidgetReloaders = [];
         (spec.fields || []).forEach(field => {
             form.appendChild(fieldWidget(
                 field, (data.config || {})[field.name], dfId));
@@ -1439,6 +1478,9 @@
             applyFieldVisibility(spec, dfId);
             if (fieldName === 'notebook_id') {
                 cellWidgetReloaders.forEach(fn => fn());
+            }
+            if (fieldName === 'drive_id') {
+                folderWidgetReloaders.forEach(fn => fn());
             }
         };
         applyFieldVisibility(spec, dfId);
