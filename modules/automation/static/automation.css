@@ -567,6 +567,172 @@
 }
 
 /* ------------------------------------------------------------------
+   Automations index: clean modern tree.
+   Data attributes (.wf-*, #automation-tree) are the JS contract — only
+   visuals change here.
+   ------------------------------------------------------------------ */
+.auto-panel { border-radius: 18px; }
+
+.auto-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 14px 18px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+}
+
+.auto-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: oklch(var(--bc) / 0.85);
+}
+
+.auto-title > i { color: oklch(var(--p)); font-size: 14px; }
+
+.auto-total {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: oklch(var(--p) / 0.14);
+    color: oklch(var(--p));
+}
+
+.auto-search {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 200px;
+    max-width: 320px;
+    padding: 0 12px;
+    height: 34px;
+    border-radius: 999px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    background: rgba(128, 128, 128, 0.07);
+}
+
+.auto-search:focus-within { border-color: oklch(var(--p) / 0.6); background: transparent; }
+.auto-search > i { font-size: 12px; opacity: 0.45; }
+.auto-search input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-size: 13px; }
+.auto-clear { opacity: 0.5; font-size: 12px; }
+.auto-clear:hover { opacity: 1; }
+
+.auto-tree { padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+
+.auto-wf {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 12px;
+    transition: background 0.12s;
+}
+
+.auto-wf:hover { background: oklch(var(--p) / 0.07); }
+.auto-wf.wf-drop-hover { background: oklch(var(--p) / 0.12); }
+
+.auto-drag { opacity: 0; font-size: 12px; cursor: grab; color: oklch(var(--bc) / 0.35); padding: 4px; }
+.auto-wf:hover .auto-drag { opacity: 1; }
+
+.auto-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+
+.auto-ico {
+    width: 36px; height: 36px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    font-size: 14px; color: oklch(var(--p));
+    background: linear-gradient(135deg, oklch(var(--p) / 0.22), oklch(var(--p) / 0.07));
+}
+
+.auto-text { min-width: 0; flex: 1; }
+
+.auto-name {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13.5px; font-weight: 650;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.auto-main:hover .auto-name { color: oklch(var(--p)); }
+
+.auto-flag {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+    color: oklch(var(--wa)); background: oklch(var(--wa) / 0.14);
+}
+
+.auto-meta {
+    display: flex; align-items: center; gap: 8px; margin-top: 2px;
+    font-size: 11px; color: oklch(var(--bc) / 0.5);
+    white-space: nowrap; overflow: hidden;
+}
+
+.auto-run { font-size: 10px; font-weight: 800; padding: 1px 8px; border-radius: 999px; text-transform: capitalize; }
+.auto-run-ok { color: oklch(var(--su)); background: oklch(var(--su) / 0.14); }
+.auto-run-bad { color: #fff; background: oklch(var(--er) / 0.75); }
+.auto-run-wait { color: oklch(var(--wa)); background: oklch(var(--wa) / 0.14); }
+.auto-muted { opacity: 0.75; }
+
+.auto-kebab { opacity: 0; flex-shrink: 0; }
+.auto-wf:hover .auto-kebab, .auto-folder-head:hover .auto-kebab, .auto-kebab:focus-visible { opacity: 0.7; }
+.auto-kebab:hover { opacity: 1 !important; }
+@media (hover: none) { .auto-drag { opacity: 0.5; } .auto-kebab { opacity: 0.7; } }
+
+.auto-folder { border-radius: 12px; }
+
+.auto-folder-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 10px; border-radius: 12px; cursor: pointer; list-style: none;
+    transition: background 0.12s;
+}
+
+.auto-folder-head::-webkit-details-marker { display: none; }
+.auto-folder-head:hover { background: rgba(128, 128, 128, 0.08); }
+.auto-caret { font-size: 10px; opacity: 0.45; transition: transform 0.15s; }
+.auto-folder:not([open]) .auto-caret { transform: rotate(-90deg); }
+.auto-folder-ico { color: oklch(var(--wa)); font-size: 14px; }
+.auto-folder-name { font-size: 13.5px; font-weight: 700; }
+.auto-count {
+    font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+    background: rgba(128, 128, 128, 0.16); opacity: 0.8;
+}
+.auto-spacer { flex: 1; }
+
+.auto-folder-body {
+    margin: 2px 0 4px 22px;
+    padding-left: 8px;
+    border-left: 1px solid rgba(128, 128, 128, 0.22);
+    display: flex; flex-direction: column; gap: 2px;
+}
+
+.wf-folder-drop.wf-drop-hover {
+    outline: 2px dashed oklch(var(--p) / 0.7);
+    outline-offset: -2px;
+    background: oklch(var(--p) / 0.08);
+}
+
+.wf-inline-create {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px; border-radius: 10px;
+    background: oklch(var(--p) / 0.08);
+}
+.wf-inline-create > i { color: oklch(var(--wa)); }
+.wf-inline-create input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-size: 13px; }
+.wf-inline-rename {
+    width: 100%; font: inherit; background: transparent;
+    border: 1px solid oklch(var(--p) / 0.6); border-radius: 6px; padding: 0 6px; outline: none;
+}
+
+.auto-empty { text-align: center; padding: 44px 16px; }
+.auto-empty > i { font-size: 34px; opacity: 0.35; margin-bottom: 10px; }
+.auto-empty-title { font-weight: 700; font-size: 14px; }
+.auto-empty-sub { font-size: 12px; opacity: 0.55; margin-top: 2px; }
+
+/* ------------------------------------------------------------------
    Responsive, roomy popup sizing. Modals scale with the viewport instead
    of the fixed max-w-lg box: comfortable on desktop, full-width on
    phones. Form area uses viewport height so long node configs scroll

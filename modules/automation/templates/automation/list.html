@@ -84,55 +84,49 @@
     </details>
 
 {% macro wf_row(w) -%}
-            <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors flex items-center gap-4 group wf-row"
-                 draggable="true" data-wf-id="{{ w.id }}" data-wf-name="{{ w.name }}">
-                <i class="fas fa-grip-vertical opacity-30 cursor-grab flex-shrink-0" title="Drag onto a folder to move"></i>
-                <a href="{{ url_for('automation.editor', workflow_id=w.id) }}"
-                   class="flex items-center gap-3 flex-1 min-w-0 group">
-                    <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
-                        <i class="fas fa-diagram-project"></i>
-                    </span>
-                    <span class="min-w-0">
-                        <span class="block font-semibold truncate group-hover:text-primary transition-colors">{{ w.name }}
-                            {% if w.ai_lock %}<span class="badge badge-warning badge-xs ml-1" title="Locked against AI edits">AI: locked</span>{% endif %}
-                            {% if w.ai_hidden %}<span class="badge badge-warning badge-xs ml-1" title="Hidden from the AI">AI: hidden</span>{% endif %}
+            <div class="auto-wf" draggable="true" data-wf-id="{{ w.id }}" data-wf-name="{{ w.name }}">
+                <span class="auto-drag" title="Drag onto a folder to move"><i class="fas fa-grip-vertical"></i></span>
+                <a href="{{ url_for('automation.editor', workflow_id=w.id) }}" class="auto-main">
+                    <span class="auto-ico"><i class="fas fa-diagram-project"></i></span>
+                    <span class="auto-text">
+                        <span class="auto-name">{{ w.name }}
+                            {% if w.ai_lock %}<span class="auto-flag" title="Locked against AI edits">AI locked</span>{% endif %}
+                            {% if w.ai_hidden %}<span class="auto-flag" title="Hidden from the AI">AI hidden</span>{% endif %}
                         </span>
-                        <span class="text-[11px] opacity-45 flex items-center gap-3 mt-0.5 flex-wrap">
+                        <span class="auto-meta">
                             {% if w.interval_minutes %}
-                            <span><i class="fas fa-clock mr-1"></i>Auto · every {{ w.interval_minutes }} min · {{ 'On' if w.enabled else 'Off' }}</span>
+                            <span class="auto-chip"><i class="fas fa-clock"></i>Auto · {{ w.interval_minutes }}m · {{ 'On' if w.enabled else 'Off' }}</span>
                             {% else %}
-                            <span><i class="fas fa-hand-pointer mr-1"></i>Manual run</span>
+                            <span class="auto-muted"><i class="fas fa-hand-pointer"></i>Manual</span>
                             {% endif %}
                             {% set last = w.runs[0] if w.runs else None %}
                             {% if last %}
-                            <span>last run
-                                <span class="badge badge-xs {{ 'badge-success' if last.status == 'done' else ('badge-error' if last.status in ('error', 'interrupted') else 'badge-warning') }}">{{ last.status }}</span>
-                                {{ last.finished_at.strftime('%d %b %H:%M') if last.finished_at else '' }}
-                            </span>
+                            <span class="auto-run auto-run-{{ 'ok' if last.status == 'done' else ('bad' if last.status in ('error', 'interrupted') else 'wait') }}">{{ last.status }}</span>
+                            <span class="auto-muted">{{ last.finished_at.strftime('%d %b %H:%M') if last.finished_at else '' }}</span>
                             {% else %}
-                            <span>never ran</span>
+                            <span class="auto-muted">never ran</span>
                             {% endif %}
                         </span>
                     </span>
                 </a>
-                <button type="button" class="btn btn-ghost btn-xs wf-row-menu" title="Actions (right-click works too)" aria-label="Actions for {{ w.name }}"
+                <button type="button" class="btn btn-ghost btn-xs auto-kebab wf-row-menu" title="Actions (right-click works too)" aria-label="Actions for {{ w.name }}"
                         data-wf-menu="{{ w.id }}"><i class="fas fa-ellipsis-vertical"></i></button>
             </div>
 {%- endmacro %}
 
 {% macro tree_folder(f) -%}
             {% if not visible or f.id in visible %}
-            <details class="automation-tree" open data-folder-block="{{ f.id }}" data-folder-name="{{ f.name }}">
-                <summary class="flex items-center gap-2 py-2 px-4 hover:bg-base-content/[0.03] cursor-pointer transition-colors wf-folder-drop"
-                         data-folder-id="{{ f.id }}" title="Drop automations here · right-click for actions">
-                    <i class="fas fa-folder text-warning"></i>
-                    <span class="font-semibold text-sm wf-folder-label">{{ f.name }}</span>
-                    <span class="badge badge-ghost badge-xs">{{ folder_counts.get(f.id, 0) }}</span>
-                    <span class="flex-1"></span>
-                    <button type="button" class="btn btn-ghost btn-xs wf-row-menu" title="Folder actions (right-click works too)" aria-label="Actions for folder {{ f.name }}"
+            <details class="auto-folder" open data-folder-block="{{ f.id }}" data-folder-name="{{ f.name }}">
+                <summary class="auto-folder-head wf-folder-drop" data-folder-id="{{ f.id }}" title="Drop automations here · right-click for actions">
+                    <i class="fas fa-chevron-down auto-caret"></i>
+                    <i class="fas fa-folder auto-folder-ico"></i>
+                    <span class="auto-folder-name wf-folder-label">{{ f.name }}</span>
+                    <span class="auto-count">{{ folder_counts.get(f.id, 0) }}</span>
+                    <span class="auto-spacer"></span>
+                    <button type="button" class="btn btn-ghost btn-xs auto-kebab wf-row-menu" title="Folder actions (right-click works too)" aria-label="Actions for folder {{ f.name }}"
                             data-folder-menu="{{ f.id }}"><i class="fas fa-ellipsis-vertical"></i></button>
                 </summary>
-                <div class="pl-5 border-l border-base-content/10 ml-4 flex flex-col">
+                <div class="auto-folder-body">
                     {% for child in f.children|sort(attribute='name') %}{{ tree_folder(child) }}{% endfor %}
                     {% for w in wf_by_folder.get(f.id, []) %}{{ wf_row(w) }}{% endfor %}
                 </div>
@@ -141,19 +135,20 @@
 {%- endmacro %}
 
     <!-- Your automations: single tree section (folders + workflows) -->
-    <div class="glass-panel rounded-2xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-base-content/10 flex items-center gap-2 flex-wrap">
-            <i class="fas fa-diagram-project text-primary/60 text-xs"></i>
-            <span class="text-[10px] uppercase tracking-wide opacity-50">Your automations</span>
-            {% if workflows %}<span class="badge badge-ghost badge-sm">{{ workflows|length }}</span>{% endif %}
-            <form method="GET" action="{{ url_for('automation.index') }}" class="flex gap-1 ml-auto flex-1 min-w-40 max-w-xs">
-                <input type="text" name="q" value="{{ q or '' }}" placeholder="Search automations…"
-                       class="input input-bordered input-xs flex-1 min-w-0">
-                <button type="submit" class="btn btn-ghost btn-xs" title="Search"><i class="fas fa-magnifying-glass"></i></button>
-                {% if q %}<a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-xs" title="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
+    <div class="glass-panel rounded-2xl overflow-hidden auto-panel">
+        <div class="auto-toolbar">
+            <div class="auto-title">
+                <i class="fas fa-diagram-project"></i>
+                <span>Your automations</span>
+                {% if workflows %}<span class="auto-total">{{ workflows|length }}</span>{% endif %}
+            </div>
+            <form method="GET" action="{{ url_for('automation.index') }}" class="auto-search">
+                <i class="fas fa-magnifying-glass"></i>
+                <input type="text" name="q" value="{{ q or '' }}" placeholder="Search automations…" aria-label="Search automations">
+                {% if q %}<a href="{{ url_for('automation.index') }}" class="auto-clear" title="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
             </form>
             <details class="dropdown dropdown-end">
-                <summary class="btn btn-primary btn-xs gap-1" title="Create new"><i class="fas fa-plus"></i> New</summary>
+                <summary class="btn btn-primary btn-sm gap-1" title="Create new"><i class="fas fa-plus"></i> New</summary>
                 <div class="dropdown-content z-10 card glass-panel p-2 shadow-xl flex flex-col gap-1 w-56">
                     <button type="button" class="btn btn-ghost btn-sm justify-start gap-2" id="wf-new-auto-btn">
                         <i class="fas fa-diagram-project text-primary"></i> New automation
@@ -164,21 +159,21 @@
                 </div>
             </details>
         </div>
-        <div class="divide-y divide-base-content/5 wf-drop-root automation-tree-scroll" id="automation-tree" data-folder-id="">
+        <div class="auto-tree wf-drop-root automation-tree-scroll" id="automation-tree" data-folder-id="">
         {% if workflows or folders %}
             {% for w in wf_by_folder.get(None, []) %}{{ wf_row(w) }}{% endfor %}
             {% for f in folders %}{{ tree_folder(f) }}{% endfor %}
         {% else %}
-        <div class="text-center py-14">
-            <i class="fas fa-diagram-project text-4xl mb-3 block opacity-50"></i>
+        <div class="auto-empty">
+            <i class="fas fa-diagram-project"></i>
             {% if q %}
-            <p class="font-semibold">No automations match “{{ q }}”.</p>
-            <p class="text-xs mt-1 opacity-50">Try a different search — or clear it to see everything.</p>
-            <a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-sm mt-4">Clear search</a>
+            <p class="auto-empty-title">No automations match “{{ q }}”.</p>
+            <p class="auto-empty-sub">Try a different search — or clear it to see everything.</p>
+            <a href="{{ url_for('automation.index') }}" class="btn btn-ghost btn-sm mt-2">Clear search</a>
             {% else %}
-            <p class="font-semibold">No workflows yet.</p>
-            <p class="text-xs mt-1 opacity-50">Start from an example above — or create a blank one.</p>
-            <button type="button" class="btn btn-primary btn-sm mt-4"
+            <p class="auto-empty-title">No workflows yet.</p>
+            <p class="auto-empty-sub">Start from an example above — or create a blank one.</p>
+            <button type="button" class="btn btn-primary btn-sm mt-3"
                     onclick="document.getElementById('wf-new-modal').showModal()">
                 <i class="fas fa-plus"></i> New automation
             </button>
@@ -383,9 +378,9 @@
     }
     function inlineCreate(parentBlock, parentId) {
         const host = parentBlock
-            ? parentBlock.querySelector(':scope > div')
-            : tree.querySelector(':scope > div');
-        if (host.querySelector('.wf-inline-create')) return;
+            ? parentBlock.querySelector(':scope > .auto-folder-body')
+            : tree;
+        if (!host || host.querySelector(':scope > .wf-inline-create')) return;
         const row = document.createElement('div');
         row.className = 'wf-inline-create';
         row.innerHTML = '<i class="fas fa-folder-plus"></i> ';
