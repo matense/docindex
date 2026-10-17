@@ -48,13 +48,13 @@ def fts_available():
     return ready
 
 
-def fts_upsert(file_id):
+def fts_upsert(file_id, commit=True):
     """Refresh a file's FTS row from files/file_index. No-op without FTS5."""
     if not fts_available():
         return
     stored = db.session.get(StoredFile, file_id)
     if not stored or stored.deleted_at is not None:
-        fts_delete(file_id)
+        fts_delete(file_id, commit=commit)
         return
     index = stored.index
     db.session.execute(sql_text(
@@ -64,21 +64,27 @@ def fts_upsert(file_id):
          "text": (index.extracted_text if index else "") or "",
          "caption": (index.caption if index else "") or "",
          "tags": (index.hashtags if index else "") or ""})
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
 
 
-def fts_delete(file_id):
+def fts_delete(file_id, commit=True):
     if not fts_available():
         return
     db.session.execute(sql_text("DELETE FROM file_fts WHERE rowid = :id"),
                        {"id": file_id})
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
 
 
 _FTS_BATCH = 500  # keep well under SQLite's bound-variable limit
 
 
-def fts_delete_many(file_ids):
+def fts_delete_many(file_ids, commit=True):
     """Delete many FTS rows in one go (batched — SQLite caps the number of
     bound variables per statement). No-op without FTS5."""
     if not fts_available():
@@ -89,7 +95,10 @@ def fts_delete_many(file_ids):
         db.session.execute(sql_text(
             "DELETE FROM file_fts WHERE rowid IN "
             "(" + ", ".join(str(int(fid)) for fid in chunk) + ")"))
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
 
 
 def fts_rebuild():

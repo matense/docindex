@@ -666,7 +666,12 @@ def edit(file_id):
         abort(400)
     if request.method == "POST":
         content = request.form.get("content", "")
-        file_service.update_file_content(stored, content)
+        try:
+            file_service.update_file_content(stored, content)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template("drive/edit.html", file=stored,
+                                   content=content)
         _trigger_indexing(stored.id)
         flash("File saved. Re-indexing started.", "success")
         return redirect(url_for("drive.index", folder_id=stored.folder_id))

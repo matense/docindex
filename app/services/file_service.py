@@ -157,19 +157,21 @@ def delete_file(stored_file):
     _guard_not_synced(stored_file)
     from ..models import utcnow
     stored_file.deleted_at = utcnow()
-    db.session.commit()
+    db.session.flush()
     from . import search_service
-    search_service.fts_delete(stored_file.id)  # trashed files are not searchable
+    search_service.fts_delete(stored_file.id, commit=False)  # trashed files are not searchable
+    db.session.commit()
 
 
 def restore_file(stored_file):
     """Bring a trashed file back to its drive."""
     _guard_not_synced(stored_file)
     stored_file.deleted_at = None
-    db.session.commit()
+    db.session.flush()
     from . import search_service
     # file_index still holds the extracted text — just re-add the FTS row.
-    search_service.fts_upsert(stored_file.id)
+    search_service.fts_upsert(stored_file.id, commit=False)
+    db.session.commit()
 
 
 def purge_file(stored_file):
@@ -194,9 +196,10 @@ def purge_file(stored_file):
     from ..models import IndexJob
     IndexJob.query.filter_by(file_id=file_id).delete()
     db.session.delete(stored_file)
-    db.session.commit()
+    db.session.flush()
     from . import search_service
-    search_service.fts_delete(file_id)
+    search_service.fts_delete(file_id, commit=False)
+    db.session.commit()
 
 
 def trashed_files(user_id):

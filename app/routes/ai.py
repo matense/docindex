@@ -143,7 +143,7 @@ def _resolve_context(user, data):
     raw_ids = data.get("scope_drive_ids")
     if isinstance(raw_ids, list):
         drive_ids = []
-        for i in raw_ids:
+        for i in raw_ids[:10]:
             try:
                 drive_ids.append(int(i))
             except (TypeError, ValueError):
@@ -680,6 +680,10 @@ def start_task():
     attachment_ids = data.get("attachments") or []
     if not message and not attachment_ids:
         return jsonify({"error": "Empty message."}), 400
+    if len(message) > 20000:
+        return jsonify({"error": "Message is too long (max 20000 characters)."}), 400
+    if len(attachment_ids) > 20:
+        return jsonify({"error": "Too many attachments (max 20)."}), 400
 
     # Legacy single drive_id maps onto the multi-drive scope.
     if not data.get("scope_drive_ids") and not data.get("scope_drive_id"):
