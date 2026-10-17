@@ -609,25 +609,46 @@
 }
 
 .auto-search {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
     min-width: 0;
     width: 100%;
     max-width: 340px;
     justify-self: center;
-    padding: 0 12px;
-    height: 34px;
-    border-radius: 999px;
-    border: 1px solid rgba(128, 128, 128, 0.25);
-    background: rgba(128, 128, 128, 0.07);
 }
 
-.auto-search:focus-within { border-color: oklch(var(--p) / 0.6); background: transparent; }
-.auto-search > i { font-size: 12px; opacity: 0.45; }
-.auto-search input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-size: 13px; }
-.auto-clear { opacity: 0.5; font-size: 12px; }
-.auto-clear:hover { opacity: 1; }
+.auto-search-ico {
+    position: absolute;
+    left: 12px;
+    font-size: 12px;
+    opacity: 0.45;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.auto-panel .auto-toolbar .auto-search .auto-search-input {
+    width: 100%;
+    padding-left: 32px;
+    padding-right: 30px;
+    border-radius: 999px;
+    font-size: 13px;
+}
+
+.auto-search-clear {
+    position: absolute;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 11px;
+    opacity: 0.55;
+}
+
+.auto-search-clear:hover { opacity: 1; background: rgba(128, 128, 128, 0.15); }
 
 .auto-tree { padding: 8px; display: flex; flex-direction: column; gap: 2px; }
 
@@ -723,18 +744,6 @@
     outline: 2px dashed oklch(var(--p) / 0.7);
     outline-offset: -2px;
     background: oklch(var(--p) / 0.08);
-}
-
-.wf-inline-create {
-    display: flex; align-items: center; gap: 6px;
-    padding: 8px 10px; border-radius: 10px;
-    background: oklch(var(--p) / 0.08);
-}
-.wf-inline-create > i { color: oklch(var(--wa)); }
-.wf-inline-create input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-size: 13px; }
-.wf-inline-rename {
-    width: 100%; font: inherit; background: transparent;
-    border: 1px solid oklch(var(--p) / 0.6); border-radius: 6px; padding: 0 6px; outline: none;
 }
 
 .auto-empty { text-align: center; padding: 44px 16px; }
@@ -1164,11 +1173,6 @@
     width: 100%;
     font: inherit;
     font-weight: inherit;
-    background: transparent;
-    border: 1px solid oklch(var(--p) / 0.6);
-    border-radius: 6px;
-    padding: 0 6px;
-    outline: none;
 }
 
 /* Per-row ⋯ appears on hover; always visible on touch devices. */

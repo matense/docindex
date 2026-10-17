@@ -2,7 +2,7 @@
 {% block title %}Automation - DocIndex{% endblock %}
 {% block page_container_class %}p-3 md:p-4 pb-24 h-full{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=4">
+<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=5">
 {% endblock %}
 {% block content %}
 <div class="mx-auto w-full max-w-6xl flex flex-col gap-3 h-full min-h-0" id="automation-page">
@@ -146,9 +146,9 @@
                 {% if workflows %}<span class="auto-total">{{ workflows|length }}</span>{% endif %}
             </div>
             <form method="GET" action="{{ url_for('automation.index') }}" class="auto-search">
-                <i class="fas fa-magnifying-glass"></i>
-                <input type="text" name="q" value="{{ q or '' }}" placeholder="Search automations…" aria-label="Search automations">
-                {% if q %}<a href="{{ url_for('automation.index') }}" class="auto-clear" title="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
+                <i class="fas fa-magnifying-glass auto-search-ico"></i>
+                <input type="text" name="q" value="{{ q or '' }}" placeholder="Search automations…" aria-label="Search automations" class="input input-bordered input-sm auto-search-input">
+                {% if q %}<a href="{{ url_for('automation.index') }}" class="auto-search-clear" title="Clear search" aria-label="Clear search"><i class="fas fa-xmark"></i></a>{% endif %}
             </form>
             <details class="dropdown dropdown-end">
                 <summary class="btn btn-primary btn-sm gap-1" title="Create new"><i class="fas fa-plus"></i> New</summary>
@@ -391,6 +391,7 @@
         inp.type = 'text'; inp.maxLength = 120;
         inp.placeholder = 'New folder name…';
         inp.setAttribute('aria-label', 'New folder name');
+        inp.className = 'input input-bordered input-xs flex-1 min-w-0';
         const ok = document.createElement('button');
         ok.type = 'button'; ok.className = 'btn btn-primary btn-xs'; ok.textContent = 'Create';
         const cancel = document.createElement('button');
@@ -421,7 +422,7 @@
         label.innerHTML = '';
         const inp = document.createElement('input');
         inp.type = 'text'; inp.value = orig; inp.maxLength = 120;
-        inp.className = 'wf-inline-rename';
+        inp.className = 'wf-inline-rename input input-bordered input-xs';
         inp.setAttribute('aria-label', 'Rename folder');
         let done = false;
         const commit = () => {
