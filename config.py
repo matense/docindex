@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 from dotenv import load_dotenv
 
@@ -24,8 +25,10 @@ class Config:
     SESSION_COOKIE_SECURE = os.environ.get(
         "SESSION_COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
     REMEMBER_COOKIE_HTTPONLY = True
-    REMEMBER_COOKIE_DURATION = 14 * 24 * 3600  # 14 days
-    PERMANENT_SESSION_LIFETIME = 14 * 24 * 3600
+    REMEMBER_COOKIE_DURATION = timedelta(days=14)
+    REMEMBER_COOKIE_SECURE = os.environ.get(
+        "SESSION_COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+    PERMANENT_SESSION_LIFETIME = timedelta(days=14)
     # SQLite: background threads (indexing, folder sync) plus web requests can
     # exceed the default QueuePool (5+10) and deadlock on "connection timed
     # out". NullPool opens/closes connections on demand — the right choice for

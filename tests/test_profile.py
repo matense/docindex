@@ -62,7 +62,7 @@ def test_change_password_success(auth_client, client):
         "new_password": "newpass456",
         "confirm_password": "newpass456",
     })
-    client.get("/logout")
+    client.post("/logout")
     resp = client.post("/login", data={"username": "alice", "password": "newpass456"})
     assert resp.status_code == 302  # login worked with the new password
 
@@ -107,7 +107,7 @@ def test_admin_disables_registration(admin_client, app):
 
 def test_register_route_blocked_when_disabled(admin_client, client):
     admin_client.post("/settings/profile/registration", data={})
-    client.get("/logout")
+    client.post("/logout")
     resp = client.get("/register")
     assert resp.status_code == 302
     assert "/login" in resp.headers["Location"]
@@ -121,7 +121,7 @@ def test_register_route_blocked_when_disabled(admin_client, client):
 
 def test_login_page_hides_register_link_when_disabled(admin_client, client):
     admin_client.post("/settings/profile/registration", data={})
-    client.get("/logout")
+    client.post("/logout")
     resp = client.get("/login")
     assert b"Register" not in resp.data
 
@@ -131,5 +131,5 @@ def test_admin_reenables_registration(admin_client, client, app):
     admin_client.post("/settings/profile/registration", data={"enabled": "on"})
     with app.app_context():
         assert Setting.get_bool("registration_enabled", True) is True
-    client.get("/logout")
+    client.post("/logout")
     assert client.get("/register").status_code == 200

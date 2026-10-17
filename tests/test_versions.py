@@ -170,7 +170,7 @@ def test_versions_of_other_users_are_not_accessible(client, auth_client, app):
         bob.set_password("bobpass123")
         db.session.add(bob)
         db.session.commit()
-    auth_client.get("/logout")
+    auth_client.post("/logout")
     client.post("/login", data={"username": "bob", "password": "bobpass123"})
     assert client.get(f"/file/{fid}/history/{vid}/download").status_code == 404
     assert client.post(f"/file/{fid}/history/{vid}/restore").status_code == 404

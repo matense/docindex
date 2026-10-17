@@ -2604,7 +2604,7 @@ def test_ai_flags_route_toggles_and_enforces_ownership(
         db.session.add(other)
         db.session.commit()
         other_id = other.id
-    auth_client.get("/logout")
+    auth_client.post("/logout")
     auth_client.post("/login", data={"username": "other4",
                                      "password": "x"})
     resp = auth_client.post(f"/m/automation/{wf_id}/ai-flags",
