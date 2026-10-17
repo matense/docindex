@@ -2141,7 +2141,7 @@
             }
             return false;
         }
-        setSaved('Guardado ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+        setSaved('Saved ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
         return true;
     }
 

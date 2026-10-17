@@ -1362,6 +1362,28 @@ def test_folder_crud_and_move(auth_client, app, user, enabled):
             is None
 
 
+def test_workflow_move_ajax_returns_json(auth_client, app, user, enabled):
+    """ajax=1 move (drag & drop in the tree) returns JSON, no redirect."""
+    auth_client.post("/m/automation/folders/create",
+                     data={"name": "Inbound"}, follow_redirects=True)
+    with app.app_context():
+        folder_id = models.AutomationFolder.query.filter_by(
+            name="Inbound").one().id
+    wf_id = _workflow(app, user, _text_graph("x"), name="Ajax move")
+    resp = auth_client.post(f"/m/automation/{wf_id}/move",
+                            data={"folder_id": folder_id, "ajax": "1"})
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "id": wf_id, "folder_id": folder_id}
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert wf.folder_id == folder_id
+    # Back to root via the query-string variant.
+    resp = auth_client.post(f"/m/automation/{wf_id}/move?ajax=1",
+                            data={"folder_id": "-1"})
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "id": wf_id, "folder_id": None}
+
+
 def test_folder_move_rejects_cycles(auth_client, app, user, enabled):
     AutomationFolder = models.AutomationFolder
     auth_client.post("/m/automation/folders/create",

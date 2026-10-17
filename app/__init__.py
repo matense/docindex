@@ -73,7 +73,10 @@ def _sqlite_pragmas(dbapi_conn, _connection_record):
     cursor.close()
 
 
-_sqlite_listener_registered = False
+# Engines (not apps) that already carry the pragma listener: create_app()
+# runs per test and each app builds its own engine, so guard per-engine —
+# a global one-shot flag would leave later apps without WAL/busy_timeout.
+_sqlite_pragma_engines = set()
 
 
 def create_app(config_class=Config):
@@ -93,12 +96,10 @@ def create_app(config_class=Config):
 
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
-            # Register once: create_app() runs per test, and listeners
-            # accumulate on the same engine otherwise.
-            global _sqlite_listener_registered
-            if not _sqlite_listener_registered:
-                event.listens_for(db.engine, "connect")(_sqlite_pragmas)
-                _sqlite_listener_registered = True
+            engine = db.engine
+            if id(engine) not in _sqlite_pragma_engines:
+                event.listens_for(engine, "connect")(_sqlite_pragmas)
+                _sqlite_pragma_engines.add(id(engine))
 
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every

@@ -215,6 +215,35 @@
         f.requestSubmit();
     }
 
+    // Move a workflow without a full page reload: POST ajax=1, then re-home
+    // the row in the tree and fix the folder count badges. Any surprise
+    // falls back to a plain reload.
+    async function moveWorkflow(wfId, folderId) {
+        const fd = new FormData();
+        fd.append('csrf_token', csrf);
+        fd.append('folder_id', folderId);
+        fd.append('ajax', '1');
+        try {
+            const resp = await fetch(BASE + wfId + '/move', { method: 'POST', body: fd });
+            if (!resp.ok) throw new Error('move failed');
+            const row = tree.querySelector('[data-wf-id="' + wfId + '"]');
+            if (!row) throw new Error('row gone');
+            const srcBlock = row.closest('[data-folder-block]');
+            const dstBlock = (folderId && folderId !== '-1')
+                ? tree.querySelector('[data-folder-block="' + folderId + '"]') : null;
+            const dst = dstBlock ? dstBlock.querySelector(':scope > div') : tree;
+            if (!dst) throw new Error('target gone');
+            dst.appendChild(row);
+            [srcBlock, dstBlock].forEach((blk) => {
+                if (!blk) return;
+                const badge = blk.querySelector(':scope > summary .badge');
+                if (badge) badge.textContent = blk.querySelectorAll('[data-wf-id]').length;
+            });
+        } catch (e) {
+            location.reload();
+        }
+    }
+
     // --- Drag & drop: automations and folders onto folders (or the root) ---
     let drag = null;
     tree.querySelectorAll('[data-folder-block] > summary').forEach(s => { s.draggable = true; });
@@ -263,7 +292,7 @@
         t.classList.remove('wf-drop-hover');
         const fid = t.dataset.folderId || '';
         if (drag.kind === 'wf') {
-            postForm(BASE + drag.id + '/move', { folder_id: fid === '' ? '-1' : fid });
+            moveWorkflow(drag.id, fid === '' ? '-1' : fid);
         } else {
             postForm(BASE + 'folders/' + drag.id + '/move', { parent_id: fid });
         }
@@ -419,11 +448,11 @@
         const cur = wfFolderOf(wfId);
         const items = [{ label: 'Unsorted (root)', icon: 'fa-inbox',
                          current: !cur,
-                         fn: () => postForm(BASE + wfId + '/move', { folder_id: '-1' }) }];
+                         fn: () => moveWorkflow(wfId, '-1') }];
         (FLAT_FOLDERS || []).forEach(f => {
             items.push({ label: f.name, icon: 'fa-folder',
                          current: String(f.id) === String(cur),
-                         fn: () => postForm(BASE + wfId + '/move', { folder_id: String(f.id) }) });
+                         fn: () => moveWorkflow(wfId, String(f.id)) });
         });
         return items;
     }

@@ -847,7 +847,6 @@ def _exec_condition(ctx, config, inputs, outputs):
         # New multi-condition mode: every row counts.
         if not conds:
             raise WorkflowError("Add at least one condition.")
-        match_any = (config.get("match") or "all") == "any"
         # Multiple conditions in one go (AND/OR via the match selector).
         match_any = (config.get("match") or "all") == "any"
         hits = [_compare(render_template(c.get("column", ""), outputs),
@@ -1340,7 +1339,6 @@ def register_defaults():
         "category": "Transform",
         "description": "Splits long text into smaller chunks (JSON "
                        "{chunks, count}) so each piece fits the AI.",
-        "example": "12000 chars / 4000 → 3 chunks.",
         "example": "12000 chars / 4000 → 3 chunks.",
         "inputs": [{"name": "in", "kind": "any"}],
         "outputs": [{"name": "out", "kind": "json"}],

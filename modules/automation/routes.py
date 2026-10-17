@@ -219,6 +219,10 @@ def _clean_next():
         else url_for("automation.index")
 
 
+def _wants_json():
+    return request.args.get("ajax") == "1" or request.form.get("ajax") == "1"
+
+
 @bp.post("/<int:workflow_id>/move")
 def move(workflow_id):
     """Move a workflow into a folder (or back to root)."""
@@ -230,6 +234,9 @@ def move(workflow_id):
         folder = _owned_folder(folder_id)
         workflow.folder_id = folder.id
     db.session.commit()
+    if _wants_json():
+        return jsonify({"ok": True, "id": workflow.id,
+                        "folder_id": workflow.folder_id})
     return redirect(request.form.get("next") or url_for("automation.index"))
 
 
