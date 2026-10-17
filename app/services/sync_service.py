@@ -221,14 +221,21 @@ def remove_synced_drive(drive):
         _jobs.pop(drive.id, None)
 
     # Thumbnails are ours (generated under THUMBNAIL_FOLDER) — remove them.
-    file_ids = [f.id for f in StoredFile.query.filter_by(drive_id=drive.id).all()]
-    for stored in StoredFile.query.filter_by(drive_id=drive.id).all():
+    # Stream in chunks: a 50k-file drive must not load all rows twice.
+    file_ids = []
+    q = (StoredFile.query.filter_by(drive_id=drive.id)
+         .yield_per(1000))
+    for stored in q:
+        file_ids.append(stored.id)
         thumb = file_service.thumbnail_path(stored)
         if os.path.exists(thumb):
             try:
                 os.remove(thumb)
             except OSError:
                 current_app.logger.exception("Failed to remove thumbnail %s", thumb)
+        # Detach ORM state periodically on huge drives.
+        if len(file_ids) % 1000 == 0:
+            db.session.expire_all()
 
     # Queued index jobs reference these files (FK) — remove them first.
     # Batched: SQLite caps the number of bound variables per statement.

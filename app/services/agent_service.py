@@ -5,7 +5,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from ..extensions import db
-from ..models import Drive, StoredFile
+from ..models import Drive, FileVersion, StoredFile
 from . import ai_service, file_service, hashtag_service, search_service
 
 _SEARCH_FILTERS_SCHEMA = {
@@ -793,6 +793,8 @@ def _tool_get_file_info(user, file_id):
     folder_path = "/".join(reversed(parts)) or "/"
 
     index = stored.index
+    version_count = (db.session.query(func.count(FileVersion.id))
+                     .filter_by(file_id=stored.id).scalar())
     return {
         "file_id": stored.id,
         "name": stored.name,
@@ -805,7 +807,7 @@ def _tool_get_file_info(user, file_id):
         "word_count": index.word_count if index else None,
         "line_count": index.line_count if index else None,
         "has_caption": bool(index and index.caption),
-        "versions": len(stored.versions),
+        "versions": version_count,
         "hashtags": hashtag_service.get_tags(index),
     }
 
@@ -962,13 +964,35 @@ for _core_name in TOOL_HANDLERS:
     )
 
 
+_active_tools_cache = {"at": 0.0, "enabled": frozenset(), "all_mods": None}
+
+
 def _active_tools():
-    """(definitions, handlers, labels) for core tools plus enabled modules."""
+    """(definitions, handlers, labels) for core tools plus enabled modules.
+
+    Module flags change rarely; cache the enabled-module set for a few
+    seconds to avoid a DB hit per agent step (long tasks take dozens).
+    """
+    import time as _time
+
     from . import module_service
 
+    now = _time.monotonic()
+    mods = {e["module"] for e in _TOOL_REGISTRY.values() if e["module"]}
+    try:
+        testing = bool(current_app.testing)
+    except Exception:  # noqa: BLE001 - no app context in some unit tests
+        testing = False
+    if testing or (now - _active_tools_cache["at"] > 5
+            or _active_tools_cache["all_mods"] != mods):
+        enabled = {m for m in mods if module_service.is_enabled(m)}
+        _active_tools_cache.update(at=now, enabled=frozenset(enabled),
+                                   all_mods=set(mods))
+    else:
+        enabled = _active_tools_cache["enabled"]
     definitions, handlers, labels = [], {}, {}
     for full, entry in _TOOL_REGISTRY.items():
-        if entry["module"] and not module_service.is_enabled(entry["module"]):
+        if entry["module"] and entry["module"] not in enabled:
             continue
         definitions.append(entry["definition"])
         handlers[full] = entry["handler"]

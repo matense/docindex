@@ -42,6 +42,13 @@ _stop_events = {}
 _subscribers = {}
 _lock = threading.Lock()
 
+# Global bound: raw threads per task would let 100 users x tasks exhaust
+# the process. A single shared pool caps total concurrency; the per-user
+# cap in start_task() still applies first.
+from concurrent.futures import ThreadPoolExecutor as _Pool
+
+_task_pool = _Pool(max_workers=8, thread_name_prefix="ai-task")
+
 
 def subscribe(task_id):
     """Register a live-event subscriber; returns its queue."""
@@ -111,8 +118,11 @@ def start_task(user, message, ctx=None, app=None):
 
     app = app or current_app._get_current_object()
     if app.config.get("AI_TASKS_ASYNC", True):
-        threading.Thread(target=_task_worker,
-                         args=(task.id, app), daemon=True).start()
+        try:
+            _task_pool.submit(_task_worker, task.id, app)
+        except RuntimeError:
+            # Pool saturated/shutting down: run inline so the task completes.
+            _task_worker(task.id, app)
     else:
         _task_worker(task.id, app)
     return task

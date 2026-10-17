@@ -137,16 +137,26 @@ def profile():
     drive_stats = []
     drives = (Drive.query.filter_by(user_id=current_user.id)
               .order_by(Drive.created_at).all())
+    drive_ids = [d.id for d in drives]
+    file_stats = dict(
+        db.session.query(StoredFile.drive_id,
+                         func.count(StoredFile.id),
+                         func.coalesce(func.sum(StoredFile.size), 0))
+        .filter(StoredFile.user_id == current_user.id,
+                StoredFile.drive_id.in_(drive_ids or [-1]),
+                StoredFile.deleted_at.is_(None))
+        .group_by(StoredFile.drive_id).all()) if drive_ids else {}
+    folder_stats = dict(
+        db.session.query(Folder.drive_id, func.count(Folder.id))
+        .filter(Folder.user_id == current_user.id,
+                Folder.drive_id.in_(drive_ids or [-1]))
+        .group_by(Folder.drive_id).all()) if drive_ids else {}
     for d in drives:
-        file_count, total_size = (db.session.query(
-            func.count(StoredFile.id),
-            func.coalesce(func.sum(StoredFile.size), 0))
-            .filter(StoredFile.drive_id == d.id,
-                    StoredFile.deleted_at.is_(None)).first())
+        file_count, total_size = file_stats.get(d.id, (0, 0))
         drive_stats.append({
             "drive": d,
             "file_count": file_count,
-            "folder_count": Folder.query.filter_by(drive_id=d.id).count(),
+            "folder_count": folder_stats.get(d.id, 0),
             "total_size": total_size,
             "sync_stats": (json.loads(d.last_sync_stats)
                            if d.last_sync_stats else None),

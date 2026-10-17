@@ -265,6 +265,13 @@ def set_enabled(name, enabled, user):
         state.enabled_at = datetime.now(timezone.utc)
         state.enabled_by = user.id
     db.session.commit()
+    try:
+        from . import agent_service
+        cache = getattr(agent_service, "_active_tools_cache", None)
+        if isinstance(cache, dict):
+            cache["at"] = 0.0
+    except Exception:  # noqa: BLE001 - cache reset must never break toggle
+        pass
     if enabled:
         # First-enable hook: modules can create default content (e.g. the
         # notebooks module creates the "My Notebooks" drive).
