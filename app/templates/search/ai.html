@@ -15,8 +15,8 @@
         <div class="flex items-center gap-1">
             <select id="aip-model-select" title="Active model — switch between your configured AI connections"
                     class="select select-bordered select-xs font-mono max-w-52 hidden"></select>
-            <button id="aip-autoscroll" class="btn btn-ghost btn-sm btn-circle" title="Auto-scroll">
-                <i class="fas fa-arrow-down-long"></i>
+            <button id="aip-autoscroll" class="btn btn-ghost btn-sm btn-circle" title="Auto-scroll" aria-label="Auto-scroll chat">
+                <i class="fas fa-arrow-down-long" aria-hidden="true"></i>
             </button>
             <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.toggleList()" title="Conversations">
                 <i class="fas fa-clock-rotate-left"></i><span class="hidden sm:inline">History</span>
@@ -24,8 +24,8 @@
             <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.newConversation()" title="New conversation">
                 <i class="fas fa-plus"></i><span class="hidden sm:inline">New chat</span>
             </button>
-            <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost btn-sm btn-circle" title="AI settings">
-                <i class="fas fa-gear"></i>
+            <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost btn-sm btn-circle" title="AI settings" aria-label="AI settings">
+                <i class="fas fa-gear" aria-hidden="true"></i>
             </a>
         </div>
     </div>

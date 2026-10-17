@@ -106,6 +106,8 @@
     window.uiToast = function (message, kind = 'info') {
         const box = document.createElement('div');
         box.className = 'toast toast-bottom toast-center z-[60] mb-24';
+        box.setAttribute('role', 'status');
+        box.setAttribute('aria-live', 'polite');
         const alert = document.createElement('div');
         alert.className = 'alert alert-' + kind + ' glass-panel shadow-lg text-sm py-2';
         alert.textContent = message;
@@ -115,5 +117,36 @@
             box.classList.add('spa-toast-out');
             setTimeout(() => box.remove(), 300);
         }, 3000);
+    };
+
+    // Shared JSON fetch: checks HTTP status, parses safely, toasts on error.
+    // Returns parsed JSON (or raw text when not JSON), or null on failure.
+    window.apiFetch = async function (url, options, opts) {
+        opts = opts || {};
+        let resp;
+        try {
+            resp = await fetch(url, options);
+        } catch (e) {
+            if (!opts.silent) window.uiToast('Could not reach the server.', 'error');
+            return null;
+        }
+        if (!resp.ok) {
+            let msg = 'Request failed (' + resp.status + ').';
+            try {
+                const data = await resp.clone().json();
+                if (data && data.error) msg = data.error;
+            } catch (e) { /* non-JSON error body */ }
+            if (!opts.silent) window.uiToast(msg, 'error');
+            return null;
+        }
+        try {
+            return await resp.json();
+        } catch (e) {
+            try {
+                return await resp.text();
+            } catch (e2) {
+                return null;
+            }
+        }
     };
 })();

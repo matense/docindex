@@ -261,6 +261,7 @@
         closeContextMenu();
         const ul = document.createElement('ul');
         ul.className = 'context-menu glass-menu';
+        ul.setAttribute('role', 'menu');
         entries.forEach((en) => {
             if (!en) return;
             const li = document.createElement('li');
@@ -272,6 +273,7 @@
             } else {
                 const b = document.createElement('button');
                 b.type = 'button';
+                b.setAttribute('role', 'menuitem');
                 b.className = 'context-menu-item' + (en.danger ? ' text-error' : '');
                 const icon = document.createElement('i');
                 icon.className = 'fas ' + en.icon + ' w-4 text-center opacity-70';
