@@ -549,6 +549,9 @@ def ai_test():
     api_key = (data.get("api_key") or "").strip()
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
+    ok, msg = _valid_base_url(base_url)
+    if not ok:
+        return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(base_url, api_key)
     return jsonify({"ok": ok, "message": message})
 
@@ -579,6 +582,9 @@ def ai_models():
             api_key = ai_service.decrypt_api_key(conn.api_key or "")
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
+    ok_url, url_msg = _valid_base_url(base_url)
+    if not ok_url:
+        return jsonify({"ok": False, "message": url_msg}), 400
     try:
         ok, result = ai_service.list_models(base_url, api_key)
         if ok:

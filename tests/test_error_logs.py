@@ -29,10 +29,10 @@ def test_log_event_persists_row(app):
 
 def test_log_event_never_raises(app):
     with app.app_context():
-        with patch("app.services.log_service.db.session.commit",
+        with patch("app.services.log_service.db.engine.begin",
                    side_effect=RuntimeError("db down")):
             log_service.log_event("error", "app", "still fine")  # no raise
-        assert ErrorLog.query.count() == 0  # rolled back cleanly
+        assert ErrorLog.query.count() == 0  # nothing persisted
 
 
 def test_db_log_handler_captures_warnings(app, auth_client):
@@ -167,7 +167,7 @@ def test_logging_recursion_guard(app):
         record = logging.LogRecord("app.services.indexing_service",
                                    logging.WARNING, __file__, 1,
                                    "guarded warning", None, None)
-        with patch("app.services.log_service.db.session.add",
+        with patch("app.services.log_service.db.engine.begin",
                    side_effect=RuntimeError("insert failed")):
             handler.emit(record)  # must not raise or hang
         assert ErrorLog.query.count() == 0

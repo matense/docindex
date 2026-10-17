@@ -642,9 +642,11 @@ def view(file_id):
                 protocols=["http", "https", "mailto"],
                 strip=True)
         except Exception:
-            # bleach missing/broken: fall back to raw HTML (template escapes
-            # via |safe only when sanitized — log and show plain text).
-            rendered = html
+            # bleach missing/broken: fail closed — never render unsanitized
+            # HTML with |safe. Template falls back to plain-text content.
+            current_app.logger.warning("Markdown sanitizer unavailable for %s",
+                                       stored.name)
+            rendered = None
     elif stored.is_editable:
         content = file_service.read_text_content(stored)
     elif stored.index and stored.index.extracted_text:

@@ -36,27 +36,46 @@ def _request_context():
 
 def log_event(level, source, message, detail=None, path=None, user_id=None):
     """Persist one log row. Safe to call from requests and background threads
-    (needs an app context). Never raises."""
+    (needs an app context). Never raises, never touches the caller's session.
+
+    Uses a dedicated engine connection so logging cannot commit or discard
+    the caller's pending writes (the old db.session.rollback() could silently
+    drop an in-flight upload/edit).
+    """
     if getattr(_write_guard, "active", False):
         return  # recursion guard: a failure while logging must not re-log
     _write_guard.active = True
     try:
         if path is None and user_id is None:
             path, user_id = _request_context()
-        # Clear any dirty state left by the failed operation we are logging —
-        # otherwise this commit would silently persist it.
-        db.session.rollback()
-        row = ErrorLog(level=level, source=(source or "app")[:40],
-                       message=(message or "")[:2000], detail=detail,
-                       path=path, user_id=user_id)
-        db.session.add(row)
-        db.session.commit()
-        _prune()
+        keep = int(current_app.config.get("ERROR_LOG_KEEP", 2000))
+        with db.engine.begin() as conn:
+            conn.execute(
+                ErrorLog.__table__.insert().values(
+                    level=(level or "error")[:20],
+                    source=(source or "app")[:40],
+                    message=(message or "")[:2000],
+                    detail=detail,
+                    path=path,
+                    user_id=user_id,
+                )
+            )
+            # Prune inline (same connection, no ORM session involved).
+            total = conn.execute(
+                db.text("SELECT COUNT(*) FROM error_logs")
+            ).scalar() or 0
+            if total > keep:
+                cutoff = conn.execute(
+                    db.text("SELECT id FROM error_logs "
+                            "ORDER BY id DESC LIMIT 1 OFFSET :keep"),
+                    {"keep": keep},
+                ).scalar()
+                if cutoff is not None:
+                    conn.execute(
+                        db.text("DELETE FROM error_logs WHERE id <= :cutoff"),
+                        {"cutoff": cutoff},
+                    )
     except Exception:  # noqa: BLE001 - logging must never break the app
-        try:
-            db.session.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         logging.getLogger("docindex.errorlog").debug(
             "failed to persist log row", exc_info=True)
     finally:
