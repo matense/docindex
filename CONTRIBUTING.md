@@ -7,7 +7,7 @@ installations compatible. Read this before making changes.
 
 1. **Database changes always go through migrations** — never edit the
    database directly or ship code that requires manual schema fixes.
-2. **Run the tests before every push** — `pytest` must be green (490+ tests).
+2. **Run the tests before every push** — `pytest` must be green (540+ tests).
 3. **Never commit secrets or runtime data** — `.env`, `instance/`,
    `uploads/` and `venv/` are gitignored; keep it that way.
 4. **Keep the docs in sync** — if you change the architecture, update

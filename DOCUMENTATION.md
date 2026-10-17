@@ -67,8 +67,8 @@ docindex/
 │   │                       #   settings/ behaviors/ components/
 │   └── static/
 │       ├── css/style.css
-│       └── js/             # spa/ui/main/drive/ai_chat/ai_page/sync+tasks widgets
-└── tests/                  # pytest suite (~547 tests)
+│       └── js/             # spa/ui/main/drive/ai_chat/ai_page/sync+tasks/hashtag/caption widgets
+└── tests/                  # pytest suite (~540 tests)
 ```
 
 ## Application factory and entry points
@@ -1223,7 +1223,7 @@ tool + table).
 
 ## Testing
 
-pytest suite in `tests/`, 547 tests across 20+ modules:
+pytest suite in `tests/`, 540+ tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

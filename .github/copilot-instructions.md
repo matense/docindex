@@ -19,7 +19,7 @@
 
 ### Testing
 - **Framework**: `pytest`
-- **Configuration**: `tests/conftest.py` uses `TestConfig` (in-memory SQLite, `INDEX_ASYNC=False`, CSRF off)
+- **Configuration**: `tests/conftest.py` uses `TestConfig` (in-memory SQLite, `INDEX_ASYNC=False, SYNC_ASYNC=False, HASHTAG_ASYNC=False, AI_TASKS_ASYNC=False, AUTOMATION_ASYNC=False`, CSRF off)
 - **Run tests**: `pytest`
 
 ## 3. Code Conventions & Patterns
