@@ -313,7 +313,11 @@ class AITask(db.Model):
     """A long-horizon background AI task: an agent run decoupled from the HTTP
     request, with every event persisted as chat messages so the user can open
     the transcript at any time. Status lifecycle:
-    queued -> running -> done | error | stopped | interrupted."""
+    queued -> running -> done | error | stopped | interrupted.
+
+    One conversation can own several sequential tasks (background mode
+    continues the same chat); the latest task decides the conversation's
+    background state."""
 
     __tablename__ = "ai_tasks"
 
@@ -323,8 +327,10 @@ class AITask(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     conversation_id = db.Column(db.Integer, db.ForeignKey("chat_conversations.id"),
-                                nullable=False, unique=True)
+                                nullable=False, index=True)
     title = db.Column(db.String(255), nullable=False, default="Background task")
+    # The exact user question that launched this task (title is truncated).
+    prompt = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False, default="queued", index=True)
     error = db.Column(db.Text, nullable=True)
     # True once the user dismissed the finished task from the bottom dock.
@@ -337,7 +343,8 @@ class AITask(db.Model):
     started_at = db.Column(db.DateTime, nullable=True)
     finished_at = db.Column(db.DateTime, nullable=True)
 
-    conversation = db.relationship("ChatConversation", backref=db.backref("task", uselist=False))
+    conversation = db.relationship("ChatConversation",
+                                     backref=db.backref("tasks"))
 
     @property
     def is_active(self):

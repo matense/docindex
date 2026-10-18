@@ -305,7 +305,7 @@ request (see "Background AI tasks"). Status lifecycle: `queued` -> `running`
 |--------|------|-------|
 | `id` | Integer PK | |
 | `user_id` | FK -> users.id, indexed | |
-| `conversation_id` | FK -> chat_conversations.id, unique | every task owns its transcript conversation (one-to-one) |
+| `conversation_id` | FK -> chat_conversations.id, indexed | transcript conversation (one conversation can own several sequential tasks; the latest decides its background state) |
 | `title` | String(255), default "Background task" | first 80 chars of the request |
 | `status` | String(20), indexed | see lifecycle above |
 | `error` | Text, **nullable** | failure detail for `error`/`interrupted` |

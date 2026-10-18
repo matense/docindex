@@ -343,8 +343,10 @@ def conversation(conv_id):
     if not conv:
         return jsonify({"error": "Not found"}), 404
     # A conversation owned by a background task reopens in background mode
-    # until the user dismisses the task (ack) — see ai_chat.js.
-    task = AITask.query.filter_by(conversation_id=conv.id).first()
+    # until the user dismisses the task (ack) — see ai_chat.js. One
+    # conversation can own several sequential tasks: the latest decides.
+    task = (AITask.query.filter_by(conversation_id=conv.id)
+            .order_by(AITask.id.desc()).first())
     return jsonify({
         "id": conv.id,
         "title": conv.title,
@@ -375,6 +377,9 @@ def delete_conversation(conv_id):
     conv = _get_conversation(conv_id)
     if not conv:
         return jsonify({"error": "Not found"}), 404
+    # A conversation can own several background tasks — remove them with it
+    # so the dock never points at a deleted transcript.
+    AITask.query.filter_by(conversation_id=conv.id).delete()
     db.session.delete(conv)
     db.session.commit()
     return jsonify({"ok": True})
@@ -723,10 +728,30 @@ def start_task():
                     id=legacy_drive_id, user_id=current_user.id).first():
                 return jsonify({"error": "Drive not found."}), 404
 
+    # Optional: continue an existing conversation instead of starting a
+    # new one — background mode changes only the execution, not the chat.
+    conv = None
+    conv_id = data.get("conversation_id")
+    if conv_id not in (None, ""):
+        try:
+            conv_id = int(conv_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid conversation id."}), 400
+        conv = ChatConversation.query.filter_by(
+            id=conv_id, user_id=current_user.id).first()
+        if conv is None:
+            return jsonify({"error": "Conversation not found."}), 404
+        busy = (AITask.query.filter_by(conversation_id=conv.id)
+                .filter(AITask.status.in_(("queued", "running"))).first())
+        if busy is not None:
+            return jsonify({"error": "This conversation already has a "
+                                     "background task running."}), 409
+
     # Snapshot the full context (drives, files, cell) so the task keeps
     # working with what it was launched with, even if the user moves on.
     ctx = _resolve_context(current_user, data)
-    task = ai_task_service.start_task(current_user, message, ctx=ctx)
+    task = ai_task_service.start_task(current_user, message, ctx=ctx,
+                                      conversation_id=conv.id if conv else None)
     return jsonify({"ok": True, "task": _task_json(task)})
 
 
@@ -797,12 +822,17 @@ def rerun_task(task_id):
         return jsonify({"error": "Not found"}), 404
     if task.is_active:
         return jsonify({"error": "The task is still running."}), 409
-    first_user = next((m for m in task.conversation.messages
-                       if m.role == "user"), None)
-    message = (first_user.content if first_user else task.title) or ""
-    # Strip the rendered 📎 attachment suffix: a re-run sends the question.
-    import re as _re
-    message = _re.sub(r"\n\n📎 [^\n]*$", "", message).strip()
+    # The exact launching question (title is truncated at 80 chars); fall
+    # back to the conversation's first user message for pre-prompt tasks.
+    if task.prompt:
+        message = task.prompt
+    else:
+        first_user = next((m for m in task.conversation.messages
+                           if m.role == "user"), None)
+        message = (first_user.content if first_user else task.title) or ""
+        # Strip the rendered 📎 attachment suffix: a re-run sends the question.
+        import re as _re
+        message = _re.sub(r"\n\n📎 [^\n]*$", "", message).strip()
     ctx = {"context": json.loads(task.context)} if task.context else None
     try:
         new_task = ai_task_service.start_task(current_user, message, ctx=ctx)

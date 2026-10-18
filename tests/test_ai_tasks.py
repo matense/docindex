@@ -572,6 +572,43 @@ def test_queue_positions(auth_client, app, user):
     assert tasks[first]["status"] == "queued"
 
 
+def test_background_task_continues_existing_conversation(auth_client, app, user):
+    """Background mode changes only the execution: the reply lands in the
+    same conversation, keeping the whole history — no new chat is made."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("first answer", "second answer")):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first question"}).get_json()["task"]
+        second = auth_client.post("/ai/tasks", json={
+            "message": "second question",
+            "conversation_id": first["conversation_id"]}).get_json()["task"]
+
+    assert second["conversation_id"] == first["conversation_id"]
+    with app.app_context():
+        conv = db.session.get(ChatConversation, first["conversation_id"])
+        roles = [m.role for m in conv.messages]
+        assert roles == ["user", "assistant", "user", "assistant"]
+        assert conv.messages[0].content == "first question"
+        assert conv.messages[1].content == "first answer"
+        assert conv.messages[2].content == "second question"
+        assert conv.messages[3].content == "second answer"
+
+
+def test_background_task_rejects_unknown_or_busy_conversation(auth_client, app, user):
+    _enable_ai(app)
+    assert auth_client.post("/ai/tasks", json={
+        "message": "hi", "conversation_id": 999999}).status_code == 404
+    assert auth_client.post("/ai/tasks", json={
+        "message": "hi", "conversation_id": "abc"}).status_code == 400
+    # A conversation with a running task cannot take another one.
+    with app.app_context():
+        running_id = _make_task(app, user, "running")
+        conv_id = db.session.get(AITask, running_id).conversation_id
+    assert auth_client.post("/ai/tasks", json={
+        "message": "hi", "conversation_id": conv_id}).status_code == 409
+
+
 # --- Dock progress, rename, re-run -------------------------------------------
 
 

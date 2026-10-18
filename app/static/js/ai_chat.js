@@ -1754,10 +1754,11 @@
             const question = input.value.trim();
             if (!question && !attachments.length) return;
 
-            // Background mode: launch a long-horizon task on the server and
-            // leave this chat untouched — the dock widget tracks it. The
-            // task captures the CURRENT context (drives, open file, cell,
-            // attachments) and keeps it for its whole lifetime.
+            // Background mode: run this turn as a long-horizon task on the
+            // server, but keep it in THIS conversation — history is shared,
+            // only the execution mode changes. The dock widget tracks it.
+            // The task captures the CURRENT context (drives, open file,
+            // cell, attachments) and keeps it for its whole lifetime.
             if (backgroundMode) {
                 const sentAttachments = attachments;
                 const sentCell = cellRef;
@@ -1799,6 +1800,9 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             message: question,
+                            // Stay in this conversation when there is one —
+                            // the task continues the same transcript.
+                            conversation_id: conversationId,
                             attachments: sentAttachments.map(a => a.id),
                             context_file_id: (window.currentFile
                                 && window.currentFile.id !== contextDismissedId

@@ -79,13 +79,16 @@ def _broadcast(task_id, event):
         q.put(event)
 
 
-def start_task(user, message, ctx=None, app=None):
-    """Create the conversation + task row and launch the agent worker.
+def start_task(user, message, ctx=None, app=None, conversation_id=None):
+    """Create the task row and launch the agent worker.
 
-    ``ctx`` is the dict returned by ``routes.ai._resolve_context`` — its
-    notes seed the worker's history and its ``context`` snapshot is stored
-    on the task, so the run keeps working with the drives/files/cell it was
-    launched with even after the user navigates elsewhere.
+    ``conversation_id`` continues an existing conversation (background mode
+    changes only the execution, not the chat); without it a fresh
+    conversation is created. ``ctx`` is the dict returned by
+    ``routes.ai._resolve_context`` — its notes seed the worker's history and
+    its ``context`` snapshot is stored on the task, so the run keeps working
+    with the drives/files/cell it was launched with even after the user
+    navigates elsewhere.
 
     Runs in a daemon thread unless AI_TASKS_ASYNC is off (tests), in which
     case the worker runs inline and the returned task is already finished.
@@ -102,17 +105,25 @@ def start_task(user, message, ctx=None, app=None):
         raise ValueError("You already have 3 background tasks running — "
                          "stop or wait for one to finish first.")
 
+    conv = None
+    if conversation_id is not None:
+        conv = ChatConversation.query.filter_by(
+            id=conversation_id, user_id=user.id).first()
+        if conv is None:
+            raise ValueError("Conversation not found.")
+    if conv is None:
+        conv = ChatConversation(user_id=user.id, title=message[:80])
+        db.session.add(conv)
+        db.session.flush()
+
     display = message
     if ctx and ctx["context"].get("file_names"):
         display += "\n\n📎 " + ", ".join(ctx["context"]["file_names"])
 
-    conv = ChatConversation(user_id=user.id, title=message[:80])
-    db.session.add(conv)
-    db.session.flush()
     db.session.add(ChatMessage(conversation_id=conv.id, role="user",
                                content=display))
     task = AITask(user_id=user.id, conversation_id=conv.id,
-                  title=message[:80], status="queued",
+                  title=message[:80], prompt=message, status="queued",
                   context=(json.dumps(ctx["context"]) if ctx else None))
     db.session.add(task)
     db.session.commit()

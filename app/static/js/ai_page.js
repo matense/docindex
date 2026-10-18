@@ -1502,6 +1502,9 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: question,
+                        // Stay in this conversation when there is one —
+                        // the task continues the same transcript.
+                        conversation_id: conversationId,
                         attachments: sentAttachments.map(a => a.id),
                         context_file_id: (window.currentFile
                             && window.currentFile.id !== contextDismissedId
