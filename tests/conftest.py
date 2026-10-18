@@ -5,6 +5,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Tests must run with zero setup (CI has no .env): provide a dummy secret.
+# Real deployments still require a proper SECRET_KEY (config.py raises
+# without one); test sessions use an in-memory DB anyway.
+os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
+
 from app import create_app  # noqa: E402
 from app.extensions import db as _db  # noqa: E402
 from app.models import User  # noqa: E402
