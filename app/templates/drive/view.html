@@ -28,6 +28,9 @@
                 <i class="fas fa-pen"></i> Edit
             </a>
             {% endif %}
+            <button type="button" class="btn btn-ghost btn-sm" id="similar-toggle" title="Files with similar content">
+                <i class="fas fa-clone"></i> Similar
+            </button>
             <button type="button" class="btn btn-ghost btn-sm" id="history-toggle"
                     onclick="document.getElementById('history-panel').classList.toggle('hidden'); this.classList.toggle('btn-active')">
                 <i class="fas fa-clock-rotate-left"></i> History
@@ -35,6 +38,51 @@
             </button>
         </div>
     </div>
+
+    <!-- Similar files (semantic) -->
+    <div id="similar-panel" class="hidden">
+        <div id="similar-body" class="text-sm opacity-60">Loading similar files…</div>
+    </div>
+    <script>
+    (function () {
+        const btn = document.getElementById('similar-toggle');
+        const panel = document.getElementById('similar-panel');
+        const body = document.getElementById('similar-body');
+        if (!btn || !panel) return;
+        let loaded = false;
+        btn.addEventListener('click', async () => {
+            const opening = panel.classList.contains('hidden');
+            panel.classList.toggle('hidden');
+            btn.classList.toggle('btn-active', opening);
+            if (!opening || loaded) return;
+            loaded = true;
+            try {
+                const resp = await fetch('{{ url_for('drive.similar', file_id=file.id) }}',
+                                         { headers: { 'Accept': 'application/json' } });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.error || 'unavailable');
+                if (!data.files.length) {
+                    body.textContent = 'No similar files found.';
+                    body.className = 'text-sm opacity-60';
+                    return;
+                }
+                body.innerHTML = '';
+                body.className = 'flex flex-col gap-1';
+                data.files.forEach(f => {
+                    const a = document.createElement('a');
+                    a.href = f.url;
+                    a.className = 'link link-hover text-sm truncate';
+                    a.textContent = f.name;
+                    a.title = 'Similarity ' + f.score;
+                    body.appendChild(a);
+                });
+            } catch (err) {
+                body.textContent = 'Similar files unavailable right now.';
+                body.className = 'text-sm opacity-60';
+            }
+        });
+    })();
+    </script>
 
     <!-- Version history timeline -->
     <div id="history-panel" class="hidden">

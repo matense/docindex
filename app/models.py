@@ -186,6 +186,33 @@ class FileIndex(db.Model):
         return f"<FileIndex file={self.file_id} status={self.status}>"
 
 
+class FileEmbedding(db.Model):
+    """One embedded text chunk for semantic search (native, no vector DB).
+
+    Chunk texts come from the extracted text (or image caption + name);
+    ``text_hash`` skips re-embedding unchanged chunks; ``model``/``dims``
+    record what produced the vector so a model change re-embeds cleanly.
+    """
+
+    __tablename__ = "file_embeddings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id"),
+                        nullable=False, index=True)
+    chunk_index = db.Column(db.Integer, nullable=False, default=0)
+    text = db.Column(db.Text, nullable=True)
+    text_hash = db.Column(db.String(64), nullable=True)
+    embedding = db.Column(db.LargeBinary, nullable=True)
+    model = db.Column(db.String(120), nullable=True)
+    dims = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    __table_args__ = (db.UniqueConstraint("file_id", "chunk_index"),)
+
+    def __repr__(self):
+        return f"<FileEmbedding file={self.file_id} chunk={self.chunk_index}>"
+
+
 class IndexJob(db.Model):
     """Persistent indexing queue entry — survives restarts, retries on failure.
 

@@ -1,8 +1,9 @@
 import io
+from unittest.mock import patch
 
 from app.extensions import db
 from app.models import StoredFile, User
-from app.services import hashtag_service, search_service
+from app.services import embedding_service, hashtag_service, search_service
 
 
 def _upload(client, name, content):
@@ -170,3 +171,105 @@ def test_count_files_breakdowns(auth_client, app, user):
         # Filters-only count (no query).
         assert search_service.count_files(u, extensions=["md"])["total"] == 1
         assert search_service.count_files(u, "nomatchanywhere")["total"] == 0
+
+
+# ---------------------------------------------------------- semantic -----
+
+
+def _enable_embeddings(app):
+    app.config["AI_ENABLED"] = True
+    app.config["AI_EMBEDDING_MODEL"] = "test-model"
+
+
+def _fake_embed(texts, user=None):
+    """Deterministic 2-D vectors: cat-related text vs everything else."""
+    return [[1.0, 0.0] if "cat" in t.lower() else [0.0, 1.0]
+            for t in texts]
+
+
+def test_chunk_text_splits_and_rejoins():
+    text = ("First paragraph here.\n\nSecond paragraph there.\n\n" + "word " * 900)
+    chunks = embedding_service.chunk_text(text, size=500, overlap=50)
+    assert len(chunks) >= 2
+    assert all(len(c) <= 600 for c in chunks)
+    # Nothing lost: every word survives in at least one chunk.
+    words = text.split()
+    assert all(any(w in c for c in chunks) for w in words)
+
+
+def test_semantic_search_ranks_by_meaning(auth_client, app, user):
+    _enable_embeddings(app)
+    _upload(auth_client, "cat.txt", b"the cat sits on the mat")
+    _upload(auth_client, "dog.txt", b"a dog barks loudly outside")
+    with app.app_context():
+        u = _user(app, user)
+        with patch.object(embedding_service, "embed_texts",
+                          side_effect=_fake_embed):
+            for stored in StoredFile.query.filter_by(user_id=user).all():
+                embedding_service.embed_file(stored, u)
+            ranked = search_service.semantic_search_files(u, "cat")
+    assert [s.name for s, _, _ in ranked] == ["cat.txt", "dog.txt"]
+    assert ranked[0][1] > ranked[1][1]
+
+
+def test_semantic_falls_back_without_model(auth_client, app, user):
+    _upload(auth_client, "budget.txt", b"the budget is approved")
+    with app.app_context():
+        u = _user(app, user)
+        # No embedding model: semantic is empty, auto degrades to keyword.
+        assert search_service.search_advanced(
+            u, "budget", mode="semantic")["total"] == 0
+        out = search_service.search_advanced(u, "budget", mode="auto")
+        assert out["total"] == 1
+        assert out["results"][0]["name"] == "budget.txt"
+
+
+def test_hybrid_fuses_keyword_and_semantic(auth_client, app, user):
+    _enable_embeddings(app)
+    _upload(auth_client, "exact.txt", b"budget budget budget numbers")
+    _upload(auth_client, "meaning.txt", b"completely unrelated wording here")
+    with app.app_context():
+        u = _user(app, user)
+        meaning_id = StoredFile.query.filter_by(name="meaning.txt").one().id
+        with patch.object(embedding_service, "semantic_search",
+                          return_value=[(meaning_id, 0.95, "snippet")]):
+            out = search_service.search_advanced(u, "budget", mode="hybrid")
+    names = [r["name"] for r in out["results"]]
+    assert set(names) == {"exact.txt", "meaning.txt"}
+    assert out["total"] == 2
+
+
+def test_tool_search_forwards_mode(app, user):
+    from app.services import agent_service
+    seen = {}
+
+    def fake_search(user_, query, **kw):
+        seen.update(kw)
+        return {"results": [], "total": 0}
+
+    with app.app_context():
+        u = db.session.get(User, user)
+        with patch.object(search_service, "search_advanced",
+                          side_effect=fake_search):
+            agent_service._tool_search_files(u, "q", None, mode="semantic")
+    assert seen.get("mode") == "semantic"
+
+
+def test_similar_files_endpoint(auth_client, app, user):
+    _enable_embeddings(app)
+    _upload(auth_client, "kitten.txt", b"a small cat sleeps")
+    _upload(auth_client, "tomcat.txt", b"the big cat hunts")
+    _upload(auth_client, "truck.txt", b"a heavy truck engine")
+    with patch.object(embedding_service, "embed_texts",
+                      side_effect=_fake_embed):
+        with app.app_context():
+            u = _user(app, user)
+            for stored in StoredFile.query.filter_by(user_id=user).all():
+                embedding_service.embed_file(stored, u)
+            kitten = StoredFile.query.filter_by(name="kitten.txt").one()
+            first_id = kitten.id
+    resp = auth_client.get(f"/file/{first_id}/similar")
+    assert resp.status_code == 200
+    names = [f["name"] for f in resp.get_json()["files"]]
+    assert "tomcat.txt" in names
+    assert "kitten.txt" not in names

@@ -422,6 +422,28 @@ def edit_drive(drive_id):
     return redirect(request.form.get("next") or url_for("drive.index"))
 
 
+@bp.route("/file/<int:file_id>/similar")
+@login_required
+def similar(file_id):
+    """Files with content most similar to this one ("more like this")."""
+    from ..services import embedding_service
+    stored = db.session.get(StoredFile, file_id)
+    if (stored is None or stored.user_id != current_user.id
+            or stored.deleted_at is not None):
+        return jsonify({"error": "Not found."}), 404
+    if not embedding_service.embeddings_available(current_user):
+        return jsonify({"error": "Semantic search is off (AI_EMBEDDING_MODEL empty).",
+                        "files": []}), 400
+    try:
+        pairs = embedding_service.similar_files(stored, current_user, limit=8)
+    except ai_service.AIError as exc:
+        return jsonify({"error": str(exc), "files": []}), 400
+    return jsonify({"files": [
+        {"id": f.id, "name": f.name, "extension": f.extension,
+         "score": round(s, 3), "url": url_for("drive.view", file_id=f.id)}
+        for f, s in pairs]})
+
+
 @bp.route("/file/<int:file_id>/summary")
 @login_required
 def file_summary(file_id):

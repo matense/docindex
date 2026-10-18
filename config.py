@@ -85,6 +85,16 @@ class Config:
     AI_API_KEY = os.environ.get("AI_API_KEY", "")
     AI_MODEL = os.environ.get("AI_MODEL", "llama3.1")
     AI_VISION_MODEL = os.environ.get("AI_VISION_MODEL", "")  # falls back to AI_MODEL
+    # Embedding model for semantic search (OpenAI-compatible /v1/embeddings
+    # on the same base URL — e.g. "text-embedding-qwen" in LM Studio or
+    # "nomic-embed-text" in Ollama). Empty disables semantic search and the
+    # app transparently falls back to keyword (FTS5) search.
+    AI_EMBEDDING_MODEL = os.environ.get("AI_EMBEDDING_MODEL", "")
+    # Semantic chunking/indexing knobs: ~chars per chunk, overlap between
+    # consecutive chunks, max chunks embedded per file.
+    AI_EMBED_CHUNK_CHARS = _int_env("AI_EMBED_CHUNK_CHARS", 2000, 200, 20000)
+    AI_EMBED_CHUNK_OVERLAP = _int_env("AI_EMBED_CHUNK_OVERLAP", 200, 0, 5000)
+    AI_EMBED_MAX_CHUNKS = _int_env("AI_EMBED_MAX_CHUNKS", 200, 1, 2000)
     AI_MAX_STEPS = _int_env("AI_MAX_STEPS", 16, 1, 128)
     AI_RATE_LIMIT_RPM = _int_env("AI_RATE_LIMIT_RPM", 30, 0, 600)
     # How many past user/assistant chat messages are sent to the model.

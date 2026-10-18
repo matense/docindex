@@ -52,6 +52,14 @@
             <i class="fas fa-magnifying-glass text-primary"></i> Results for "{{ query }}"
             <span class="text-sm font-normal opacity-50 ml-2">{{ results | length }} file(s)</span>
         </h1>
+        <div class="flex items-center gap-2 flex-wrap">
+        {% if embeddings_on %}
+        <div class="ai-mode-switch" title="Retrieval mode: exact keywords, hybrid (recommended), or pure meaning">
+            <a href="{{ url_for('search.results', q=query, mode='keyword') }}" class="ai-mode-btn {{ 'active' if mode == 'keyword' }}">Keywords</a>
+            <a href="{{ url_for('search.results', q=query, mode='hybrid') }}" class="ai-mode-btn {{ 'active' if mode == 'hybrid' }}">Hybrid</a>
+            <a href="{{ url_for('search.results', q=query, mode='semantic') }}" class="ai-mode-btn {{ 'active' if mode == 'semantic' }}">Meaning</a>
+        </div>
+        {% endif %}
         <div class="ai-mode-switch">
             <a href="{{ url_for('search.results') }}" class="ai-mode-btn active">
                 <i class="fas fa-magnifying-glass"></i> Search

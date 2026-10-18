@@ -269,6 +269,10 @@ def index_file(file_id, app=None):
         db.session.commit()
         # Keep the FTS5 search index in sync (no-op when FTS5 is unavailable).
         search_service.fts_upsert(stored.id)
+        # Embed for semantic search (no-op when embeddings are off; skips
+        # unchanged chunks). Covers every path through here: queue drainers,
+        # synchronous uploads/reindexes and direct calls.
+        _embed_if_enabled(app, stored)
 
 
 # --------------------------------------------------------------------------
@@ -377,6 +381,22 @@ def _process_job(app, job_id):
         job.status = ("pending" if job.attempts < MAX_JOB_ATTEMPTS
                       else "error")
     db.session.commit()
+
+
+def _embed_if_enabled(app, stored):
+    """Embed a freshly indexed file for semantic search (best-effort).
+
+    Runs inside the index worker: unchanged chunks are skipped by text
+    hash, and any failure only skips embeddings — the text index stands.
+    """
+    try:
+        from . import embedding_service
+        if embedding_service.embeddings_available():
+            embedding_service.embed_file(stored)
+    except Exception:  # noqa: BLE001 - embeddings never break indexing
+        app.logger.warning("Embedding failed for file %s", stored.id,
+                           exc_info=True)
+        db.session.rollback()
 
 
 def _drain(app):

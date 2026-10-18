@@ -483,14 +483,26 @@ def _plain_snippet(text, terms, radius=160):
 
 
 def search_advanced(user, query=None, *, sort="relevance", offset=0, limit=10,
-                    **filters):
+                    mode="auto", **filters):
     """Agent-oriented search: FTS5 syntax (phrases, AND/OR/NOT, column scopes
     like name:/tags:/caption:), metadata filters (drive, extensions, folder,
     word/size ranges, has_tags, has_caption, indexed), sort and pagination.
 
+    ``mode``: "keyword" (FTS5/BM25 only), "semantic" (embeddings cosine
+    only), "hybrid" (both fused with RRF) or "auto" (hybrid when embeddings
+    are available, else keyword). Semantic/hybrid honor drive, extensions,
+    folder, size and word filters; relevance-only ordering.
+
     Returns {"results": [compact dicts], "total": <rows matching the query
     and filters, ignoring pagination>}.
     """
+    mode = _resolve_mode(user, query, mode)
+    if mode == "semantic":
+        return _semantic_results(user, query, offset=offset, limit=limit,
+                                 filters=filters)
+    if mode == "hybrid":
+        return _hybrid_results(user, query, offset=offset, limit=limit,
+                               filters=filters)
     limit = max(1, min(int(limit or 10), MAX_ADVANCED_LIMIT))
     offset = max(0, int(offset or 0))
     query = (query or "").strip()
@@ -555,3 +567,135 @@ def count_files(user, query=None, **filters):
         params).all()}
     return {"total": total, "by_extension": by_extension,
             "by_drive": by_drive}
+
+
+# --------------------------------------------------------------------------
+# Semantic + hybrid retrieval (native embeddings, RRF fusion)
+# --------------------------------------------------------------------------
+
+_RRF_K = 60
+_SEMANTIC_CANDIDATES = 100
+
+
+def _resolve_mode(user, query, mode):
+    if mode in ("keyword", "semantic", "hybrid"):
+        return mode
+    from . import embedding_service
+    if query and (query or "").strip() \
+            and embedding_service.embeddings_available(user):
+        return "hybrid"
+    return "keyword"
+
+
+def semantic_search_files(user, query, limit=50, drive=None, extensions=None):
+    """Vector-only retrieval -> [(stored, score, snippet_text)] best-first.
+
+    Empty when embeddings are unavailable (callers fall back to keyword).
+    Honors drive scope and extension filter; other keyword filters do not
+    apply to the vector path.
+    """
+    from . import ai_service, embedding_service
+    if not embedding_service.embeddings_available(user):
+        return []
+    try:
+        ranked = embedding_service.semantic_search(
+            user, query, limit=limit, drive=drive, with_text=True)
+    except ai_service.AIError:
+        return []
+    if not ranked:
+        return []
+    ids = [fid for fid, _, _ in ranked]
+    files = {f.id: f for f in
+             StoredFile.query.filter(StoredFile.id.in_(ids)).all()} \
+        if ids else {}
+    exts = None
+    if extensions:
+        exts = {str(e).lower().lstrip(".") for e in extensions if e}
+    out = []
+    for fid, score, text in ranked:
+        stored = files.get(fid)
+        if stored is None:
+            continue
+        if exts is not None and stored.extension not in exts:
+            continue
+        out.append((stored, score, text))
+    return out
+
+
+def _vec_result_dict(stored, score, text):
+    index = stored.index
+    snippet = (text or "")[:400]
+    return {
+        "file_id": stored.id,
+        "name": stored.name,
+        "extension": stored.extension,
+        "size": stored.size,
+        "word_count": index.word_count if index else None,
+        "score": round(min(max(score, 0.0), 1.0) * 10, 3),
+        "snippet": snippet + ("…" if text and len(text) > 400 else ""),
+        "tags": hashtag_service.get_tags(index),
+    }
+
+
+def _semantic_filtered(user, query, filters, limit=_SEMANTIC_CANDIDATES):
+    """Vector ranking with the cheap metadata filters applied in Python."""
+    ranked = semantic_search_files(
+        user, query, limit=limit, drive=filters.get("drive"),
+        extensions=filters.get("extensions"))
+    folder_id = filters.get("folder_id")
+    try:
+        folder_id = int(folder_id) if folder_id not in (None, "") else None
+    except (TypeError, ValueError):
+        folder_id = None
+    min_words = filters.get("min_words")
+    max_words = filters.get("max_words")
+    min_size = filters.get("min_size")
+    max_size = filters.get("max_size")
+    out = []
+    for stored, score, text in ranked:
+        if folder_id is not None and stored.folder_id != folder_id:
+            continue
+        if min_size is not None and stored.size < min_size:
+            continue
+        if max_size is not None and stored.size > max_size:
+            continue
+        wc = stored.index.word_count if stored.index else None
+        if min_words is not None and (wc is None or wc < min_words):
+            continue
+        if max_words is not None and (wc is None or wc > max_words):
+            continue
+        out.append((stored, score, text))
+    return out
+
+
+def _semantic_results(user, query, *, offset, limit, filters):
+    ranked = _semantic_filtered(user, query, filters)
+    page = ranked[offset:offset + limit]
+    return {
+        "results": [_vec_result_dict(stored, score, text)
+                    for stored, score, text in page],
+        "total": len(ranked),
+    }
+
+
+def _rrf_fuse(ranked_lists, k=_RRF_K):
+    """Reciprocal rank fusion over best-first file-id lists."""
+    scores = {}
+    for lst in ranked_lists:
+        for rank, fid in enumerate(lst):
+            scores[fid] = scores.get(fid, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=scores.get, reverse=True)
+
+
+def _hybrid_results(user, query, *, offset, limit, filters):
+    kw = search_advanced(user, query, sort="relevance", offset=0,
+                         limit=100, mode="keyword", **filters)
+    vec = _semantic_filtered(user, query, filters)
+    kw_ids = [r["file_id"] for r in kw["results"]]
+    vec_ids = [stored.id for stored, _, _ in vec]
+    fused = _rrf_fuse([kw_ids, vec_ids])
+    by_id = {r["file_id"]: r for r in kw["results"]}
+    for stored, score, text in vec:
+        by_id.setdefault(stored.id, _vec_result_dict(stored, score, text))
+    results = [by_id[fid] for fid in fused if fid in by_id]
+    return {"results": results[offset:offset + limit], "total": len(results)}

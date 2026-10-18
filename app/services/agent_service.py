@@ -82,6 +82,17 @@ TOOLS = [
                                  "updated_at"],
                         "description": "Result order (default relevance).",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["keyword", "semantic", "hybrid"],
+                        "description": (
+                            "Retrieval mode: 'keyword' (exact FTS5 words), "
+                            "'semantic' (meaning, typos and cross-language "
+                            "match), or 'hybrid' (both fused — default, "
+                            "falls back to keyword when embeddings are "
+                            "off). Use semantic/hybrid when the question is "
+                            "about meaning rather than exact words."),
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Max results to return (default 10, max 25).",
@@ -363,6 +374,10 @@ Rules:
   files, call count_files first to measure the result set; if it is large,
   refine with a better query or filters (extensions, min_words, folder)
   before calling search_files.
+- search_files defaults to hybrid retrieval (keywords + meaning fused); pass
+  mode "keyword" for exact-word matching or "semantic" for pure meaning
+  (typos, paraphrases, cross-language). If the question is about meaning
+  rather than exact words, try mode "semantic" when keyword finds nothing.
 - search_files uses FTS5 syntax: "quoted phrases", AND/OR/NOT and column
   scopes (name:, tags:, caption:). Plain words match by prefix, so use word
   stems with '*' (e.g. budg* matches budget/budgets).
@@ -551,6 +566,7 @@ def _tool_search_files(user, query, drive=None, **kw):
         sort=kw.get("sort") or "relevance",
         offset=kw.get("offset") or 0,
         limit=kw.get("limit") or 10,
+        mode=kw.get("mode") or "auto",
         drive=drive,
         extensions=kw.get("extensions"),
         folder_id=kw.get("folder_id"),

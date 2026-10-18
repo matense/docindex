@@ -1,8 +1,10 @@
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
+from markupsafe import escape
 
-from ..models import Drive
-from ..services import drive_service, search_service
+from ..extensions import db
+from ..models import Drive, StoredFile
+from ..services import drive_service, embedding_service, hashtag_service, search_service
 
 bp = Blueprint("search", __name__)
 
@@ -15,10 +17,41 @@ def results():
     query = request.args.get("q", "").strip()
     if query:
         drive = drive_service.get_current_drive(current_user)
-        results = search_service.search_files(query, current_user, drive=drive)
+        embeddings_on = embedding_service.embeddings_available(current_user)
+        mode = (request.args.get("mode") or "auto").strip().lower()
+        if mode not in ("auto", "keyword", "hybrid", "semantic"):
+            mode = "auto"
+        if mode == "keyword" or not embeddings_on:
+            results = search_service.search_files(query, current_user, drive=drive)
+            mode = "keyword"
+        else:
+            if mode == "auto":
+                mode = "hybrid"
+            adv = search_service.search_advanced(
+                current_user, query, limit=50, mode=mode, drive=drive)
+            ids = [r["file_id"] for r in adv["results"]]
+            files = {f.id: f for f in StoredFile.query.filter(
+                StoredFile.id.in_(ids)).all()} if ids else {}
+            results = []
+            for r in adv["results"]:
+                stored = files.get(r["file_id"])
+                if stored is None:
+                    continue
+                index = stored.index
+                results.append({
+                    "file": stored,
+                    "name_html": escape(r["name"]),
+                    "matches": [],
+                    "snippet": r.get("snippet") or "",
+                    "caption": index.caption if index else None,
+                    "tags": hashtag_service.get_tags(index),
+                })
     else:
         results = []
-    return render_template("search/results.html", query=query, results=results)
+        embeddings_on = embedding_service.embeddings_available(current_user)
+        mode = "keyword"
+    return render_template("search/results.html", query=query, results=results,
+                           embeddings_on=embeddings_on, mode=mode)
 
 
 @bp.route("/api/search")
