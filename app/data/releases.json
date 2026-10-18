@@ -15,6 +15,9 @@
             "Background tasks: dock icons show live step count, current tool and elapsed time, plus completion toasts and opt-in browser notifications; tasks can be renamed and re-run with the same question and context; queued tasks show their line position.",
             "Chat history filter: All / Background tasks with status dots, launch toast listing the captured context, and finished banners reporting steps, duration and model.",
             "Background mode now continues the same conversation — one chat can own several sequential tasks, keeping the whole history.",
+            "Attach files from your device straight in the chat (paperclip or drag & drop): saved to the open drive, or to a drive you pick when it is read-only — images land with caption + thumbnail, tables with columns and head rows, text with word counts, and sending waits for the summary.",
+            "Every attachment chip has a 'Run workflow' button for workflows that accept files; attached content is also pre-summarized into the AI context so answers come without extra tool calls.",
+            "New view_image tool: the AI looks at images through the vision model (optionally focused by your question) instead of relying on the short stored caption — and refreshes that caption for search.",
             "Template fan-in: connect several nodes into a transform.template input and join them all with {{ in }}."
           ]
         },
@@ -26,6 +29,7 @@
             "Task workers answer the question that launched them with the recent transcript attached, instead of the conversation's first message.",
             "Deleting a conversation also removes its background tasks, so the dock never points at a deleted transcript.",
             "Conversation detail exposes task start/finish times; run progress computation is shared between the run page and the widget feed.",
+            "Notebooks (.pdocnb) get their own amber book icon in the drive, search results and chat attachments instead of the generic file.",
             "Avatar uses local gradient initials (no external image service); profile crash on drives with files fixed."
           ]
         },

@@ -24,3 +24,11 @@ def test_app_version_matches_latest_release(auth_client):
     from app import APP_VERSION
     resp = auth_client.get("/settings/releases")
     assert f"v{APP_VERSION}".encode() in resp.data
+
+
+def test_dropdown_badge_matches_running_version(auth_client):
+    """The header 'What's new' badge (base.html shell, kept alive by the SPA
+    router) must show the same version as the releases page."""
+    from app import APP_VERSION
+    resp = auth_client.get("/settings/profile")
+    assert f"v{APP_VERSION}</span>".encode() in resp.data
