@@ -21,6 +21,7 @@
             case 'pdf': return 'fa-file-pdf';
             case 'docx': return 'fa-file-word';
             case 'csv': return 'fa-file-excel';
+            case 'pdocnb': return 'fa-book-open';
             default: return 'fa-file-lines';
         }
     }

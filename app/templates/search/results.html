@@ -5,6 +5,7 @@
     {%- if f.is_image -%}fa-file-image text-pink-500
     {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
     {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
+    {%- elif f.extension == 'pdocnb' -%}fa-book-open text-amber-500
     {%- elif f.extension in ['csv', 'xlsx'] -%}fa-file-excel text-green-500
     {%- else -%}fa-file-lines text-indigo-500{%- endif -%}
 {%- endmacro %}

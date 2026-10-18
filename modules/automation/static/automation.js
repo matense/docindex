@@ -382,7 +382,7 @@
             doc: 'fa-file-word', docx: 'fa-file-word',
             png: 'fa-file-image', jpg: 'fa-file-image',
             jpeg: 'fa-file-image', gif: 'fa-file-image',
-            pdocnb: 'fa-book',
+            pdocnb: 'fa-book-open',
         };
         return map[String(ext || '').toLowerCase()] || 'fa-file';
     }
