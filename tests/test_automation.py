@@ -1279,8 +1279,11 @@ def test_for_file_api_lists_only_triggerable(auth_client, app, user, enabled):
     _workflow(app, user, _text_graph(), name="Plain")
     _workflow(app, user, _TRIGGER_GRAPH, name="Triggerable")
     resp = auth_client.get("/m/automation/api/for-file")
-    names = [w["name"] for w in resp.get_json()["workflows"]]
-    assert names == ["Triggerable"]
+    workflows = resp.get_json()["workflows"]
+    assert [w["name"] for w in workflows] == ["Triggerable"]
+    assert workflows[0]["folder"] == ""
+    assert workflows[0]["schedule"] is None
+    assert workflows[0]["last_run"] is None
 
 
 def test_for_file_api_disambiguates_same_name(auth_client, app, user, enabled):

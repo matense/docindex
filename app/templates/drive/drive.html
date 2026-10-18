@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=6">
+{% endblock %}
 {% block title %}{{ folder.name if folder else (drive.name if drive else 'My Drive') }} - DocIndex{% endblock %}
 
 {% macro file_icon(f) -%}
@@ -399,8 +402,7 @@
             Run an automation on <b id="run-wf-file"></b>. Only workflows with
             a <i>Trigger input</i> node can run on a file.
         </p>
-        <div id="run-wf-list"
-             class="flex flex-col divide-y divide-base-content/5 border border-base-content/10 rounded-xl max-h-[50vh] overflow-y-auto">
+        <div id="run-wf-list" class="auto-tree max-h-[50vh] overflow-y-auto rounded-xl">
             <div class="text-xs opacity-40 p-4 text-center">loading…</div>
         </div>
         <div class="modal-action">

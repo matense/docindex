@@ -552,37 +552,100 @@ async function openRunWorkflow(fileId, fileName) {
         return;
     }
     list.innerHTML = '';
-    // Same name in several folders reads as a duplicate (e.g. two
-    // "Translate a file"): sort by name and badge the folder on clashes.
+    // Automation-style rows, grouped by folder like the automations page:
+    // same names in several folders read as duplicates, so sort by name
+    // and badge the folder on clashes.
     const names = {};
     runWfCache.forEach((wf) => { names[wf.name] = (names[wf.name] || 0) + 1; });
-    runWfCache.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((wf) => {
+    const sorted = runWfCache.slice().sort((a, b) =>
+        (a.folder || '').localeCompare(b.folder || '') || a.name.localeCompare(b.name));
+    const groups = [];
+    sorted.forEach((wf) => {
+        const key = wf.folder || '';
+        if (!groups.length || groups[groups.length - 1].key !== key) {
+            groups.push({ key, items: [] });
+        }
+        groups[groups.length - 1].items.push(wf);
+    });
+
+    function fmtTime(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getDate()} ${mon} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function statusClass(status) {
+        if (status === 'done') return 'ok';
+        if (status === 'error' || status === 'interrupted') return 'bad';
+        return 'wait';
+    }
+
+    function makeRow(wf) {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'flex items-center gap-3 px-4 py-3 text-left hover:bg-primary/5 transition-colors';
-        const icon = document.createElement('i');
-        icon.className = 'fas fa-diagram-project text-primary/70 w-4 flex-shrink-0';
-        const wrap = document.createElement('span');
-        wrap.className = 'min-w-0';
-        const title = document.createElement('span');
-        title.className = 'text-sm font-semibold truncate flex items-center gap-2';
-        title.appendChild(document.createTextNode(wf.name));
+        btn.className = 'auto-wf text-left w-full';
+        btn.title = wf.description ? wf.description + '\nClick to run on this file' : 'Click to run on this file';
+
+        const main = document.createElement('span');
+        main.className = 'auto-main';
+
+        const icon = document.createElement('span');
+        icon.className = 'auto-ico';
+        icon.innerHTML = '<i class="fas fa-diagram-project"></i>';
+
+        const text = document.createElement('span');
+        text.className = 'auto-text';
+        const name = document.createElement('span');
+        name.className = 'auto-name';
+        name.appendChild(document.createTextNode(wf.name));
         if (names[wf.name] > 1) {
             const badge = document.createElement('span');
-            badge.className = 'badge badge-ghost badge-xs flex-shrink-0';
+            badge.className = 'auto-count';
             badge.textContent = wf.folder ? 'in ' + wf.folder : 'Unsorted';
-            badge.title = wf.folder ? 'Folder: ' + wf.folder : 'Not in a folder';
-            title.appendChild(badge);
+            name.appendChild(badge);
         }
-        wrap.appendChild(title);
-        if (wf.description) {
-            const desc = document.createElement('span');
-            desc.className = 'block text-[11px] opacity-45 truncate';
-            desc.textContent = wf.description;
-            wrap.appendChild(desc);
+        const meta = document.createElement('span');
+        meta.className = 'auto-meta';
+        if (wf.schedule && wf.schedule.interval_minutes) {
+            const chip = document.createElement('span');
+            chip.className = 'auto-chip';
+            chip.innerHTML = '<i class="fas fa-clock"></i>';
+            chip.appendChild(document.createTextNode(
+                `Auto · ${wf.schedule.interval_minutes}m · ${wf.schedule.enabled ? 'On' : 'Off'}`));
+            meta.appendChild(chip);
+        } else {
+            const manual = document.createElement('span');
+            manual.className = 'auto-muted';
+            manual.innerHTML = '<i class="fas fa-hand-pointer"></i>Manual';
+            meta.appendChild(manual);
         }
-        btn.appendChild(icon);
-        btn.appendChild(wrap);
+        if (wf.last_run) {
+            const st = document.createElement('span');
+            st.className = 'auto-run auto-run-' + statusClass(wf.last_run.status);
+            st.textContent = wf.last_run.status;
+            meta.appendChild(st);
+            const when = fmtTime(wf.last_run.finished_at);
+            if (when) {
+                const t = document.createElement('span');
+                t.className = 'auto-muted';
+                t.textContent = when;
+                meta.appendChild(t);
+            }
+        } else {
+            const never = document.createElement('span');
+            never.className = 'auto-muted';
+            never.textContent = 'never ran';
+            meta.appendChild(never);
+        }
+        text.appendChild(name);
+        text.appendChild(meta);
+        main.appendChild(icon);
+        main.appendChild(text);
+        btn.appendChild(main);
         btn.addEventListener('click', async () => {
             btn.disabled = true;
             try {
@@ -611,7 +674,35 @@ async function openRunWorkflow(fileId, fileName) {
                 }
             }
         });
-        list.appendChild(btn);
+        return btn;
+    }
+
+    groups.forEach((g) => {
+        if (g.key) {
+            const det = document.createElement('details');
+            det.className = 'auto-folder';
+            det.open = true;
+            const head = document.createElement('summary');
+            head.className = 'auto-folder-head';
+            head.innerHTML = '<i class="fas fa-chevron-down auto-caret"></i>' +
+                '<i class="fas fa-folder auto-folder-ico"></i>';
+            const label = document.createElement('span');
+            label.className = 'auto-folder-name';
+            label.textContent = g.key;
+            head.appendChild(label);
+            const count = document.createElement('span');
+            count.className = 'auto-count';
+            count.textContent = g.items.length;
+            head.appendChild(count);
+            const body = document.createElement('div');
+            body.className = 'auto-folder-body';
+            g.items.forEach((wf) => body.appendChild(makeRow(wf)));
+            det.appendChild(head);
+            det.appendChild(body);
+            list.appendChild(det);
+        } else {
+            g.items.forEach((wf) => list.appendChild(makeRow(wf)));
+        }
     });
 }
 

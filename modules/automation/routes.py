@@ -518,16 +518,35 @@ def api_for_file():
     folders = _folder_map()
 
     triggerable = []
+    # Latest run per workflow (one query) for the status badge + time.
+    run_rows = (AutomationRun.query
+               .filter(AutomationRun.workflow_id.in_(
+                   [w.id for w in workflows]),
+                       AutomationRun.user_id == current_user.id)
+               .order_by(AutomationRun.id.desc()).all())
+    last_by_wf = {}
+    for run in run_rows:
+        last_by_wf.setdefault(run.workflow_id, run)
     for workflow in workflows:
         try:
             graph = engine.parse_graph(workflow.graph)
         except engine.WorkflowError:
             continue
         if any(n["type"] == "input.trigger" for n in graph["nodes"]):
-            triggerable.append({"id": workflow.id, "name": workflow.name,
-                                "description": workflow.description[:120],
-                                "folder": _folder_path(folders, workflow.folder_id)
-                                if workflow.folder_id else ""})
+            last = last_by_wf.get(workflow.id)
+            triggerable.append({
+                "id": workflow.id, "name": workflow.name,
+                "description": workflow.description[:120],
+                "folder": _folder_path(folders, workflow.folder_id)
+                if workflow.folder_id else "",
+                "schedule": ({"interval_minutes": workflow.interval_minutes,
+                              "enabled": bool(workflow.enabled)}
+                             if workflow.interval_minutes else None),
+                "last_run": ({"status": last.status,
+                              "finished_at": (last.finished_at.isoformat()
+                                             if last.finished_at else None)}
+                             if last else None),
+            })
     return jsonify({"workflows": triggerable})
 
 
