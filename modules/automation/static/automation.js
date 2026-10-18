@@ -319,7 +319,6 @@
             document.fonts.ready.then(run).catch(() => {});
         }
     }
-    }
 
     function exportGraph() {
         const data = editor.export().drawflow.Home.data;
