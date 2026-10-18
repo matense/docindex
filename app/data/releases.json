@@ -1,6 +1,47 @@
 {
   "releases": [
     {
+      "version": "0.1.4",
+      "date": "2026-10-18",
+      "title": "Live background work: animated tools, run widgets, smarter tasks",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Chat shows live tool-call chips: spinning icon, present-tense label ('Searching files…'), elapsed timer and step k/N progress, settling to a green check with the result summary.",
+            "Tool results now carry clickable file chips that open the referenced files; every message has a copy button and the last answer can be regenerated.",
+            "Automation background-runs widget (bottom-right, like sync): live progress of manual, scheduled and AI-triggered runs on any page, with stop button and finished toasts — the editor Run button now stays on the canvas.",
+            "Background tasks: dock icons show live step count, current tool and elapsed time, plus completion toasts and opt-in browser notifications; tasks can be renamed and re-run with the same question and context; queued tasks show their line position.",
+            "Chat history filter: All / Background tasks with status dots, launch toast listing the captured context, and finished banners reporting steps, duration and model.",
+            "Background mode now continues the same conversation — one chat can own several sequential tasks, keeping the whole history.",
+            "Template fan-in: connect several nodes into a transform.template input and join them all with {{ in }}."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Automations list: proper toolbar layout, single search box, and styles that survive first load and SPA navigation.",
+            "Task workers answer the question that launched them with the recent transcript attached, instead of the conversation's first message.",
+            "Deleting a conversation also removes its background tasks, so the dock never points at a deleted transcript.",
+            "Conversation detail exposes task start/finish times; run progress computation is shared between the run page and the widget feed.",
+            "Avatar uses local gradient initials (no external image service); profile crash on drives with files fixed."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Automation editor canvas stayed empty due to a stray brace breaking the editor script.",
+            "Whole app rendered unstyled after privacy attributes were added to the Tailwind CDN tag — reverted.",
+            "Double search box on the automations page caused by the legacy input styling.",
+            "Run status endpoint refactored with identical output; re-run of old tasks falls back to the first user message."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.3",
       "date": "2026-10-17",
       "title": "Automation grows up: folders, smarter nodes, live preview",
