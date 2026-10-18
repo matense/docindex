@@ -48,6 +48,20 @@ def test_profile_shows_admin_section_for_admin(admin_client):
     assert b"New user registration" in resp.data
 
 
+def test_profile_lists_drive_stats_with_files(auth_client):
+    """Regression: the grouped file-stats query returns 3-column rows —
+    the profile crashed turning them straight into a dict (ValueError:
+    dictionary update sequence element #0 has length 3)."""
+    import io
+    auth_client.post("/upload", data={
+        "folder_id": "",
+        "files": (io.BytesIO(b"hello world"), "notes.txt"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    resp = auth_client.get("/settings/profile")
+    assert resp.status_code == 200
+    assert b"files" in resp.data
+
+
 # --- Email / password changes ---
 
 def test_change_email(auth_client, app):

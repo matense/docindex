@@ -1210,6 +1210,14 @@
     overflow-y: auto;
 }
 
+/* The examples gallery is a flex child of a fit-on-screen page: expanded,
+   it would grow unbounded and push "Your automations" / "Recent runs" out
+   of reach (the page itself never scrolls). Cap it and scroll internally. */
+#automation-examples[open] > div {
+    max-height: min(48vh, 560px);
+    overflow-y: auto;
+}
+
 /* ------------------------------------------------------------------ */
 /* Live preview / run animations: flowing wires, pulsing nodes, badges  */
 /* ------------------------------------------------------------------ */

@@ -138,14 +138,14 @@ def profile():
     drives = (Drive.query.filter_by(user_id=current_user.id)
               .order_by(Drive.created_at).all())
     drive_ids = [d.id for d in drives]
-    file_stats = dict(
-        db.session.query(StoredFile.drive_id,
-                         func.count(StoredFile.id),
-                         func.coalesce(func.sum(StoredFile.size), 0))
-        .filter(StoredFile.user_id == current_user.id,
-                StoredFile.drive_id.in_(drive_ids or [-1]),
-                StoredFile.deleted_at.is_(None))
-        .group_by(StoredFile.drive_id).all()) if drive_ids else {}
+    file_rows = (db.session.query(StoredFile.drive_id,
+                                  func.count(StoredFile.id),
+                                  func.coalesce(func.sum(StoredFile.size), 0))
+                 .filter(StoredFile.user_id == current_user.id,
+                         StoredFile.drive_id.in_(drive_ids or [-1]),
+                         StoredFile.deleted_at.is_(None))
+                 .group_by(StoredFile.drive_id).all()) if drive_ids else []
+    file_stats = {drive_id: (count, size) for drive_id, count, size in file_rows}
     folder_stats = dict(
         db.session.query(Folder.drive_id, func.count(Folder.id))
         .filter(Folder.user_id == current_user.id,

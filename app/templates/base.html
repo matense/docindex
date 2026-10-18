@@ -136,7 +136,7 @@
                 <div class="flex items-center gap-2 flex-shrink-0 w-48 lg:w-64 justify-end" id="header-right-section">
                     <div class="dropdown dropdown-end dropdown-hover" id="profile-dropdown">
                         <div tabindex="0" role="button" class="avatar cursor-pointer transition-transform hover:scale-105 duration-200" aria-haspopup="menu" aria-label="Profile menu">
-                            <div class="w-10 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 shadow-md bg-primary/20 flex items-center justify-center font-bold text-primary" aria-hidden="true">{{ (current_user.username or 'D')[0]|upper }}</div>
+                            <div class="w-10 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 shadow-md bg-gradient-to-br from-primary to-secondary font-bold text-white text-sm" style="display:flex;align-items:center;justify-content:center" aria-hidden="true">{{ (current_user.username or 'D')[:2]|upper }}</div>
                         </div>
                         <ul tabindex="0" class="menu menu-sm dropdown-content mt-0 z-[1] glass-menu w-56">
                             <li class="px-4 py-3 border-b border-base-content/10 mb-2">
@@ -145,6 +145,7 @@
                             </li>
                             <li><a href="{{ url_for('settings.profile') }}"><i class="fas fa-user w-5"></i> Profile</a></li>
                             <li><a href="{{ url_for('settings.ai_settings') }}"><i class="fas fa-robot w-5"></i> AI Settings</a></li>
+                            <li><a href="{{ url_for('behaviors.index') }}"><i class="fas fa-masks-theater w-5"></i> Behaviors &amp; Personas</a></li>
                             <li><a href="{{ url_for('settings.help_page') }}"><i class="fas fa-circle-question w-5"></i> Help</a></li>
                             <li><a href="{{ url_for('settings.releases') }}"><i class="fas fa-gift w-5"></i> What's new <span class="badge badge-xs badge-primary ml-auto">v{{ app_version }}</span></a></li>
                             {% if current_user.is_admin %}

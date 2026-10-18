@@ -93,6 +93,17 @@
         window.currentFile = null;
         window.currentWorkflow = null;
         window.currentWorkflowNode = null;
+        // Module pages ship their own stylesheets via {% block head %}, which
+        // lives OUTSIDE #page-content-container — a plain content swap never
+        // loads them and the page renders unstyled until a full refresh.
+        // Pull any missing stylesheet links into the live <head> first.
+        doc.querySelectorAll('head link[rel="stylesheet"]').forEach((link) => {
+            const href = link.getAttribute('href');
+            if (!href) return;
+            const exists = [...document.head.querySelectorAll('link[rel="stylesheet"]')]
+                .some((l) => l.getAttribute('href') === href);
+            if (!exists) document.head.appendChild(document.importNode(link, true));
+        });
         container.innerHTML = newContent.innerHTML;
         execScripts(container);
         updatePageState(doc, url);
