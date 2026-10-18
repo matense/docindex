@@ -59,7 +59,8 @@ echo -^> Creating/upgrading the database...
 "%VENV_PY%" -m flask --app run.py db upgrade heads
 if errorlevel 1 exit /b 1
 
-rem 6. First admin user (prompts; or pass args: install.bat user email password)
+rem 6. First admin user (prompts; or pass args: install.bat user email -
+rem    the password is always prompted, never passed as an argument)
 echo -^> Creating the admin user...
 "%VENV_PY%" create_admin.py %*
 

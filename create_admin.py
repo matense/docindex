@@ -1,7 +1,9 @@
 """Create a user (or the first admin) from the command line.
 
-Usage: python create_admin.py [username] [email] [password]
-Prompts for anything not given as arguments.
+Usage: python create_admin.py [username] [email]
+Prompts for anything not given as arguments. The password is ALWAYS
+prompted (never passed as an argument — it would leak into shell
+history and process lists).
 """
 
 import getpass

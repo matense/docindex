@@ -85,8 +85,9 @@ docindex/
   `upgrade()` on startup — a no-op when the schema is current — so pulling
   new code never leaves the DB behind the models ("no such column" 500s).
 - `run.py` starts the dev server on `0.0.0.0:$PORT` (default 5000, debug on).
-- `create_admin.py [username] [email] [password]` creates an admin user
-  (prompts for missing arguments).
+- `create_admin.py [username] [email]` creates an admin user
+  (prompts for missing arguments; the password is always prompted, never
+  passed as an argument).
 
 ## Configuration
 

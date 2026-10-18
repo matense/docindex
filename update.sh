@@ -25,7 +25,10 @@ echo "-> Upgrading the database..."
 if ! "$VENV_PY" -m flask --app run.py db upgrade heads; then
     echo "-> Standard upgrade failed (the database may carry a stamp from the"
     echo "   first public release) — repairing the migration stamp..."
-    "$VENV_PY" -m flask --app run.py db-repair
+    "$VENV_PY" -m flask --app run.py db-repair || {
+        echo "ERROR: database repair failed — resolve it manually, then re-run ./update.sh."
+        exit 1
+    }
 fi
 
 echo ""
