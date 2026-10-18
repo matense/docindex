@@ -552,7 +552,11 @@ async function openRunWorkflow(fileId, fileName) {
         return;
     }
     list.innerHTML = '';
-    runWfCache.forEach((wf) => {
+    // Same name in several folders reads as a duplicate (e.g. two
+    // "Translate a file"): sort by name and badge the folder on clashes.
+    const names = {};
+    runWfCache.forEach((wf) => { names[wf.name] = (names[wf.name] || 0) + 1; });
+    runWfCache.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((wf) => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'flex items-center gap-3 px-4 py-3 text-left hover:bg-primary/5 transition-colors';
@@ -561,8 +565,15 @@ async function openRunWorkflow(fileId, fileName) {
         const wrap = document.createElement('span');
         wrap.className = 'min-w-0';
         const title = document.createElement('span');
-        title.className = 'block text-sm font-semibold truncate';
-        title.textContent = wf.name;
+        title.className = 'text-sm font-semibold truncate flex items-center gap-2';
+        title.appendChild(document.createTextNode(wf.name));
+        if (names[wf.name] > 1) {
+            const badge = document.createElement('span');
+            badge.className = 'badge badge-ghost badge-xs flex-shrink-0';
+            badge.textContent = wf.folder ? 'in ' + wf.folder : 'Unsorted';
+            badge.title = wf.folder ? 'Folder: ' + wf.folder : 'Not in a folder';
+            title.appendChild(badge);
+        }
         wrap.appendChild(title);
         if (wf.description) {
             const desc = document.createElement('span');

@@ -466,6 +466,7 @@ def api_attachable():
     workflows = (AutomationWorkflow.query
                  .filter_by(user_id=current_user.id)
                  .order_by(AutomationWorkflow.updated_at.desc()).all())
+    folders = _folder_map()
     for workflow in workflows:
         try:
             graph = engine.parse_graph(workflow.graph)
@@ -481,8 +482,28 @@ def api_attachable():
             file_params = []
         if has_trigger or file_params:
             out.append({"id": workflow.id, "name": workflow.name,
-                        "trigger": has_trigger, "file_params": file_params})
+                        "trigger": has_trigger, "file_params": file_params,
+                        "folder": _folder_path(folders, workflow.folder_id)
+                        if workflow.folder_id else ""})
     return jsonify({"workflows": out})
+
+
+def _folder_map():
+    return {f.id: f for f in AutomationFolder.query.filter_by(
+        user_id=current_user.id).all()}
+
+
+def _folder_path(folders, folder_id):
+    """'Parent / Child' breadcrumb for a folder id ("" at the root)."""
+    parts, seen = [], set()
+    while folder_id and folder_id not in seen:
+        seen.add(folder_id)
+        folder = folders.get(folder_id)
+        if folder is None:
+            break
+        parts.append(folder.name)
+        folder_id = folder.parent_id
+    return " / ".join(reversed(parts))
 
 
 @bp.get("/api/for-file")
@@ -494,6 +515,8 @@ def api_for_file():
     workflows = (AutomationWorkflow.query
                  .filter_by(user_id=current_user.id)
                  .order_by(AutomationWorkflow.updated_at.desc()).all())
+    folders = _folder_map()
+
     triggerable = []
     for workflow in workflows:
         try:
@@ -502,7 +525,9 @@ def api_for_file():
             continue
         if any(n["type"] == "input.trigger" for n in graph["nodes"]):
             triggerable.append({"id": workflow.id, "name": workflow.name,
-                                "description": workflow.description[:120]})
+                                "description": workflow.description[:120],
+                                "folder": _folder_path(folders, workflow.folder_id)
+                                if workflow.folder_id else ""})
     return jsonify({"workflows": triggerable})
 
 

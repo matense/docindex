@@ -433,13 +433,21 @@
             head.className = 'text-[10px] uppercase tracking-wide opacity-50 px-2 py-1';
             head.textContent = 'Run "' + a.name + '" with…';
             pop.appendChild(head);
-            wfs.slice(0, 12).forEach(wf => {
+            const names = {};
+            wfs.forEach((wf) => { names[wf.name] = (names[wf.name] || 0) + 1; });
+            wfs.slice().sort((a, b) => a.name.localeCompare(b.name)).slice(0, 12).forEach(wf => {
                 const b = document.createElement('button');
                 b.type = 'button';
                 b.className = 'ai-menu-item';
                 const how = wf.trigger ? 'input' : (wf.file_params[0] || {}).label || 'file';
                 b.innerHTML = '<i class="fas fa-diagram-project w-5 text-center text-primary"></i> ';
                 b.appendChild(document.createTextNode(wf.name + '  ·  ' + how));
+                if (names[wf.name] > 1) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge badge-ghost badge-xs ml-1';
+                    badge.textContent = wf.folder ? 'in ' + wf.folder : 'Unsorted';
+                    b.appendChild(badge);
+                }
                 b.title = wf.trigger ? 'Runs with this file as trigger input'
                                      : 'Runs with this file as "' + how + '"';
                 b.onclick = () => { pop.remove(); startWorkflowRun(wf, a); };

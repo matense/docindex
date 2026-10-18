@@ -1283,6 +1283,21 @@ def test_for_file_api_lists_only_triggerable(auth_client, app, user, enabled):
     assert names == ["Triggerable"]
 
 
+def test_for_file_api_disambiguates_same_name(auth_client, app, user, enabled):
+    with app.app_context():
+        folder = models.AutomationFolder(user_id=user, name="Test")
+        db.session.add(folder)
+        db.session.commit()
+        folder_id = folder.id
+    _workflow(app, user, _TRIGGER_GRAPH, name="Translate a file")
+    _workflow(app, user, _TRIGGER_GRAPH, name="Translate a file",
+              folder_id=folder_id)
+    resp = auth_client.get("/m/automation/api/for-file")
+    folders = sorted(w.get("folder", "") for w in resp.get_json()["workflows"]
+                     if w["name"] == "Translate a file")
+    assert folders == ["", "Test"]
+
+
 # ---------------------------------------------------------------------------
 # Read file contents node
 # ---------------------------------------------------------------------------
