@@ -1815,7 +1815,7 @@
         startHeartbeat();
         liveBubble = null;
         lastThinkingSpan = null;
-        const thinking = addMessage('assistant', '_Searching your files..._');
+        const thinking = addMessage('assistant', '_Thinking…_');
 
         try {
             abortCtrl = new AbortController();
