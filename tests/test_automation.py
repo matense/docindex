@@ -748,6 +748,71 @@ def test_run_status_lists_input_files(auth_client, app, user, enabled):
         {"file_id": file_id, "name": "input-data.txt", "via": "node n1"}]
 
 
+def test_runs_active_lists_active_and_recent(auth_client, app, user,
+                                               enabled):
+    """The background-run widget feed: queued/running plus just-finished."""
+    wf_id = _workflow(app, user, _text_graph("active widget"),
+                      name="active widget")
+    now = datetime.utcnow()
+    with app.app_context():
+        queued = models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="queued",
+            trigger="manual")
+        running = models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="running",
+            trigger="schedule",
+            log=json.dumps([{"node": "n1", "label": "Text",
+                             "status": "running", "summary": "",
+                             "ms": 0}]))
+        recent = models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="done",
+            trigger="manual", finished_at=now - timedelta(minutes=2))
+        old = models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="done",
+            trigger="manual", finished_at=now - timedelta(hours=2))
+        db.session.add_all([queued, running, recent, old])
+        db.session.commit()
+        ids = {"queued": queued.id, "running": running.id,
+               "recent": recent.id, "old": old.id}
+    data = auth_client.get("/m/automation/runs/active").get_json()
+    got = {r["id"]: r for r in data["runs"]}
+    assert ids["queued"] in got
+    assert ids["running"] in got
+    assert ids["recent"] in got
+    assert ids["old"] not in got  # finished long ago: no toast
+    q = got[ids["queued"]]
+    assert q["workflow_name"] == "active widget"
+    assert q["trigger"] == "manual"
+    assert q["url"].endswith(f"/runs/{ids['queued']}")
+    assert q["progress"]["current"] is None
+    r = got[ids["running"]]
+    assert r["progress"]["current"] == {"node": "n1", "label": "Text"}
+    assert r["trigger"] == "schedule"
+
+
+def test_runs_active_isolated_per_user(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph())
+    with app.app_context():
+        other = User(username="carol", email="carol@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        other_wf = models.AutomationWorkflow(
+            user_id=other.id, name="other",
+            graph=json.dumps({"nodes": [], "edges": []}))
+        db.session.add(other_wf)
+        db.session.commit()
+        db.session.add(models.AutomationRun(
+            workflow_id=other_wf.id, user_id=other.id, status="running"))
+        own = models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="running")
+        db.session.add(own)
+        db.session.commit()
+        own_id = own.id
+    data = auth_client.get("/m/automation/runs/active").get_json()
+    assert [r["id"] for r in data["runs"]] == [own_id]
+
+
 def test_format_duration():
     from app import format_duration
     assert format_duration(None) == ""

@@ -2410,7 +2410,7 @@
 
         async function startRun(params) {
             wfConsoleOpen();
-            wfConsoleLog('run started — opening the run page…');
+            wfConsoleLog('starting the run…');
             const resp = await fetch(root.dataset.runUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2423,7 +2423,13 @@
                                { title: 'Run workflow' });
                 return;
             }
-            window.location.href = data.url;
+            // Stay in the editor: the background-run widget (bottom-right)
+            // shows live progress and links to the run page.
+            wfConsoleLog('run #' + data.run_id + ' running in the background — ' +
+                         'progress is in the bottom-right card, or open ' + data.url);
+            window.uiToast('Workflow running in the background — track it in the bottom-right card.',
+                           'info');
+            if (window.automationRunsPoll) window.automationRunsPoll();
         }
 
         function openParamsForm(specs) {

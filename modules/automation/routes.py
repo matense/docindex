@@ -603,25 +603,58 @@ def runs(workflow_id):
                            runs=workflow_runs)
 
 
-@bp.get("/runs/<int:run_id>")
-def run_detail(run_id):
-    run = _owned_run(run_id)
-    params = None
-    if run.params:
-        try:
-            params = json.loads(run.params)
-        except ValueError:
-            params = None
-    return render_template("automation/run.html", run=run, params=params)
+@bp.get("/runs/active")
+def runs_active():
+    """Active + recently finished runs of the current user.
+
+    Backs the global background-run widget (the automation equivalent of
+    /sync/active): the widget polls this to show live progress anywhere in
+    the app — including schedule/AI-triggered runs the user never opened.
+    Final states stay listed briefly so a just-finished run still toasts.
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    active = (AutomationRun.query
+              .filter_by(user_id=current_user.id)
+              .filter(AutomationRun.status.in_(("queued", "running")))
+              .order_by(AutomationRun.id.desc()).limit(10).all())
+    finished = (AutomationRun.query
+                .filter_by(user_id=current_user.id)
+                .filter(AutomationRun.status.in_(AutomationRun.FINAL_STATUSES))
+                .filter(AutomationRun.finished_at.isnot(None))
+                .filter(AutomationRun.finished_at >= cutoff)
+                .filter(~AutomationRun.id.in_([r.id for r in active] or [0]))
+                .order_by(AutomationRun.id.desc()).limit(5).all())
+    out = []
+    for run in active + finished:
+        prog = _run_progress(run)
+        out.append({
+            "id": run.id, "status": run.status, "trigger": run.trigger,
+            "workflow_id": run.workflow_id,
+            "workflow_name": (run.workflow.name
+                              if run.workflow is not None else "Workflow"),
+            "error": (run.error or "")[:200],
+            "progress": {"total": prog["total"],
+                         "finished": prog["finished"],
+                         "percent": prog["percent"],
+                         "current": prog["current"]},
+            "url": url_for("automation.run_detail", run_id=run.id),
+            "started_at": (run.started_at.isoformat()
+                           if run.started_at else None),
+            "finished_at": (run.finished_at.isoformat()
+                            if run.finished_at else None),
+        })
+    return jsonify({"runs": out})
 
 
-@bp.get("/runs/<int:run_id>/status")
-def run_status(run_id):
-    run = _owned_run(run_id)
+def _run_progress(run):
+    """Shared progress computation for run_status and runs_active.
+
+    Returns {"log", "total", "pipeline", "finished", "current", "percent",
+    "output", "graph"} — the run page shows the executed nodes (with their
+    times), the one running now and the ones still pending, plus a percent.
+    """
     log_entries = json.loads(run.log) if run.log else []
-    # Progress + pipeline: the graph's nodes in execution order, so the run
-    # page can show the executed nodes (with their times), the one running
-    # now and the ones still pending, plus an overall percentage.
     total = 0
     pipeline = []
     graph = {"nodes": [], "edges": []}
@@ -643,6 +676,8 @@ def run_status(run_id):
     finished = sum(1 for e in log_entries if e.get("status") != "running")
     current = next((e for e in reversed(log_entries)
                     if e.get("status") == "running"), None)
+    current = ({"node": current["node"], "label": current["label"]}
+               if current else None)
     if run.status == "done":
         percent = 100
     elif total:
@@ -650,20 +685,41 @@ def run_status(run_id):
     else:
         percent = 0
     output = json.loads(run.output) if run.output else None
+    return {"log": log_entries, "total": total, "pipeline": pipeline,
+            "finished": finished, "current": current, "percent": percent,
+            "output": output, "graph": graph}
+
+
+@bp.get("/runs/<int:run_id>")
+def run_detail(run_id):
+    run = _owned_run(run_id)
+    params = None
+    if run.params:
+        try:
+            params = json.loads(run.params)
+        except ValueError:
+            params = None
+    return render_template("automation/run.html", run=run, params=params)
+
+
+@bp.get("/runs/<int:run_id>/status")
+def run_status(run_id):
+    run = _owned_run(run_id)
+    prog = _run_progress(run)
+    output = prog["output"]
     return jsonify({
         "id": run.id, "status": run.status, "error": run.error,
-        "log": log_entries,
+        "log": prog["log"],
         "output": output,
         # Per-node output previews (runs done before this field existed
         # simply don't have it — the popup then says "not captured").
         "node_outputs": (output or {}).get("node_outputs") or {},
-        "inputs": _run_inputs(run, graph["nodes"]),
+        "inputs": _run_inputs(run, prog["graph"]["nodes"]),
         "progress": {
-            "total": total, "finished": finished, "percent": percent,
-            "current": ({"node": current["node"], "label": current["label"]}
-                        if current else None),
+            "total": prog["total"], "finished": prog["finished"],
+            "percent": prog["percent"], "current": prog["current"],
         },
-        "pipeline": pipeline,
+        "pipeline": prog["pipeline"],
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": (run.finished_at.isoformat()
                         if run.finished_at else None),
