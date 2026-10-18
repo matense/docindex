@@ -225,6 +225,7 @@
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
         let liveBubble = null;         // tentative answer bubble while streaming
+        let toolChipEl = null;         // animated "tool working" chip
         let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
         let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
@@ -561,6 +562,40 @@
             scrollDown();
         }
 
+        // --- Live tool chip ------------------------------------------------
+        // A tool_start event opens an animated chip while the tool actually
+        // runs; step/tool_result (or the turn ending) settle it.
+        function ensureToolChip(label) {
+            ensureReasoningBox();
+            settleToolChip();
+            const chip = document.createElement('div');
+            chip.className = 'ai-tool-line';
+            chip.dataset.status = 'running';
+            chip.innerHTML =
+                '<i class="fas fa-circle-notch ai-tool-spin"></i>' +
+                '<span class="ai-tool-label"></span>' +
+                '<span class="ai-tool-wait"><span>.</span><span>.</span><span>.</span></span>';
+            chip.querySelector('.ai-tool-label').textContent = label || 'Calling tool';
+            reasoningBody.appendChild(chip);
+            toolChipEl = chip;
+            scrollDown();
+        }
+
+        function settleToolChip(summary) {
+            if (!toolChipEl) return;
+            const chip = toolChipEl;
+            toolChipEl = null;
+            chip.dataset.status = 'done';
+            if (summary != null) {
+                chip.querySelector('.ai-tool-label').textContent = summary;
+            }
+            chip.querySelector('.ai-tool-wait')?.remove();
+            const icon = chip.querySelector('i');
+            if (icon) icon.className = 'fas fa-circle-check text-success';
+            lastThinkingSpan = null;
+            scrollDown();
+        }
+
         // --- Token streaming (live thinking + tentative answer bubble) ----
         function appendThinkingToken(text) {
             if (!lastThinkingSpan) addReasoningLine('thinking', '');
@@ -614,6 +649,7 @@
         }
 
         function collapseReasoningBox() {
+            settleToolChip(); // a still-running tool never got its result
             if (reasoningBox) reasoningBox.open = false;
             reasoningBox = null;
             reasoningBody = null;
@@ -1166,9 +1202,14 @@
                 // reasoning box (it was narration before a tool call).
                 if (event.migrate) migrateLiveBubble(event.content);
                 else addReasoningLine('thinking', event.content);
+            } else if (event.type === 'tool_start') {
+                ensureToolChip(event.step.label);
             } else if (event.type === 'step') {
-                addReasoningLine('step', event.step.label + (event.step.detail ? ': ' + event.step.detail : ''));
+                const text = event.step.label + (event.step.detail ? ': ' + event.step.detail : '');
+                if (toolChipEl) settleToolChip(text);
+                else addReasoningLine('step', text);
             } else if (event.type === 'tool_result') {
+                settleToolChip(); // tool_start never got its step (edge case)
                 addReasoningLine('tool_result', event.result.summary);
             } else if (event.type === 'notice') {
                 addMessage('notice', event.content);
@@ -1177,11 +1218,13 @@
             } else if (event.type === 'answer') {
                 state.gotResult = true;
                 if (event.conversation_id) conversationId = event.conversation_id;
+                settleToolChip();
                 collapseReasoningBox();
                 finalizeLiveBubble(event.answer,
                                    { created_at: new Date().toISOString(), model: event.model });
             } else if (event.type === 'error') {
                 state.gotResult = true;
+                settleToolChip();
                 collapseReasoningBox();
                 discardLiveBubble(); // keep whatever partial text arrived
                 addMessage('assistant', '**Error:** ' + event.error,

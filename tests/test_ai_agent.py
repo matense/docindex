@@ -78,8 +78,11 @@ def test_chat_endpoint_persists_conversation(auth_client, app, user):
 
     assert resp.status_code == 200
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    assert events[0]["type"] == "step"
-    assert events[0]["step"]["label"] == "Searched files"
+    assert events[1]["type"] == "step"
+    assert events[1]["step"]["label"] == "Searched files"
+    # tool_start is announced before the tool runs (live working chip).
+    assert events[0]["type"] == "tool_start"
+    assert events[0]["step"]["label"] == "Searching files"
     assert events[-1]["type"] == "answer"
     assert "tomato soup" in events[-1]["answer"]
 
@@ -226,14 +229,49 @@ def test_thinking_and_tool_result_events(auth_client, app, user):
 
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
     types = [e["type"] for e in events]
-    assert types == ["thinking", "step", "tool_result", "answer"]
+    assert types == ["thinking", "tool_start", "step", "tool_result", "answer"]
     assert events[0]["content"] == "Let me search for lunch info."
-    assert "Found 1 file(s): menu.txt" in events[2]["result"]["summary"]
+    assert "Found 1 file(s): menu.txt" in events[3]["result"]["summary"]
 
     with app.app_context():
         conv = ChatConversation.query.one()
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "thinking", "step", "assistant"]
+
+
+def test_tool_start_emitted_before_handler_runs(app, user):
+    """Live-animation contract: tool_start arrives BEFORE the tool handler
+    executes — the client animates a working chip while the call runs."""
+    marker = []
+    entry = agent_service._TOOL_REGISTRY["search_files"]
+    real_handler = entry["handler"]
+
+    def scripted_handler(user_obj, args, drive_):
+        marker.append("ran")
+        return {"results": []}
+
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "search_files", "arguments": '{"query": "x"}'},
+        }]},
+        {"role": "assistant", "content": "Nothing here."},
+    ])
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        entry["handler"] = scripted_handler
+        try:
+            with patch("app.services.ai_service.chat_completion",
+                       side_effect=lambda *a, **k: next(responses)):
+                for kind, payload in agent_service.run_agent_events(
+                        user_obj, [{"role": "user", "content": "x?"}]):
+                    if kind == "tool_start":
+                        assert marker == []  # nothing has executed yet
+        finally:
+            entry["handler"] = real_handler
+
+    assert marker == ["ran"]
 
 
 def test_chat_attachments_inject_system_message(auth_client, app, user):
@@ -350,7 +388,7 @@ def test_agent_continues_when_model_narrates_without_tool_call(app, user):
                 events.append((kind, payload))
 
     kinds = [k for k, _ in events]
-    assert kinds == ["thinking", "step", "tool_result", "answer"]
+    assert kinds == ["thinking", "tool_start", "step", "tool_result", "answer"]
     assert events[0][1] == "Vou procurar o ficheiro sobre férias."
     assert "25 vacation days" in events[-1][1]
 
@@ -524,7 +562,7 @@ def test_agent_streams_tokens(app, user):
 
     kinds = [k for k, _ in events]
     assert kinds == ["thinking_token", "thinking_token", "thinking",
-                     "step", "tool_result",
+                     "tool_start", "step", "tool_result",
                      "answer_token", "answer_token", "answer"]
     assert events[-1] == ("answer", "Lunch is soup.")
 
@@ -587,7 +625,7 @@ def test_chat_endpoint_streaming_no_duplicate_thinking(auth_client, app, user):
     types = [e["type"] for e in events]
     # Reasoning came as live tokens — the full thinking event is NOT
     # re-sent (it would duplicate), but it is still persisted to the DB.
-    assert types == ["thinking_token", "step", "tool_result",
+    assert types == ["thinking_token", "tool_start", "step", "tool_result",
                      "answer_token", "answer"]
     assert events[0]["content"] == "thinking aloud"
     assert events[-1]["answer"] == "Lunch is tomato soup."
@@ -621,8 +659,8 @@ def test_chat_endpoint_migrates_answer_tokens_to_thinking(auth_client, app, user
 
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
     types = [e["type"] for e in events]
-    assert types == ["answer_token", "thinking", "step", "tool_result",
-                     "answer_token", "answer"]
+    assert types == ["answer_token", "thinking", "tool_start", "step",
+                     "tool_result", "answer_token", "answer"]
     thinking = next(e for e in events if e["type"] == "thinking")
     assert thinking["content"] == "Let me search."
     assert thinking["migrate"] is True

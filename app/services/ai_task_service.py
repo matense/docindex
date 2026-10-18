@@ -302,6 +302,10 @@ def _run_task(task_id, app):
                     if block_tokens == "answer":
                         ev["migrate"] = True
                 block_tokens = None
+            elif kind == "tool_start":
+                # Broadcast before the tool runs: a chat window watching this
+                # task animates a live "working" chip. Nothing to persist yet.
+                ev = {"type": "tool_start", "step": payload}
             elif kind == "step":
                 block_tokens = None
                 flush_step()  # a step without result (stay sane)

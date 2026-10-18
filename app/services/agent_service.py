@@ -919,6 +919,22 @@ _STEP_LABELS = {
     "save_behavior": "Saved behavior",
 }
 
+# Present-tense wording for the live "tool is working" chip (tool_start):
+# the step label above reads naturally only once the call has finished.
+_RUNNING_LABELS = {
+    "search_files": "Searching files",
+    "count_files": "Counting files",
+    "read_file": "Reading file",
+    "grep_file": "Searching inside file",
+    "list_files": "Listing drive",
+    "get_file_info": "Checking file info",
+    "set_hashtags": "Saving hashtags",
+    "list_hashtags": "Listing hashtags",
+    "list_drives": "Listing drives",
+    "list_behaviors": "Listing behaviors",
+    "save_behavior": "Saving behavior",
+}
+
 # ---------------------------------------------------------------------------
 # Tool registry: the core tools above are registered below; modules add
 # extra tools via register_tool() (namespaced as "<module>.<tool>").
@@ -1102,6 +1118,9 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
       ("thinking", text)                       — the model's intermediate reasoning
+      ("tool_start", {"label":..., "name":...}) — a tool is about to run;
+                                     yielded BEFORE the handler executes so
+                                     the client can animate a live chip
       ("step", {"label":..., "detail":...})    — a tool call being made
       ("tool_result", {"label":..., "summary":...}) — what the tool returned
       ("notice", text)                         — automatic context compaction
@@ -1220,6 +1239,12 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
             except json.JSONDecodeError:
                 args = {}
+
+            # Announce BEFORE the handler runs: the client shows an animated
+            # "working" chip while the call itself executes (the slow part).
+            running_label = _RUNNING_LABELS.get(
+                name, active_labels.get(name, name))
+            yield ("tool_start", {"label": running_label, "name": name})
 
             handler = active_handlers.get(name)
             result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}

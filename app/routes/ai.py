@@ -533,8 +533,8 @@ def chat():
     drive_ids = ctx["context"]["drive_ids"]  # None -> all drives in scope
 
     def generate():
-        """Stream NDJSON events: thinking(+_token) / step / tool_result /
-        answer(+_token) / error.
+        """Stream NDJSON events: thinking(+_token) / tool_start / step /
+        tool_result / answer(+_token) / error.
 
         Token deltas are forwarded live. `block_tokens` tracks which kind of
         token was streamed for the current model message, so the full
@@ -573,6 +573,12 @@ def chat():
                             event["migrate"] = True
                         yield json.dumps(event, ensure_ascii=False) + "\n"
                     block_tokens = None
+                elif kind == "tool_start":
+                    # Announced BEFORE the tool runs so clients animate a
+                    # live "working" chip. Not persisted in the transcript.
+                    block_tokens = None
+                    yield json.dumps({"type": "tool_start", "step": payload},
+                                     ensure_ascii=False) + "\n"
                 elif kind == "step":
                     block_tokens = None
                     steps.append(payload)

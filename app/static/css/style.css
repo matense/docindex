@@ -2961,6 +2961,81 @@ body.show-shortcuts #shortcut-help-panel {
     to { visibility: hidden; }
 }
 
+/* --- Live tool-call chip (animated while the tool runs) ------------------
+   The backend emits tool_start BEFORE the tool executes; the chip shimmers
+   with a spinning icon until its step/tool_result event settles it. */
+.ai-tool-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 3px 10px 3px 8px;
+    border-radius: 999px;
+    max-width: 100%;
+    border: 1px solid transparent;
+    transition: border-color 0.25s, background 0.25s;
+}
+
+.ai-tool-line .ai-tool-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ai-tool-line .ai-tool-spin {
+    font-size: 10px;
+    color: #6366f1;
+    flex-shrink: 0;
+}
+
+.ai-tool-line[data-status="running"] {
+    border-color: rgba(99, 102, 241, 0.35);
+    background: linear-gradient(100deg,
+        rgba(99, 102, 241, 0.08) 25%,
+        rgba(129, 140, 248, 0.20) 50%,
+        rgba(99, 102, 241, 0.08) 75%);
+    background-size: 220% 100%;
+    animation: ai-tool-shimmer 1.6s ease-in-out infinite;
+}
+
+.ai-tool-line[data-status="running"] .ai-tool-spin {
+    animation: ai-tool-spin-anim 0.9s linear infinite;
+}
+
+.ai-tool-line[data-status="running"] .ai-tool-label { opacity: 0.9; }
+.ai-tool-line[data-status="done"] { opacity: 0.55; }
+
+.ai-tool-wait {
+    display: inline-flex;
+    flex-shrink: 0;
+    letter-spacing: 1px;
+}
+
+.ai-tool-wait span { animation: ai-tool-dot 1.2s ease-in-out infinite; }
+.ai-tool-wait span:nth-child(2) { animation-delay: 0.15s; }
+.ai-tool-wait span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes ai-tool-spin-anim {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes ai-tool-shimmer {
+    from { background-position: 190% 0; }
+    to   { background-position: -90% 0; }
+}
+
+@keyframes ai-tool-dot {
+    0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+    30%           { opacity: 1;    transform: translateY(-1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ai-tool-line[data-status="running"] { animation: none; }
+    .ai-tool-line .ai-tool-spin { animation: none; }
+    .ai-tool-wait span { animation: none; opacity: 0.45; }
+}
+
 /* --- Google-style search hero (/search without a query) --- */
 #search-dock-container {
     transition: opacity 0.3s ease, transform 0.3s ease;
