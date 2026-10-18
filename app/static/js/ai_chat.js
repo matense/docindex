@@ -248,8 +248,41 @@
         });
         moreMenu.addEventListener('click', closeMoreMenu);
 
+        // Browser notifications when a background task finishes (opt-in,
+        // stored locally; the dock widget fires them from any page).
+        const notifyBtn = el.querySelector('.acw-notify');
+        function renderNotifyBtn() {
+            const on = localStorage.getItem('docindex-task-notify') === '1';
+            notifyBtn.querySelector('span').textContent =
+                on ? 'Task notifications: on' : 'Notify on task finish';
+            notifyBtn.querySelector('i').className =
+                'fas w-5 text-center text-primary ' + (on ? 'fa-bell' : 'fa-bell-slash');
+            notifyBtn.classList.toggle('ai-toggle-on', on);
+        }
+        notifyBtn.addEventListener('click', async () => {
+            if (localStorage.getItem('docindex-task-notify') === '1') {
+                localStorage.setItem('docindex-task-notify', '0');
+                renderNotifyBtn();
+                return;
+            }
+            if (!('Notification' in window)) {
+                window.uiToast('This browser does not support notifications.', 'error');
+                return;
+            }
+            const perm = await Notification.requestPermission();
+            if (perm === 'granted') {
+                localStorage.setItem('docindex-task-notify', '1');
+                window.uiToast('You will be notified when background tasks finish.', 'success');
+            } else {
+                window.uiToast('Notifications blocked — allow them in the browser to get task alerts.', 'error');
+            }
+            renderNotifyBtn();
+        });
+        renderNotifyBtn();
+
         // --- Per-window state ---
         let conversationId = null;
+        let convFilter = 'all'; // history list filter: all | tasks
         let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
         let contextDismissedId = null; // currentFile.id the user hid
@@ -925,7 +958,18 @@
                     });
                     // Conversations owned by a background task reopen in
                     // task mode until the task is dismissed.
-                    if (conv.task) enterTaskMode(conv.task);
+                    if (conv.task) {
+                        // Cheap accounting for the finished banner: steps from
+                        // the transcript, model from the latest assistant msg.
+                        const steps = conv.messages.filter(m => m.role === 'step').length;
+                        const lastAssistant = [...conv.messages].reverse()
+                            .find(m => m.role === 'assistant' && m.model);
+                        conv.task.stats = {
+                            steps,
+                            model: lastAssistant ? lastAssistant.model : null,
+                        };
+                        enterTaskMode(conv.task);
+                    }
                     else if (taskMode) exitTaskMode();
                     // Restore the context the user last set up in this
                     // conversation (task mode shows its captured context
@@ -977,10 +1021,28 @@
             fetch('/ai/conversations')
                 .then(r => r.json())
                 .then(convs => {
-                    convListEl.innerHTML = convs.length ? '' :
-                        '<div class="text-center opacity-50 text-sm p-4">No conversations yet</div>';
+                    convListEl.innerHTML = '';
+                    // Filter bar: all conversations vs background tasks only.
+                    const filterBar = document.createElement('div');
+                    filterBar.className = 'ai-conv-filter';
+                    [['all', 'All'], ['tasks', 'Background tasks']].forEach(([val, label]) => {
+                        const b = document.createElement('button');
+                        b.type = 'button';
+                        b.textContent = label;
+                        b.className = 'ai-conv-filter-btn' + (convFilter === val ? ' ai-conv-filter-on' : '');
+                        b.onclick = () => { convFilter = val; toggleList(); toggleList(); };
+                        filterBar.appendChild(b);
+                    });
+                    convListEl.appendChild(filterBar);
+                    const shown = convFilter === 'tasks' ? convs.filter(c => c.task) : convs;
+                    if (!shown.length) {
+                        const empty = document.createElement('div');
+                        empty.className = 'text-center opacity-50 text-sm p-4';
+                        empty.textContent = convFilter === 'tasks' ? 'No background tasks yet' : 'No conversations yet';
+                        convListEl.appendChild(empty);
+                    } else {
                     let lastGroup = null;
-                    convs.forEach(c => {
+                    shown.forEach(c => {
                         const group = convGroupLabel(c.updated_at);
                         if (group !== lastGroup) {
                             convListEl.appendChild(convGroupHeader(group));
@@ -993,7 +1055,16 @@
 
                         const ico = document.createElement('span');
                         ico.className = 'ai-conv-ico';
-                        ico.innerHTML = '<i class="fas fa-message"></i>';
+                        if (c.task) {
+                            ico.innerHTML = '<i class="fas fa-robot"></i>';
+                            const dot = document.createElement('span');
+                            dot.className = 'ai-conv-dot ' + (c.task === 'queued' || c.task === 'running'
+                                ? 'ai-conv-dot-active' : c.task === 'done' ? 'ai-conv-dot-done' : 'ai-conv-dot-bad');
+                            dot.title = 'Background task: ' + c.task;
+                            ico.appendChild(dot);
+                        } else {
+                            ico.innerHTML = '<i class="fas fa-message"></i>';
+                        }
 
                         const info = document.createElement('div');
                         info.className = 'flex-1 min-w-0';
@@ -1003,7 +1074,9 @@
                         info.appendChild(title);
                         const meta = document.createElement('div');
                         meta.className = 'ai-conv-meta truncate';
-                        meta.textContent = [fmtTime(c.updated_at), c.model].filter(Boolean).join(' · ');
+                        meta.textContent = [fmtTime(c.updated_at),
+                            c.task ? 'Task · ' + c.task : null,
+                            c.model].filter(Boolean).join(' · ');
                         info.appendChild(meta);
 
                         const actions = document.createElement('div');
@@ -1034,6 +1107,7 @@
                         row.appendChild(actions);
                         convListEl.appendChild(row);
                     });
+                    }
                     convListEl.classList.remove('hidden');
                     convListEl.classList.add('flex');
                     messagesEl.classList.add('hidden');
@@ -1484,6 +1558,27 @@
         let taskMode = null;   // {id, status, title} while in task mode
         let taskBanner = null;
 
+        function fmtTaskDur(ms) {
+            if (!(ms >= 0)) return '';
+            const s = Math.round(ms / 1000);
+            if (s < 60) return s + 's';
+            const m = Math.floor(s / 60);
+            return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+        }
+
+        // "· 12 steps · 3m05s · model X" for a finished task banner, from the
+        // persisted transcript + task times (no extra request).
+        function taskStatsLine() {
+            const stats = taskMode && taskMode.stats;
+            if (!stats) return '';
+            const bits = [stats.steps + ' step' + (stats.steps === 1 ? '' : 's')];
+            const start = Date.parse(taskMode.started_at || '');
+            const end = Date.parse(taskMode.finished_at || '');
+            if (!isNaN(start) && !isNaN(end)) bits.push(fmtTaskDur(end - start));
+            if (stats.model) bits.push(stats.model);
+            return ' · ' + bits.join(' · ');
+        }
+
         function renderTaskBanner() {
             if (taskBanner) taskBanner.remove();
             taskBanner = null;
@@ -1501,7 +1596,7 @@
                   '<button type="button" class="ai-task-banner-rename" title="Rename task"><i class="fas fa-pencil"></i></button>'
                 : '<i class="fas fa-flag-checkered"></i>' +
                   '<span class="ai-task-banner-title"></span>' +
-                  '<span class="opacity-60">· finished</span>' +
+                  '<span class="opacity-60">· finished' + taskStatsLine() + '</span>' +
                   '<button type="button" class="ai-task-banner-dismiss" data-action="rerun" title="Run again with the same question and context">' +
                       '<i class="fas fa-rotate-right"></i> Re-run</button>' +
                   '<button type="button" class="ai-task-banner-dismiss" data-action="dismiss" title="Dismiss — back to a normal chat">' +
@@ -1677,6 +1772,27 @@
                 // background mode until the user dismisses the task.
                 if (!taskMode) setBackgroundMode(false);
                 renderChips();
+                // Summarize the captured context in the launch toast, so the
+                // user sees what the task will work with.
+                const ctxBits = [];
+                if (sentAttachments.length) {
+                    ctxBits.push(sentAttachments.length === 1
+                        ? sentAttachments[0].name
+                        : sentAttachments.length + ' files');
+                }
+                if (sentDrives.length) {
+                    ctxBits.push('drive ' + sentDrives.map(d => d.name).join(', '));
+                }
+                const openFile = (window.currentFile
+                    && window.currentFile.id !== contextDismissedId
+                    && !sentAttachments.some(a => a.id === window.currentFile.id))
+                    ? window.currentFile : null;
+                if (openFile) ctxBits.push('open file ' + (openFile.name || ''));
+                if (sentCell) ctxBits.push('notebook cell');
+                if (personaRef) ctxBits.push(personaRef.name);
+                const launchMsg = 'Background task started'
+                    + (ctxBits.length ? ' · ' + ctxBits.join(' · ') : '')
+                    + ' — follow it live here or in the dock below.';
                 try {
                     const resp = await fetch('/ai/tasks', {
                         method: 'POST',
@@ -1710,7 +1826,7 @@
                                        { title: 'Run in background' });
                         return;
                     }
-                    window.uiToast('Background task started — follow it live here or in the dock below.', 'info');
+                    window.uiToast(launchMsg, 'info');
                     // Follow the task live in THIS window: loading its fresh
                     // conversation enters task mode (banner + captured context)
                     // and subscribes to the event stream, so the AI's work

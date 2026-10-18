@@ -182,8 +182,16 @@ def active_tasks(user):
                            ChatMessage.role == "step")
                    .group_by(ChatMessage.conversation_id).all())
               if conv_ids else {})
+    # Queue position among ALL queued tasks (the pool is shared): a queued
+    # task shows "#N in line" instead of a bare "Queued".
+    queue_order = {}
+    queued_all = (AITask.query.filter_by(status="queued")
+                  .order_by(AITask.created_at, AITask.id).all())
+    for i, qt in enumerate(queued_all):
+        queue_order[qt.id] = i + 1
     for t in tasks:
         t._step_count = counts.get(t.conversation_id, 0)
+        t._queue_pos = queue_order.get(t.id)
     return tasks
 
 

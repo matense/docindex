@@ -66,7 +66,10 @@
                 + (p.current ? ' · ' + p.current + '…' : '')
                 + (el ? ' · ' + el : '');
         }
-        if (t.status === 'queued') return 'Queued' + (el ? ' · waiting ' + el : '');
+        if (t.status === 'queued') {
+            const pos = t.queue_pos ? ' · #' + t.queue_pos + ' in line' : '';
+            return 'Queued' + pos + (el ? ' · waiting ' + el : '');
+        }
         if (t.status === 'done') return 'Finished · ' + steps + ' step' + (steps === 1 ? '' : 's') + (el ? ' · ' + el : '');
         if (t.status === 'error') return (t.error || 'Failed') + (el ? ' · ' + el : '');
         if (t.status === 'stopped') return 'Stopped' + (el ? ' · ' + el : '');
@@ -148,16 +151,33 @@
             const prev = prevStatus[t.id];
             const wasActive = prev === 'queued' || prev === 'running';
             const nowFinal = t.status !== 'queued' && t.status !== 'running';
-            if (prev !== undefined && wasActive && nowFinal) {
-                const label = t.title.length > 60 ? t.title.slice(0, 60) + '…' : t.title;
-                if (t.status === 'done') {
-                    window.uiToast('Background task finished: ' + label, 'success');
-                } else if (t.status === 'error' || t.status === 'interrupted') {
-                    window.uiToast('Background task failed: ' + label, 'error');
-                } else {
-                    window.uiToast('Background task stopped: ' + label, 'info');
-                }
+            if (prev === undefined || !wasActive || !nowFinal) return;
+            const label = t.title.length > 60 ? t.title.slice(0, 60) + '…' : t.title;
+            if (t.status === 'done') {
+                window.uiToast('Background task finished: ' + label, 'success');
+            } else if (t.status === 'error' || t.status === 'interrupted') {
+                window.uiToast('Background task failed: ' + label, 'error');
+            } else {
+                window.uiToast('Background task stopped: ' + label, 'info');
             }
+            // Opt-in browser notification (only when the tab is hidden — the
+            // toast above already covers the visible case).
+            try {
+                if (document.hidden
+                    && localStorage.getItem('docindex-task-notify') === '1'
+                    && 'Notification' in window
+                    && Notification.permission === 'granted') {
+                    const n = new Notification(
+                        'Background task ' + (t.status === 'done' ? 'finished' : t.status), {
+                            body: t.title, tag: 'ai-task-' + t.id,
+                        });
+                    n.onclick = () => {
+                        window.focus();
+                        if (window.aiChat) window.aiChat.openConversation(t.conversation_id);
+                        n.close();
+                    };
+                }
+            } catch (e) { /* notifications unavailable — toast sufficed */ }
         });
     }
 

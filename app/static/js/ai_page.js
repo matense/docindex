@@ -56,6 +56,7 @@
     let driveRefs = []; // drives picked with $ mentions [{id, name}]
     let driveListCache = null; // /api/drives, fetched on first $ use
     let backgroundMode = false; // send as a long-horizon background task
+    let convFilter = 'all'; // history filter: all | tasks
     let personaRef = null; // {key, name, emoji} — sticky per conversation
     let taskAbort = null;  // AbortController of the live task stream
 
@@ -1101,10 +1102,28 @@
         fetch('/ai/conversations')
             .then(r => r.json())
             .then(convs => {
-                convListEl.innerHTML = convs.length ? '' :
-                    '<div class="text-center opacity-50 text-sm p-4">No conversations yet</div>';
+                convListEl.innerHTML = '';
+                // Filter bar: all conversations vs background tasks only.
+                const filterBar = document.createElement('div');
+                filterBar.className = 'ai-conv-filter';
+                [['all', 'All'], ['tasks', 'Background tasks']].forEach(([val, label]) => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = label;
+                    b.className = 'ai-conv-filter-btn' + (convFilter === val ? ' ai-conv-filter-on' : '');
+                    b.onclick = () => { convFilter = val; toggleList(); toggleList(); };
+                    filterBar.appendChild(b);
+                });
+                convListEl.appendChild(filterBar);
+                const shown = convFilter === 'tasks' ? convs.filter(c => c.task) : convs;
+                if (!shown.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'text-center opacity-50 text-sm p-4';
+                    empty.textContent = convFilter === 'tasks' ? 'No background tasks yet' : 'No conversations yet';
+                    convListEl.appendChild(empty);
+                } else {
                 let lastGroup = null;
-                convs.forEach(c => {
+                shown.forEach(c => {
                     const group = convGroupLabel(c.updated_at);
                     if (group !== lastGroup) {
                         convListEl.appendChild(convGroupHeader(group));
@@ -1117,7 +1136,16 @@
 
                     const ico = document.createElement('span');
                     ico.className = 'ai-conv-ico';
-                    ico.innerHTML = '<i class="fas fa-message"></i>';
+                    if (c.task) {
+                        ico.innerHTML = '<i class="fas fa-robot"></i>';
+                        const dot = document.createElement('span');
+                        dot.className = 'ai-conv-dot ' + (c.task === 'queued' || c.task === 'running'
+                            ? 'ai-conv-dot-active' : c.task === 'done' ? 'ai-conv-dot-done' : 'ai-conv-dot-bad');
+                        dot.title = 'Background task: ' + c.task;
+                        ico.appendChild(dot);
+                    } else {
+                        ico.innerHTML = '<i class="fas fa-message"></i>';
+                    }
 
                     const info = document.createElement('div');
                     info.className = 'flex-1 min-w-0';
@@ -1127,7 +1155,9 @@
                     info.appendChild(title);
                     const meta = document.createElement('div');
                     meta.className = 'ai-conv-meta truncate';
-                    meta.textContent = [fmtTime(c.updated_at), c.model].filter(Boolean).join(' · ');
+                    meta.textContent = [fmtTime(c.updated_at),
+                        c.task ? 'Task · ' + c.task : null,
+                        c.model].filter(Boolean).join(' · ');
                     info.appendChild(meta);
 
                     const actions = document.createElement('div');
@@ -1158,6 +1188,7 @@
                     row.appendChild(actions);
                     convListEl.appendChild(row);
                 });
+                }
                 convListEl.classList.remove('hidden');
                 convListEl.classList.add('flex');
                 messagesEl.classList.add('hidden');

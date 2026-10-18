@@ -302,6 +302,7 @@ def conversations():
     # (N+1): one grouped query for the newest assistant row each.
     conv_ids = [c.id for c in convs]
     latest_model = {}
+    task_status = {}
     if conv_ids:
         rows = (db.session.query(ChatMessage.conversation_id,
                                  ChatMessage.model)
@@ -317,11 +318,20 @@ def conversations():
             if cid not in seen:
                 seen.add(cid)
                 latest_model[cid] = model
+        # Which conversations belong to a background task (history filter +
+        # status dot) — one query for the whole list.
+        for tcid, tstatus in (db.session.query(AITask.conversation_id,
+                                               AITask.status)
+                              .filter(AITask.conversation_id.in_(conv_ids),
+                                      AITask.user_id == current_user.id).all()):
+            task_status[tcid] = tstatus
     return jsonify([
         {"id": c.id, "title": c.title,
          "updated_at": c.updated_at.isoformat() if c.updated_at else None,
          # The model shown is the one that wrote the latest assistant reply.
-         "model": latest_model.get(c.id)}
+         "model": latest_model.get(c.id),
+         # Background-task ownership (None for normal chats).
+         "task": task_status.get(c.id)}
         for c in convs
     ])
 
@@ -343,6 +353,10 @@ def conversation(conv_id):
         "context": json.loads(conv.context) if conv.context else None,
         "task": ({"id": task.id, "status": task.status, "title": task.title,
                   "notified": bool(task.notified),
+                  "started_at": (task.started_at.isoformat()
+                                 if task.started_at else None),
+                  "finished_at": (task.finished_at.isoformat()
+                                   if task.finished_at else None),
                   "context": (json.loads(task.context)
                               if task.context else None)}
                  if task and not task.notified else None),
@@ -659,7 +673,7 @@ def chat():
 
 
 def _task_json(task):
-    return {
+    data = {
         "id": task.id,
         "title": task.title,
         "status": task.status,
@@ -671,6 +685,9 @@ def _task_json(task):
         # Dock progress line: steps done + currently running tool (if live).
         "progress": ai_task_service.task_progress(task),
     }
+    if getattr(task, "_queue_pos", None):
+        data["queue_pos"] = task._queue_pos
+    return data
 
 
 @bp.route("/tasks", methods=["POST"])

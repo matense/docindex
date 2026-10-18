@@ -501,7 +501,75 @@ def test_search_files_accepts_multiple_drives(app, user):
         only = Drive.query.filter_by(name="Gamma").one()
         ids = {r["file"].id for r in search_service.search_files("commonword", u, drive=only)}
         assert ids == {f3}
-        assert d3 != drives  # sanity: distinct scope
+        assert d3 != drives  # sanity: distinct
+
+
+# --- P2/P3: history flags, times, completeness, queue ----------------------
+
+
+def test_conversations_list_flags_tasks(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        auth_client.post("/ai/tasks", json={"message": "bg work"})
+
+    convs = auth_client.get("/ai/conversations").get_json()
+    assert len(convs) == 1
+    assert convs[0]["task"] == "done"
+
+
+def test_conversation_detail_includes_task_times(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        task_id = auth_client.post(
+            "/ai/tasks", json={"message": "bg work"}).get_json()["task"]["id"]
+    with app.app_context():
+        conv_id = db.session.get(AITask, task_id).conversation_id
+
+    task = auth_client.get(f"/ai/conversations/{conv_id}").get_json()["task"]
+    assert task["status"] == "done"
+    assert task["started_at"] and task["finished_at"]
+
+
+def test_task_history_complete_after_reopen(auth_client, app, user):
+    """Closing the chat and reopening shows the whole transcript: every
+    persisted event in order, so nothing the task did is lost."""
+    _enable_ai(app)
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "list_drives", "arguments": "{}"},
+        }]},
+        {"role": "assistant", "content": "You have one drive."},
+    ])
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=lambda *a, **k: next(responses)):
+        task_id = auth_client.post(
+            "/ai/tasks", json={"message": "Count my drives"}).get_json()["task"]["id"]
+    with app.app_context():
+        conv_id = db.session.get(AITask, task_id).conversation_id
+
+    # Reopen (fresh GET, as a new chat window would).
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    roles = [m["role"] for m in data["messages"]]
+    assert roles == ["user", "step", "assistant"]
+    assert data["messages"][0]["content"].startswith("Count my drives")
+    assert "Listed drives" in data["messages"][1]["content"]
+    assert "→" in data["messages"][1]["content"]
+    assert data["messages"][2]["content"] == "You have one drive."
+
+
+def test_queue_positions(auth_client, app, user):
+    _enable_ai(app)
+    first = _make_task(app, user, "queued")
+    second = _make_task(app, user, "queued")
+
+    tasks = {t["id"]: t for t in
+             auth_client.get("/ai/tasks/active").get_json()["tasks"]}
+    assert tasks[first]["queue_pos"] == 1
+    assert tasks[second]["queue_pos"] == 2
+    assert tasks[first]["status"] == "queued"
 
 
 # --- Dock progress, rename, re-run -------------------------------------------
