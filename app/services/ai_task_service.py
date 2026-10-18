@@ -312,13 +312,33 @@ def _run_task(task_id, app):
 
     model_name = ai_service.config_for(user).get("model", "")
     max_steps = app.config.get("AI_TASK_MAX_STEPS", 64)
-    first_msg = next((m for m in task.conversation.messages
-                      if m.role == "user"), None)
-    user_text = first_msg.content if first_msg else task.title
+    # The question that launched THIS task — never the conversation's first
+    # message (one conversation can now own several sequential tasks).
+    if task.prompt:
+        user_text = task.prompt
+    else:
+        # Pre-prompt tasks: fall back to the latest user message (it may
+        # carry the rendered 📎 attachment suffix — strip it).
+        last_user = next((m for m in reversed(task.conversation.messages)
+                          if m.role == "user"), None)
+        user_text = last_user.content if last_user else task.title
+        marker = "\n\n📎"
+        if marker in user_text:
+            user_text = user_text.split(marker)[0].rstrip()
     notes = snapshot.get("notes") or []
+    # Recent transcript so follow-ups ("it", "that run", ...) resolve — the
+    # launching turn is re-appended below as the final message.
+    transcript = [{"role": m.role, "content": m.content}
+                  for m in task.conversation.messages
+                  if m.role in ("user", "assistant") and not m.archived]
+    if (transcript and transcript[-1]["role"] == "user"
+            and (transcript[-1]["content"] == user_text
+                 or transcript[-1]["content"].startswith(user_text + "\n\n📎"))):
+        transcript.pop()
     history = (
         [{"role": "system", "content": _TASK_NOTE}]
         + [{"role": "system", "content": n} for n in notes]
+        + transcript[-20:]
         + [{"role": "user", "content": user_text}]
     )
 

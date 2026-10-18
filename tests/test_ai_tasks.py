@@ -609,6 +609,32 @@ def test_background_task_rejects_unknown_or_busy_conversation(auth_client, app, 
         "message": "hi", "conversation_id": conv_id}).status_code == 409
 
 
+def test_task_worker_answers_launching_question_not_first(auth_client, app, user):
+    """Regression: with several tasks in one conversation the worker must
+    answer the question that launched THIS task (last), with the transcript
+    before it — never the conversation's first message."""
+    _enable_ai(app)
+    seen = {}
+
+    def capture(*a, **k):
+        # Snapshot: run_agent_events keeps appending to this list.
+        seen["messages"] = list(k.get("messages") or a[0])
+        return {"role": "assistant", "content": "ok"}
+
+    with patch("app.services.ai_service.chat_completion", side_effect=capture):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first question"}).get_json()["task"]
+        auth_client.post("/ai/tasks", json={
+            "message": "second question",
+            "conversation_id": first["conversation_id"]})
+
+    turns = [(m["role"], m["content"]) for m in seen["messages"]
+             if m["role"] != "system"]
+    assert turns[0] == ("user", "first question")
+    assert ("assistant", "ok") in turns
+    assert turns[-1] == ("user", "second question")
+
+
 # --- Dock progress, rename, re-run -------------------------------------------
 
 
