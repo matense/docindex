@@ -55,8 +55,9 @@ TOOLS = [
             "name": "search_files",
             "description": (
                 "Full-text search over the user's files (filenames, hashtags, "
-                "extracted document text and AI image captions), powered by "
-                "FTS5. Supports \"quoted phrases\", boolean operators "
+                "extracted document text and AI image captions), hybridized "
+                "with semantic similarity when embeddings are on. "
+                "Supports \"quoted phrases\", boolean operators "
                 "(AND, OR, NOT) and column scopes (name:, tags:, caption:, "
                 "text:). Plain words are matched by prefix — append '*' to a "
                 "word stem to also match longer forms (e.g. budg* matches "

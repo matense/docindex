@@ -2,7 +2,6 @@ from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
 from markupsafe import escape
 
-from ..extensions import db
 from ..models import Drive, StoredFile
 from ..services import drive_service, embedding_service, hashtag_service, search_service
 
