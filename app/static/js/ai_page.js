@@ -410,6 +410,44 @@
         return div.innerHTML.replace(/\n/g, '<br>');
     }
 
+    // Per-tool icons for the live "tool is working" chip.
+    const TOOL_ICONS = {
+        search_files: 'fa-magnifying-glass',
+        count_files: 'fa-calculator',
+        read_file: 'fa-book-open',
+        grep_file: 'fa-highlighter',
+        list_files: 'fa-folder-tree',
+        get_file_info: 'fa-circle-info',
+        set_hashtags: 'fa-tags',
+        list_hashtags: 'fa-tags',
+        list_drives: 'fa-hard-drive',
+        list_behaviors: 'fa-list-check',
+        save_behavior: 'fa-floppy-disk',
+    };
+
+    function toolIcon(name) {
+        if (!name) return 'fa-wrench';
+        if (TOOL_ICONS[name]) return TOOL_ICONS[name];
+        if (name.startsWith('notebooks.')) return 'fa-table-cells';
+        if (name.startsWith('automation.')) return 'fa-diagram-project';
+        return 'fa-wrench';
+    }
+
+    function copyWithToast(text) {
+        const done = () => { if (window.uiToast) window.uiToast('Copied', 'success'); };
+        if (window.DocIndex && window.DocIndex.copyText) {
+            window.DocIndex.copyText(text, done);
+        } else if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => {});
+        }
+    }
+
+    function enhanceBubble(bubble) {
+        if (window.DocIndex && window.DocIndex.enhanceCodeBlocks) {
+            window.DocIndex.enhanceCodeBlocks(bubble);
+        }
+    }
+
     function scrollDown(force = false) {
         if (!force && (!autoScroll || asPaused)) return;
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -502,6 +540,48 @@
         div.appendChild(footer);
     }
 
+    // Hover-visible actions on user/assistant bubbles: Copy for both,
+    // Regenerate on the LATEST assistant bubble only.
+    let lastUserQuestion = null;  // for the Regenerate action
+    let lastAssistantDiv = null;  // only this bubble shows Regenerate
+
+    function addBubbleActions(div, role, content) {
+        div._rawContent = content;
+        const bar = document.createElement('div');
+        bar.className = 'ai-msg-actions';
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'ai-msg-btn';
+        copy.title = 'Copy';
+        copy.setAttribute('aria-label', 'Copy message');
+        copy.innerHTML = '<i class="fas fa-copy"></i>';
+        copy.addEventListener('click', () => copyWithToast(div._rawContent || ''));
+        bar.appendChild(copy);
+        if (role === 'assistant') {
+            const regen = document.createElement('button');
+            regen.type = 'button';
+            regen.className = 'ai-msg-btn ai-msg-regen';
+            regen.title = 'Regenerate — send your last message again';
+            regen.setAttribute('aria-label', 'Regenerate answer');
+            regen.innerHTML = '<i class="fas fa-rotate-right"></i>';
+            regen.addEventListener('click', regenerateLast);
+            bar.appendChild(regen);
+            if (lastAssistantDiv) {
+                lastAssistantDiv.querySelector('.ai-msg-regen')?.remove();
+            }
+            lastAssistantDiv = div;
+        }
+        div.appendChild(bar);
+    }
+
+    // Re-send the most recent user message as a new turn.
+    function regenerateLast() {
+        if (abortCtrl || !lastUserQuestion) return;  // only while idle
+        input.value = lastUserQuestion;
+        growInput();
+        form.requestSubmit();
+    }
+
     function addMessage(role, content, meta = {}) {
         removeEmptyState();
         const div = document.createElement('div');
@@ -510,6 +590,7 @@
             div.innerHTML = '<div class="chat-bubble chat-bubble-primary whitespace-pre-line"></div>';
             div.querySelector('.chat-bubble').textContent = content;
             addMetaFooter(div, meta);
+            addBubbleActions(div, role, content);
         } else if (role === 'thinking') {
             const det = document.createElement('details');
             det.className = 'ai-reasoning rounded-xl';
@@ -543,8 +624,11 @@
                     '</div>' +
                 '</div>' +
                 '<div class="chat-bubble bg-base-100/80 text-base-content prose prose-sm max-w-none shadow-sm"></div>';
-            div.querySelector('.chat-bubble').innerHTML = renderMarkdown(content);
+            const bubble = div.querySelector('.chat-bubble');
+            bubble.innerHTML = renderMarkdown(content);
+            enhanceBubble(bubble);
             addMetaFooter(div, meta);
+            addBubbleActions(div, 'assistant', content);
         }
         messagesEl.appendChild(div);
         scrollDown(role === 'user');  // always follow your own message
@@ -557,7 +641,14 @@
     let lastThinkingSpan = null;   // thinking line tokens are appended to
     let liveBubble = null;         // tentative answer bubble while streaming
     let toolChipEl = null;         // animated "tool working" chip
+    let toolElapsedTimer = null;   // 1s ticker for the running chip
     let abortCtrl = null;          // non-null while a request is in flight
+    let thinkBuf = '';             // RAF-batched token buffers
+    let answerBuf = '';
+    let rafScheduled = false;
+    let heartbeatTimer = null;     // "waiting for the model" ticker
+    let heartbeatEl = null;
+    let lastEventAt = 0;
 
     function ensureReasoningBox() {
         if (reasoningBox) return;
@@ -567,12 +658,23 @@
         reasoningBox.className = 'ai-reasoning rounded-xl';
         reasoningBox.open = true;
         reasoningBox.innerHTML =
-            '<summary><i class="fas fa-brain text-secondary"></i> Reasoning' +
+            '<summary><i class="fas fa-brain text-secondary"></i> ' +
+            '<span class="ai-reasoning-title">Reasoning</span>' +
             '<i class="fas fa-chevron-down ai-reasoning-chevron"></i></summary>' +
             '<div class="ai-reasoning-body"></div>';
         reasoningBody = reasoningBox.querySelector('.ai-reasoning-body');
         messagesEl.appendChild(reasoningBox);
         scrollDown();
+    }
+
+    // Live step progress in the summary line, from the backend's
+    // index/max_steps on tool_start/step events.
+    function updateStepProgress(payload) {
+        if (!reasoningBox || !payload) return;
+        const idx = payload.index, max = payload.max_steps;
+        if (!idx || !max) return;
+        const title = reasoningBox.querySelector('.ai-reasoning-title');
+        if (title) title.textContent = 'Reasoning — step ' + idx + ' / ' + max;
     }
 
     function addReasoningLine(kind, content) {
@@ -597,20 +699,29 @@
 
     // --- Live tool chip ------------------------------------------------------
     // A tool_start event opens an animated chip while the tool actually runs;
-    // step/tool_result (or the turn ending) settle it.
-    function ensureToolChip(label) {
+    // step/tool_result (or the turn ending) settle it. While running, a
+    // per-tool icon and an elapsed-seconds ticker are shown.
+    function ensureToolChip(label, name) {
         ensureReasoningBox();
         settleToolChip();
         const chip = document.createElement('div');
         chip.className = 'ai-tool-line';
         chip.dataset.status = 'running';
         chip.innerHTML =
+            '<i class="fas ' + toolIcon(name) + ' ai-tool-ico"></i>' +
             '<i class="fas fa-circle-notch ai-tool-spin"></i>' +
             '<span class="ai-tool-label"></span>' +
+            '<span class="ai-tool-elapsed"></span>' +
             '<span class="ai-tool-wait"><span>.</span><span>.</span><span>.</span></span>';
         chip.querySelector('.ai-tool-label').textContent = label || 'Calling tool';
+        chip._startedAt = Date.now();
         reasoningBody.appendChild(chip);
         toolChipEl = chip;
+        toolElapsedTimer = setInterval(() => {
+            const s = Math.floor((Date.now() - chip._startedAt) / 1000);
+            const elSpan = chip.querySelector('.ai-tool-elapsed');
+            if (elSpan && s > 0) elSpan.textContent = '· ' + s + 's';
+        }, 1000);
         scrollDown();
     }
 
@@ -618,28 +729,85 @@
         if (!toolChipEl) return;
         const chip = toolChipEl;
         toolChipEl = null;
+        if (toolElapsedTimer) {
+            clearInterval(toolElapsedTimer);
+            toolElapsedTimer = null;
+        }
         chip.dataset.status = 'done';
         if (summary != null) {
             chip.querySelector('.ai-tool-label').textContent = summary;
         }
         chip.querySelector('.ai-tool-wait')?.remove();
-        const icon = chip.querySelector('i');
-        if (icon) icon.className = 'fas fa-circle-check text-success';
+        const spin = chip.querySelector('.ai-tool-spin');
+        if (spin) spin.className = 'fas fa-circle-check text-success';
+        const elSpan = chip.querySelector('.ai-tool-elapsed');
+        if (elSpan) {
+            const s = Math.max(0, Math.round(
+                (Date.now() - (chip._startedAt || Date.now())) / 1000));
+            elSpan.textContent = '· ' + s + 's';
+        }
         lastThinkingSpan = null;
         scrollDown();
     }
 
-    // --- Token streaming (live thinking + tentative answer bubble) ----------
-    function appendThinkingToken(text) {
-        if (!lastThinkingSpan) addReasoningLine('thinking', '');
-        lastThinkingSpan.textContent += text;
+    // Clickable file chips under a settled tool line (search results, read
+    // files, ...) linking to the file viewer.
+    function addToolFileChips(files) {
+        if (!files || !files.length || !reasoningBody) return;
+        const row = document.createElement('div');
+        row.className = 'ai-file-chips';
+        files.slice(0, 8).forEach(f => {
+            const a = document.createElement('a');
+            a.className = 'ai-file-chip';
+            a.href = '/file/' + encodeURIComponent(f.id) + '/view';
+            a.title = 'Open ' + f.name;
+            a.innerHTML = '<i class="fas fa-file"></i>';
+            a.appendChild(document.createTextNode(f.name));
+            row.appendChild(a);
+        });
+        reasoningBody.appendChild(row);
         scrollDown();
+    }
+
+    // --- Token streaming (live thinking + tentative answer bubble) ----------
+    // Token DOM appends are RAF-batched: tokens accumulate in buffers and
+    // flush once per animation frame instead of on every network chunk.
+    function flushTokens() {
+        rafScheduled = false;
+        // Local copies first: ensureLiveBubble() below can re-enter via
+        // collapseReasoningBox, so the buffers must already be empty.
+        const think = thinkBuf; thinkBuf = '';
+        const answer = answerBuf; answerBuf = '';
+        if (think) {
+            if (!lastThinkingSpan) addReasoningLine('thinking', '');
+            lastThinkingSpan.textContent += think;
+        }
+        if (answer) {
+            ensureLiveBubble();
+            liveBubble._rawContent = (liveBubble._rawContent || '') + answer;
+            const bubble = liveBubble.querySelector('.chat-bubble');
+            bubble.insertBefore(document.createTextNode(answer),
+                                bubble.querySelector('.ai-cursor'));
+        }
+        if (think || answer) scrollDown();
+    }
+
+    function scheduleTokenFlush() {
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(flushTokens);
+    }
+
+    function appendThinkingToken(text) {
+        thinkBuf += text;
+        scheduleTokenFlush();
     }
 
     function ensureLiveBubble() {
         if (liveBubble) return;
         collapseReasoningBox();
         liveBubble = addMessage('assistant', '');
+        liveBubble._rawContent = '';
         const bubble = liveBubble.querySelector('.chat-bubble');
         bubble.textContent = '';
         const cursor = document.createElement('span');
@@ -648,16 +816,14 @@
     }
 
     function appendAnswerToken(text) {
-        ensureLiveBubble();
-        const bubble = liveBubble.querySelector('.chat-bubble');
-        bubble.insertBefore(document.createTextNode(text),
-                            bubble.querySelector('.ai-cursor'));
-        scrollDown();
+        answerBuf += text;
+        scheduleTokenFlush();
     }
 
     // The streamed text turned out to be narration before a tool call, not
     // the final answer: move the bubble into the reasoning box.
     function migrateLiveBubble(text) {
+        flushTokens();
         if (liveBubble) {
             liveBubble.remove();
             liveBubble = null;
@@ -667,18 +833,56 @@
 
     // Replace the tentative bubble with the final rendered markdown.
     function finalizeLiveBubble(answer, meta) {
+        flushTokens();
         if (!liveBubble) return addMessage('assistant', answer, meta);
         const div = liveBubble;
         liveBubble = null;
-        div.querySelector('.chat-bubble').innerHTML = renderMarkdown(answer);
+        div._rawContent = answer;
+        const bubble = div.querySelector('.chat-bubble');
+        bubble.innerHTML = renderMarkdown(answer);
+        enhanceBubble(bubble);
         addMetaFooter(div, meta);
         scrollDown();
         return div;
     }
 
     function discardLiveBubble() {
+        flushTokens();  // any buffered partial text still lands
         if (liveBubble) liveBubble.querySelector('.ai-cursor')?.remove();
         liveBubble = null;
+    }
+
+    // --- "Waiting for the model" heartbeat -----------------------------------
+    // While a request is busy with no events arriving for >2s, show a subtle
+    // ticking status line; cleared as soon as anything arrives.
+    function noteStreamActivity() {
+        lastEventAt = Date.now();
+        if (heartbeatEl) { heartbeatEl.remove(); heartbeatEl = null; }
+    }
+
+    function startHeartbeat() {
+        stopHeartbeat();
+        lastEventAt = Date.now();
+        heartbeatTimer = setInterval(() => {
+            if (!abortCtrl) { stopHeartbeat(); return; }
+            if (toolChipEl) return;  // a tool is visibly running
+            const wait = Date.now() - lastEventAt;
+            if (wait < 2000) return;
+            if (!heartbeatEl) {
+                heartbeatEl = document.createElement('div');
+                heartbeatEl.className = 'ai-wait-line';
+                heartbeatEl.innerHTML = '<i class="fas fa-robot"></i><span></span>';
+                messagesEl.appendChild(heartbeatEl);
+            }
+            heartbeatEl.querySelector('span').textContent =
+                'Waiting for the model… ' + Math.floor(wait / 1000) + 's';
+            scrollDown();
+        }, 1000);
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        if (heartbeatEl) { heartbeatEl.remove(); heartbeatEl = null; }
     }
 
     function collapseReasoningBox() {
@@ -706,6 +910,13 @@
         reasoningBody = null;
         lastThinkingSpan = null;
         liveBubble = null;
+        toolChipEl = null;
+        thinkBuf = '';
+        answerBuf = '';
+        lastAssistantDiv = null;
+        lastUserQuestion = null;
+        if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
+        stopHeartbeat();
         messagesEl.innerHTML = '';
     }
 
@@ -733,6 +944,11 @@
                         seenArchived = false;
                     }
                     const el = addMessage(m.role, m.content, m);
+                    if (m.role === 'user') {
+                        // Strip the rendered 📎 attachment suffix: a
+                        // regenerated turn must re-send the question only.
+                        lastUserQuestion = m.content.replace(/\n\n📎 [^\n]*$/, '');
+                    }
                     if (m.archived) {
                         seenArchived = true;
                         if (el) el.classList.add('ai-archived');
@@ -752,6 +968,76 @@
             });
     }
 
+    // --- NDJSON stream helpers (shared by the live chat answer and the
+    // background-task watcher) ---
+    function handleStreamEvent(event, state) {
+        noteStreamActivity();
+        // Non-token events must see the fully flushed token state (e.g.
+        // migrate moves the tentative bubble into the reasoning box).
+        if (event.type !== 'thinking_token' && event.type !== 'answer_token') {
+            flushTokens();
+        }
+        if (event.type === 'tool_start') {
+            updateStepProgress(event.step);
+            ensureToolChip(event.step.label, event.step.name);
+        } else if (event.type === 'thinking_token') {
+            appendThinkingToken(event.content);
+        } else if (event.type === 'answer_token') {
+            appendAnswerToken(event.content);
+        } else if (event.type === 'thinking') {
+            // With migrate, the tentative answer bubble moves into the
+            // reasoning box (it was narration before a tool call, not the
+            // final answer).
+            if (event.migrate) migrateLiveBubble(event.content);
+            else addReasoningLine('thinking', event.content);
+        } else if (event.type === 'step') {
+            updateStepProgress(event.step);
+            const text = event.step.label + (event.step.detail ? ': ' + event.step.detail : '');
+            if (toolChipEl) settleToolChip(text);
+            else addReasoningLine('step', text);
+        } else if (event.type === 'tool_result') {
+            settleToolChip(); // tool_start never got its step (edge case)
+            addReasoningLine('tool_result', event.result.summary);
+            addToolFileChips(event.result.files);
+        } else if (event.type === 'notice') {
+            addMessage('notice', event.content);
+        } else if (event.type === 'ui_action') {
+            window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
+        } else if (event.type === 'answer') {
+            state.gotResult = true;
+            if (event.conversation_id) conversationId = event.conversation_id;
+            settleToolChip();
+            collapseReasoningBox();
+            finalizeLiveBubble(event.answer,
+                               { created_at: new Date().toISOString(), model: event.model });
+        } else if (event.type === 'error') {
+            state.gotResult = true;
+            settleToolChip();
+            collapseReasoningBox();
+            discardLiveBubble(); // keep whatever partial text arrived
+            addMessage('assistant', '**Error:** ' + event.error,
+                       { created_at: new Date().toISOString() });
+        }
+    }
+
+    async function readNdjson(reader, onEvent) {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                let event;
+                try { event = JSON.parse(line); } catch { continue; }
+                onEvent(event);
+            }
+        }
+    }
+
     // Stream a running background task's events live, exactly like a normal
     // chat answer. The transcript is persisted server-side, so a stream that
     // just ends is not an error — the final loadConversation reconciles.
@@ -759,60 +1045,18 @@
         taskAbort = new AbortController();
         liveBubble = null;
         lastThinkingSpan = null;
+        const state = { gotResult: true };
         try {
             const resp = await fetch('/ai/tasks/' + task.id + '/stream',
                                      { signal: taskAbort.signal });
             if (!resp.ok || !resp.body) return;
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    let event;
-                    try { event = JSON.parse(line); } catch { continue; }
-                    if (event.type === 'task_status') continue;
-                    if (event.type === 'tool_start') {
-                        ensureToolChip(event.step.label);
-                    } else if (event.type === 'thinking_token') {
-                        appendThinkingToken(event.content);
-                    } else if (event.type === 'answer_token') {
-                        appendAnswerToken(event.content);
-                    } else if (event.type === 'thinking') {
-                        if (event.migrate) migrateLiveBubble(event.content);
-                        else addReasoningLine('thinking', event.content);
-                    } else if (event.type === 'step') {
-                        const text = event.step.label + (event.step.detail ? ': ' + event.step.detail : '');
-                        if (toolChipEl) settleToolChip(text);
-                        else addReasoningLine('step', text);
-                    } else if (event.type === 'tool_result') {
-                        settleToolChip(); // tool_start never got its step
-                        addReasoningLine('tool_result', event.result.summary);
-                    } else if (event.type === 'notice') {
-                        addMessage('notice', event.content);
-                    } else if (event.type === 'ui_action') {
-                        window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
-                    } else if (event.type === 'answer') {
-                        settleToolChip();
-                        collapseReasoningBox();
-                        finalizeLiveBubble(event.answer,
-                                           { created_at: new Date().toISOString(), model: event.model });
-                    } else if (event.type === 'error') {
-                        settleToolChip();
-                        collapseReasoningBox();
-                        discardLiveBubble();
-                        addMessage('assistant', '**Error:** ' + event.error,
-                                   { created_at: new Date().toISOString() });
-                    }
-                }
-            }
+            await readNdjson(resp.body.getReader(), (event) => {
+                if (event.type === 'task_status') return;
+                handleStreamEvent(event, state);
+            });
         } catch { /* aborted or offline — the transcript persists */ }
         taskAbort = null;
+        flushTokens();
         collapseReasoningBox();
         if (conversationId) loadConversation(conversationId);
     }
@@ -1276,6 +1520,8 @@
         addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
                    { created_at: new Date().toISOString() });
         setBusy(true);
+        lastUserQuestion = question;  // for the Regenerate action
+        startHeartbeat();
         liveBubble = null;
         lastThinkingSpan = null;
         const thinking = addMessage('assistant', '_Searching your files..._');
@@ -1324,66 +1570,16 @@
                 return;
             }
 
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+            // Stream NDJSON events: steps appear live as the agent works.
+            const state = { gotResult: false };
             let firstEvent = true;
-            let gotResult = false;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    let event;
-                    try { event = JSON.parse(line); } catch { continue; }
-                    if (firstEvent) { thinking.remove(); firstEvent = false; }
-                    if (event.type === 'tool_start') {
-                        ensureToolChip(event.step.label);
-                    } else if (event.type === 'thinking_token') {
-                        appendThinkingToken(event.content);
-                    } else if (event.type === 'answer_token') {
-                        appendAnswerToken(event.content);
-                    } else if (event.type === 'thinking') {
-                        // With migrate, the tentative answer bubble moves
-                        // into the reasoning box (it was narration before
-                        // a tool call, not the final answer).
-                        if (event.migrate) migrateLiveBubble(event.content);
-                        else addReasoningLine('thinking', event.content);
-                    } else if (event.type === 'step') {
-                        const text = event.step.label + (event.step.detail ? ': ' + event.step.detail : '');
-                        if (toolChipEl) settleToolChip(text);
-                        else addReasoningLine('step', text);
-                    } else if (event.type === 'tool_result') {
-                        settleToolChip(); // tool_start never got its step
-                        addReasoningLine('tool_result', event.result.summary);
-                    } else if (event.type === 'notice') {
-                        addMessage('notice', event.content);
-                    } else if (event.type === 'ui_action') {
-                        window.dispatchEvent(new CustomEvent('docindex-ui-action', { detail: event.action }));
-                    } else if (event.type === 'answer') {
-                        gotResult = true;
-                        conversationId = event.conversation_id;
-                        settleToolChip();
-                        collapseReasoningBox();
-                        finalizeLiveBubble(event.answer,
-                                           { created_at: new Date().toISOString(), model: event.model });
-                    } else if (event.type === 'error') {
-                        gotResult = true;
-                        settleToolChip();
-                        collapseReasoningBox();
-                        discardLiveBubble(); // keep whatever partial text arrived
-                        addMessage('assistant', '**Error:** ' + event.error,
-                                   { created_at: new Date().toISOString() });
-                    }
-                }
-            }
+            await readNdjson(resp.body.getReader(), (event) => {
+                if (firstEvent) { thinking.remove(); firstEvent = false; }
+                handleStreamEvent(event, state);
+            });
             thinking.remove();
             collapseReasoningBox();
-            if (!gotResult) {
+            if (!state.gotResult) {
                 discardLiveBubble(); // keep any partial text that arrived
                 addMessage('assistant',
                            '**Error:** the connection was lost before the answer arrived. Please try again.',
@@ -1403,6 +1599,8 @@
             }
         } finally {
             abortCtrl = null;
+            flushTokens();  // no buffered token may be lost at the end
+            stopHeartbeat();
             setBusy(false);
         }
     });

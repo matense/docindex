@@ -3036,6 +3036,145 @@ body.show-shortcuts #shortcut-help-panel {
     .ai-tool-wait span { animation: none; opacity: 0.45; }
 }
 
+/* Per-tool icon + elapsed seconds on the live tool chip */
+.ai-tool-line .ai-tool-ico {
+    font-size: 10px;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+.ai-tool-line .ai-tool-elapsed {
+    font-size: 10px;
+    opacity: 0.55;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Clickable file chips under a settled tool line */
+.ai-file-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-left: 20px;
+}
+
+.ai-file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    text-decoration: none;
+    color: oklch(var(--p));
+    background: oklch(var(--p) / 0.08);
+    border: 1px solid oklch(var(--p) / 0.18);
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-file-chip:hover {
+    background: oklch(var(--p) / 0.16);
+    border-color: oklch(var(--p) / 0.35);
+}
+
+.ai-file-chip i { font-size: 9px; opacity: 0.8; }
+
+/* Hover-visible bubble actions (Copy / Regenerate) */
+.ai-messages .chat {
+    position: relative;
+    /* Room below the bubble for the action bar, without changing layout. */
+    margin-bottom: 0.9rem;
+}
+
+.ai-msg-actions {
+    position: absolute;
+    bottom: -0.35rem;
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 3;
+}
+
+.ai-messages .chat-end .ai-msg-actions { right: 0; }
+.ai-messages .chat-start .ai-msg-actions { left: 2.6rem; }
+
+.chat:hover .ai-msg-actions,
+.chat:focus-within .ai-msg-actions {
+    opacity: 1;
+}
+
+.ai-msg-btn {
+    width: 1.35rem;
+    height: 1.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.45rem;
+    border: 1px solid oklch(var(--bc) / 0.14);
+    background: var(--fallback-b1, oklch(var(--b1) / 1));
+    color: oklch(var(--bc) / 0.55);
+    font-size: 0.62rem;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-msg-btn:hover {
+    color: oklch(var(--p));
+    border-color: oklch(var(--p) / 0.4);
+}
+
+/* "Waiting for the model" heartbeat line while no events arrive */
+.ai-wait-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 11px;
+    opacity: 0.55;
+    padding: 0.15rem 0.4rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.ai-wait-line i {
+    color: oklch(var(--p));
+    animation: ai-task-pulse 1.6s ease-in-out infinite;
+}
+
+/* Code blocks get a hover copy button (added by DocIndex.enhanceCodeBlocks) */
+.ai-code-wrap {
+    position: relative;
+}
+
+.ai-code-copy {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.45rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(15, 23, 42, 0.55);
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 0.65rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.ai-code-wrap:hover .ai-code-copy,
+.ai-code-copy:focus-visible {
+    opacity: 1;
+}
+
+.ai-code-copy:hover { color: #fff; }
+.ai-code-copy.ai-code-copied { color: #4ade80; opacity: 1; }
+
 /* --- Google-style search hero (/search without a query) --- */
 #search-dock-container {
     transition: opacity 0.3s ease, transform 0.3s ease;

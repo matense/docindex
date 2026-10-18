@@ -36,7 +36,64 @@
         return div.innerHTML.replace(/\n/g, "<br>");
     }
 
+    // Post-process an element whose innerHTML came from renderMarkdown:
+    // wrap every <pre> in a container with a copy button. Done via DOM APIs
+    // AFTER sanitizing, so the button markup never goes through DOMPurify.
+    function enhanceCodeBlocks(container) {
+        if (!container || !container.querySelectorAll) return;
+        container.querySelectorAll("pre").forEach(pre => {
+            if (pre.closest(".ai-code-wrap")) return;  // already enhanced
+            const wrap = document.createElement("div");
+            wrap.className = "ai-code-wrap";
+            pre.parentNode.insertBefore(wrap, pre);
+            wrap.appendChild(pre);
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "ai-code-copy";
+            btn.title = "Copy code";
+            btn.setAttribute("aria-label", "Copy code");
+            btn.innerHTML = '<i class="fas fa-copy"></i>';
+            btn.addEventListener("click", () => {
+                const code = pre.querySelector("code") || pre;
+                const done = () => {
+                    btn.classList.add("ai-code-copied");
+                    btn.innerHTML = '<i class="fas fa-check"></i>';
+                    setTimeout(() => {
+                        btn.classList.remove("ai-code-copied");
+                        btn.innerHTML = '<i class="fas fa-copy"></i>';
+                    }, 1500);
+                    if (window.uiToast) window.uiToast("Copied", "success");
+                };
+                copyText(code.textContent || "", done);
+            });
+            wrap.appendChild(btn);
+        });
+    }
+
+    // Clipboard with a legacy fallback (non-secure contexts).
+    function copyText(text, done) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => legacyCopy(text, done));
+        } else {
+            legacyCopy(text, done);
+        }
+    }
+
+    function legacyCopy(text, done) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch {}
+        ta.remove();
+        done();
+    }
+
     window.DocIndex = window.DocIndex || {};
     window.DocIndex.escapeHtml = escapeHtml;
     window.DocIndex.renderMarkdown = renderMarkdown;
+    window.DocIndex.enhanceCodeBlocks = enhanceCodeBlocks;
+    window.DocIndex.copyText = copyText;
 })();

@@ -1125,3 +1125,125 @@ def test_agent_narration_without_marker_still_nudges(app, user):
     kinds = [k for k, _ in events]
     assert kinds == ["thinking", "answer"]  # nudge happened, then final answer
     assert calls["n"] == 2
+
+
+def _scripted_run(app, user, tool_name, tool_args):
+    """Run the agent with a scripted model: one tool call, then an answer.
+    Returns the (kind, payload) event list."""
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": tool_name, "arguments": tool_args},
+        }]},
+        {"role": "assistant", "content": "Done."},
+    ])
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)):
+            return list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "go"}]))
+
+
+def test_tool_events_carry_step_index_and_budget(app, user):
+    """tool_start and step payloads carry the 1-based step index and the
+    resolved max_steps budget, for the chat UI's step progress display."""
+    file_id = _make_indexed_file(app, "menu.txt", "Today's lunch is soup.")
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "search_files", "arguments": '{"query": "lunch"}'},
+        }]},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_2", "type": "function",
+            "function": {"name": "read_file", "arguments": f'{{"file_id": {file_id}}}'},
+        }]},
+        {"role": "assistant", "content": "Soup."},
+    ])
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "lunch?"}], max_steps=7))
+
+    starts = [p for k, p in events if k == "tool_start"]
+    steps = [p for k, p in events if k == "step"]
+    assert [s["index"] for s in starts] == [1, 2]
+    assert [s["index"] for s in steps] == [1, 2]
+    assert all(s["max_steps"] == 7 for s in starts + steps)
+    assert starts[0]["name"] == "search_files"
+
+
+def test_tool_result_carries_file_references(app, user):
+    """Tools whose results reference files expose them as files: [{id, name}]
+    for the chat UI's clickable chips."""
+    file_id = _make_indexed_file(app, "menu.txt", "Today's lunch is soup.")
+
+    events = _scripted_run(app, user, "search_files", '{"query": "lunch"}')
+    result = next(p for k, p in events if k == "tool_result")
+    assert result["files"] == [{"id": file_id, "name": "menu.txt"}]
+
+    events = _scripted_run(app, user, "read_file", f'{{"file_id": {file_id}}}')
+    result = next(p for k, p in events if k == "tool_result")
+    assert result["files"] == [{"id": file_id, "name": "menu.txt"}]
+
+    events = _scripted_run(app, user, "get_file_info", f'{{"file_id": {file_id}}}')
+    result = next(p for k, p in events if k == "tool_result")
+    assert result["files"] == [{"id": file_id, "name": "menu.txt"}]
+
+
+def test_tool_result_without_file_references_has_no_files_key(app, user):
+    """Tools with no file references (and error results) carry no files key."""
+    events = _scripted_run(app, user, "count_files", '{"query": "zzz-nothing"}')
+    result = next(p for k, p in events if k == "tool_result")
+    assert "files" not in result
+
+    events = _scripted_run(app, user, "read_file", '{"file_id": 9999}')
+    result = next(p for k, p in events if k == "tool_result")
+    assert "files" not in result  # error result: no chips
+
+
+def test_result_files_caps_and_dedupes(app, user):
+    from app.services.agent_service import _RESULT_FILES_CAP, _result_files
+    rows = [{"file_id": i, "name": f"f{i}.txt"} for i in range(1, 20)]
+    files = _result_files({"results": rows, "total": 19})
+    assert len(files) == _RESULT_FILES_CAP
+    # Dedupe: same file in "file_id" and "results" appears once.
+    files = _result_files({"file_id": 3, "name": "a.txt",
+                           "results": [{"file_id": 3, "name": "a.txt"},
+                                       {"file_id": 4, "name": "b.txt"}]})
+    assert files == [{"id": 3, "name": "a.txt"}, {"id": 4, "name": "b.txt"}]
+    # Not a dict / error / nothing file-shaped -> None.
+    assert _result_files(["not", "a", "dict"]) is None
+    assert _result_files({"error": "File not found."}) is None
+    assert _result_files({"total": 0}) is None
+
+
+def test_chat_endpoint_streams_step_progress_and_files(auth_client, app, user):
+    """The NDJSON stream forwards index/max_steps on tool_start+step and
+    files on tool_result."""
+    file_id = _make_indexed_file(app, "menu.txt", "Today's lunch is tomato soup.")
+
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "search_files", "arguments": '{"query": "lunch"}'},
+        }]},
+        {"role": "assistant", "content": "Lunch is tomato soup."},
+    ])
+
+    app.config["AI_ENABLED"] = True
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=lambda *a, **k: next(responses)):
+        resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
+        raw = resp.data.decode()
+
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    start = next(e for e in events if e["type"] == "tool_start")
+    step = next(e for e in events if e["type"] == "step")
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert start["step"]["index"] == 1 and start["step"]["max_steps"] >= 1
+    assert step["step"]["index"] == 1 and step["step"]["max_steps"] >= 1
+    assert result["result"]["files"] == [{"id": file_id, "name": "menu.txt"}]

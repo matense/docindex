@@ -1016,6 +1016,43 @@ def _active_tools():
     return definitions, handlers, labels
 
 
+# Max file-reference chips attached to a tool_result event (the chat UI
+# renders them as clickable chips under the settled tool line).
+_RESULT_FILES_CAP = 8
+
+
+def _result_files(result):
+    """Extract [{"id", "name"}] file references from a tool result, for the
+    chat UI's clickable file chips. Covers the shapes the file-referencing
+    tools return: a single file ("file_id" + "name", e.g. read_file /
+    get_file_info / grep_file / set_hashtags) or result lists ("results" /
+    "files" rows, e.g. search_files / list_files). Deduped, capped at
+    `_RESULT_FILES_CAP`; None when the result references no files."""
+    if not isinstance(result, dict) or "error" in result:
+        return None
+    out, seen = [], set()
+
+    def _add(fid, name):
+        try:
+            fid = int(fid)
+        except (TypeError, ValueError):
+            return
+        if not name or fid in seen or len(out) >= _RESULT_FILES_CAP:
+            return
+        seen.add(fid)
+        out.append({"id": fid, "name": str(name)})
+
+    if result.get("file_id") is not None:
+        _add(result.get("file_id"), result.get("name"))
+    for key in ("results", "files"):
+        rows = result.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    _add(row.get("file_id"), row.get("name"))
+    return out or None
+
+
 def _summarize_result(name, result):
     """One-line human summary of a tool result, shown live in the chat UI."""
     if isinstance(result, dict) and "error" in result:
@@ -1118,11 +1155,15 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
       ("thinking", text)                       — the model's intermediate reasoning
-      ("tool_start", {"label":..., "name":...}) — a tool is about to run;
-                                     yielded BEFORE the handler executes so
-                                     the client can animate a live chip
-      ("step", {"label":..., "detail":...})    — a tool call being made
-      ("tool_result", {"label":..., "summary":...}) — what the tool returned
+      ("tool_start", {"label", "name", "index", "max_steps"}) — a tool is
+                                     about to run; yielded BEFORE the handler
+                                     executes so the client can animate a
+                                     live chip. index is the 1-based step
+                                     number, max_steps the step budget.
+      ("step", {"label", "detail", "index", "max_steps"}) — a tool call being made
+      ("tool_result", {"label", "summary", "files"}) — what the tool returned;
+                                     "files" lists referenced files
+                                     ([{"id", "name"}]) when present
       ("notice", text)                         — automatic context compaction
       ("stopped", text)                        — cancelled via `should_stop`
       ("answer", text)                         — the final answer (always last)
@@ -1164,7 +1205,7 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
     fit_notified = False
     active_tools, active_handlers, active_labels = _active_tools()
 
-    for _ in range(max_steps):
+    for step_index in range(max_steps):
         if should_stop is not None and should_stop():
             yield ("stopped", "Task stopped by the user.")
             return
@@ -1244,7 +1285,9 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
             # "working" chip while the call itself executes (the slow part).
             running_label = _RUNNING_LABELS.get(
                 name, active_labels.get(name, name))
-            yield ("tool_start", {"label": running_label, "name": name})
+            yield ("tool_start", {"label": running_label, "name": name,
+                                  "index": step_index + 1,
+                                  "max_steps": max_steps})
 
             handler = active_handlers.get(name)
             result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
@@ -1255,9 +1298,14 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
             if name == "read_file" and args.get("start"):
                 detail = f"{detail} (from char {args['start']})"
             label = active_labels.get(name, name)
-            yield ("step", {"label": label, "detail": str(detail)})
-            yield ("tool_result", {"label": label,
-                                   "summary": _summarize_result(name, result)})
+            yield ("step", {"label": label, "detail": str(detail),
+                            "index": step_index + 1, "max_steps": max_steps})
+            result_payload = {"label": label,
+                              "summary": _summarize_result(name, result)}
+            files = _result_files(result)
+            if files:
+                result_payload["files"] = files
+            yield ("tool_result", result_payload)
             # A tool may ask the browser to react (e.g. the automation
             # editor reloads the canvas after edit_workflow).
             if isinstance(result, dict) and isinstance(result.get("ui"), dict):
