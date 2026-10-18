@@ -114,11 +114,19 @@
                     <label class="text-sm font-medium opacity-70">Vision model (image captions)</label>
                     <select name="vision_model" id="conn-vision" class="select select-bordered w-full mt-1 font-mono text-sm"></select>
                 </div>
-                <div>
+                <div class="md:col-span-2">
                     <label class="text-sm font-medium opacity-70">Embedding model (semantic search)</label>
                     <select name="embedding_model" id="conn-embed" class="select select-bordered w-full mt-1 font-mono text-sm"></select>
                     <p class="text-xs opacity-40 mt-1">Empty = keyword-only search (global <span class="font-mono">AI_EMBEDDING_MODEL</span> applies when set).</p>
                 </div>
+            </div>
+
+            <details class="glass-panel rounded-xl px-4 py-3">
+                <summary class="cursor-pointer text-sm font-bold opacity-80 hover:opacity-100 flex items-center gap-2">
+                    <i class="fas fa-sliders"></i> Advanced settings
+                    <span class="text-xs font-normal opacity-50">budgets, limits and history</span>
+                </summary>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
                 <div>
                     <label class="text-sm font-medium opacity-70">Max agent steps</label>
                     <input type="number" name="max_steps" min="1" max="100" class="input input-bordered w-full mt-1"
@@ -147,7 +155,8 @@
                            placeholder="default (60000)">
                     <p class="text-xs opacity-40 mt-1">Max estimated prompt size. Set below your model's context (e.g. 60000 for an 80k model). Oldest messages are dropped beyond it. Empty = global default (60000).</p>
                 </div>
-            </div>
+                </div>
+            </details>
 
             <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" name="is_active" class="checkbox checkbox-primary checkbox-sm"
