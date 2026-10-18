@@ -668,6 +668,7 @@
         search_files: 'fa-magnifying-glass',
         count_files: 'fa-calculator',
         read_file: 'fa-book-open',
+        view_image: 'fa-eye',
         grep_file: 'fa-highlighter',
         list_files: 'fa-folder-tree',
         get_file_info: 'fa-circle-info',

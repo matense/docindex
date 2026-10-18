@@ -151,6 +151,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "view_image",
+            "description": (
+                "Look at an image file by its id and get a detailed visual "
+                "description: objects, people, scenes, colors and any visible "
+                "text. Use this when the user asks what an image shows or "
+                "what is written in it — read_file only returns the stored "
+                "caption, which may be missing or too short. Pass 'question' "
+                "to focus the look (e.g. 'what does the sign say?')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "integer", "description": "The image file id."},
+                    "question": {
+                        "type": "string",
+                        "description": "What to focus on (optional).",
+                    },
+                },
+                "required": ["file_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep_file",
             "description": (
                 "Search for a word or phrase INSIDE one file's extracted text "
@@ -341,6 +366,8 @@ Rules:
 - search_files uses FTS5 syntax: "quoted phrases", AND/OR/NOT and column
   scopes (name:, tags:, caption:). Plain words match by prefix, so use word
   stems with '*' (e.g. budg* matches budget/budgets).
+- To answer what an image shows, call view_image — read_file only returns
+  its stored caption, which may be missing or too short for the question.
 - To answer a question about a specific file, call grep_file first to find
   the exact lines that matter, then read_file only around that section if
   you need more context. Never read a whole large file when grep_file can
@@ -642,6 +669,54 @@ def _tool_read_file(user, file_id, start=0, length=20_000):
     }
 
 
+def _tool_view_image(user, file_id, question=None):
+    """Look at an image through the vision model and return a detailed
+    description. The fresh caption is stored on the file index so search
+    and later reads benefit from it."""
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return {"error": "File not found."}
+    guarded = _file_guard_error(user, stored)
+    if guarded:
+        return {"error": guarded}
+    if not stored.is_image:
+        return {"error": f"'{stored.name}' is not an image — view_image only works on images."}
+    cfg = ai_service.config_for(user)
+    if not cfg.get("enabled") or not cfg.get("base_url"):
+        return {"error": "AI vision is not configured."}
+    focus = (question or "").strip()
+    instruction = (
+        "Look carefully at this image and answer this question about it: "
+        + focus
+        + " Describe what you see so the answer is complete."
+        if focus else
+        "Describe this image in detail: objects, people, scenes, colors, "
+        "any visible text, and the overall context.")
+    try:
+        caption = ai_service.caption_image(
+            file_service.file_path(stored), config=cfg,
+            instruction=instruction)
+    except ai_service.AIError as exc:
+        return {"error": str(exc)[:300]}
+    except Exception:  # noqa: BLE001 - vision backend down etc.
+        return {"error": "The vision model is unreachable right now."}
+    if not (caption or "").strip():
+        return {"error": "The vision model returned nothing."}
+    # Refresh the stored caption so search and later reads benefit.
+    try:
+        index = stored.index
+        if index is not None:
+            index.caption = caption
+            db.session.commit()
+    except Exception:  # noqa: BLE001 - the caption matters, not its persistence
+        db.session.rollback()
+    return {"file_id": stored.id, "name": stored.name,
+            "caption": caption, "focus": focus or None}
+
+
 def _tool_grep_file(user, file_id, pattern, context=2):
     stored = (StoredFile.query
               .filter_by(id=file_id, user_id=user.id)
@@ -890,6 +965,8 @@ TOOL_HANDLERS = {
         **{k: v for k, v in args.items() if k != "query"}),
     "read_file": lambda user, args, drive: _tool_read_file(
         user, args.get("file_id"), args.get("start", 0), args.get("length", 20_000)),
+    "view_image": lambda user, args, drive: _tool_view_image(
+        user, args.get("file_id"), args.get("question")),
     "grep_file": lambda user, args, drive: _tool_grep_file(
         user, args.get("file_id"), args.get("pattern"), args.get("context", 2)),
     "list_files": lambda user, args, drive: _tool_list_files(
@@ -909,6 +986,7 @@ _STEP_LABELS = {
     "search_files": "Searched files",
     "count_files": "Counted files",
     "read_file": "Read file",
+    "view_image": "Viewed image",
     "grep_file": "Searched inside file",
     "list_files": "Listed drive",
     "get_file_info": "Checked file info",
@@ -925,6 +1003,7 @@ _RUNNING_LABELS = {
     "search_files": "Searching files",
     "count_files": "Counting files",
     "read_file": "Reading file",
+    "view_image": "Viewing image",
     "grep_file": "Searching inside file",
     "list_files": "Listing drive",
     "get_file_info": "Checking file info",
@@ -1081,6 +1160,11 @@ def _summarize_result(name, result):
             return "No matches inside the file."
         extra = " (truncated)" if result.get("truncated") else ""
         return f"{matches} matching line(s) in {result.get('name', '?')}{extra}"
+    if name == "view_image":
+        caption = (result.get("caption") or "").strip().replace("\n", " ")
+        if len(caption) > 120:
+            caption = caption[:120] + "…"
+        return f"Seen {result.get('name', '?')}: {caption}" if caption else "Image seen."
     if name == "list_files":
         return (f"{len(result.get('folders', []))} folder(s), "
                 f"{len(result.get('files', []))} file(s)")

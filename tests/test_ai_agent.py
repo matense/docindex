@@ -1250,6 +1250,100 @@ def test_chat_endpoint_streams_step_progress_and_files(auth_client, app, user):
     assert result["result"]["files"] == [{"id": file_id, "name": "menu.txt"}]
 
 
+# --- view_image: the AI looks at images --------------------------------------
+
+PNG_1PX = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+           b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+           b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+
+def _make_image_file(app, user_id, name="pic.png"):
+    """Store a real 1px PNG directly (caption path needs a real file)."""
+    import os
+    import shutil
+    import tempfile
+    from app.services import file_service
+    with app.app_context():
+        user_obj = db.session.get(User, user_id)
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.write(PNG_1PX)
+        tmp.close()
+
+        class FakeStorage:
+            filename = name
+            mimetype = "image/png"
+
+            def save(self, path):
+                shutil.copy(tmp.name, path)
+
+        stored = file_service.save_upload(FakeStorage(), user_obj)
+        fid = stored.id
+        os.unlink(tmp.name)
+        return fid
+
+
+def test_view_image_looks_and_persists_caption(app, user):
+    from app.models import StoredFile as _SF
+    fid = _make_image_file(app, user)
+    app.config["AI_ENABLED"] = True
+    seen = {}
+
+    def fake_caption(path, config=None, instruction=None, **kw):
+        seen["instruction"] = instruction
+        return "a red bicycle against a blue wall"
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.agent_service.ai_service.caption_image",
+                   side_effect=fake_caption):
+            result = agent_service._tool_view_image(user_obj, fid, "what color?")
+    assert result["caption"] == "a red bicycle against a blue wall"
+    assert "color" in seen["instruction"]
+    with app.app_context():
+        assert db.session.get(_SF, fid).index.caption == \
+            "a red bicycle against a blue wall"
+
+
+def test_view_image_rejects_non_image_missing_and_no_vision(app, user):
+    file_id = _make_indexed_file(app, "notes.txt", "plain text")
+    fid = _make_image_file(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert agent_service._tool_view_image(
+            user_obj, file_id)["error"].startswith("'notes.txt' is not an image")
+        assert agent_service._tool_view_image(
+            user_obj, 999999)["error"] == "File not found."
+        app.config["AI_ENABLED"] = False
+        assert agent_service._tool_view_image(
+            user_obj, fid)["error"] == "AI vision is not configured."
+
+
+def test_agent_uses_view_image_for_visual_questions(app, user):
+    fid = _make_image_file(app, user)
+    responses = iter([
+        {"role": "assistant", "content": "Let me look at the image.",
+         "tool_calls": [{
+             "id": "call_1", "type": "function",
+             "function": {"name": "view_image",
+                          "arguments": '{"file_id": %d}' % fid},
+         }]},
+        {"role": "assistant", "content": "It shows a red bicycle. [[END]]"},
+    ])
+    app.config["AI_ENABLED"] = True
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)), \
+             patch("app.services.agent_service.ai_service.caption_image",
+                   return_value="a red bicycle"):
+            answer, steps = agent_service.run_agent(
+                user_obj, [{"role": "user",
+                            "content": "What does the picture show?"}])
+    assert "red bicycle" in answer
+    assert [s["label"] for s in steps] == ["Viewed image"]
+    assert steps[0]["detail"] == "pic.png"
+
+
 # --- Chat attachments: device upload, summary, AI brief ---------------------
 
 
