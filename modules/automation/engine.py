@@ -237,6 +237,9 @@ def _referenced_nodes(graph_nodes):
 
         _scan(node.get("config") or {})
         refs.discard(node["id"])
+        # "in" is not a node id: fan-in ports (e.g. transform.template)
+        # expose the joined inputs under that name at execution time.
+        refs.discard("in")
         deps[node["id"]] = refs
     return deps
 
@@ -456,6 +459,8 @@ def validate_graph(graph, node_types=None):
                      for p in src_spec.get("outputs", [])}
         in_ports = {p["name"]: p.get("kind", "any")
                     for p in dst_spec.get("inputs", [])}
+        in_multi = {p["name"] for p in dst_spec.get("inputs", [])
+                    if p.get("multiple")}
         if edge.get("from_port") not in out_ports:
             raise WorkflowError(
                 f"Node '{src}' has no output port '{edge.get('from_port')}'.")
@@ -470,9 +475,10 @@ def validate_graph(graph, node_types=None):
                 f"Cannot connect '{src}' ({skind}) to '{dst}' ({dkind}) — "
                 f"insert a conversion step (e.g. read_files, json_to_table).")
         # Fan-in guard: two edges into the same input port would silently
-        # overwrite (last wins).
+        # overwrite (last wins) — unless the port opts in with
+        # "multiple": true, in which case the payloads arrive as a list.
         target = (dst, edge["to_port"])
-        if target in seen_targets:
+        if target in seen_targets and edge["to_port"] not in in_multi:
             raise WorkflowError(
                 f"Input '{edge['to_port']}' of node '{dst}' already has a "
                 f"connection — one wire per input.")
@@ -539,11 +545,16 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
         node_ctx["log"] = notes.append
 
         inputs = {}
+        multi = {p["name"] for p in spec.get("inputs", []) if p.get("multiple")}
         for edge in inbound[nid]:
             src_out = outputs.get(edge["from"], {})
             payload = src_out.get(edge["from_port"])
             if payload is not None:
-                inputs[edge["to_port"]] = payload
+                if edge["to_port"] in multi:
+                    # Fan-in port: payloads arrive as a list, wire order.
+                    inputs.setdefault(edge["to_port"], []).append(payload)
+                else:
+                    inputs[edge["to_port"]] = payload
 
         if inbound[nid] and not inputs:
             outputs[nid] = {p["name"]: None

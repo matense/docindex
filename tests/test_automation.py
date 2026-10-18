@@ -221,6 +221,43 @@ def test_render_template_digs_into_json():
         engine.render_template("{{ n1.items.9 }}", outputs)
 
 
+def test_template_multiple_inputs_join_as_in():
+    """Fan-in port: several nodes wired into the template's 'in' arrive as a
+    list and are exposed to the template as {{ in }} (blank-line joined)."""
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "alpha", "format": "text"}},
+        {"id": "n2", "type": "input.text",
+         "config": {"content": "beta", "format": "text"}},
+        {"id": "n3", "type": "transform.template",
+         "config": {"template": "All:\n{{ in }}"}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "n3", "to_port": "in"},
+        {"from": "n2", "from_port": "out", "to": "n3", "to_port": "in"}]}
+    outputs, _, _ = _execute(graph)
+    assert outputs["n3"]["out"]["data"] == "All:\nalpha\n\nbeta"
+    # Refs keep working alongside the joined input.
+    graph["nodes"][2]["config"]["template"] = "{{ n2 }} | {{ in }}"
+    outputs, _, _ = _execute(graph)
+    assert outputs["n3"]["out"]["data"] == "beta | alpha\n\nbeta"
+    # {{ in }} is a scope name, not a node ref: diagnose stays clean.
+    assert engine.diagnose_graph(graph, NODE_TYPES)["ok"]
+
+
+def test_fan_in_still_rejected_on_regular_ports():
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "a", "format": "text"}},
+        {"id": "n2", "type": "input.text",
+         "config": {"content": "b", "format": "text"}},
+        {"id": "n3", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "n3", "to_port": "in"},
+        {"from": "n2", "from_port": "out", "to": "n3", "to_port": "in"}]}
+    with pytest.raises(engine.WorkflowError, match="one wire per input"):
+        engine.validate_graph(graph, NODE_TYPES)
+
+
 # ---------------------------------------------------------------------------
 # Engine: payload coercions
 # ---------------------------------------------------------------------------

@@ -92,7 +92,8 @@ _NODE_EXAMPLES = {
     "docindex.search_files": "Query \"contract\" returns the matching files "
                              "for the next node to read.",
     "transform.template": "Writes a letter: \"Dear {{ n1 }}, …\" — the "
-                          "text of node n1 is inserted where the ref is.",
+                          "text of node n1 is inserted where the ref is. "
+                          "Connect several nodes and {{ in }} joins them all.",
     "transform.table_filter": "status is one of (paid, pending) AND total "
                               "is greater than 100.",
     "transform.table_select": "Pick name and total, renaming total to "
@@ -417,7 +418,18 @@ def _exec_search_files(ctx, config, inputs):
 # --------------------------------------------------------------------------
 
 def _exec_template(ctx, config, outputs, inputs):
-    return p_text(render_template(config.get("template", ""), outputs))
+    # Wires into "in" are optional ({{ n1 }} refs already pull any node), but
+    # when several nodes are connected their texts are joined and exposed as
+    # {{ in }} — the quick way to merge without writing refs by hand.
+    scope = outputs
+    incoming = inputs.get("in")
+    if incoming:
+        if not isinstance(incoming, list):
+            incoming = [incoming]
+        scope = dict(outputs)
+        scope["in"] = {"in": p_text("\n\n".join(as_text(p)
+                                                for p in incoming))}
+    return p_text(render_template(config.get("template", ""), scope))
 
 
 def _exec_json_path(ctx, config, inputs, outputs):
@@ -1222,8 +1234,10 @@ def register_defaults():
                        "other nodes wherever you need it. Write the text "
                        "normally and place {{ n1 }} where the output of node "
                        "n1 should appear — every node shows its id (n1, n2, "
-                       "…) in the corner of its card.",
-        "inputs": [{"name": "in", "kind": "any"}],
+                       "…) in the corner of its card. You can also connect "
+                       "several nodes to the input and use {{ in }} to "
+                       "insert them all, joined by a blank line.",
+        "inputs": [{"name": "in", "kind": "any", "multiple": True}],
         "outputs": [{"name": "out", "kind": "text"}],
         "fields": [
             {"name": "template", "label": "Template", "kind": "textarea",
@@ -1241,12 +1255,15 @@ def register_defaults():
                   "value": "Results:\n\n{{ n1 }}"},
                  {"label": "Combine two nodes",
                   "value": "First part:\n{{ n1 }}\n\nSecond part:\n{{ n2 }}"},
+                 {"label": "Join everything connected",
+                  "value": "# Combined\n\n{{ in }}"},
                  {"label": "One field of JSON data",
                   "value": "The customer name is {{ n1.name }}."},
              ],
              "help": "{{ n1 }} inserts the whole output of node n1. "
                      "{{ n1.name }} digs one field out of JSON data "
-                     "(use dots for each level)."},
+                     "(use dots for each level). {{ in }} joins every node "
+                     "connected to the input, separated by a blank line."},
         ]}, lambda ctx, config, inputs: _exec_template(
             ctx, config, ctx["_outputs"], inputs))
 

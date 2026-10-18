@@ -1150,7 +1150,10 @@ tool + table).
   scheduled/triggered/AI runs; kinds: short/long text, number, file —
   the answers ride on `AutomationRun.params` and duplicate/unnamed
   parameters are rejected at validation; notebook input), **Transform**
-  (template with `{{ node.port.path }}` references, pick-a-value-from-JSON,
+  (template with `{{ node.port.path }}` references — its input port is a
+  fan-in port (`"multiple": true` in the spec): several nodes may be wired
+  in, their texts arrive as a list and are exposed to the template as
+  `{{ in }}`, joined by a blank line; pick-a-value-from-JSON,
   JSON to table (a list of objects becomes rows; an object becomes a
   key/value table), multi-condition row filter (column/operator/value
   rows combined with ALL/ANY — operators include contains, numeric
