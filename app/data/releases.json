@@ -4,6 +4,7 @@
       "version": "0.1.4",
       "date": "2026-10-18",
       "title": "Live background work: animated tools, run widgets, smarter tasks",
+      "warning": "The Automation module is still young — review a workflow's first runs before trusting it with important files.",
       "sections": [
         {
           "title": "New",
