@@ -422,11 +422,41 @@ def edit_drive(drive_id):
     return redirect(request.form.get("next") or url_for("drive.index"))
 
 
+@bp.route("/file/<int:file_id>/summary")
+@login_required
+def file_summary(file_id):
+    """Machine-readable summary of a file for chat attachment cards and AI
+    context: index status, caption (images), columns + head rows (tables),
+    head + counts (text). The chat polls this until the index is ready."""
+    stored = db.session.get(StoredFile, file_id)
+    if (stored is None or stored.user_id != current_user.id
+            or stored.deleted_at is not None):
+        return jsonify({"error": "Not found."}), 404
+    index = FileIndex.query.filter_by(file_id=stored.id).first()
+    desc = file_service.describe_for_chat(stored)
+    data = {
+        "id": stored.id, "name": stored.name,
+        "extension": stored.extension, "size": stored.size,
+        "drive": ({"id": stored.drive.id, "name": stored.drive.name}
+                  if stored.drive else None),
+        "index": {"status": index.status if index else "pending",
+                  "error": index.error if index else None},
+        "summary": desc,
+    }
+    if stored.is_image:
+        data["thumbnail_url"] = url_for("drive.thumbnail", file_id=stored.id)
+    return jsonify(data)
+
+
 @bp.route("/upload", methods=["POST"])
 @login_required
 def upload():
     drive = drive_service.get_current_drive(current_user)
     if drive.is_synced:
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify({"error": "Synced drives are read-only — upload "
+                                     "to a regular drive instead.",
+                            "saved": 0, "errors": [], "files": []}), 400
         flash("Synced drives are read-only — upload to a regular drive instead.",
               "error")
         return redirect(url_for("drive.index"))

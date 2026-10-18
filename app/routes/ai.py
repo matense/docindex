@@ -100,6 +100,33 @@ def _notebook_access_note(stored):
     return ""
 
 
+def _attachment_brief(file_service, stored, cap=1000):
+    """One-line pre-extracted content for an attached file, so the model
+    answers from the gist without a tool call: image caption, table columns
+    plus head rows, text head. None when nothing useful is known yet."""
+    try:
+        desc = file_service.describe_for_chat(stored)
+    except Exception:  # noqa: BLE001 - brief is best-effort
+        return None
+    kind = desc.get("kind")
+    if kind == "image":
+        return (f"Image. Caption: {desc['caption']}"
+                if desc.get("caption") else None)
+    if kind == "table":
+        cols = ", ".join(desc.get("columns") or [])
+        if not cols:
+            return None
+        rows = [" | ".join(r) for r in (desc.get("rows") or [])[:4]]
+        text = f"Table columns: {cols}."
+        if rows:
+            text += f" First rows: {'; '.join(rows)}."
+        return text[:cap]
+    if kind == "text":
+        head = (desc.get("head") or "").strip().replace("\n", " ")
+        return f"Starts with: {head[:cap]}" if head else None
+    return None
+
+
 def _resolve_context(user, data):
     """Resolve a chat/task request's context payload into a dict with:
 
@@ -257,6 +284,22 @@ def _resolve_context(user, data):
             "You can read_file them directly by id — no need to search first.")
         snapshot["file_ids"] = [f.id for f in attached]
         snapshot["file_names"] = [f.name for f in attached]
+        # Pre-extracted gist per attachment (caption, columns+rows, head):
+        # the model answers from this without spending tool calls, and digs
+        # deeper with read_file/grep only when needed.
+        from ..services import file_service as _file_service
+        shown = 0
+        for f in attached:
+            if shown >= 3:
+                break
+            brief = _attachment_brief(_file_service, f)
+            if brief:
+                notes.append(f"Attached file [id {f.id}] {f.name}: {brief}")
+                shown += 1
+        if len(attached) > shown:
+            notes.append(
+                f"...and {len(attached) - shown} more attached file(s) — "
+                "read them by id when needed.")
 
     # The worker thread cannot rebuild the notes (no request context), so
     # the snapshot carries their final text.
@@ -773,6 +816,91 @@ def task_detail(task_id):
     if task is None:
         return jsonify({"error": "Not found"}), 404
     return jsonify(_task_json(task))
+
+
+@bp.route("/attachments", methods=["POST"])
+@login_required
+def upload_attachments():
+    """Upload device files straight from the chat composer.
+
+    Saves to ``drive_id`` when given (must be owned + writable), otherwise
+    to the open drive when writable. When the open drive is read-only the
+    client is asked to choose: 409 + writable drives list ("ask first").
+    Always answers JSON. Every saved file is indexed and returned ready
+    to attach.
+    """
+    from ..services import file_service, indexing_service
+    from werkzeug.utils import secure_filename
+
+    drive = None
+    drive_id = request.form.get("drive_id", type=int)
+    if drive_id:
+        drive = Drive.query.filter_by(
+            id=drive_id, user_id=current_user.id).first()
+        if drive is None:
+            return jsonify({"error": "Drive not found."}), 404
+        if drive.is_synced:
+            return jsonify({"error": "That drive is read-only."}), 400
+    else:
+        drive = drive_service.get_current_drive(current_user)
+        if drive.is_synced:
+            writable = [d for d in Drive.query
+                        .filter_by(user_id=current_user.id)
+                        .order_by(Drive.name).all() if not d.is_synced]
+            return jsonify({"error": "The open drive is read-only — pick "
+                                     "where to save.",
+                            "needs_drive_choice": True,
+                            "drives": [{"id": d.id, "name": d.name}
+                                       for d in writable]}), 409
+
+    uploaded = request.files.getlist("files")
+    saved_files, errors = [], []
+    for file_storage in uploaded:
+        if not file_storage.filename:
+            continue
+        if not file_service.allowed_file(file_storage.filename):
+            errors.append(f"{file_storage.filename}: file type not allowed")
+            continue
+        try:
+            name = secure_filename(file_storage.filename) or "unnamed"
+            existing = file_service.find_by_name(
+                current_user.id, drive.id, None, name)
+            if existing:
+                result = file_service.replace_with_upload(existing,
+                                                          file_storage)
+                saved_files.append({"id": existing.id, "name": existing.name,
+                                    "drive_id": drive.id,
+                                    "drive_name": drive.name,
+                                    "versioned": result == "replaced",
+                                    "duplicates": []})
+                _trigger_chat_indexing(existing.id)
+                continue
+            stored = file_service.save_upload(file_storage, current_user,
+                                              None)
+            stored.drive_id = drive.id
+            db.session.commit()
+            _trigger_chat_indexing(stored.id)
+            dupes = file_service.find_duplicates(stored)
+            saved_files.append({
+                "id": stored.id, "name": stored.name,
+                "drive_id": drive.id, "drive_name": drive.name,
+                "versioned": False,
+                "duplicates": [{"id": d.id, "name": d.name} for d in dupes],
+            })
+        except ValueError as exc:
+            errors.append(str(exc))
+    return jsonify({"files": saved_files, "errors": errors,
+                    "drive": {"id": drive.id, "name": drive.name}})
+
+
+def _trigger_chat_indexing(file_id):
+    """Index a chat upload now (sync in tests) or queue it like /upload."""
+    from ..services import indexing_service
+    if current_app.config.get("INDEX_ASYNC", True):
+        indexing_service.enqueue_index([file_id])
+        indexing_service.ensure_workers(1)
+    else:
+        indexing_service.index_file(file_id)
 
 
 @bp.route("/tasks/<int:task_id>/stop", methods=["POST"])

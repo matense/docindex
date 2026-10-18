@@ -1096,6 +1096,24 @@ def test_browse_lists_folders_and_files(auth_client, app, user, enabled):
         f"/m/automation/api/browse?file_id={root_file}").status_code == 200
 
 
+def test_attachable_lists_trigger_and_file_param_workflows(auth_client, app, user, enabled):
+    trig = {"nodes": [{"id": "n1", "type": "input.trigger", "x": 0, "y": 0,
+                       "config": {}}], "edges": []}
+    param = {"nodes": [{"id": "n1", "type": "input.param", "x": 0, "y": 0,
+                        "config": {"param": "doc", "label": "Document",
+                                   "kind": "file", "ask": "yes"}}], "edges": []}
+    _workflow(app, user, trig, name="trig")
+    _workflow(app, user, param, name="param")
+    _workflow(app, user, _text_graph(), name="plain")
+
+    data = auth_client.get("/m/automation/api/attachable").get_json()
+    by_name = {w["name"]: w for w in data["workflows"]}
+    assert by_name["trig"]["trigger"] is True
+    assert by_name["param"]["file_params"] == [{"param": "doc",
+                                                "label": "Document"}]
+    assert "plain" not in by_name
+
+
 def test_browse_enforces_ownership(auth_client, app, user, enabled):
     with app.app_context():
         other = User(username="dave", email="dave@example.com")

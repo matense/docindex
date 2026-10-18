@@ -456,6 +456,35 @@ def run(workflow_id):
                     "url": url_for("automation.run_detail", run_id=active.id)})
 
 
+@bp.get("/api/attachable")
+def api_attachable():
+    """Workflows that can consume a chat attachment: those with an
+    input.trigger node, and those asking for a file via input.param.
+    The chat's "Run workflow…" chip button offers these; picking one runs
+    the workflow with trigger_file_id / params={param: file_id}."""
+    out = []
+    workflows = (AutomationWorkflow.query
+                 .filter_by(user_id=current_user.id)
+                 .order_by(AutomationWorkflow.updated_at.desc()).all())
+    for workflow in workflows:
+        try:
+            graph = engine.parse_graph(workflow.graph)
+        except engine.WorkflowError:
+            continue
+        has_trigger = any(n.get("type") == "input.trigger"
+                          for n in graph["nodes"])
+        try:
+            file_params = [{"param": s["param"], "label": s["label"]}
+                           for s in nodes.run_param_specs(graph)
+                           if s["kind"] == "file"]
+        except Exception:  # noqa: BLE001 - treat as no file params
+            file_params = []
+        if has_trigger or file_params:
+            out.append({"id": workflow.id, "name": workflow.name,
+                        "trigger": has_trigger, "file_params": file_params})
+    return jsonify({"workflows": out})
+
+
 @bp.get("/api/for-file")
 def api_for_file():
     """Workflows that accept a file trigger — the drive's Run workflow menu.

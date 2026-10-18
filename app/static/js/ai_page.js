@@ -348,17 +348,27 @@
         attachments.forEach((a) => {
             const chip = document.createElement('span');
             chip.className = 'badge badge-primary badge-outline gap-1 text-xs';
-            chip.innerHTML = '<i class="fas fa-paperclip"></i>';
-            chip.appendChild(document.createTextNode(a.name));
+            const pending = !!pendingSummaries[a.id];
+            chip.innerHTML = '<i class="fas ' + (pending ? 'fa-circle-notch fa-spin' : 'fa-paperclip') + '"></i>';
+            chip.appendChild(document.createTextNode(a.name + (pending ? ' · indexing…' : '')));
+            if (pending) chip.title = 'Indexing — the summary card lands here when ready';
             const rm = document.createElement('button');
             rm.type = 'button';
             rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
             rm.innerHTML = '<i class="fas fa-xmark"></i>';
             rm.onclick = () => {
                 attachments = attachments.filter(x => x.id !== a.id);
+                delete pendingSummaries[a.id];
                 renderChips();
             };
             chip.appendChild(rm);
+            const runBtn = document.createElement('button');
+            runBtn.type = 'button';
+            runBtn.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+            runBtn.title = 'Run a workflow with this file';
+            runBtn.innerHTML = '<i class="fas fa-play"></i>';
+            runBtn.onclick = (e) => { e.stopPropagation(); runWorkflowWithFile(a); };
+            chip.appendChild(runBtn);
             chipsEl.appendChild(chip);
         });
         const hasChips = chipsEl.childNodes.length > 0;
@@ -378,6 +388,248 @@
         if (attachments.some(a => a.id === id)) return;
         attachments.push({ id, name });
         renderChips();
+    }
+
+    // --- Device upload + attachment summaries (shared by paperclip & DnD) -
+    let pendingSummaries = {}; // fileId -> {name}
+    let summaryWaitToastAt = 0;
+
+    function summariesPending() {
+        return Object.keys(pendingSummaries).length > 0;
+    }
+
+    function waitForSummaries() {
+        if (!summariesPending()) return Promise.resolve();
+        if (!summaryWaitToastAt || Date.now() - summaryWaitToastAt > 30000) {
+            summaryWaitToastAt = Date.now();
+            window.uiToast('Preparing attached files — one moment…', 'info');
+        }
+        return new Promise(resolve => {
+            const t0 = Date.now();
+            const check = () => {
+                if (!summariesPending() || Date.now() - t0 > 95000) resolve();
+                else setTimeout(check, 1000);
+            };
+            check();
+        });
+    }
+
+    async function uploadDeviceFiles(fileList, driveId, pickedDriveName) {
+        const files = Array.from(fileList || []).filter(f => f && f.name);
+        if (!files.length) return;
+        addMessage('step', 'Uploading ' + files.length + ' file(s)…');
+        const fd = new FormData();
+        files.forEach(f => fd.append('files', f));
+        if (driveId) fd.append('drive_id', driveId);
+        let resp;
+        try {
+            resp = await fetch('/ai/attachments', { method: 'POST', body: fd });
+        } catch (err) {
+            addMessage('assistant', '**Error:** upload failed.');
+            return;
+        }
+        let data = {};
+        try { data = await resp.json(); } catch (err) { /* non-JSON */ }
+        if (resp.status === 409 && data.needs_drive_choice) {
+            const picked = await pickUploadDrive(data.drives || []);
+            if (!picked) {
+                addMessage('step', 'Upload cancelled — no drive picked.');
+                return;
+            }
+            return uploadDeviceFiles(fileList, picked.id, picked.name);
+        }
+        if (!resp.ok) {
+            addMessage('assistant', '**Error:** ' + (data.error || 'upload failed.'));
+            return;
+        }
+        if (pickedDriveName) {
+            window.uiToast('Saved to ' + pickedDriveName + '.', 'info');
+        }
+        (data.files || []).forEach(f => {
+            attachFile(f.id, f.name);
+            if (f.versioned) {
+                addMessage('step', '"' + f.name + '" updated — previous content kept as a version.');
+            }
+            (f.duplicates || []).forEach(d =>
+                addMessage('step', '⚠️ "' + f.name + '" has identical content to "' + d.name + '" — see file info to handle it.'));
+            watchSummary(f.id, f.name);
+        });
+        (data.errors || []).forEach(err => addMessage('step', '⚠️ ' + err));
+        addMessage('step', 'Attached ' + (data.files || []).length + ' file(s) to the chat.');
+        if (window.spaInvalidate) window.spaInvalidate();
+    }
+
+    function pickUploadDrive(drives) {
+        return new Promise(resolve => {
+            if (!drives.length) {
+                window.uiToast('No writable drive available.', 'error');
+                resolve(null);
+                return;
+            }
+            const pop = document.createElement('div');
+            pop.className = 'glass-menu z-30 flex flex-col min-w-52 p-1.5 absolute bottom-full left-2 mb-1';
+            const head = document.createElement('div');
+            head.className = 'text-[10px] uppercase tracking-wide opacity-50 px-2 py-1';
+            head.textContent = 'Save uploaded files to…';
+            pop.appendChild(head);
+            drives.forEach(d => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'ai-menu-item';
+                b.innerHTML = '<i class="fas fa-hard-drive w-5 text-center text-accent"></i> ';
+                b.appendChild(document.createTextNode(d.name));
+                b.onclick = () => { pop.remove(); resolve(d); };
+                pop.appendChild(b);
+            });
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'ai-menu-item opacity-60';
+            cancel.textContent = 'Cancel';
+            cancel.onclick = () => { pop.remove(); resolve(null); };
+            pop.appendChild(cancel);
+            const wrap = document.getElementById('aip-form').parentElement;
+            wrap.style.position = 'relative';
+            wrap.appendChild(pop);
+            setTimeout(() => document.addEventListener('click', function off(e) {
+                if (!pop.contains(e.target)) { pop.remove(); resolve(null); }
+                else document.addEventListener('click', off, { once: true });
+            }, { once: true }));
+        });
+    }
+
+    function watchSummary(fileId, name) {
+        pendingSummaries[fileId] = { name };
+        renderChips();
+        let tries = 0;
+        const tick = async () => {
+            if (!pendingSummaries[fileId]) return;
+            tries++;
+            try {
+                const resp = await fetch('/file/' + fileId + '/summary',
+                                         { headers: { 'Accept': 'application/json' } });
+                if (resp.ok) {
+                    const s = await resp.json();
+                    if (s.index && s.index.status === 'ok') {
+                        delete pendingSummaries[fileId];
+                        renderChips();
+                        addSummaryCard(s);
+                        return;
+                    }
+                    if (s.index && s.index.status === 'error') {
+                        delete pendingSummaries[fileId];
+                        renderChips();
+                        addMessage('step', '⚠️ Could not index "' + name + '": ' +
+                            (s.index.error || 'indexing failed') + ' — the AI can still read it by id.');
+                        return;
+                    }
+                }
+            } catch (err) { /* offline — retry */ }
+            if (tries >= 45) {
+                delete pendingSummaries[fileId];
+                renderChips();
+                addMessage('step', '⚠️ "' + name + '" is still indexing — ask anyway, the AI reads it live by id.');
+                return;
+            }
+            setTimeout(tick, 2000);
+        };
+        setTimeout(tick, 2500);
+    }
+
+    function addSummaryCard(s) {
+        const sum = s.summary || {};
+        const lines = ['**' + s.name + '**'];
+        if (sum.kind === 'image') {
+            lines.push('(image' + (sum.indexed ? '' : ', index pending') + ')');
+            if (s.thumbnail_url) lines.push('![' + s.name + '](' + s.thumbnail_url + ')');
+            if (sum.caption) lines.push('Caption: ' + sum.caption);
+            else lines.push('_Caption pending — the AI can still see the image._');
+        } else if (sum.kind === 'table') {
+            const ncols = (sum.columns || []).length;
+            lines.push('(table, ' + ncols + ' columns)');
+            if (ncols) lines.push('Columns: ' + sum.columns.join(', '));
+            (sum.rows || []).slice(0, 4).forEach(r => lines.push('`' + r.join(' | ') + '`'));
+        } else if (sum.kind === 'text') {
+            const c = sum.counts || {};
+            lines.push('(text' + (c.words != null ? ', ' + c.words + ' words' : '') + ')');
+            if (sum.head) lines.push('```text\n' + sum.head.slice(0, 1500) + '\n```');
+        } else {
+            lines.push('(attached — the AI reads it live by id)');
+        }
+        addMessage('assistant', lines.join('\n\n'));
+    }
+
+    async function runWorkflowWithFile(a) {
+        let data;
+        try {
+            const resp = await fetch('/m/automation/api/attachable',
+                                     { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('unavailable');
+            data = await resp.json();
+        } catch (err) {
+            window.uiToast('Automation is not available.', 'error');
+            return;
+        }
+        const wfs = (data && data.workflows) || [];
+        if (!wfs.length) {
+            window.uiToast('No workflow accepts files — describe it to the AI instead.', 'info');
+            return;
+        }
+        const pop = document.createElement('div');
+        pop.className = 'glass-menu z-30 flex flex-col min-w-52 max-w-72 p-1.5 absolute bottom-full left-2 mb-1';
+        const head = document.createElement('div');
+        head.className = 'text-[10px] uppercase tracking-wide opacity-50 px-2 py-1';
+        head.textContent = 'Run "' + a.name + '" with…';
+        pop.appendChild(head);
+        wfs.slice(0, 12).forEach(wf => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'ai-menu-item';
+            const how = wf.trigger ? 'input' : (wf.file_params[0] || {}).label || 'file';
+            b.innerHTML = '<i class="fas fa-diagram-project w-5 text-center text-primary"></i> ';
+            b.appendChild(document.createTextNode(wf.name + '  ·  ' + how));
+            b.title = wf.trigger ? 'Runs with this file as trigger input'
+                                 : 'Runs with this file as "' + how + '"';
+            b.onclick = () => { pop.remove(); startWorkflowRun(wf, a); };
+            pop.appendChild(b);
+        });
+        const wrap = document.getElementById('aip-form').parentElement;
+        wrap.style.position = 'relative';
+        wrap.appendChild(pop);
+        setTimeout(() => document.addEventListener('click', function off(e) {
+            if (!pop.contains(e.target)) pop.remove();
+            else document.addEventListener('click', off, { once: true });
+        }, { once: true }));
+    }
+
+    async function startWorkflowRun(wf, a) {
+        let body;
+        const params = wf.file_params || [];
+        if (wf.trigger && !params.length) body = { file_id: a.id };
+        else if (params.length === 1 && !wf.trigger) body = { params: { [params[0].param]: String(a.id) } };
+        else if (wf.trigger) body = { file_id: a.id };
+        else {
+            window.uiToast('"' + wf.name + '" needs several inputs — ask the AI to run it.', 'info');
+            return;
+        }
+        let resp, data = {};
+        try {
+            resp = await fetch('/m/automation/' + wf.id + '/run', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            data = await resp.json().catch(() => ({}));
+        } catch (err) {
+            window.uiToast('Could not reach the server.', 'error');
+            return;
+        }
+        if (!resp.ok) {
+            window.uiToast(data.error || 'Could not start the workflow.', 'error');
+            return;
+        }
+        addMessage('step', 'Workflow "' + wf.name + '" started on "' + a.name +
+            '" — run ' + data.run_id + ': ' + data.url);
+        window.uiToast('Workflow started — track it in the bottom-right card.', 'info');
+        if (window.automationRunsPoll) window.automationRunsPoll();
     }
 
     renderChips();  // show the current-context chip if a file is open
@@ -1248,26 +1500,7 @@
         if (!e.dataTransfer.files.length) return;
         e.preventDefault();
         showDropOverlay(false);
-        const fd = new FormData();
-        for (const f of e.dataTransfer.files) fd.append('files', f);
-        addMessage('step', 'Uploading ' + e.dataTransfer.files.length + ' file(s)...');
-        fetch('/upload', {
-            method: 'POST',
-            body: fd,
-            headers: { 'Accept': 'application/json' },
-        })
-            .then(r => r.json())
-            .then(data => {
-                (data.files || []).forEach(f => {
-                    attachFile(f.id, f.name);
-                    (f.duplicates || []).forEach(d =>
-                        addMessage('step', '⚠️ "' + f.name + '" has identical content to "' + d.name + '" — see file info to handle it.'));
-                });
-                (data.errors || []).forEach(err => addMessage('step', '⚠️ ' + err));
-                addMessage('step', 'Attached ' + (data.files || []).length + ' file(s) to the chat.');
-                if (window.spaInvalidate) window.spaInvalidate();
-            })
-            .catch(() => addMessage('assistant', '**Error:** upload failed.'));
+        uploadDeviceFiles(e.dataTransfer.files);
     });
 
     // --- @here and # mention autocomplete --------------------------------------
@@ -1355,6 +1588,17 @@
         }
         input.focus();
         input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Paperclip: upload files from this device (same flow as DnD).
+    const aipFileInput = document.getElementById('aip-file-input');
+    document.getElementById('aip-attach-upload').addEventListener('click', () => {
+        aipFileInput.click();
+        input.focus();
+    });
+    aipFileInput.addEventListener('change', () => {
+        uploadDeviceFiles(aipFileInput.files);
+        aipFileInput.value = '';
     });
 
     input.addEventListener('input', () => {
@@ -1479,6 +1723,10 @@
         }
         const question = input.value.trim();
         if (!question && !attachments.length) return;
+
+        // The user chose to wait for attachment summaries: hold the send
+        // until indexing cards are ready (or the timeout passes).
+        await waitForSummaries();
 
         // Background mode: launch a long-horizon task on the server and leave
         // this conversation untouched — the dock widget tracks it. The task

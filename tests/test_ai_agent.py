@@ -1,10 +1,11 @@
+import io
 import json
 from unittest.mock import patch
 
 import pytest
 
 from app.extensions import db
-from app.models import ChatConversation, StoredFile, User
+from app.models import ChatConversation, Drive, StoredFile, User
 from app.services import agent_service
 
 
@@ -1247,3 +1248,88 @@ def test_chat_endpoint_streams_step_progress_and_files(auth_client, app, user):
     assert start["step"]["index"] == 1 and start["step"]["max_steps"] >= 1
     assert step["step"]["index"] == 1 and step["step"]["max_steps"] >= 1
     assert result["result"]["files"] == [{"id": file_id, "name": "menu.txt"}]
+
+
+# --- Chat attachments: device upload, summary, AI brief ---------------------
+
+
+def _upload(client, name, content, **kw):
+    data = {"files": (io.BytesIO(content), name)}
+    data.update(kw)
+    return client.post("/ai/attachments", data=data,
+                       content_type="multipart/form-data")
+
+
+def test_ai_attachments_upload_to_current_drive(auth_client, app, user):
+    resp = _upload(auth_client, "data.csv", b"a,b\n1,2\n")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["drive"]["name"] == "Personal"
+    assert body["errors"] == []
+    assert body["files"][0]["name"] == "data.csv"
+    file_id = body["files"][0]["id"]
+
+    # Indexed inline in tests: the summary is ready with columns + rows.
+    summary = auth_client.get(f"/file/{file_id}/summary").get_json()
+    assert summary["index"]["status"] == "ok"
+    assert summary["summary"]["kind"] == "table"
+    assert summary["summary"]["columns"] == ["a", "b"]
+    assert summary["summary"]["rows"] == [["1", "2"]]
+
+
+def test_ai_attachments_readonly_drive_asks_then_saves(auth_client, app, user):
+    with app.app_context():
+        personal = Drive(name="Personal", user_id=user)
+        synced = Drive(name="RO", user_id=user, source_path="/tmp/ro-test")
+        db.session.add_all([personal, synced])
+        db.session.commit()
+        personal_id, synced_id = personal.id, synced.id
+    with auth_client.session_transaction() as sess:
+        sess["drive_id"] = synced_id
+
+    resp = _upload(auth_client, "note.txt", b"hi")
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["needs_drive_choice"] is True
+    assert {d["name"] for d in body["drives"]} == {"Personal"}
+
+    resp = _upload(auth_client, "note.txt", b"hi", drive_id=str(personal_id))
+    assert resp.status_code == 200
+    assert resp.get_json()["drive"] == {"id": personal_id, "name": "Personal"}
+
+    resp = _upload(auth_client, "note.txt", b"hi", drive_id=str(synced_id))
+    assert resp.status_code == 400
+
+
+def test_file_summary_rejects_foreign_and_missing(auth_client, app, user):
+    assert auth_client.get("/file/999999/summary").status_code == 404
+    file_id = _make_indexed_file(app, "mine.txt", "secret")
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+    client2 = app.test_client()
+    client2.post("/login", data={"username": "bob", "password": "password123"})
+    assert client2.get(f"/file/{file_id}/summary").status_code == 404
+
+
+def test_chat_context_includes_attachment_brief(auth_client, app, user):
+    app.config["AI_ENABLED"] = True
+    file_id = _upload(auth_client, "mars.txt",
+                      b"hello world from mars, all systems nominal").get_json()["files"][0]["id"]
+
+    captured = {}
+
+    def fake(*a, **k):
+        captured["messages"] = k.get("messages") or a[0]
+        return {"role": "assistant", "content": "ok"}
+
+    with patch("app.services.ai_service.chat_completion", side_effect=fake):
+        resp = auth_client.post("/ai/chat", json={
+            "message": "summarize", "attachments": [file_id]})
+        resp.data  # consume the stream inside the patch
+
+    system_notes = [m["content"] for m in captured["messages"]
+                    if m["role"] == "system"]
+    assert any("hello world from mars" in note for note in system_notes)

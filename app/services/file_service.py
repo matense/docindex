@@ -318,3 +318,89 @@ def read_text_content(stored_file, max_chars=200_000):
     path = file_path(stored_file)
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         return fh.read(max_chars)
+
+
+_TABLE_EXTS = {"csv", "xlsx", "xlsm", "xls"}
+_TEXT_EXTS = {"txt", "md"}
+_SAMPLE_ROWS = 8
+_SAMPLE_CHARS = 4000
+
+
+def describe_for_chat(stored_file):
+    """Compact machine-readable summary of a file for chat context/summary
+    cards: caption for images, columns + head rows for tables, head + counts
+    for text. Never raises — returns {"kind": ...} with whatever is known."""
+    ext = (stored_file.extension or "").lower()
+    index = FileIndex.query.filter_by(file_id=stored_file.id).first()
+    indexed = bool(index and index.status == "ok")
+    out = {"kind": "other", "indexed": indexed, "caption": None,
+           "columns": [], "rows": [], "head": None,
+           "counts": {"words": None, "lines": None, "chars": None},
+           "truncated": False}
+    try:
+        if stored_file.is_image:
+            out["kind"] = "image"
+            if index and index.caption:
+                out["caption"] = index.caption[:2000]
+            return out
+        if ext in _TABLE_EXTS:
+            out["kind"] = "table"
+            columns, rows = _table_head(stored_file)
+            if columns is None:
+                return out
+            out["columns"] = columns
+            out["rows"] = rows
+            return out
+        if ext in _TEXT_EXTS:
+            out["kind"] = "text"
+            try:
+                text = read_text_content(stored_file, max_chars=_SAMPLE_CHARS + 1)
+            except OSError:
+                return out
+            if len(text) > _SAMPLE_CHARS:
+                text = text[:_SAMPLE_CHARS]
+                out["truncated"] = True
+            out["head"] = text
+            out["counts"] = {"words": len(text.split()),
+                             "lines": text.count("\n") + 1 if text else 0,
+                             "chars": len(text)}
+            return out
+    except Exception:  # noqa: BLE001 - summary is best-effort
+        pass
+    return out
+
+
+def _table_head(stored_file, max_rows=_SAMPLE_ROWS):
+    """(columns, rows) head of a tabular file — (None, None) on failure."""
+    ext = (stored_file.extension or "").lower()
+    path = file_path(stored_file)
+    if ext == "csv":
+        import csv
+        with open(path, "r", encoding="utf-8", errors="replace",
+                   newline="") as fh:
+            reader = csv.reader(fh)
+            rows = []
+            for row in reader:
+                rows.append([str(c)[:200] for c in row][:20])
+                if len(rows) > max_rows:
+                    break
+        if not rows:
+            return [], []
+        return rows[0], rows[1:max_rows + 1]
+    if ext in ("xlsx", "xlsm", "xls"):
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                rows.append([(str(c)[:200] if c is not None else "")
+                             for c in list(row)[:20]])
+                if len(rows) > max_rows:
+                    break
+        finally:
+            wb.close()
+        if not rows:
+            return [], []
+        return rows[0], rows[1:max_rows + 1]
+    return None, None
