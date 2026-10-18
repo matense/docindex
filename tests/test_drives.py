@@ -165,13 +165,13 @@ def test_agent_scoped_to_drive(app, user, auth_client):
     _upload(auth_client, "hidden.txt", b"the secret is 42")
 
     from unittest.mock import patch
+
     from app.models import User as UserModel
     from app.services import agent_service
 
     with app.app_context():
         user_obj = db.session.get(UserModel, user)
         other_drive = Drive.query.filter_by(name="Other").one()
-        visible = StoredFile.query.filter_by(name="visible.txt").one()
 
         calls = []
 

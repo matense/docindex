@@ -180,7 +180,6 @@ class _HashtagJob:
     """Progress/state of one bulk tagging run (in-memory only)."""
 
     def __init__(self, drive_id, drive_name):
-        import time as _time
         self.drive_id = drive_id
         self.drive_name = drive_name
         self.state = "running"      # running | paused | done | cancelled | error

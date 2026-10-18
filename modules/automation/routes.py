@@ -2,9 +2,18 @@
 
 import json
 
-from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
-                   render_template, request, url_for)
-from flask_login import current_user, login_required
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
+from flask_login import current_user
 
 from app.extensions import db
 from app.models import Drive, Folder, StoredFile
@@ -185,7 +194,6 @@ def folder_move(folder_id):
 @bp.post("/folders/cleanup")
 def folders_cleanup():
     """Delete every folder that is empty (no workflows, no subfolders)."""
-    mine = AutomationFolder.query.filter_by(user_id=current_user.id).all()
     removed = 0
     changed = True
     while changed:

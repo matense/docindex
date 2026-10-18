@@ -121,6 +121,7 @@ def test_recover_interrupted_requeues_running(auth_client, app):
 
 def test_recover_purges_old_finished_jobs(auth_client, app):
     from datetime import timedelta
+
     from app.models import utcnow
     _upload(auth_client, "old.txt", b"old job")
     with app.app_context():

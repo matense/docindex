@@ -26,11 +26,11 @@ import json
 import os
 import re
 import uuid
-from datetime import timedelta, timezone
+from datetime import UTC, timedelta
 from io import BytesIO
 
-from werkzeug.datastructures import FileStorage
 from flask import g, has_app_context
+from werkzeug.datastructures import FileStorage
 
 from app.extensions import db
 from app.models import StoredFile, utcnow
@@ -286,7 +286,7 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
     last_snapshot_at = latest.created_at if latest else None
     if last_snapshot_at is not None and last_snapshot_at.tzinfo is None:
         # SQLite returns naive datetimes; utcnow() is timezone-aware.
-        last_snapshot_at = last_snapshot_at.replace(tzinfo=timezone.utc)
+        last_snapshot_at = last_snapshot_at.replace(tzinfo=UTC)
     if (not skip_snapshot
             and (force_checkpoint or last_snapshot_at is None
                  or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL)):

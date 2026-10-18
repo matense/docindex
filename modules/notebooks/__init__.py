@@ -4,8 +4,9 @@ DEFAULT_DRIVE_NAME = "My Notebooks"
 
 
 def register(ctx):
-    from . import doc, routes, tools  # noqa: F401 - imports do the wiring
     from app.services import agent_service, indexing_service, module_service
+
+    from . import doc, routes, tools  # noqa: F401 - imports do the wiring
 
     indexing_service.register_extractor(doc.EXTENSION, doc.extract)
     module_service.register_file_viewer(

@@ -316,7 +316,7 @@ def update_file_content(stored_file, content, source="edit", note=""):
 
 def read_text_content(stored_file, max_chars=200_000):
     path = file_path(stored_file)
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         return fh.read(max_chars)
 
 
@@ -376,7 +376,7 @@ def _table_head(stored_file, max_rows=_SAMPLE_ROWS):
     path = file_path(stored_file)
     if ext == "csv":
         import csv
-        with open(path, "r", encoding="utf-8", errors="replace",
+        with open(path, encoding="utf-8", errors="replace",
                    newline="") as fh:
             reader = csv.reader(fh)
             rows = []

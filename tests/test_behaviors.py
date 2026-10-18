@@ -1,9 +1,8 @@
 """Core behaviors & personas: management page, toggles, picker filtering."""
 
-import json
 
 from app.extensions import db
-from app.models import Behavior, ChatConversation, PersonaPref, User
+from app.models import Behavior, User
 from app.services import behavior_service, persona_service
 
 

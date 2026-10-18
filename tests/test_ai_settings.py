@@ -85,7 +85,7 @@ def test_connection_isolation(auth_client, app):
         "username": "erin", "email": "erin@example.com",
         "password": "pw123456", "confirm": "pw123456",
     })
-    resp = other.post(f"/settings/ai/{cid}/delete", follow_redirects=True)
+    other.post(f"/settings/ai/{cid}/delete", follow_redirects=True)
     with app.app_context():
         assert AIConnection.query.count() == 1  # untouched
 
@@ -179,7 +179,7 @@ def test_chat_uses_user_connection(auth_client, app, user):
 
     with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={"message": "hi"})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
 
     assert resp.status_code == 200
     assert captured["config"]["base_url"] == "http://my-llm.local/v1"

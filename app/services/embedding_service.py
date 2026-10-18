@@ -149,7 +149,7 @@ def cosine(a, b):
                                 _np.asarray(b, dtype=_np.float32)))
         except Exception:  # noqa: BLE001 - fall through to pure python
             pass
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 def embed_file(stored, user=None):
@@ -195,7 +195,7 @@ def embed_file(stored, user=None):
     if fresh:
         vectors = embed_texts([t for _, t, _ in fresh], user=user)
         dims = len(vectors[0]) if vectors else 0
-        for (i, text, h), vec in zip(fresh, vectors):
+        for (i, text, h), vec in zip(fresh, vectors, strict=True):
             db.session.add(FileEmbedding(
                 file_id=stored.id, chunk_index=i, text=text[:4000],
                 text_hash=h, embedding=_pack(vec), model=model, dims=dims))
@@ -222,6 +222,9 @@ def similar_files(stored, user, limit=8):
         return []
     limit = max(1, min(int(limit or 8), 25))
     n = len(own[0])
+    own = [v for v in own if len(v) == n]
+    if not own:
+        return []
     centroid = [sum(v[i] for v in own) / len(own) for i in range(n)]
     norm = sum(x * x for x in centroid) ** 0.5
     if norm:
@@ -237,8 +240,8 @@ def similar_files(stored, user, limit=8):
     best = {}
     for row in q.yield_per(1000):
         vec = _unpack(row.embedding, row.dims)
-        if not vec:
-            continue
+        if not vec or len(vec) != n:
+            continue  # stale row from another embedding model
         s = cosine(centroid, vec)
         if s > best.get(row.file_id, -1):
             best[row.file_id] = s
@@ -282,11 +285,12 @@ def semantic_search(user, query, limit=50, drive=None, file_ids=None,
 
     best = {}
     best_text = {}
+    qdims = len(qvec)
     batch, batch_rows = [], []
     for row in q.yield_per(1000):
         vec = _unpack(row.embedding, row.dims)
-        if not vec:
-            continue
+        if not vec or len(vec) != qdims:
+            continue  # stale row from another embedding model
         batch.append(vec)
         batch_rows.append((row.file_id, row.text))
         if len(batch) >= 500:
@@ -306,7 +310,7 @@ def _score_batch(qvec, batch, file_rows, best, best_text=None):
             import numpy as _np2
             m = _np2.asarray(batch, dtype=_np2.float32)
             q = _np2.asarray(qvec, dtype=_np2.float32)
-            for (fid, text), s in zip(file_rows, m.dot(q).tolist()):
+            for (fid, text), s in zip(file_rows, m.dot(q).tolist(), strict=True):
                 if s > best.get(fid, -1):
                     best[fid] = float(s)
                     if best_text is not None:
@@ -314,7 +318,7 @@ def _score_batch(qvec, batch, file_rows, best, best_text=None):
             return
         except Exception:  # noqa: BLE001 - fall through to pure python
             pass
-    for (fid, text), vec in zip(file_rows, batch):
+    for (fid, text), vec in zip(file_rows, batch, strict=True):
         s = cosine(qvec, vec)
         if s > best.get(fid, -1):
             best[fid] = s

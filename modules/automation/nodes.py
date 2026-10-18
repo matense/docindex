@@ -12,12 +12,22 @@ from werkzeug.datastructures import FileStorage
 
 from app.extensions import db
 from app.models import Drive, Folder, StoredFile
-from app.services import (ai_service, file_service, indexing_service,
-                          search_service)
+from app.services import ai_service, file_service, indexing_service, search_service
 
-from .engine import (WorkflowError, as_drive_id, as_files, as_json, as_table,
-                      as_text, p_drive, p_files, p_json, p_table, p_text,
-                      render_template, table_to_csv)
+from .engine import (
+    WorkflowError,
+    as_files,
+    as_json,
+    as_table,
+    as_text,
+    p_drive,
+    p_files,
+    p_json,
+    p_table,
+    p_text,
+    render_template,
+    table_to_csv,
+)
 from .registry import register_node_type
 
 _OPS = ("equals", "not_equals", "contains", "not_contains", "gt", "lt",
@@ -141,8 +151,8 @@ _NODE_EXAMPLES = {
 def _owned_file(user, file_id):
     try:
         fid = int(file_id)
-    except (TypeError, ValueError):
-        raise WorkflowError("Configure a file first (no valid file selected).")
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Configure a file first (no valid file selected).") from err
     stored = db.session.get(StoredFile, fid)
     if stored is None or stored.user_id != user.id \
             or stored.deleted_at is not None:
@@ -161,9 +171,9 @@ def _compare(left, op, right):
     if op in ("gt", "lt", "gte", "lte"):
         try:
             lnum, rnum = float(left), float(right)
-        except ValueError:
+        except ValueError as err:
             raise WorkflowError(f"Cannot compare '{left}' and '{right}' as "
-                                "numbers.")
+                                "numbers.") from err
         return {"gt": lnum > rnum, "lt": lnum < rnum,
                 "gte": lnum >= rnum, "lte": lnum <= rnum}[op]
     if op == "equals":
@@ -244,8 +254,8 @@ def load_file_payload(user, file_id, log=None):
     if ext == "json":
         try:
             return p_json(json.loads(file_service.read_text_content(stored)))
-        except ValueError:
-            raise WorkflowError(f"'{stored.name}' is not valid JSON.")
+        except ValueError as err:
+            raise WorkflowError(f"'{stored.name}' is not valid JSON.") from err
     if ext == "csv":
         from .engine import csv_to_table
         table = csv_to_table(file_service.read_text_content(stored))
@@ -262,8 +272,8 @@ def _exec_input_text(ctx, config, inputs):
     if config.get("format") == "json":
         try:
             return p_json(json.loads(content))
-        except ValueError:
-            raise WorkflowError("The input text is not valid JSON.")
+        except ValueError as err:
+            raise WorkflowError("The input text is not valid JSON.") from err
     return p_text(content)
 
 
@@ -310,8 +320,8 @@ def _exec_input_drive(ctx, config, inputs):
     if ask and provided not in (None, ""):
         try:
             drive_id = int(provided)
-        except (TypeError, ValueError):
-            raise WorkflowError(f"Run parameter '{name}' is not a drive.")
+        except (TypeError, ValueError) as err:
+            raise WorkflowError(f"Run parameter '{name}' is not a drive.") from err
         drive = db.session.get(Drive, drive_id)
         if drive is None or drive.user_id != ctx["user"].id:
             raise WorkflowError(f"Run parameter '{name}': that drive does "
@@ -405,8 +415,8 @@ def _exec_search_files(ctx, config, inputs):
         raise WorkflowError("Configure a search query.")
     try:
         limit = max(1, min(int(config.get("limit") or 10), 50))
-    except (TypeError, ValueError):
-        raise WorkflowError("Max results must be a number (1-50).")
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Max results must be a number (1-50).") from err
     hits = search_service.search_files(query, ctx["user"], limit=limit)
     files = [{"file_id": h["file"].id, "name": h["file"].name} for h in hits]
     ctx["log"](f"{len(files)} file(s) matched '{query}'")
@@ -438,8 +448,8 @@ def _exec_json_path(ctx, config, inputs, outputs):
         try:
             source = p_json(json.loads(render_template(config["source"], outputs)
                                        or "null"))
-        except ValueError:
-            raise WorkflowError("The source is not valid JSON.")
+        except ValueError as err:
+            raise WorkflowError("The source is not valid JSON.") from err
     if source is None:
         raise WorkflowError("No input — connect a node or set the source.")
     data = as_json(source)
@@ -453,9 +463,9 @@ def _exec_json_path(ctx, config, inputs, outputs):
                     data = data[part]
                 else:
                     raise KeyError(part)
-            except (KeyError, IndexError, ValueError):
+            except (KeyError, IndexError, ValueError) as err:
                 raise WorkflowError(f"Path '{path}' does not exist in the "
-                                    "JSON data.")
+                                    "JSON data.") from err
     return p_json(data)
 
 
@@ -606,8 +616,8 @@ def _exec_text_split(ctx, config, inputs):
     mode = config.get("mode") or "chars"
     try:
         size = max(100, int(config.get("size") or 4000))
-    except (TypeError, ValueError):
-        raise WorkflowError("Chunk size must be a number.")
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Chunk size must be a number.") from err
     if mode == "lines":
         lines = text.splitlines()
         chunks = ["\n".join(lines[i:i + size])
@@ -626,8 +636,8 @@ def _exec_folder_list(ctx, config, inputs, outputs=None):
     if folder_id not in (None, ""):
         try:
             folder_id = int(folder_id)
-        except (TypeError, ValueError):
-            raise WorkflowError("Invalid folder.")
+        except (TypeError, ValueError) as err:
+            raise WorkflowError("Invalid folder.") from err
         folder = db.session.get(Folder, folder_id)
         if folder is None or folder.drive_id != drive.id:
             raise WorkflowError("The folder is not in that drive.")
@@ -695,16 +705,17 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
 
 def _exec_http_get(ctx, config, inputs, outputs):
     """GET JSON/text from a URL (SSRF-guarded, no redirects, size-capped)."""
-    from urllib.parse import urlparse as _up
     import ipaddress as _ip
+    from urllib.parse import urlparse as _up
+
     import requests as _rq
     raw = render_template(config.get("url", ""), outputs).strip()
     if not raw:
         raise WorkflowError("Configure a URL.")
     try:
         p = _up(raw)
-    except Exception:
-        raise WorkflowError("Invalid URL.")
+    except Exception as err:
+        raise WorkflowError("Invalid URL.") from err
     if p.scheme not in ("http", "https"):
         raise WorkflowError("URL must start with http:// or https://.")
     host = (p.hostname or "").lower()
@@ -720,7 +731,7 @@ def _exec_http_get(ctx, config, inputs, outputs):
         resp = _rq.get(raw, timeout=15, allow_redirects=False,
                        headers={"User-Agent": "DocIndex-Automation/1.0"})
     except Exception as exc:
-        raise WorkflowError(f"Request failed: {exc}")
+        raise WorkflowError(f"Request failed: {exc}") from exc
     if resp.status_code in (301, 302, 303, 307, 308):
         raise WorkflowError("Redirects are not followed — use the final URL.")
     if resp.status_code != 200:
@@ -785,7 +796,7 @@ def _exec_ai_prompt(ctx, config, inputs, outputs):
         message = ai_service.chat_completion(
             _ai_messages(config, prompt, outputs), config=cfg, block=True)
     except ai_service.AIError as exc:
-        raise WorkflowError(str(exc))
+        raise WorkflowError(str(exc)) from exc
     return p_text((message.get("content") or "").strip())
 
 
@@ -808,16 +819,16 @@ def _exec_ai_extract_json(ctx, config, inputs, outputs):
             message = ai_service.chat_completion(messages, config=cfg,
                                                  block=True)
         except ai_service.AIError as exc:
-            raise WorkflowError(str(exc))
+            raise WorkflowError(str(exc)) from exc
         text = (message.get("content") or "").strip()
         candidate = _JSON_BLOCK_RE.search(text)
         try:
             return p_json(json.loads(candidate.group(1) if candidate
                                      else text))
-        except ValueError:
+        except ValueError as err:
             if attempt == 2:
                 raise WorkflowError("The model did not return valid JSON "
-                                    "after two attempts.")
+                                    "after two attempts.") from err
             messages.append({"role": "assistant", "content": text})
             messages.append({"role": "user", "content":
                              "That was not valid JSON. Answer with ONLY the "
@@ -843,7 +854,7 @@ def _exec_ai_agent(ctx, config, inputs, outputs):
             elif kind in ("thinking", "answer"):
                 answer = payload
     except ai_service.AIError as exc:
-        raise WorkflowError(str(exc))
+        raise WorkflowError(str(exc)) from exc
     ctx["log"](f"agent finished after {len(steps)} step(s)")
     return p_text((answer or "").strip())
 
@@ -899,16 +910,16 @@ def _notebook_doc():
     import importlib
     try:
         return importlib.import_module("docindex_module_notebooks.doc")
-    except ImportError:
-        raise WorkflowError("The Notebooks module is not available.")
+    except ImportError as err:
+        raise WorkflowError("The Notebooks module is not available.") from err
 
 
 def _exec_notebook_input(ctx, config, inputs):
     doc = _notebook_doc()
     try:
         notebook_id = int(config.get("notebook_id"))
-    except (TypeError, ValueError):
-        raise WorkflowError("Configure a notebook first.")
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Configure a notebook first.") from err
     stored = doc.get_notebook(notebook_id, ctx["user"].id)
     if stored is None:
         raise WorkflowError(f"Notebook #{notebook_id} does not exist.")
@@ -918,7 +929,7 @@ def _exec_notebook_input(ctx, config, inputs):
         try:
             document = doc.load(stored)
         except ValueError as exc:
-            raise WorkflowError(str(exc))
+            raise WorkflowError(str(exc)) from exc
         _i, cell = doc.find_cell(document, cell_id)
         if cell is None:
             raise WorkflowError(
@@ -980,10 +991,10 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
             # Replace the content of one picked cell (its type is kept).
             try:
                 doc.update_cell(document, cell_id, content=text)
-            except ValueError:
+            except ValueError as err:
                 raise WorkflowError(
                     f"Cell '{cell_id}' no longer exists in notebook "
-                    f"'{stored.name}' — pick another cell.")
+                    f"'{stored.name}' — pick another cell.") from err
             ctx["log"](f"updated a cell in notebook "
                        f"'{document.get('title', stored.name)}'")
         elif (config.get("mode") or "append") == "replace":
@@ -1006,8 +1017,8 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
         notebook_drive_id = render_template(notebook_drive_id, outputs)
     try:
         drive_id = int(notebook_drive_id)
-    except (TypeError, ValueError):
-        raise WorkflowError("Pick a drive for the new notebook.")
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Pick a drive for the new notebook.") from err
     drive = db.session.get(Drive, drive_id)
     if drive is None or drive.user_id != ctx["user"].id:
         raise WorkflowError("The selected drive does not exist.")
@@ -1016,7 +1027,7 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
     try:
         stored = doc.create_notebook(ctx["user"], drive, name, cells=[cell])
     except ValueError as exc:
-        raise WorkflowError(str(exc))
+        raise WorkflowError(str(exc)) from exc
     ctx["log"](f"created notebook '{name}'")
     return p_files([{"file_id": stored.id, "name": stored.name}])
 

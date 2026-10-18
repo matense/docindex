@@ -3,10 +3,8 @@
 import io
 import os
 
-import pytest
-
 from app.extensions import db
-from app.models import Drive, FileVersion, Folder, StoredFile, User
+from app.models import FileVersion, Folder, StoredFile, User
 from app.services import ai_service, file_service
 
 

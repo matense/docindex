@@ -8,12 +8,12 @@ for tests.
 """
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.extensions import db
 
-from .models import AutomationWorkflow
 from . import runtime
+from .models import AutomationWorkflow
 
 _TICK_SECONDS = 30
 _started = False
@@ -21,7 +21,7 @@ _lock = threading.Lock()
 
 
 def _now():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def due_workflows(now=None):
@@ -38,7 +38,7 @@ def due_workflows(now=None):
         if wf.last_run_at is not None:
             last = wf.last_run_at
             if last.tzinfo is None:
-                last = last.replace(tzinfo=timezone.utc)
+                last = last.replace(tzinfo=UTC)
             if now - last < timedelta(minutes=wf.interval_minutes):
                 continue
         if runtime.has_active_run(wf.id):

@@ -2,7 +2,6 @@
 
 import io
 import os
-import time
 
 import pytest
 
@@ -398,6 +397,7 @@ def test_sync_settings_route_updates_options(auth_client, app, local_folder):
 
 def test_captions_toggle_disables_ai_captioning(auth_client, app, local_folder):
     from unittest.mock import patch
+
     from PIL import Image
 
     img_path = os.path.join(local_folder, "pic.png")

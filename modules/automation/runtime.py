@@ -4,7 +4,7 @@ nodes and startup recovery of interrupted runs."""
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import current_app
 
@@ -18,7 +18,7 @@ _lock = threading.Lock()
 
 
 def _utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def start_run(workflow, user, trigger="manual", app=None,

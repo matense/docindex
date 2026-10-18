@@ -51,7 +51,7 @@ def _exec_caption_image(ctx, config, inputs):
             file_service.file_path(stored), config=cfg, block=True,
             instruction=instruction)
     except ai_service.AIError as exc:
-        raise WorkflowError(str(exc))
+        raise WorkflowError(str(exc)) from exc
     if not caption:
         raise WorkflowError("The vision model returned an empty caption.")
     return p_text(caption)

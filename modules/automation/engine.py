@@ -89,9 +89,9 @@ def as_json(payload):
     if kind == "text":
         try:
             return json.loads(data)
-        except ValueError:
+        except ValueError as err:
             raise WorkflowError("Expected JSON data, but the text is not "
-                                "valid JSON.")
+                                "valid JSON.") from err
     raise WorkflowError(f"Cannot use a {kind} payload as JSON data.")
 
 
@@ -203,8 +203,8 @@ def _resolve_ref(ref, outputs):
                 value = value[part]
             else:
                 raise KeyError(part)
-        except (KeyError, IndexError, ValueError):
-            raise WorkflowError(f"Template path '{ref}' does not exist.")
+        except (KeyError, IndexError, ValueError) as err:
+            raise WorkflowError(f"Template path '{ref}' does not exist.") from err
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return "" if value is None else str(value)
@@ -221,21 +221,21 @@ def render_template(text, outputs):
 def _referenced_nodes(graph_nodes):
     """Node ids referenced in {{ }} templates — implicit dependencies."""
     deps = {}
+
+    def _scan(value, into):
+        if isinstance(value, str):
+            into.update(m.group(1).split(".")[0]
+                        for m in _REF_RE.finditer(value))
+        elif isinstance(value, dict):
+            for v in value.values():
+                _scan(v, into)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                _scan(v, into)
+
     for node in graph_nodes:
         refs = set()
-
-        def _scan(value):
-            if isinstance(value, str):
-                refs.update(m.group(1).split(".")[0]
-                            for m in _REF_RE.finditer(value))
-            elif isinstance(value, dict):
-                for v in value.values():
-                    _scan(v)
-            elif isinstance(value, (list, tuple)):
-                for v in value:
-                    _scan(v)
-
-        _scan(node.get("config") or {})
+        _scan(node.get("config") or {}, refs)
         refs.discard(node["id"])
         # "in" is not a node id: fan-in ports (e.g. transform.template)
         # expose the joined inputs under that name at execution time.
@@ -253,8 +253,8 @@ def parse_graph(raw):
         return {"nodes": [], "edges": []}
     try:
         graph = json.loads(raw)
-    except ValueError:
-        raise WorkflowError("The workflow graph is not valid JSON.")
+    except ValueError as err:
+        raise WorkflowError("The workflow graph is not valid JSON.") from err
     if not isinstance(graph, dict) or not isinstance(
             graph.get("nodes", []), list) or not isinstance(
             graph.get("edges", []), list):
@@ -599,12 +599,12 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
             ms = int((time.monotonic() - started) * 1000)
             if log:
                 log(nid, label, "error", str(exc)[:300], ms)
-            raise WorkflowError(f"{label}: {exc}")
+            raise WorkflowError(f"{label}: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - surface as run error
             ms = int((time.monotonic() - started) * 1000)
             if log:
                 log(nid, label, "error", str(exc)[:300], ms)
-            raise WorkflowError(f"{label}: unexpected error: {exc}")
+            raise WorkflowError(f"{label}: unexpected error: {exc}") from exc
 
     return outputs, results, created
 

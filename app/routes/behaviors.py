@@ -6,8 +6,7 @@ persona selector, Automation AI nodes' behavior field, AI tools) only show
 what the user actually uses.
 """
 
-from flask import (Blueprint, abort, jsonify, redirect, render_template,
-                   request, url_for)
+from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from ..services import behavior_service, persona_service

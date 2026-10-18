@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sys
+from datetime import UTC
 
 from ..extensions import db
 from ..models import ModuleState
@@ -70,7 +71,7 @@ def _load_manifest(path):
     if not os.path.isfile(manifest_path):
         return None, "missing module.json"
     try:
-        with open(manifest_path, "r", encoding="utf-8") as fh:
+        with open(manifest_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError) as exc:
         return None, f"invalid module.json: {exc}"
@@ -160,8 +161,7 @@ def _make_guard(name):
 def load_all(app):
     """Discover and import every valid module, registering its routes."""
     from . import agent_service  # late import: modules call register_tool
-
-    agent_service  # silence linters; the import primes the registry
+    _ = agent_service  # used for its import side effect (primes the registry)
     discover(app)
     for name, manifest in _discovered.items():
         if manifest.get("error"):
@@ -260,9 +260,9 @@ def set_enabled(name, enabled, user):
         db.session.add(state)
     state.enabled = enabled
     if enabled:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        state.enabled_at = datetime.now(timezone.utc)
+        state.enabled_at = datetime.now(UTC)
         state.enabled_by = user.id
     db.session.commit()
     try:

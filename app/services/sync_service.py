@@ -27,7 +27,6 @@ from ..extensions import db
 from ..models import Drive, FileIndex, Folder, StoredFile, utcnow
 from . import file_service, indexing_service
 
-
 # --------------------------------------------------------------------------
 # Background job tracking
 # --------------------------------------------------------------------------
@@ -40,7 +39,6 @@ class _SyncJob:
     """Progress/state of one sync run (in-memory only)."""
 
     def __init__(self, drive_id, drive_name):
-        import time as _time
         self.drive_id = drive_id
         self.drive_name = drive_name
         self.state = "running"      # running | paused | done | cancelled | error

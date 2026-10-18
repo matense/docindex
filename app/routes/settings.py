@@ -4,13 +4,33 @@ import json
 import os
 from datetime import datetime
 
-from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from ..extensions import db
-from ..models import (AIConnection, ChatConversation, ChatMessage, Drive,
-                      ErrorLog, FileIndex, Folder, Setting, StoredFile, User)
+from ..models import (
+    AIConnection,
+    ChatConversation,
+    ChatMessage,
+    Drive,
+    ErrorLog,
+    FileIndex,
+    Folder,
+    Setting,
+    StoredFile,
+    User,
+)
 from ..services import ai_service, indexing_service, module_service
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
@@ -75,8 +95,8 @@ def _valid_base_url(url):
     Local Ollama/LM Studio (localhost) stays allowed — self-hosted users need
     it — but metadata-IP (169.254.x.x) and non-http schemes are rejected.
     """
-    from urllib.parse import urlparse
     import ipaddress
+    from urllib.parse import urlparse
     try:
         p = urlparse((url or "").strip())
     except Exception:

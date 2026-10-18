@@ -18,6 +18,7 @@ of failing — long runs throttle themselves.
 import json
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor as _Pool
 
 from flask import current_app
 from sqlalchemy import func
@@ -50,8 +51,6 @@ _lock = threading.Lock()
 # Global bound: raw threads per task would let 100 users x tasks exhaust
 # the process. A single shared pool caps total concurrency; the per-user
 # cap in start_task() still applies first.
-from concurrent.futures import ThreadPoolExecutor as _Pool
-
 _task_pool = _Pool(max_workers=8, thread_name_prefix="ai-task")
 
 

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app.extensions import db
 from app.models import ErrorLog, User
-from app.services import agent_service, ai_service, log_service
+from app.services import ai_service, log_service
 
 
 def _make_admin(app):

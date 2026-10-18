@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from app.extensions import db
@@ -24,7 +24,7 @@ def _make_conversation(app, n_pairs=5):
         conv = ChatConversation(user_id=user.id, title="test conv")
         db.session.add(conv)
         db.session.flush()
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
         for i in range(n_pairs):
             db.session.add(ChatMessage(
                 conversation_id=conv.id, role="user",
@@ -48,7 +48,7 @@ def _chat_capture(auth_client, conv_id):
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "new question", "conversation_id": conv_id})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 
@@ -240,7 +240,7 @@ def _make_big_conversation(app, n_pairs=4, answer_chars=6000):
         conv = ChatConversation(user_id=user.id, title="big conv")
         db.session.add(conv)
         db.session.flush()
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
         for i in range(n_pairs):
             db.session.add(ChatMessage(
                 conversation_id=conv.id, role="user",
@@ -372,7 +372,7 @@ def test_context_file_id_tells_agent_which_file_is_open(auth_client, app, user):
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "improve this file", "context_file_id": fid})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     notes = [m for m in captured["messages"]
              if m["role"] == "system" and "currently has" in m["content"]]
@@ -395,7 +395,7 @@ def test_context_file_id_ignores_foreign_or_missing_files(auth_client, app, user
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "context_file_id": 999999})
-        resp.data
+        _ = resp.data
     assert resp.status_code == 200
     assert not [m for m in captured["messages"]
                 if m["role"] == "system" and "currently has" in m["content"]]
@@ -411,7 +411,7 @@ def _chat_capture_payload(auth_client, payload):
     with patch("app.services.ai_service.chat_completion",
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json=payload)
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 
@@ -592,7 +592,7 @@ def test_conversation_returns_latest_context(auth_client, app, user):
                return_value={"role": "assistant", "content": "hi"}):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "scope_drive_ids": [drive_id]})
-        resp.data
+        _ = resp.data
 
     with app.app_context():
         conv = ChatConversation.query.one()
@@ -611,7 +611,7 @@ def test_conversation_returns_latest_context(auth_client, app, user):
         resp = auth_client.post("/ai/chat", json={
             "message": "now everywhere", "conversation_id": conv_id,
             "scope_all_drives": True})
-        resp.data
+        _ = resp.data
     data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
     assert data["context"]["all_drives"] is True
     assert data["context"]["drive_ids"] is None

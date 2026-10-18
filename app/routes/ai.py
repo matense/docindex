@@ -1,8 +1,7 @@
 import json
 import traceback
 
-from flask import (Blueprint, Response, abort, current_app, jsonify, request,
-                   stream_with_context)
+from flask import Blueprint, Response, abort, current_app, jsonify, request, stream_with_context
 from flask_login import current_user, login_required
 
 from ..extensions import db
@@ -829,8 +828,9 @@ def upload_attachments():
     Always answers JSON. Every saved file is indexed and returned ready
     to attach.
     """
-    from ..services import file_service, indexing_service
     from werkzeug.utils import secure_filename
+
+    from ..services import file_service
 
     drive = None
     drive_id = request.form.get("drive_id", type=int)

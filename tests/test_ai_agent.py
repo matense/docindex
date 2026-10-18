@@ -130,7 +130,7 @@ def test_conversations_isolated_between_users(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                return_value={"role": "assistant", "content": "hi"}):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
 
     other = app.test_client()
     other.post("/register", data={
@@ -265,7 +265,7 @@ def test_tool_start_emitted_before_handler_runs(app, user):
         try:
             with patch("app.services.ai_service.chat_completion",
                        side_effect=lambda *a, **k: next(responses)):
-                for kind, payload in agent_service.run_agent_events(
+                for kind, _payload in agent_service.run_agent_events(
                         user_obj, [{"role": "user", "content": "x?"}]):
                     if kind == "tool_start":
                         assert marker == []  # nothing has executed yet
@@ -291,7 +291,7 @@ def test_chat_attachments_inject_system_message(auth_client, app, user):
             "message": "summarize this",
             "attachments": [file_id],
         })
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
 
     assert resp.status_code == 200
     attach_msgs = [m for m in captured["messages"]
@@ -327,7 +327,7 @@ def test_chat_attachments_from_other_users_ignored(auth_client, app, user):
             "message": "read it",
             "attachments": [file_id],
         })
-        resp.data
+        _ = resp.data
 
     assert resp.status_code == 200
     system_msgs = [m for m in captured["messages"] if m["role"] == "system"]
@@ -514,7 +514,7 @@ def test_conversations_list_includes_model(auth_client, app):
     with patch("app.services.ai_service.chat_completion",
                return_value={"role": "assistant", "content": "hi there"}):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        resp.data
+        _ = resp.data
 
     convs = auth_client.get("/ai/conversations").get_json()
     assert len(convs) == 1
@@ -831,9 +831,11 @@ def test_agent_handles_list_valued_tool_results(app, user):
 
 
 def test_trim_tool_messages_keeps_recent_intact(app, user):
-    from app.services.agent_service import (_TOOL_HISTORY_KEEP,
-                                            _TOOL_RESULT_TRIM,
-                                            _trim_tool_messages)
+    from app.services.agent_service import (
+        _TOOL_HISTORY_KEEP,
+        _TOOL_RESULT_TRIM,
+        _trim_tool_messages,
+    )
     big = "x" * (_TOOL_RESULT_TRIM + 500)
     messages = [{"role": "system", "content": "sys"}]
     for i in range(_TOOL_HISTORY_KEEP + 2):
@@ -978,8 +980,8 @@ def test_agent_no_nudge_for_answer_with_citation_and_intent_words(app, user):
 def test_agent_no_nudge_when_intent_words_are_not_at_the_end(app, user):
     """Intent is announced at the END of a message. A final answer that
     mentions 'next' early on is not mistaken for stated intent."""
-    file_id = _make_indexed_file(app, "handbook.txt",
-                                 "Vacation policy: every employee gets 25 days per year.")
+    _ = _make_indexed_file(app, "handbook.txt",
+                           "Vacation policy: every employee gets 25 days per year.")
 
     calls = {"n": 0}
 
@@ -1262,6 +1264,7 @@ def _make_image_file(app, user_id, name="pic.png"):
     import os
     import shutil
     import tempfile
+
     from app.services import file_service
     with app.app_context():
         user_obj = db.session.get(User, user_id)
@@ -1325,8 +1328,8 @@ def test_agent_uses_view_image_for_visual_questions(app, user):
          "tool_calls": [{
              "id": "call_1", "type": "function",
              "function": {"name": "view_image",
-                          "arguments": '{"file_id": %d}' % fid},
-         }]},
+                           "arguments": json.dumps({"file_id": fid})}},
+         ]},
         {"role": "assistant", "content": "It shows a red bicycle. [[END]]"},
     ])
     app.config["AI_ENABLED"] = True
@@ -1422,7 +1425,7 @@ def test_chat_context_includes_attachment_brief(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion", side_effect=fake):
         resp = auth_client.post("/ai/chat", json={
             "message": "summarize", "attachments": [file_id]})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
 
     system_notes = [m["content"] for m in captured["messages"]
                     if m["role"] == "system"]

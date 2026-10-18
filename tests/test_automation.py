@@ -5,7 +5,7 @@ import importlib.util
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -132,7 +132,6 @@ def test_validate_detects_cycles():
 def test_drive_input_static_and_asked(app, user, enabled):
     drive_id = _drive(app, user)
     with app.app_context():
-        user_obj = db.session.get(User, user)
         # Static drive: no params needed.
         outputs, _, _ = _execute({"nodes": [
             {"id": "n1", "type": "input.drive",
@@ -849,7 +848,7 @@ def test_recover_interrupted_marks_stale_runs(app, user, enabled):
 
 
 def test_runs_are_isolated_per_user(app, user, enabled):
-    wf_id = _workflow(app, user, _text_graph())
+    _ = _workflow(app, user, _text_graph())
     with app.app_context():
         other = User(username="bob", email="bob@example.com")
         other.set_password("password123")
@@ -864,7 +863,7 @@ def test_runs_are_isolated_per_user(app, user, enabled):
 # ---------------------------------------------------------------------------
 
 def test_due_workflows_rules(app, user):
-    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
     with app.app_context():
         never_ran = _workflow(app, user, _text_graph(),
                               enabled=True, interval_minutes=10)
@@ -884,7 +883,7 @@ def test_due_workflows_rules(app, user):
 
 
 def test_due_skips_workflows_with_active_run(app, user):
-    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
     with app.app_context():
         wf_id = _workflow(app, user, _text_graph(),
                           enabled=True, interval_minutes=10)
@@ -1061,7 +1060,7 @@ def _stored(app, user_id, drive_id, name, folder_id=None, deleted=False):
         f = StoredFile(name=name, stored_name="blob_" + name,
                        user_id=user_id, drive_id=drive_id,
                        folder_id=folder_id,
-                       deleted_at=(datetime(2026, 1, 1, tzinfo=timezone.utc)
+                       deleted_at=(datetime(2026, 1, 1, tzinfo=UTC)
                                    if deleted else None))
         db.session.add(f)
         db.session.commit()
@@ -2410,7 +2409,9 @@ def test_save_table_refuses_synced_drive(app, user):
 
 def _make_image(app, user_id, name="pic.png"):
     import io as _io
+
     from PIL import Image
+
     from app.services import file_service
 
     buf = _io.BytesIO()
@@ -2741,7 +2742,6 @@ def test_ai_flags_route_toggles_and_enforces_ownership(
         other.set_password("x")
         db.session.add(other)
         db.session.commit()
-        other_id = other.id
     auth_client.post("/logout")
     auth_client.post("/login", data={"username": "other4",
                                      "password": "x"})
@@ -2767,7 +2767,7 @@ def _chat_capture(auth_client, payload):
     with patch("app.services.ai_service.chat_completion",
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json=payload)
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 

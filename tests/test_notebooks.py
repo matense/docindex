@@ -1,15 +1,15 @@
 """Notebooks module: document service, routes, history, indexing and AI tools."""
 
-import json
-
-from app.extensions import db
-from app.models import Drive, FileIndex, ModuleState, StoredFile, User
-from app.services import file_service, indexing_service, search_service
 
 import importlib.util
 import os
+import sys
 
 import pytest
+
+from app.extensions import db
+from app.models import Drive, FileIndex, ModuleState, StoredFile, User
+from app.services import indexing_service, search_service
 
 # Load the module package directly (it lives outside the app package).
 _NB_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -18,7 +18,7 @@ _spec = importlib.util.spec_from_file_location(
     "docindex_module_notebooks", os.path.join(_NB_DIR, "__init__.py"),
     submodule_search_locations=[_NB_DIR])
 _nb = importlib.util.module_from_spec(_spec)
-import sys
+
 sys.modules.setdefault("docindex_module_notebooks", _nb)
 _spec.loader.exec_module(_nb)
 nb_doc = importlib.import_module("docindex_module_notebooks.doc")
@@ -205,7 +205,7 @@ def test_viewer_redirect_from_generic_view(app, auth_client, user, enabled):
 
 
 def test_ai_tools_create_and_edit(app, user, enabled):
-    drive_id = _drive(app, user)
+    _ = _drive(app, user)
     with app.app_context():
         user_obj = db.session.get(User, user)
         result = nb_tools._tool_create(user_obj, {"name": "AI notes"}, None)

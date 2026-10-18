@@ -5,8 +5,8 @@ from markupsafe import Markup, escape
 from sqlalchemy import or_
 from sqlalchemy import text as sql_text
 
-from ..models import FileIndex, StoredFile
 from ..extensions import db
+from ..models import FileIndex, StoredFile
 from . import hashtag_service
 
 SNIPPET_RADIUS = 120
@@ -121,7 +121,7 @@ def fts_rebuild():
 
 def _fts_query(terms):
     """Build a safe MATCH expression: each term becomes a quoted prefix."""
-    return " AND ".join('"%s"*' % t.replace('"', '""') for t in terms)
+    return " AND ".join('"{}"*'.format(t.replace('"', '""')) for t in terms)
 
 
 def drive_id_list(drive):

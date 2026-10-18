@@ -2,15 +2,34 @@ import difflib
 import os
 import re
 
-from flask import (Blueprint, abort, current_app, flash, jsonify, redirect,
-                   render_template, request, send_file, session, url_for)
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile
-from ..services import ai_service, drive_service, file_service, indexing_service
-from ..services import hashtag_service, log_service, search_service, sync_service
+from ..services import (
+    ai_service,
+    drive_service,
+    file_service,
+    hashtag_service,
+    indexing_service,
+    log_service,
+    search_service,
+    sync_service,
+)
 
 bp = Blueprint("drive", __name__)
 
@@ -780,7 +799,7 @@ def _get_version(stored, version_id):
 
 
 def _version_text(version, max_chars=200_000):
-    with open(file_service.version_path(version), "r",
+    with open(file_service.version_path(version),
               encoding="utf-8", errors="replace") as fh:
         return fh.read(max_chars)
 

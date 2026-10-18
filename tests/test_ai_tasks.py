@@ -8,7 +8,7 @@ import json
 from unittest.mock import patch
 
 from app.extensions import db
-from app.models import AITask, ChatConversation, ChatMessage, Drive, StoredFile, User
+from app.models import AITask, ChatConversation, Drive, User
 from app.services import agent_service, ai_task_service
 
 
@@ -478,7 +478,7 @@ def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
          patch("app.routes.ai.agent_service.run_agent_events", spy):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "scope_drive_ids": [d1, d2]})
-        resp.data  # consume the stream inside the patch
+        _ = resp.data  # consume the stream inside the patch
 
     assert resp.status_code == 200
     assert seen["drive_ids"] == sorted([d1, d2])

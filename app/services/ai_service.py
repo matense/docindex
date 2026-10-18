@@ -118,9 +118,10 @@ def _headers(cfg):
 def _fernet():
     """Fernet over SECRET_KEY (SHA256-derived). None when unusable."""
     try:
-        import hashlib as _hl
-        from cryptography.fernet import Fernet as _Fernet
         import base64 as _b64
+        import hashlib as _hl
+
+        from cryptography.fernet import Fernet as _Fernet
         from flask import current_app as _ca
         secret = (_ca.config.get("SECRET_KEY") or "").encode()
         if not secret:
@@ -394,8 +395,9 @@ def caption_image(path, config=None, block=False, instruction=None):
     """
     cfg = config or _env_config()
     try:
-        from PIL import Image
         import io as _io
+
+        from PIL import Image
         with Image.open(path) as img:
             img.thumbnail((1024, 1024))
             if img.mode in ("RGBA", "P", "LA"):

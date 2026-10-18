@@ -2,9 +2,8 @@
 
 import difflib
 
-from flask import (Blueprint, abort, jsonify, redirect, render_template,
-                   request, url_for)
-from flask_login import current_user, login_required
+from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
+from flask_login import current_user
 
 from app.extensions import db
 from app.models import Drive, Folder
@@ -292,7 +291,7 @@ def history_diff(file_id, version_id):
     version = next((v for v in stored.versions if v.id == version_id), None)
     if version is None:
         abort(404)
-    with open(file_service.version_path(version), "r",
+    with open(file_service.version_path(version),
               encoding="utf-8", errors="replace") as fh:
         old_doc = doc_service.parse(fh.read())
     summary, entries = _cell_diff(old_doc, doc_service.load(stored))

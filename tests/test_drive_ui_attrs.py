@@ -4,7 +4,6 @@ hooks that drive.js uses for drag & drop, multi-select and the context menu."""
 import io
 import re
 
-from app.extensions import db
 from app.models import Drive, StoredFile
 
 
@@ -16,13 +15,13 @@ def _upload(client, name, content):
 
 def _file_tag(html, file_id):
     """The full HTML tag that carries data-file-id="<id>"."""
-    m = re.search(r'<[^>]*data-file-id="%d"[^>]*>' % file_id, html)
+    m = re.search(f'<[^>]*data-file-id="{file_id}"[^>]*>', html)
     assert m, f"file {file_id} not rendered"
     return m.group(0)
 
 
 def _folder_tag(html, folder_id):
-    m = re.search(r'<[^>]*data-folder-sel-id="%d"[^>]*>' % folder_id, html)
+    m = re.search(f'<[^>]*data-folder-sel-id="{folder_id}"[^>]*>', html)
     assert m, f"folder {folder_id} not rendered"
     return m.group(0)
 

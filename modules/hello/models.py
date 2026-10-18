@@ -1,6 +1,6 @@
 """Module tables use the mod_<name>_ prefix."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.extensions import db
 
@@ -12,4 +12,4 @@ class HelloNote(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     text = db.Column(db.Text, nullable=False, default="")
     created_at = db.Column(
-        db.DateTime, default=lambda: datetime.now(timezone.utc))
+        db.DateTime, default=lambda: datetime.now(UTC))

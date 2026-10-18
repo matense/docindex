@@ -90,7 +90,7 @@ def _fallback_extract(path, ext):
             return _extract_pdf(path)
         if b"\x00" not in _magic(path, 8192):
             # CSV/JSON/log/etc. renamed to .xlsx & friends — index the text.
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 return fh.read(MAX_TEXT_CHARS)
     except Exception:
         current_app.logger.info("Fallback extraction failed for %s",

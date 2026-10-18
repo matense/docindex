@@ -164,6 +164,7 @@ def create_app(config_class=Config):
     def inject_globals():
         from flask import g as _g
         from flask_login import current_user as cu
+
         from .services import ai_service, drive_service, module_service
         if cu.is_authenticated:
             # Per-request cache: base template calls this once, but SPA

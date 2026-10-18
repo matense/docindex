@@ -466,7 +466,6 @@ def _tool_folders(user, args, drive):
                          db.func.count(AutomationWorkflow.id))
         .filter(AutomationWorkflow.user_id == user.id)
         .group_by(AutomationWorkflow.folder_id).all())
-    by_id = {f.id: f for f in folders}
     items = []
     for f in folders:
         parts, cur = [f.name], f.parent
@@ -694,7 +693,6 @@ def _reference_issues(user, graph):
 
 
 def _tool_stop_run(user, args, drive):
-    from .models import AutomationRun
     try:
         run_id = int(args.get("run_id"))
     except (TypeError, ValueError):

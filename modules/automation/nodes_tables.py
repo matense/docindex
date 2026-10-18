@@ -5,8 +5,15 @@ payloads ({"columns", "rows"}) and returns one; pandas does the heavy
 lifting via engine.table_to_df / df_to_table.
 """
 
-from .engine import (WorkflowError, as_table, df_to_table, p_table,
-                     render_template, table_to_csv, table_to_df)
+from .engine import (
+    WorkflowError,
+    as_table,
+    df_to_table,
+    p_table,
+    render_template,
+    table_to_csv,
+    table_to_df,
+)
 from .nodes import _save_blob_to_drive
 from .registry import register_node_type
 
@@ -154,7 +161,7 @@ def _exec_table_pivot(ctx, config, inputs):
         out = df.pivot_table(index=index, columns=pivot_col,
                              values=value_col, aggfunc=func)
     except Exception as exc:
-        raise WorkflowError(f"The pivot failed: {exc}")
+        raise WorkflowError(f"The pivot failed: {exc}") from exc
     out = out.reset_index()
     # Blank missing cells (NaN would render as "nan" downstream).
     import pandas as _pd
@@ -217,7 +224,7 @@ def _exec_table_compute(ctx, config, inputs):
     try:
         df[new_column] = df.eval(formula, engine="python")
     except Exception as exc:  # pandas raises several exception types
-        raise WorkflowError(f"The formula could not be evaluated: {exc}")
+        raise WorkflowError(f"The formula could not be evaluated: {exc}") from exc
     ctx["log"](f"computed column '{new_column}' = {formula}")
     return p_table(**df_to_table(df))
 

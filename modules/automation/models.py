@@ -1,12 +1,12 @@
 """Automation module tables (mod_automation_*)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.extensions import db
 
 
 def _utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AutomationFolder(db.Model):
