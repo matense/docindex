@@ -22,6 +22,35 @@ def test_add_connection(auth_client, app):
         assert conn.is_active  # first connection auto-activates
 
 
+def test_embedding_model_per_connection(auth_client, app, user):
+    auth_client.post("/settings/ai/add", data={
+        "name": "Emb", "base_url": "http://localhost:11434/v1",
+        "model": "llama3.1", "embedding_model": "nomic-embed-text",
+    }, follow_redirects=True)
+    with app.app_context():
+        conn = AIConnection.query.filter_by(name="Emb").one()
+        assert conn.embedding_model == "nomic-embed-text"
+        user_obj = db.session.get(User, user)
+        from app.services import ai_service
+        # Connection value wins over the (empty) global default.
+        assert ai_service.config_for(user_obj)["embedding_model"] == "nomic-embed-text"
+        # Edit persists a new value.
+        auth_client.post(f"/settings/ai/{conn.id}/edit", data={
+            "name": "Emb", "base_url": "http://localhost:11434/v1",
+            "model": "llama3.1", "embedding_model": "other-embed",
+        }, follow_redirects=True)
+        assert db.session.get(AIConnection, conn.id).embedding_model == "other-embed"
+
+
+def test_embedding_model_falls_back_to_env(auth_client, app, user):
+    app.config["AI_EMBEDDING_MODEL"] = "global-embed"
+    _add_conn(auth_client, name="NoEmb")
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        from app.services import ai_service
+        assert ai_service.config_for(user_obj)["embedding_model"] == "global-embed"
+
+
 def test_only_one_active(auth_client, app):
     _add_conn(auth_client, name="A")
     _add_conn(auth_client, name="B")

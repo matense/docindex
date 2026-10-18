@@ -21,7 +21,7 @@
                             <span class="badge badge-success badge-sm">active</span>
                         {% endif %}
                     </div>
-                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}{% if c.history_messages %} · history: {{ c.history_messages }}{% endif %}{% if c.max_prompt_tokens %} · budget: {{ c.max_prompt_tokens }} tok{% endif %}</div>
+                    <div class="text-xs opacity-60 truncate">{{ c.base_url }} · {{ c.model }}{% if c.vision_model %} · vision: {{ c.vision_model }}{% endif %}{% if c.embedding_model %} · embeddings: {{ c.embedding_model }}{% endif %}{% if c.max_steps %} · max steps: {{ c.max_steps }}{% endif %}{% if c.rate_limit_rpm is not none %} · {{ c.rate_limit_rpm if c.rate_limit_rpm else 'unlimited' }} req/min{% endif %}{% if c.history_messages %} · history: {{ c.history_messages }}{% endif %}{% if c.max_prompt_tokens %} · budget: {{ c.max_prompt_tokens }} tok{% endif %}</div>
                 </div>
                 <button type="button" class="btn btn-sm btn-ghost test-existing-btn" data-conn-id="{{ c.id }}" title="Test connection">
                     <i class="fas fa-plug-circle-check"></i>
@@ -115,6 +115,11 @@
                     <select name="vision_model" id="conn-vision" class="select select-bordered w-full mt-1 font-mono text-sm"></select>
                 </div>
                 <div>
+                    <label class="text-sm font-medium opacity-70">Embedding model (semantic search)</label>
+                    <select name="embedding_model" id="conn-embed" class="select select-bordered w-full mt-1 font-mono text-sm"></select>
+                    <p class="text-xs opacity-40 mt-1">Empty = keyword-only search (global <span class="font-mono">AI_EMBEDDING_MODEL</span> applies when set).</p>
+                </div>
+                <div>
                     <label class="text-sm font-medium opacity-70">Max agent steps</label>
                     <input type="number" name="max_steps" min="1" max="100" class="input input-bordered w-full mt-1"
                            value="{{ editing.max_steps if editing and editing.max_steps else '' }}"
@@ -173,10 +178,12 @@ const EDITING = {{ 'true' if editing else 'false' }};
 const EDIT_ID = {{ (editing.id if editing else 'null') | tojson }};
 const CURRENT_MODEL = {{ (editing.model if editing else '') | tojson }};
 const CURRENT_VISION = {{ (editing.vision_model if editing else '') | tojson }};
+const CURRENT_EMBED = {{ (editing.embedding_model if editing else '') | tojson }};
 
 const presetSel = document.getElementById('provider-preset');
 const modelSel = document.getElementById('conn-model');
 const visionSel = document.getElementById('conn-vision');
+const embedSel = document.getElementById('conn-embed');
 
 function setSelectOptions(sel, values, selected) {
     sel.innerHTML = '';
@@ -184,6 +191,12 @@ function setSelectOptions(sel, values, selected) {
         const empty = document.createElement('option');
         empty.value = '';
         empty.textContent = '(same as chat model)';
+        sel.appendChild(empty);
+    }
+    if (sel === embedSel) {
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '(off — keyword search only / global default)';
         sel.appendChild(empty);
     }
     values.forEach(v => {
@@ -209,6 +222,7 @@ function applyPreset() {
     document.getElementById('conn-base-url').value = p.base_url;
     setSelectOptions(modelSel, [p.model].filter(Boolean), p.model);
     setSelectOptions(visionSel, [p.vision_model].filter(Boolean), p.vision_model);
+    setSelectOptions(embedSel, [p.embedding_model].filter(Boolean), p.embedding_model);
     const nameInput = document.getElementById('conn-name');
     if (!nameInput.value || Object.values(PRESETS).some(x => x.label === nameInput.value)) {
         nameInput.value = p.label;
@@ -220,6 +234,7 @@ presetSel.addEventListener('change', applyPreset);
 if (EDITING) {
     setSelectOptions(modelSel, [], CURRENT_MODEL);
     setSelectOptions(visionSel, [], CURRENT_VISION);
+    setSelectOptions(embedSel, [], CURRENT_EMBED);
 } else {
     applyPreset();
 }
@@ -242,6 +257,7 @@ document.getElementById('fetch-models-btn').addEventListener('click', async () =
     if (data.ok && data.models.length) {
         setSelectOptions(modelSel, data.models, modelSel.value || data.models[0]);
         setSelectOptions(visionSel, data.models, visionSel.value);
+        setSelectOptions(embedSel, data.models, embedSel.value);
         box.classList.add('bg-success/20');
         box.textContent = data.models.length + ' model(s) loaded.';
     } else {

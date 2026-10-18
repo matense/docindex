@@ -31,16 +31,17 @@ EMBED_BATCH = 32
 MAX_INPUT_CHARS = 8000
 
 
-def _model_name():
-    return (current_app.config.get("AI_EMBEDDING_MODEL") or "").strip()
+def _model_for(user):
+    """Embedding model for this user: per-connection value, else the
+    global AI_EMBEDDING_MODEL."""
+    return (ai_service.config_for(user).get("embedding_model") or "").strip()
 
 
 def embeddings_available(user=None):
     """True when a query can be embedded: AI on + endpoint + model set."""
-    if not _model_name():
-        return False
     cfg = ai_service.config_for(user)
-    return bool(cfg["enabled"] and cfg["base_url"])
+    return bool(cfg["enabled"] and cfg["base_url"]
+                and (cfg.get("embedding_model") or "").strip())
 
 
 def _headers(cfg):
@@ -59,10 +60,11 @@ def embed_texts(texts, user=None):
     texts = [(t or "")[:MAX_INPUT_CHARS] for t in texts]
     if not texts:
         return []
-    model = _model_name()
     cfg = ai_service.config_for(user)
+    model = (cfg.get("embedding_model") or "").strip()
     if not model:
-        raise ai_service.AIError("Semantic search is off (AI_EMBEDDING_MODEL is empty).")
+        raise ai_service.AIError(
+            "Semantic search is off (no embedding model on this connection).")
     if not (cfg["enabled"] and cfg["base_url"]):
         raise ai_service.AIError("AI is not configured.")
     import requests
@@ -167,7 +169,9 @@ def embed_file(stored, user=None):
     else:
         source = (index.extracted_text if index and index.extracted_text else "") or ""
     chunks = chunk_text(source)[:current_app.config.get("AI_EMBED_MAX_CHUNKS", 200)]
-    model = _model_name()
+    model = _model_for(user)
+    if not model:
+        return FileEmbedding.query.filter_by(file_id=stored.id).count()
 
     existing = {e.chunk_index: e for e in
                 FileEmbedding.query.filter_by(file_id=stored.id).all()}

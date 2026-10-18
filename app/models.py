@@ -248,6 +248,10 @@ class AIConnection(db.Model):
     api_key = db.Column(db.String(500), nullable=False, default="")
     model = db.Column(db.String(120), nullable=False)
     vision_model = db.Column(db.String(120), nullable=False, default="")
+    # Embedding model for semantic search (OpenAI-compatible /v1/embeddings
+    # on the same base URL); empty = keyword-only search for this connection
+    # (falls back to the global AI_EMBEDDING_MODEL).
+    embedding_model = db.Column(db.String(120), nullable=False, default="")
     # Per-connection agent step limit; NULL falls back to the global AI_MAX_STEPS.
     max_steps = db.Column(db.Integer, nullable=True)
     # Per-connection request limit (requests/minute); NULL falls back to the

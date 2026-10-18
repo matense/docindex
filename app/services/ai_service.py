@@ -56,6 +56,7 @@ def _env_config():
         "api_key": cfg.get("AI_API_KEY", ""),
         "model": cfg.get("AI_MODEL", ""),
         "vision_model": cfg.get("AI_VISION_MODEL") or cfg.get("AI_MODEL", ""),
+        "embedding_model": (cfg.get("AI_EMBEDDING_MODEL") or "").strip(),
         "timeout": cfg.get("AI_REQUEST_TIMEOUT", 120),
         "max_steps": cfg.get("AI_MAX_STEPS", 16),
         "rate_limit_rpm": cfg.get("AI_RATE_LIMIT_RPM", 30),
@@ -77,6 +78,9 @@ def config_for(user=None):
                 "api_key": decrypt_api_key(conn.api_key or ""),
                 "model": conn.model,
                 "vision_model": conn.vision_model or conn.model,
+                "embedding_model": ((conn.embedding_model or "")
+                                    or current_app.config.get("AI_EMBEDDING_MODEL", "")
+                                    or "").strip(),
                 "timeout": current_app.config.get("AI_REQUEST_TIMEOUT", 120),
                 # NULL on the connection falls back to the global default.
                 "max_steps": conn.max_steps

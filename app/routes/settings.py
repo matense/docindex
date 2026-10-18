@@ -22,36 +22,42 @@ PROVIDERS = {
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "vision_model": "gpt-4o-mini",
+        "embedding_model": "text-embedding-3-small",
     },
     "claude": {
         "label": "Claude (Anthropic)",
         "base_url": "https://api.anthropic.com/v1",
         "model": "claude-sonnet-4-5",
         "vision_model": "claude-sonnet-4-5",
+        "embedding_model": "",
     },
     "kimi": {
         "label": "Kimi (Moonshot AI)",
         "base_url": "https://api.moonshot.cn/v1",
         "model": "kimi-k2-0711-preview",
         "vision_model": "moonshot-v1-8k-vision-preview",
+        "embedding_model": "",
     },
     "lmstudio": {
         "label": "LM Studio",
         "base_url": "http://localhost:1234/v1",
         "model": "",
         "vision_model": "",
+        "embedding_model": "",
     },
     "ollama": {
         "label": "Ollama",
         "base_url": "http://localhost:11434/v1",
         "model": "llama3.1",
         "vision_model": "llava",
+        "embedding_model": "nomic-embed-text",
     },
     "custom": {
         "label": "Custom (OpenAI-compatible)",
         "base_url": "",
         "model": "",
         "vision_model": "",
+        "embedding_model": "",
     },
 }
 
@@ -437,6 +443,7 @@ def ai_edit(conn_id):
     conn.base_url = base_url
     conn.model = model[:120]
     conn.vision_model = request.form.get("vision_model", "").strip()[:120]
+    conn.embedding_model = request.form.get("embedding_model", "").strip()[:120]
     conn.max_steps = _clamp_int(request.form.get("max_steps", type=int), 1, 128)
     # 0 = unlimited; negatives would brick the connection (never a free slot).
     raw_rpm = request.form.get("rate_limit_rpm", type=int)
@@ -484,6 +491,7 @@ def ai_add():
         api_key=ai_service.encrypt_api_key(api_key),
         model=model[:120],
         vision_model=vision_model[:120],
+        embedding_model=request.form.get("embedding_model", "").strip()[:120],
         max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
         rate_limit_rpm=None if raw_rpm is None else max(0, min(raw_rpm, 600)),
         history_messages=_clamp_int(
@@ -515,6 +523,7 @@ def ai_clone(conn_id):
         api_key=conn.api_key,
         model=conn.model,
         vision_model=conn.vision_model,
+        embedding_model=conn.embedding_model,
         max_steps=conn.max_steps,
         rate_limit_rpm=conn.rate_limit_rpm,
         history_messages=conn.history_messages,
