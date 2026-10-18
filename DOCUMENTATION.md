@@ -104,6 +104,7 @@ app refuses to start without it.
 | `AI_API_KEY`          | empty                                          | Bearer token (empty for local servers) |
 | `AI_MODEL`            | `llama3.1`                                     | Chat model for the assistant |
 | `AI_VISION_MODEL`     | empty (falls back to `AI_MODEL`)               | Vision model for image captions |
+| `AI_EMBEDDING_MODEL`  | empty (keyword-only search)                    | Embedding model for semantic search (`/v1/embeddings` on the same base URL); per-connection override in AI Settings |
 | `AI_MAX_STEPS`        | `16`                                           | Global agent step limit (per-connection override available) |
 | `AI_HISTORY_MESSAGES` | `20`                                           | Past user/assistant messages sent to the model (per-connection override available) |
 | `AI_MAX_PROMPT_TOKENS` | `60000`                                       | Prompt budget in estimated tokens (~chars/4); oldest conversation units are dropped beyond it (per-connection override available) |
@@ -269,6 +270,27 @@ Full-text search index for a stored file (one row per file).
 | `error` | Text, nullable | extraction error message (truncated to 1000 chars) |
 | `indexed_at` | DateTime, nullable | |
 
+### `file_embeddings` (`FileEmbedding`)
+
+One L2-normalized float32 vector row per semantic chunk (native vector
+search, no vector DB/extension — cosine similarity runs in Python with a
+numpy fast path when installed).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | Integer PK | |
+| `file_id` | FK -> files.id, indexed | part of the unique `(file_id, chunk_index)` key |
+| `chunk_index` | Integer, default 0 | chunk order within the file |
+| `text` | Text, nullable | chunk text (first 4000 chars) — shown as the semantic snippet |
+| `text_hash` | String(64), nullable | SHA-256 of the chunk; unchanged chunks skip re-embedding |
+| `embedding` | LargeBinary, nullable | float32 vector bytes |
+| `model` | String(120), nullable | embedding model that produced the vector; a model change re-embeds cleanly |
+| `dims` | Integer, nullable | vector dimensions |
+| `created_at` | DateTime | |
+
+Text chunks (~2000 chars with overlap, capped per file) come from
+`extracted_text`; images embed caption + name instead.
+
 ### `chat_conversations`
 
 | Column | Type | Notes |
@@ -308,6 +330,7 @@ request (see "Background AI tasks"). Status lifecycle: `queued` -> `running`
 | `user_id` | FK -> users.id, indexed | |
 | `conversation_id` | FK -> chat_conversations.id, indexed | transcript conversation (one conversation can own several sequential tasks; the latest decides its background state) |
 | `title` | String(255), default "Background task" | first 80 chars of the request |
+| `prompt` | Text, **nullable** | exact user question that launched the task (pre-prompt tasks fall back to the latest user message) |
 | `status` | String(20), indexed | see lifecycle above |
 | `error` | Text, **nullable** | failure detail for `error`/`interrupted` |
 | `notified` | Boolean, default False | set when the user dismisses the finished task from the dock — the "end" of the long horizon |
@@ -325,9 +348,10 @@ has `is_active=True` (enforced in the settings routes).
 | `user_id` | FK -> users.id, indexed | |
 | `name` | String(120) | |
 | `base_url` | String(500) | e.g. `http://localhost:11434/v1` |
-| `api_key` | String(500), default "" | stored in plaintext |
+| `api_key` | String(500), default "" | encrypted at rest |
 | `model` | String(120) | chat model |
 | `vision_model` | String(120), default "" | empty -> falls back to `model` |
+| `embedding_model` | String(120), default "" | semantic search model for this connection; empty -> falls back to global `AI_EMBEDDING_MODEL`, empty again -> keyword-only search |
 | `max_steps` | Integer, **nullable** | per-connection agent step limit; NULL falls back to global `AI_MAX_STEPS` |
 | `history_messages` | Integer, **nullable** | per-connection chat history size (past user/assistant messages sent to the model); NULL falls back to global `AI_HISTORY_MESSAGES` (default 20) |
 | `max_prompt_tokens` | Integer, **nullable** | per-connection prompt budget in estimated tokens; NULL falls back to global `AI_MAX_PROMPT_TOKENS` (default 60000) |
@@ -499,7 +523,10 @@ files from the normal file routes).
    stats are computed from text or
    caption. Any failure lands in `status="error"` with the message. After
    each successful commit, `search_service.fts_upsert()` refreshes the FTS5
-   row.
+   row. Still inside `index_file()`, the file is embedded for semantic
+   search when embeddings are on (`embedding_service.embed_file()`, best
+   effort — chunks are skipped by text hash, a model change re-embeds, and
+   failures never touch the text index).
 4. `search_service.search_files()` uses the **FTS5** virtual table
    `file_fts` (rowid = `files.id`; columns: name, text, caption, tags) when
    available: up to 8 terms become a `"term"* AND ...` prefix MATCH, ranked
@@ -520,6 +547,18 @@ files from the normal file routes).
    badges) and `tags` (the file's hashtags, shown as chips).
    Results are scoped to the current drive and capped at 50 (8 for the
    instant-search endpoint, which also returns `name_html`).
+5. Semantic + hybrid retrieval (opt-in): `embedding_service` embeds chunks
+   (`~2000 chars`, overlap, `file_embeddings` table) via the configured
+   embedding model (`AI_EMBEDDING_MODEL` global or per-connection;
+   `/v1/embeddings` on the same base URL). `search_advanced()` takes
+   `mode="keyword"|"semantic"|"hybrid"|"auto"` (auto = hybrid when
+   embeddings are on, else keyword): semantic ranks by max-chunk cosine
+   (honoring drive/extensions/folder/size/word filters), hybrid fuses the
+   keyword and semantic rankings with RRF (k=60). The results page offers a
+   Keywords/Hybrid/Meaning toggle (only rendered when embeddings are on),
+   and `GET /file/<id>/similar` returns "more like this" files by centroid
+   similarity (capped scan). `flask --app run.py reindex-embeddings`
+   backfills the corpus (unchanged chunks skipped).
 
    The FTS table is derived data — the source of truth is `file_index`. It
    is maintained by `fts_upsert`/`fts_delete` hooks (indexing, rename,
@@ -665,9 +704,10 @@ messages.
 
 `ai_task_service` runs an agent run decoupled from the HTTP request: the
 user flips the Background toggle in a chat client, `POST /ai/tasks` creates
-a dedicated conversation plus an `AITask` row, and a daemon worker thread
-(`AI_TASKS_ASYNC=False` runs it inline, used by tests) executes
-`agent_service.run_agent_events` with `max_steps=AI_TASK_MAX_STEPS`
+an `AITask` row in the current conversation (or a fresh one when the chat
+is new), and a daemon worker thread (`AI_TASKS_ASYNC=False` runs it inline,
+used by tests) executes `agent_service.run_agent_events` with
+`max_steps=AI_TASK_MAX_STEPS`
 (default 64) and `block=True` — when the connection's rate limit is hit the
 worker sleeps for a slot instead of failing, so long runs throttle
 themselves. Every event is persisted as a `ChatMessage` in the task's
@@ -797,17 +837,20 @@ the answer falls back to asking the user to rephrase.
 
 ### Tools
 
-`TOOLS` defines eight OpenAI function-calling tools; `TOOL_HANDLERS` maps
+`TOOLS` defines twelve OpenAI function-calling tools; `TOOL_HANDLERS` maps
 names to implementations. All tools are scoped to the calling user, and
 search/list/count are additionally scoped to the current drive.
 
-- `search_files(query, filters..., sort, limit, offset)` — advanced full-text
-  search backed by `search_service.search_advanced()`: FTS5 syntax
+- `search_files(query, filters..., sort, limit, offset, mode)` — advanced search
+  backed by `search_service.search_advanced()`: FTS5 syntax
   (`"quoted phrases"`, `AND`/`OR`/`NOT`, column scopes `name:`/`tags:`/
   `caption:`/`text:`, prefix stems like `budg*`), metadata filters
   (`extensions`, `folder_id` + `recursive`, `min_words`/`max_words`,
   `min_size`/`max_size`, `has_tags`, `has_caption`), sorting
-  (`relevance`/`name`/`size`/`word_count`/`updated_at`) and pagination.
+  (`relevance`/`name`/`size`/`word_count`/`updated_at`) and pagination, plus
+  `mode` (`keyword` exact words, `semantic` meaning/typos/cross-language,
+  `hybrid` RRF fusion of both — the default, falling back to keyword when
+  embeddings are off).
   Returns `{results: [{file_id, name, extension, size, word_count, score,
   snippet, tags}], total}` with empty fields dropped to keep the JSON
   payload small; `total` counts every match ignoring pagination.
@@ -821,6 +864,12 @@ search/list/count are additionally scoped to the current drive.
   through large files (`start + returned_chars`). Content comes from
   `extracted_text`/`caption`, falling back to reading editable text files
   from disk.
+- `view_image(file_id: int, question?: string)` — looks at an image through
+  the vision model and returns a detailed description (optionally focused by
+  `question`, e.g. what a sign says); the fresh caption is stored on the
+  index so search and later reads benefit. Use it whenever the question is
+  about what an image shows — `read_file` only returns the stored caption,
+  which may be missing or too short.
 - `grep_file(file_id: int, pattern: string, context: int = 2)` —
   case-insensitive literal search INSIDE one file's text; returns numbered
   matching lines with merged context windows (no duplicate lines). Hard
@@ -848,9 +897,11 @@ search/list/count are additionally scoped to the current drive.
 `SYSTEM_PROMPT` instructs the model to work step by step, state one or two
 sentences of reasoning before every tool call, and search like a funnel:
 broad first, then narrow — `count_files` to measure a topic, refined
-`search_files` (FTS5 phrases/boolean/column scopes/filters) to list
-candidates, `grep_file` to pinpoint the relevant lines inside a file, and
-`read_file` only around that section. It also enforces a single tool call
+`search_files` (FTS5 phrases/boolean/column scopes/filters, or
+`mode: "semantic"` when the question is about meaning rather than exact
+words) to list candidates, `grep_file` to pinpoint the relevant lines
+inside a file, `read_file` only around that section — and `view_image`
+whenever the question is about what an image shows. It also enforces a single tool call
 per step, continued reading while `has_more=true`, source citations as
 `[filename](file://ID)`, answering in the user's language, and never
 inventing content. It also asks the model to close its final answer with an
@@ -986,8 +1037,20 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   to `/file/<ID>/view` links.
 - Attachments: `@here` attaches `window.currentFile`, `#query` opens a
   mention autocomplete backed by `/api/search`, drag & drop accepts drive
-  files (attach directly) and OS files (upload via `POST /upload` with
-  `Accept: application/json`, then attach). Chips show pending attachments.
+  files (attach directly) and OS files (upload via `POST /ai/attachments`
+  with `Accept: application/json`, then attach). The chat and the full page
+  share one upload flow (`uploadDeviceFiles`): files land on the drive
+  passed as `drive_id`, else the open drive when writable — otherwise the
+  server answers 409 `needs_drive_choice` and the UI shows a drive picker
+  ("ask first"). A paperclip menu item (`acw-attach-upload` /
+  `aip-attach-upload` + hidden file input) covers devices without DnD.
+  After upload the client polls `GET /file/<id>/summary` (index status,
+  caption, table columns+head rows, text head+counts, thumbnail) until the
+  index is ready and posts a summary card; sending waits for pending
+  summaries (90 s timeout, then proceeds with a warning). Attachment chips
+  carry a ▶ "Run workflow" button listing `GET /m/automation/api/
+  attachable` workflows (input.trigger or file `input.param`), launching
+  with `trigger_file_id` / `params`. Chips show pending attachments.
 - Screen-context chips: the file open in the viewer (`window.currentFile`)
   and the workflow open in the Automation editor (`window.currentWorkflow`)
   each appear as a removable chip and are sent as `context_file_id` /
@@ -1000,12 +1063,16 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   used in the latest message is persisted on the conversation and restored
   into the chips when it is reopened.
 - Background mode: a rocket toggle sends the next message to `POST /ai/tasks`
-  instead of `/ai/chat`. The launching chat immediately loads the task's
-  fresh conversation and follows it live (banner + event stream) — no
-  close/reopen needed. A conversation owned by a task reopens in "task
-  mode" (banner + captured context + background toggle forced on) until the
-  task is dismissed; while the task runs, the window subscribes to
-  `/ai/tasks/<id>/stream` and renders it live like a normal answer.
+  instead of `/ai/chat`. The task continues the same conversation (a new one
+  is created only when the chat is empty) and the chat follows it live
+  (banner + event stream) — no close/reopen needed. A conversation owned by
+  a task reopens in "task mode" (banner + captured context + background
+  toggle forced on) until the task is dismissed; while the task runs, the
+  window subscribes to `/ai/tasks/<id>/stream` and renders it live like a
+  normal answer. Device uploads go to `POST /ai/attachments` (drive picker
+  when the open drive is read-only); `GET /file/<id>/summary` reports
+  index/caption/table/text state for the summary cards, and attachment
+  chips offer "Run workflow" via `GET /m/automation/api/attachable`.
   `ai_tasks_widget.js` adds one dock icon per task (running spinner /
   finished badge / stop / dismiss), polling `/ai/tasks/active`.
 - Conversation history: list, load and delete via the `/ai/conversations`
@@ -1028,15 +1095,21 @@ dropdowns), `components/ai_chat.html` (dock panel) and
 
 Users manage their own OpenAI-compatible connections at `/settings/ai`. A
 connection stores base URL, API key (kept when the field is left blank on
-edit), chat model, vision model and an optional per-connection `max_steps`.
-Exactly one connection is active at a time; the first connection created
-becomes active automatically. Provider presets prefill known URLs/models.
+edit), chat model, vision model, embedding model (semantic search; empty
+means keyword-only unless the global `AI_EMBEDDING_MODEL` is set) and
+optional per-connection `max_steps`, rate limit, history size and prompt
+budget. The form splits essentials (preset, name/key, URLs, models) from an
+"Advanced settings" disclosure (budgets/limits/history). Exactly one
+connection is active at a time; the first connection created becomes active
+automatically. Provider presets prefill known URLs/models (including
+`text-embedding-3-small` and `nomic-embed-text` where applicable).
 
 Runtime resolution (`ai_service.config_for(user)`): if the user has an active
-connection it wins entirely (`enabled=True`, its URL/key/models/max_steps,
-with `vision_model` falling back to `model` and `max_steps` to
-`AI_MAX_STEPS`); otherwise the env config is used (`AI_ENABLED` etc.). The
-same config drives the chat agent and image captioning at indexing time.
+connection it wins entirely (`enabled=True`, its URL/key/models, with
+`vision_model` falling back to `model`, `embedding_model` to the global
+`AI_EMBEDDING_MODEL`, and the numeric knobs to their globals); otherwise
+the env config is used (`AI_ENABLED` etc.). The same config drives the chat
+agent, image captioning at indexing time, and embedding generation.
 
 ## Migrations
 
@@ -1059,7 +1132,11 @@ stats -> `00efe0293465` sync options (captions toggle, indexing workers)
 (light/dark) -> `b2e4f6a81c53` module_states -> `e9b5d2a47c31` ai_tasks
 (long-horizon background tasks) -> `f1c6a9e25d83` `AITask.context` (launch
 context snapshot) -> `a2d8f4c17e90` `ChatConversation.context` (latest chat
-context snapshot).
+context snapshot) -> `c1a2b3d4e5f6` core behaviors & persona prefs ->
+`3f9c2a1b8d44` many tasks per conversation (`conversation_id` no longer
+unique) + `AITask.prompt` -> `7e2a9c4f1b83` `file_embeddings` (native
+semantic search) -> `9a1b2c3d4e55` `AIConnection.embedding_model`
+(per-connection semantic search model).
 
 Module migrations are **independent alembic roots** living in
 `modules/<name>/migrations/versions/` (`down_revision = None`,

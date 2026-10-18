@@ -45,7 +45,9 @@ questions about your files by searching and reading them step by step.
 - **AI image captioning** — images are described by a vision model so their
   content is searchable too.
 - **Instant search** — Google-style search dock with live results (Alt+S),
-  highlighted snippets and full search page.
+  highlighted snippets and full search page. With an embedding model
+  configured, the results page offers Keywords / Hybrid / Meaning modes and
+  each file view shows semantically "Similar files".
 - **Hashtags** — every file can carry searchable hashtag chips: add them
   yourself in the file view, or let the AI suggest them per file ("Create
   Hashtags" opens a review popup — you approve before they're saved) or run
@@ -56,7 +58,10 @@ questions about your files by searching and reading them step by step.
   connections (models) can be configured and switched per conversation. Scope
   answers to specific drives with `$` mentions or to all drives at once —
   the context chips always show what the assistant is working with, and each
-  conversation remembers the context you last used.
+  conversation remembers the context you last used. Attach files straight
+  from your device (images land captioned, tables with a head preview), ask
+  about what images show (the AI looks at them through the vision model),
+  and run workflows on attachments from the chip.
 - **Background AI tasks (long horizon)** — flip the Background toggle and
   your question runs as a server-side task: the agent keeps working (with a
   much larger step budget, throttling itself to your connection's rate
@@ -133,7 +138,7 @@ cp .env.example .env            # Windows: copy .env.example .env
 # 4. Create the database
 flask --app run.py db upgrade heads
 
-# 5. Create the first admin user (prompts for username, email, password)
+# 5. Create the first admin user (prompts for username, email and password)
 python create_admin.py
 
 # 6. Run

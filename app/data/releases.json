@@ -18,6 +18,7 @@
             "Attach files from your device straight in the chat (paperclip or drag & drop): saved to the open drive, or to a drive you pick when it is read-only — images land with caption + thumbnail, tables with columns and head rows, text with word counts, and sending waits for the summary.",
             "Every attachment chip has a 'Run workflow' button for workflows that accept files; attached content is also pre-summarized into the AI context so answers come without extra tool calls.",
             "New view_image tool: the AI looks at images through the vision model (optionally focused by your question) instead of relying on the short stored caption — and refreshes that caption for search.",
+            "Semantic search (opt-in): hybrid keyword + meaning retrieval with RRF fusion, Keywords/Hybrid/Meaning toggle on the results page, 'Similar files' on the file view, embeddings stored per chunk — enable with AI_EMBEDDING_MODEL globally or per AI connection, then backfill with reindex-embeddings.",
             "Template fan-in: connect several nodes into a transform.template input and join them all with {{ in }}."
           ]
         },
@@ -30,6 +31,7 @@
             "Deleting a conversation also removes its background tasks, so the dock never points at a deleted transcript.",
             "Conversation detail exposes task start/finish times; run progress computation is shared between the run page and the widget feed.",
             "Notebooks (.pdocnb) get their own amber book icon in the drive, search results and chat attachments instead of the generic file.",
+            "AI connection form splits essentials from an Advanced disclosure (budgets, limits, history); Run-workflow pickers match the automations list (status, time, folders) and disambiguate same-name workflows.",
             "Avatar uses local gradient initials (no external image service); profile crash on drives with files fixed."
           ]
         },
