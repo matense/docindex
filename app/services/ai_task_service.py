@@ -20,6 +20,7 @@ import queue
 import threading
 
 from flask import current_app
+from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
@@ -36,6 +37,10 @@ _TASK_NOTE = (
 
 # task_id -> threading.Event, set when the user asks to stop the task.
 _stop_events = {}
+# task_id -> {"steps": int, "current": str|None}: live progress for the dock
+# widget (the currently running tool is only known while the worker runs it;
+# finished/step counts always survive in the persisted transcript).
+_live = {}
 # task_id -> list[queue.Queue]: live event subscribers (chat windows watching
 # the task's stream endpoint). Events are NDJSON-shaped dicts; None is the
 # end-of-stream sentinel.
@@ -163,11 +168,48 @@ def active_tasks(user):
     """Tasks shown in the dock: running/queued, plus finished ones the user
     has not dismissed yet (the notification badge state). Capped to avoid
     unbounded dock payloads."""
-    return (AITask.query
-            .filter(AITask.user_id == user.id)
-            .filter(db.or_(AITask.status.in_(("queued", "running")),
-                           AITask.notified.is_(False)))
-            .order_by(AITask.created_at.desc()).limit(20).all())
+    tasks = (AITask.query
+             .filter(AITask.user_id == user.id)
+             .filter(db.or_(AITask.status.in_(("queued", "running")),
+                            AITask.notified.is_(False)))
+             .order_by(AITask.created_at.desc()).limit(20).all())
+    # One aggregate query (not per task) for the persisted step counts the
+    # dock progress line is derived from when no worker is live.
+    conv_ids = [t.conversation_id for t in tasks]
+    counts = (dict(db.session.query(ChatMessage.conversation_id,
+                                    func.count(ChatMessage.id))
+                   .filter(ChatMessage.conversation_id.in_(conv_ids),
+                           ChatMessage.role == "step")
+                   .group_by(ChatMessage.conversation_id).all())
+              if conv_ids else {})
+    for t in tasks:
+        t._step_count = counts.get(t.conversation_id, 0)
+    return tasks
+
+
+def task_progress(task):
+    """Dock-widget progress: steps done + currently running tool (if live).
+
+    While the worker runs, progress comes from the in-memory live map
+    (updated on every tool event); otherwise it is derived from the
+    persisted transcript, so restarts and finished tasks still report.
+    """
+    with _lock:
+        live = _live.get(task.id)
+        if live is not None:
+            return {"steps": live["steps"], "current": live["current"]}
+    n = getattr(task, "_step_count", None)
+    if n is None:
+        n = (ChatMessage.query
+             .filter_by(conversation_id=task.conversation_id,
+                        role="step").count())
+    return {"steps": n, "current": None}
+
+
+def _live_update(task_id, **fields):
+    with _lock:
+        state = _live.setdefault(task_id, {"steps": 0, "current": None})
+        state.update(fields)
 
 
 def recover_interrupted(app):
@@ -218,6 +260,7 @@ def _task_worker(task_id, app):
             with _lock:
                 _stop_events.pop(task_id, None)
                 _subscribers.pop(task_id, None)
+                _live.pop(task_id, None)
 
 
 def _run_task(task_id, app):
@@ -305,14 +348,20 @@ def _run_task(task_id, app):
             elif kind == "tool_start":
                 # Broadcast before the tool runs: a chat window watching this
                 # task animates a live "working" chip. Nothing to persist yet.
+                _live_update(task_id, current=payload.get("label"))
                 ev = {"type": "tool_start", "step": payload}
             elif kind == "step":
                 block_tokens = None
                 flush_step()  # a step without result (stay sane)
                 pending_step = payload
+                _live_update(task_id,
+                             steps=_live.get(task_id, {}).get("steps", 0) + 1,
+                             current=f"{payload.get('label')}: "
+                                     f"{payload.get('detail')}")
                 ev = {"type": "step", "step": payload}
             elif kind == "tool_result":
                 flush_step(payload.get("summary"))
+                _live_update(task_id, current=None)
                 ev = {"type": "tool_result", "result": payload}
             elif kind == "ui_action":
                 # Browser-side signal (e.g. automation canvas refresh) —

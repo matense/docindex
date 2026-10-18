@@ -13,6 +13,7 @@
 
     let container = null;
     let lastHash = null;
+    let prevStatus = {}; // task id -> last seen status (completion toasts)
     let pollMs = 3000;
     let timer = null;
 
@@ -39,6 +40,39 @@
         return div.innerHTML;
     }
 
+    function fmtElapsed(ms) {
+        if (!(ms >= 0)) return '';
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return s + 's';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'm ' + (s % 60) + 's';
+        return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+    }
+
+    function elapsedMs(t) {
+        const start = Date.parse(t.started_at || t.created_at || '');
+        if (isNaN(start)) return -1;
+        const end = t.finished_at ? Date.parse(t.finished_at) : Date.now();
+        return end - start;
+    }
+
+    function progressLine(t) {
+        const p = t.progress || {};
+        const steps = p.steps || 0;
+        const active = t.status === 'queued' || t.status === 'running';
+        const el = fmtElapsed(elapsedMs(t));
+        if (t.status === 'running') {
+            return 'Step ' + steps
+                + (p.current ? ' · ' + p.current + '…' : '')
+                + (el ? ' · ' + el : '');
+        }
+        if (t.status === 'queued') return 'Queued' + (el ? ' · waiting ' + el : '');
+        if (t.status === 'done') return 'Finished · ' + steps + ' step' + (steps === 1 ? '' : 's') + (el ? ' · ' + el : '');
+        if (t.status === 'error') return (t.error || 'Failed') + (el ? ' · ' + el : '');
+        if (t.status === 'stopped') return 'Stopped' + (el ? ' · ' + el : '');
+        return 'Interrupted' + (el ? ' · ' + el : '');
+    }
+
     function renderTask(t) {
         const active = t.status === 'queued' || t.status === 'running';
         const badge = STATUS_BADGE[t.status];
@@ -56,7 +90,7 @@
             `<button type="button" class="dock-task-close" title="${active ? 'Stop task' : 'Dismiss'}">` +
                 `<i class="fas ${active ? 'fa-stop' : 'fa-xmark'}"></i></button>` +
             `<span class="dock-label">${escapeHtml(t.title.slice(0, 12))}</span>`;
-        item.title = t.title + (t.error ? '\n' + t.error : '');
+        item.title = t.title + '\n' + progressLine(t);
 
         // Click the tile: open the task's transcript in a chat window —
         // live-streamed while the task is still running.
@@ -90,12 +124,41 @@
             }
             return;
         }
-        const h = JSON.stringify(tasks.map(t => [t.id, t.status]));
-        if (h === lastHash) return;  // nothing changed — don't touch the DOM
+        const h = JSON.stringify(tasks.map(t => [t.id, t.status,
+            t.progress && t.progress.steps, t.progress && t.progress.current]));
+        if (h === lastHash) { updatePrevStatus(tasks); return; }  // nothing changed — don't touch the DOM
         lastHash = h;
         container.innerHTML = '<div class="dock-separator"></div>';
         tasks.forEach(t => container.appendChild(renderTask(t)));
         container.classList.remove('hidden');
+        notifyFinished(tasks);
+        updatePrevStatus(tasks);
+    }
+
+    function updatePrevStatus(tasks) {
+        const seen = {};
+        tasks.forEach(t => { seen[t.id] = t.status; });
+        prevStatus = seen;
+    }
+
+    // A task the widget watched finish toasts once — the user may be on any
+    // page when a long task completes.
+    function notifyFinished(tasks) {
+        tasks.forEach(t => {
+            const prev = prevStatus[t.id];
+            const wasActive = prev === 'queued' || prev === 'running';
+            const nowFinal = t.status !== 'queued' && t.status !== 'running';
+            if (prev !== undefined && wasActive && nowFinal) {
+                const label = t.title.length > 60 ? t.title.slice(0, 60) + '…' : t.title;
+                if (t.status === 'done') {
+                    window.uiToast('Background task finished: ' + label, 'success');
+                } else if (t.status === 'error' || t.status === 'interrupted') {
+                    window.uiToast('Background task failed: ' + label, 'error');
+                } else {
+                    window.uiToast('Background task stopped: ' + label, 'info');
+                }
+            }
+        });
     }
 
     async function post(url) {

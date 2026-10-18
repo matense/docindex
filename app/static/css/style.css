@@ -2405,6 +2405,37 @@ body.show-shortcuts #shortcut-help-panel {
     background: rgba(34, 197, 94, .28);
 }
 
+/* Task title inside the banner (truncated) + inline rename affordance. */
+.ai-task-banner-title {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ai-task-banner-rename {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 9999px;
+    font-size: 10px;
+    opacity: 0.55;
+    cursor: pointer;
+}
+
+.ai-task-banner-rename:hover {
+    opacity: 1;
+    background: oklch(var(--p) / 0.15);
+}
+
+.ai-task-banner input {
+    width: 180px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
 @keyframes ai-task-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }

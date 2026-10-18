@@ -666,7 +666,10 @@ def _task_json(task):
         "error": task.error,
         "conversation_id": task.conversation_id,
         "created_at": task.created_at.isoformat() if task.created_at else None,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
         "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        # Dock progress line: steps done + currently running tool (if live).
+        "progress": ai_task_service.task_progress(task),
     }
 
 
@@ -747,6 +750,48 @@ def ack_task(task_id):
     if task is None:
         return jsonify({"error": "Not found or still running"}), 404
     return jsonify({"ok": True})
+
+
+@bp.route("/tasks/<int:task_id>/rename", methods=["POST"])
+@login_required
+def rename_task(task_id):
+    """Rename a task (dock tooltip + task banner title)."""
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+    title = " ".join(str((request.get_json(silent=True) or {}).get("title")
+                         or "").split())[:120]
+    if not title:
+        return jsonify({"error": "Title cannot be empty."}), 400
+    task.title = title
+    if task.conversation is not None:
+        task.conversation.title = title[:80]
+    db.session.commit()
+    return jsonify({"ok": True, "task": _task_json(task)})
+
+
+@bp.route("/tasks/<int:task_id>/rerun", methods=["POST"])
+@login_required
+def rerun_task(task_id):
+    """Launch a new background task cloning a finished one's question and
+    captured context (its drives/files/cell snapshot)."""
+    task = ai_task_service.get_task(current_user, task_id)
+    if task is None:
+        return jsonify({"error": "Not found"}), 404
+    if task.is_active:
+        return jsonify({"error": "The task is still running."}), 409
+    first_user = next((m for m in task.conversation.messages
+                       if m.role == "user"), None)
+    message = (first_user.content if first_user else task.title) or ""
+    # Strip the rendered 📎 attachment suffix: a re-run sends the question.
+    import re as _re
+    message = _re.sub(r"\n\n📎 [^\n]*$", "", message).strip()
+    ctx = {"context": json.loads(task.context)} if task.context else None
+    try:
+        new_task = ai_task_service.start_task(current_user, message, ctx=ctx)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "task": _task_json(new_task)})
 
 
 @bp.route("/tasks/<int:task_id>/stream")

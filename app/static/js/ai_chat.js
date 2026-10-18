@@ -1491,22 +1491,102 @@
             const active = taskMode.status === 'queued' || taskMode.status === 'running';
             const banner = document.createElement('div');
             banner.className = 'ai-task-banner' + (active ? '' : ' ai-task-banner-done');
+            banner.title = active
+                ? 'Replies sent here start a new background task — this one keeps running.'
+                : 'This conversation belongs to a finished background task.';
             banner.innerHTML = active
                 ? '<i class="fas fa-rocket"></i>' +
-                  '<span>Live background task — running on the server</span>'
+                  '<span class="ai-task-banner-title"></span>' +
+                  '<span class="opacity-60">· live on the server</span>' +
+                  '<button type="button" class="ai-task-banner-rename" title="Rename task"><i class="fas fa-pencil"></i></button>'
                 : '<i class="fas fa-flag-checkered"></i>' +
-                  '<span>Background task finished</span>' +
-                  '<button type="button" class="ai-task-banner-dismiss" title="Dismiss — back to a normal chat">' +
+                  '<span class="ai-task-banner-title"></span>' +
+                  '<span class="opacity-60">· finished</span>' +
+                  '<button type="button" class="ai-task-banner-dismiss" data-action="rerun" title="Run again with the same question and context">' +
+                      '<i class="fas fa-rotate-right"></i> Re-run</button>' +
+                  '<button type="button" class="ai-task-banner-dismiss" data-action="dismiss" title="Dismiss — back to a normal chat">' +
                       '<i class="fas fa-xmark"></i> Dismiss</button>';
             messagesEl.prepend(banner);
             taskBanner = banner;
+            banner.querySelector('.ai-task-banner-title').textContent =
+                taskMode.title || 'Background task';
+            const renameBtn = banner.querySelector('.ai-task-banner-rename');
+            if (renameBtn) renameBtn.addEventListener('click', renameTaskTitle);
             if (!active) {
-                banner.querySelector('.ai-task-banner-dismiss')
+                banner.querySelector('[data-action="dismiss"]')
                     .addEventListener('click', async () => {
                         await fetch('/ai/tasks/' + taskMode.id + '/ack',
                                     { method: 'POST' });
                         exitTaskMode();
                     });
+                banner.querySelector('[data-action="rerun"]')
+                    .addEventListener('click', rerunTask);
+            }
+        }
+
+        // Inline rename: the banner title becomes an input (Enter saves).
+        function renameTaskTitle() {
+            if (!taskMode || !taskBanner) return;
+            const titleEl = taskBanner.querySelector('.ai-task-banner-title');
+            if (!titleEl || taskBanner.querySelector('input')) return;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = taskMode.title || '';
+            input.maxLength = 120;
+            input.className = 'input input-bordered input-xs';
+            input.setAttribute('aria-label', 'Task title');
+            titleEl.replaceWith(input);
+            input.focus();
+            input.select();
+            let done = false;
+            const commit = async (save) => {
+                if (done) return;
+                done = true;
+                const value = input.value.trim();
+                if (save && value && value !== taskMode.title) {
+                    try {
+                        const resp = await fetch('/ai/tasks/' + taskMode.id + '/rename', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title: value }),
+                        });
+                        if (resp.ok) taskMode.title = value;
+                        else window.uiToast('Could not rename the task.', 'error');
+                    } catch (err) {
+                        window.uiToast('Could not reach the server.', 'error');
+                    }
+                }
+                renderTaskBanner();
+            };
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') commit(true);
+                else if (e.key === 'Escape') commit(false);
+            });
+            input.addEventListener('blur', () => commit(true));
+        }
+
+        // Re-run: a finished task's question + captured context as a new task.
+        async function rerunTask() {
+            if (!taskMode) return;
+            const ok = await window.uiConfirm(
+                'Run this task again with the same question and context?',
+                { title: 'Re-run task', confirmText: 'Re-run' });
+            if (!ok) return;
+            try {
+                const resp = await fetch('/ai/tasks/' + taskMode.id + '/rerun',
+                                         { method: 'POST' });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    window.uiToast(data.error || 'Could not re-run the task.',
+                                   'error');
+                    return;
+                }
+                window.uiToast('New background task started.', 'info');
+                if (data.task && data.task.conversation_id) {
+                    loadConversation(data.task.conversation_id);
+                }
+            } catch (err) {
+                window.uiToast('Could not reach the server.', 'error');
             }
         }
 

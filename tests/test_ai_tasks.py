@@ -502,3 +502,108 @@ def test_search_files_accepts_multiple_drives(app, user):
         ids = {r["file"].id for r in search_service.search_files("commonword", u, drive=only)}
         assert ids == {f3}
         assert d3 != drives  # sanity: distinct scope
+
+
+# --- Dock progress, rename, re-run -------------------------------------------
+
+
+def test_active_tasks_include_progress(auth_client, app, user):
+    _enable_ai(app)
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "list_drives", "arguments": "{}"},
+        }]},
+        {"role": "assistant", "content": "You have one drive."},
+    ])
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=lambda *a, **k: next(responses)):
+        task_id = auth_client.post(
+            "/ai/tasks", json={"message": "Count my drives"}).get_json()["task"]["id"]
+
+    tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
+    assert len(tasks) == 1
+    prog = tasks[0]["progress"]
+    assert prog == {"steps": 1, "current": None}  # persisted transcript
+    assert tasks[0]["started_at"]
+
+    # While the worker runs, the in-memory live map reports the current tool.
+    ai_task_service._live[task_id] = {"steps": 2,
+                                      "current": "Searching files"}
+    try:
+        prog = auth_client.get("/ai/tasks/active").get_json()["tasks"][0]["progress"]
+        assert prog == {"steps": 2, "current": "Searching files"}
+    finally:
+        ai_task_service._live.pop(task_id, None)
+
+
+def test_rename_task(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("done!")):
+        task_id = auth_client.post(
+            "/ai/tasks", json={"message": "bg work"}).get_json()["task"]["id"]
+
+    resp = auth_client.post(f"/ai/tasks/{task_id}/rename",
+                            json={"title": "  Weekly report  "})
+    assert resp.status_code == 200
+    assert resp.get_json()["task"]["title"] == "Weekly report"
+    with app.app_context():
+        task = db.session.get(AITask, task_id)
+        assert task.title == "Weekly report"
+        assert task.conversation.title == "Weekly report"
+
+    assert auth_client.post(
+        f"/ai/tasks/{task_id}/rename", json={"title": "   "}).status_code == 400
+    assert auth_client.post("/ai/tasks/999999/rename",
+                            json={"title": "x"}).status_code == 404
+
+
+def test_rerun_task_clones_question_and_context(auth_client, app, user):
+    _enable_ai(app)
+    drive_id, _ = _make_drive_with_file(app, user, "Work", "a.txt", "aaa")
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("first done", "second done")):
+        first_id = auth_client.post("/ai/tasks", json={
+            "message": "summarize", "scope_drive_ids": [drive_id]}).get_json()["task"]["id"]
+        resp = auth_client.post(f"/ai/tasks/{first_id}/rerun")
+
+    assert resp.status_code == 200
+    second_id = resp.get_json()["task"]["id"]
+    assert second_id != first_id
+    with app.app_context():
+        first = db.session.get(AITask, first_id)
+        second = db.session.get(AITask, second_id)
+        assert second.status == "done"
+        assert second.conversation_id != first.conversation_id
+        assert json.loads(second.context)["drive_names"] == ["Work"]
+        user_msgs = [m.content for m in second.conversation.messages
+                     if m.role == "user"]
+        assert user_msgs == ["summarize"]
+        assert second.conversation.messages[-1].content == "second done"
+
+
+def test_rerun_running_task_rejected(auth_client, app, user):
+    task_id = _make_task(app, user, "running")
+    assert auth_client.post(f"/ai/tasks/{task_id}/rerun").status_code == 409
+    assert auth_client.post("/ai/tasks/999999/rerun").status_code == 404
+
+
+def test_rename_rerun_isolated_per_user(auth_client, app, user):
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("hi")):
+        task_id = auth_client.post(
+            "/ai/tasks", json={"message": "alice's task"}).get_json()["task"]["id"]
+
+    client2 = app.test_client()
+    with app.app_context():
+        bob = User(username="dave", email="dave@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+    client2.post("/login", data={"username": "dave",
+                                 "password": "password123"})
+    assert client2.post(f"/ai/tasks/{task_id}/rename",
+                        json={"title": "x"}).status_code == 404
+    assert client2.post(f"/ai/tasks/{task_id}/rerun").status_code == 404
