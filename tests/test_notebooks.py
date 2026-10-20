@@ -135,6 +135,10 @@ def test_notebook_list_grouped_by_drive(app, auth_client, user, enabled):
     data = auth_client.get("/m/notebooks/").data.decode()
     assert "Personal" in data
     assert "1 notebook" in data
+    # Drive sections are collapsible <details> with memory.
+    assert "nb-drive-section" in data
+    assert f'data-drive-id="{drive_id}"' in data
+    assert "nb-drive-collapsed" in data
 
 
 def test_organize_skips_synced_drives(app, auth_client, user, enabled):

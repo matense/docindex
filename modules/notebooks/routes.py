@@ -88,7 +88,8 @@ def _group_by_location(enriched):
             group["folder_order"].append(fkey)
         group["folders"][fkey]["items"].append(nb)
         group["total"] += 1
-    return [{"drive": drives[k]["drive"], "total": drives[k]["total"],
+    return [{"drive_id": k, "drive": drives[k]["drive"],
+             "total": drives[k]["total"],
              "folders": [dict(drives[k]["folders"][f],
                                folder_id=f)
                          for f in drives[k]["folder_order"]]}
