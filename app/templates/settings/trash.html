@@ -55,6 +55,52 @@
 
     <!-- File list -->
     <div class="glass-panel rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-base-content/10 flex items-center gap-3 flex-wrap">
+            <span class="font-bold text-sm">Automatic purge</span>
+            <span class="text-[11px] opacity-50">When on, files and whole drives in the trash for over 30 days are permanently deleted.</span>
+            <span class="flex-1"></span>
+            <form method="POST" action="{{ url_for('settings.trash_settings') }}" class="flex items-center gap-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="trash_auto_purge" value="{{ '' if auto_purge else 'on' }}">
+                <button type="submit" class="btn btn-xs {{ 'btn-warning' if auto_purge else 'btn-ghost' }}">
+                    {{ 'On — purges after 30 days' if auto_purge else 'Off' }}
+                </button>
+            </form>
+        </div>
+        {% if drives %}
+        <div class="px-4 py-2 text-[11px] uppercase tracking-wide opacity-50">Drives ({{ drives|length }})</div>
+        {% for d in drives %}
+        <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors border-t border-base-content/5">
+            <div class="flex items-center gap-3 flex-wrap">
+                <span class="w-9 h-9 rounded-lg bg-base-content/5 text-warning flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-hard-drive"></i>
+                </span>
+                <div class="flex-1 min-w-0">
+                    <div class="text-sm font-semibold truncate">{{ d.name }}</div>
+                    <div class="text-[11px] opacity-45 flex items-center gap-3 mt-1 flex-wrap">
+                        <span><i class="fas fa-clock mr-1"></i>deleted {{ d.deleted_at.strftime('%d %b %Y %H:%M') if d.deleted_at }}</span>
+                    </div>
+                </div>
+                <div class="flex gap-2 flex-shrink-0">
+                    <form method="POST" action="{{ url_for('drive.restore_drive', drive_id=d.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost btn-sm gap-1">
+                            <i class="fas fa-rotate-left"></i> Restore
+                        </button>
+                    </form>
+                    <form method="POST" action="{{ url_for('drive.purge_drive', drive_id=d.id) }}"
+                          data-confirm="Permanently delete drive &quot;{{ d.name }}&quot; and everything in it? This cannot be undone."
+                          data-confirm-danger>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-error btn-outline btn-sm gap-1">
+                            <i class="fas fa-xmark"></i> Delete forever
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
         {% if files %}
         <div class="divide-y divide-base-content/5">
             {% for t in files %}

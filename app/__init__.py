@@ -157,6 +157,15 @@ def create_app(config_class=Config):
         except Exception:  # noqa: BLE001 - never block app startup on this
             app.logger.exception("AI task recovery failed")
 
+    # Trash janitor: hourly pass purging items older than 30 days for users
+    # who opted into automatic purge (default off).
+    if not app.config.get("TESTING"):
+        from .services import trash_service
+        try:
+            trash_service.start_auto_purge(app)
+        except Exception:  # noqa: BLE001 - never block app startup on this
+            app.logger.exception("Trash auto-purge failed to start")
+
     # AI API endpoints are JSON; the frontend attaches the CSRF token via
     # the fetch() wrapper, so no exemptions needed.
 

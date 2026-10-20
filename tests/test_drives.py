@@ -196,3 +196,128 @@ def test_agent_scoped_to_drive(app, user, auth_client):
     # The search ran inside "Other" drive: visible.txt must not appear
     # (the tool result summary would list it otherwise)
     assert "visible.txt" not in str(steps)
+
+
+# ---------------------------------------------------------------------------
+# Drive trash: soft-delete, restore, purge, 30-day auto-purge
+# ---------------------------------------------------------------------------
+
+def _work_drive_id(app, user):
+    from app.models import Drive as _Drive
+    with app.app_context():
+        return _Drive.query.filter_by(user_id=user, name="Work").one().id
+
+
+def test_delete_drive_trashes_and_restores(auth_client, app, user):
+    _upload(auth_client, "personal.txt", b"personal stuff")
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    _upload(auth_client, "w2.txt", b"more work")
+    wid = _work_drive_id(app, user)
+
+    resp = auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        from app.models import Drive as _Drive, StoredFile as _SF
+        assert _Drive.query.get(wid).deleted_at is not None
+        # Files are untouched (restore is a one-liner).
+        assert _SF.query.filter_by(drive_id=wid).count() == 1
+
+    # Trashed drive disappears from listings; current drive falls back.
+    assert b"w2.txt" not in auth_client.get("/").data
+    resp = auth_client.get("/settings/trash")
+    assert b"Work" in resp.data
+    assert auth_client.post(f"/drives/{wid}/select").status_code == 404
+
+    auth_client.post(f"/drives/{wid}/restore", follow_redirects=True)
+    with app.app_context():
+        from app.models import Drive as _Drive2
+        assert _Drive2.query.get(wid).deleted_at is None
+    auth_client.post(f"/drives/{wid}/select", follow_redirects=True)
+    assert b"w2.txt" in auth_client.get("/").data
+
+
+def test_purge_drive_removes_everything(auth_client, app, user):
+    import os
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    _upload(auth_client, "w.txt", b"work")
+    wid = _work_drive_id(app, user)
+    with app.app_context():
+        from app.models import StoredFile as _SF
+        from app.services import file_service as _fs
+        stored = _SF.query.filter_by(drive_id=wid).one()
+        blob = _fs.file_path(stored)
+        assert os.path.exists(blob)
+    auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
+    auth_client.post(f"/drives/{wid}/purge", follow_redirects=True)
+    with app.app_context():
+        from app.models import Drive as _Drive, FileIndex as _FI, StoredFile as _SF2
+        assert _Drive.query.get(wid) is None
+        assert _SF2.query.filter_by(drive_id=wid).count() == 0
+        assert _FI.query.count() == 0
+    assert not os.path.exists(blob)
+
+
+def test_synced_drive_delete_removes_immediately(auth_client, app, user):
+    from app.models import Drive as _Drive
+    with app.app_context():
+        _Drive.query.filter_by(user_id=user).delete()
+        synced = _Drive(name="RO", user_id=user, source_path="/tmp/ro-test")
+        db.session.add(synced)
+        db.session.commit()
+        sid = synced.id
+    auth_client.post(f"/drives/{sid}/delete", follow_redirects=True)
+    with app.app_context():
+        # Row gone (no trash for synced); SQLite may reuse the id for the
+        # Personal drive recreated lazily afterwards — match by name.
+        assert _Drive.query.filter_by(name="RO").count() == 0
+
+
+def test_trash_auto_purge_toggle_and_30_day_rule(auth_client, app, user):
+    from datetime import datetime, timedelta
+    from app.models import Drive as _Drive, StoredFile as _SF, User as _U
+    from app.services import trash_service
+
+    _upload(auth_client, "old.txt", b"old")
+    _upload(auth_client, "fresh.txt", b"fresh")
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    _upload(auth_client, "w.txt", b"work")
+    wid = _work_drive_id(app, user)
+    old = datetime.utcnow() - timedelta(days=31)
+    recent = datetime.utcnow() - timedelta(days=10)
+    with app.app_context():
+        user_obj = db.session.get(_U, user)
+        assert user_obj.trash_auto_purge is False  # default off
+        db.session.query(_SF).filter_by(name="old.txt").update(
+            {"deleted_at": old})
+        db.session.query(_SF).filter_by(name="fresh.txt").update(
+            {"deleted_at": recent})
+        db.session.get(_Drive, wid).deleted_at = old
+        db.session.commit()
+
+    # Toggle off (default): nothing is purged.
+    assert trash_service.purge_expired(app) == (0, 0)
+
+    # Toggle on via the trash page.
+    resp = auth_client.post("/settings/trash/settings",
+                            data={"trash_auto_purge": "on"},
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(_U, user).trash_auto_purge is True
+
+    # Recent trash survives; 31-day-old trash is purged.
+    files, drives = trash_service.purge_expired(app)
+    assert (files, drives) == (1, 1)
+    with app.app_context():
+        assert _SF.query.filter_by(name="old.txt").count() == 0
+        assert _SF.query.filter_by(name="fresh.txt").count() == 1
+        assert _Drive.query.get(wid) is None
+
+    # Toggle back off.
+    auth_client.post("/settings/trash/settings", data={},
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(_U, user).trash_auto_purge is False

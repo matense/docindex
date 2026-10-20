@@ -46,6 +46,9 @@ def _get_file(file_id, include_trashed=False):
     stored = _get_owned(StoredFile, file_id)
     if not include_trashed and stored.deleted_at is not None:
         abort(404)
+    if (not include_trashed and stored.drive is not None
+            and stored.drive.deleted_at is not None):
+        abort(404)  # the whole drive is in the trash
     return stored
 
 
@@ -236,6 +239,48 @@ def sync_settings(drive_id):
                         "index_workers": drive.index_workers})
     flash("Sync settings saved.", "success")
     return redirect(request.form.get("next") or url_for("settings.profile"))
+
+
+@bp.route("/drives/<int:drive_id>/delete", methods=["POST"])
+@login_required
+def delete_drive(drive_id):
+    """Trash a drive (restorable). Synced drives skip the trash: their rows
+    are removed immediately, the real folder is never touched."""
+    drive, error = drive_service.trash_drive(current_user, drive_id)
+    if drive is None:
+        flash(error or "Drive not found.", "error")
+    else:
+        if session.get("drive_id") == drive.id:
+            session.pop("drive_id", None)  # get_current_drive() falls back
+        if drive.is_synced:
+            flash(f'Synced drive "{drive.name}" removed. The folder on disk was '
+                  "not touched.", "success")
+        else:
+            flash(f'Drive "{drive.name}" moved to the trash.', "success")
+    return redirect(request.form.get("next") or url_for("drive.index"))
+
+
+@bp.route("/drives/<int:drive_id>/restore", methods=["POST"])
+@login_required
+def restore_drive(drive_id):
+    drive = drive_service.restore_drive(current_user, drive_id)
+    if drive is None:
+        flash("Drive not found.", "error")
+    else:
+        flash(f'Drive "{drive.name}" restored.', "success")
+    return redirect(request.form.get("next") or url_for("settings.trash"))
+
+
+@bp.route("/drives/<int:drive_id>/purge", methods=["POST"])
+@login_required
+def purge_drive(drive_id):
+    if not drive_service.purge_drive(current_user, drive_id):
+        flash("Drive not found.", "error")
+    else:
+        if session.get("drive_id") == int(drive_id):
+            session.pop("drive_id", None)
+        flash("Drive permanently deleted.", "success")
+    return redirect(request.form.get("next") or url_for("settings.trash"))
 
 
 @bp.route("/drives/<int:drive_id>/remove", methods=["POST"])

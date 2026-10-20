@@ -9,13 +9,23 @@ folders are moved into it.
 from flask import session
 
 from ..extensions import db
-from ..models import Drive, Folder, StoredFile
+from ..models import Drive, Folder, StoredFile, utcnow
 
 DEFAULT_DRIVE_NAME = "Personal"
 
 
 def list_drives(user):
-    return Drive.query.filter_by(user_id=user.id).order_by(Drive.name).all()
+    """Non-trashed drives (trash lives separately)."""
+    return (Drive.query.filter_by(user_id=user.id)
+            .filter(Drive.deleted_at.is_(None))
+            .order_by(Drive.name).all())
+
+
+def trashed_drives(user):
+    """Soft-deleted drives, most recently deleted first."""
+    return (Drive.query.filter_by(user_id=user.id)
+            .filter(Drive.deleted_at.isnot(None))
+            .order_by(Drive.deleted_at.desc()).all())
 
 
 def _create_drive(user, name):
@@ -26,14 +36,20 @@ def _create_drive(user, name):
 
 
 def get_current_drive(user):
-    """Current drive for the user, creating/migrating lazily when needed."""
+    """Current drive for the user, creating/migrating lazily when needed.
+
+    Trashed drives are never returned: a session pointing at one falls
+    back to the oldest live drive (or a fresh Personal drive)."""
     drive = None
     drive_id = session.get("drive_id")
     if drive_id:
-        drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
+        drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
+                 .filter(Drive.deleted_at.is_(None)).first())
 
     if drive is None:
-        drive = Drive.query.filter_by(user_id=user.id).order_by(Drive.id).first()
+        drive = (Drive.query.filter_by(user_id=user.id)
+                 .filter(Drive.deleted_at.is_(None))
+                 .order_by(Drive.id).first())
 
     if drive is None:
         drive = _create_drive(user, DEFAULT_DRIVE_NAME)
@@ -81,6 +97,7 @@ def create_drive(user, name):
     if not name:
         return None, "Drive name cannot be empty."
     exists = Drive.query.filter(Drive.user_id == user.id,
+                                Drive.deleted_at.is_(None),
                                 Drive.name.ilike(name)).first()
     if exists:
         return None, f'A drive named "{name}" already exists.'
@@ -91,8 +108,10 @@ def create_drive(user, name):
 
 
 def select_drive(user, drive_id):
-    """Switch the current drive. Returns the drive or None if not owned."""
-    drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
+    """Switch the current drive. Returns the drive or None if not owned
+    (trashed drives cannot be selected)."""
+    drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
+             .filter(Drive.deleted_at.is_(None)).first())
     if drive:
         session["drive_id"] = drive.id
     return drive
@@ -100,7 +119,8 @@ def select_drive(user, drive_id):
 
 def update_drive(user, drive_id, name, description):
     """Rename a drive and/or set its description. Returns (drive, error)."""
-    drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
+    drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
+             .filter(Drive.deleted_at.is_(None)).first())
     if not drive:
         return None, "Drive not found."
     name = (name or "").strip()
@@ -108,6 +128,7 @@ def update_drive(user, drive_id, name, description):
         return None, "Drive name cannot be empty."
     clash = (Drive.query
              .filter(Drive.user_id == user.id, Drive.id != drive.id,
+                     Drive.deleted_at.is_(None),
                      Drive.name.ilike(name))
              .first())
     if clash:
@@ -116,3 +137,50 @@ def update_drive(user, drive_id, name, description):
     drive.description = (description or "").strip()[:500]
     db.session.commit()
     return drive, None
+
+
+def trash_drive(user, drive_id):
+    """Soft-delete a drive (restorable from the trash). Synced drives are
+    mirrors of real folders, so they skip the trash and are removed
+    immediately instead. Returns (drive, error)."""
+    from . import sync_service
+    drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
+    if not drive or drive.deleted_at is not None:
+        return None, "Drive not found."
+    if drive.is_synced:
+        sync_service.remove_synced_drive(drive)
+        return drive, None
+    drive.deleted_at = utcnow()
+    db.session.commit()
+    return drive, None
+
+
+def restore_drive(user, drive_id):
+    """Undo a soft-delete. Returns the drive or None."""
+    drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
+             .filter(Drive.deleted_at.isnot(None)).first())
+    if drive is None:
+        return None
+    drive.deleted_at = None
+    db.session.commit()
+    return drive
+
+
+def purge_drive(user, drive_id):
+    """Permanently delete a trashed drive and everything in it (files with
+    blobs, versions, index + embedding rows, FTS entries, folders). Returns
+    True when something was removed."""
+    from . import file_service
+    drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
+             .filter(Drive.deleted_at.isnot(None)).first())
+    if drive is None:
+        return False
+    for stored in StoredFile.query.filter_by(drive_id=drive.id).all():
+        if stored.deleted_at is None:
+            stored.deleted_at = utcnow()
+        file_service.purge_file(stored)
+    for folder in Folder.query.filter_by(drive_id=drive.id).all():
+        db.session.delete(folder)
+    db.session.delete(drive)
+    db.session.commit()
+    return True

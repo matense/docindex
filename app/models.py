@@ -20,6 +20,8 @@ class User(UserMixin, db.Model):
     is_admin = db.Column(db.Boolean, default=False)
     theme = db.Column(db.String(10), nullable=False,
                       default="light", server_default="light")
+    trash_auto_purge = db.Column(db.Boolean, nullable=False, default=False,
+                                 server_default="false")  # purge trash older than 30 days
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",
@@ -57,6 +59,7 @@ class Drive(db.Model):
     last_sync_stats = db.Column(db.Text, nullable=True)  # JSON stats of the last sync
     captions_enabled = db.Column(db.Boolean, nullable=False, default=True)  # AI image captions
     index_workers = db.Column(db.Integer, nullable=False, default=1)  # parallel indexing workers
+    deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete: trash, restorable
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",

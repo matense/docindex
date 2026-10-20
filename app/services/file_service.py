@@ -195,6 +195,9 @@ def purge_file(stored_file):
     # Any queued index jobs for the file disappear with it (FK safety).
     from ..models import IndexJob
     IndexJob.query.filter_by(file_id=file_id).delete()
+    # Semantic vectors have no cascade (plain FK) — remove them explicitly.
+    from ..models import FileEmbedding
+    FileEmbedding.query.filter_by(file_id=file_id).delete()
     db.session.delete(stored_file)
     db.session.flush()
     from . import search_service

@@ -235,6 +235,7 @@ TRASH_PER_PAGE = 50
 def trash():
     """Dedicated trash bin page: browse, search, restore or purge deleted
     files (linked from a card on the profile page)."""
+    from ..services import drive_service
     page = max(1, request.args.get("page", 1, type=int))
     q = (request.args.get("q") or "").strip()
     query = (StoredFile.query
@@ -248,8 +249,26 @@ def trash():
              .filter(StoredFile.user_id == current_user.id,
                      StoredFile.deleted_at.isnot(None))
              .count())
+    drives = drive_service.trashed_drives(current_user)
     return render_template("settings/trash.html", files=pagination.items,
-                           pagination=pagination, q=q, total=total)
+                           pagination=pagination, q=q, total=total,
+                           drives=drives,
+                           auto_purge=current_user.trash_auto_purge)
+
+
+@bp.route("/trash/settings", methods=["POST"])
+@login_required
+def trash_settings():
+    """Toggle the 30-day automatic purge (off = trash waits forever)."""
+    current_user.trash_auto_purge = request.form.get("trash_auto_purge") == "on"
+    db.session.commit()
+    if current_user.trash_auto_purge:
+        flash("Automatic purge enabled: trash older than 30 days is "
+              "permanently deleted, including whole drives.", "success")
+    else:
+        flash("Automatic purge disabled: trashed items wait until you "
+              "delete them manually.", "success")
+    return redirect(url_for("settings.trash"))
 
 
 # --------------------------------------------------------------------------
