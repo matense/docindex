@@ -18,11 +18,34 @@
         <button class="btn btn-primary btn-sm gap-1" onclick="document.getElementById('nb-new-modal').showModal()">
             <i class="fas fa-plus"></i> New notebook
         </button>
+        <button type="button" class="btn btn-ghost btn-sm gap-1" id="nb-organize-btn" title="Preview a plan that moves every notebook into its drive's 'DocIndex Notebooks' folder — nothing moves until you confirm">
+            <i class="fas fa-sitemap text-secondary"></i> Organize
+        </button>
+        {% if revertable %}
+        <form method="POST" action="{{ url_for('notebooks.organize_revert') }}"
+              data-confirm="Move the organized notebooks back to where they were?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost btn-sm gap-1" title="Undo the last organize run">
+                <i class="fas fa-rotate-left text-warning"></i> Revert last organize
+            </button>
+        </form>
+        {% endif %}
     </div>
 
-    {% if notebooks %}
+    {% if groups %}
+    {% for g in groups %}
+    <div class="flex items-center gap-2 px-1 pt-2 text-xs opacity-60">
+        <i class="fas fa-hard-drive"></i><span class="font-semibold">{{ g.drive }}</span>
+        <span class="opacity-50">/</span>
+        {% if g.folder == 'DocIndex Notebooks' %}
+        <span class="badge badge-primary badge-sm gap-1"><i class="fas fa-book-open"></i>{{ g.folder }}</span>
+        {% else %}
+        <span>{{ g.folder }}</span>
+        {% endif %}
+        <span class="badge badge-ghost badge-sm ml-auto">{{ g['items']|length }}</span>
+    </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {% for nb in notebooks %}
+        {% for nb in g['items'] %}
         <div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-2">
             <div class="flex items-center gap-2">
                 <i class="fas fa-book-open text-primary"></i>
@@ -67,6 +90,7 @@
         </div>
         {% endfor %}
     </div>
+    {% endfor %}
     {% else %}
     <div class="glass-panel rounded-2xl px-6 py-12 text-center">
         <i class="fas fa-book-open text-4xl opacity-20"></i>
@@ -125,6 +149,31 @@
     <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
 
+<!-- Organize plan modal -->
+<dialog id="nb-organize-modal" class="modal">
+    <div class="modal-box glass-panel max-w-2xl">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-sitemap text-secondary"></i> Organize notebooks</h3>
+        <p class="text-xs opacity-50 mb-4">
+            Every notebook moves into its drive's <strong>DocIndex Notebooks</strong> folder.
+            Nothing moves until you press Confirm — review the plan below.
+        </p>
+        <div id="nb-organize-plan" class="flex flex-col gap-1.5 max-h-96 overflow-auto text-sm">
+            <p class="text-xs opacity-50 py-4 text-center">
+                <i class="fas fa-circle-notch fa-spin"></i> Computing plan…
+            </p>
+        </div>
+        <form method="POST" action="{{ url_for('notebooks.organize_apply') }}" class="modal-action">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('nb-organize-modal').close()">Cancel</button>
+            <button type="submit" class="btn btn-primary btn-sm gap-1" id="nb-organize-confirm" disabled>
+                <i class="fas fa-check"></i> Confirm &amp; move
+            </button>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
 <script>
 (function () {
     window.nbRename = function (id, currentName) {
@@ -134,6 +183,51 @@
             currentName.endsWith('.pdocnb') ? currentName.slice(0, -7) : currentName;
         document.getElementById('nb-rename-modal').showModal();
     };
+
+    const esc = s => String(s ?? '').replace(/[&<>"']/g,
+        c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    const organizeBtn = document.getElementById('nb-organize-btn');
+    if (organizeBtn) {
+        organizeBtn.addEventListener('click', () => {
+            const box = document.getElementById('nb-organize-plan');
+            const confirmBtn = document.getElementById('nb-organize-confirm');
+            confirmBtn.disabled = true;
+            box.innerHTML = '<p class="text-xs opacity-50 py-4 text-center">'
+                + '<i class="fas fa-circle-notch fa-spin"></i> Computing plan…</p>';
+            document.getElementById('nb-organize-modal').showModal();
+            fetch('{{ url_for('notebooks.organize_plan') }}')
+                .then(r => r.json())
+                .then(data => {
+                    const moves = data.moves || [];
+                    if (!moves.length) {
+                        box.innerHTML = '<p class="text-xs opacity-60 py-4 text-center">'
+                            + 'Nothing to organize — every notebook is already in its '
+                            + "'DocIndex Notebooks' folder."
+                            + (data.skipped_synced ? ' (' + data.skipped_synced + ' on read-only drives stay put.)' : '')
+                            + '</p>';
+                        return;
+                    }
+                    box.innerHTML = moves.map(m => {
+                        const from = m.from_folder_name
+                            ? esc(m.from_drive_name) + ' / ' + esc(m.from_folder_name)
+                            : esc(m.from_drive_name) + ' /';
+                        return '<div class="flex items-center gap-2 rounded-lg border border-base-content/10 px-3 py-2">'
+                            + '<i class="fas fa-book-open text-primary flex-shrink-0"></i>'
+                            + '<span class="font-medium truncate">' + esc(m.name) + '</span>'
+                            + '<span class="text-[11px] opacity-50 truncate ml-auto">' + from
+                            + ' <i class="fas fa-arrow-right mx-1"></i> '
+                            + esc(m.to_drive_name) + ' / ' + esc(m.to_folder_name) + '</span>'
+                            + '</div>';
+                    }).join('')
+                    + (data.skipped_synced ? '<p class="text-[11px] opacity-50 text-center">'
+                        + data.skipped_synced + ' notebook(s) on read-only drives stay put.</p>' : '');
+                    confirmBtn.disabled = false;
+                })
+                .catch(() => {
+                    box.innerHTML = '<p class="text-xs text-error py-4 text-center">Could not compute the plan.</p>';
+                });
+        });
+    }
 })();
 </script>
 {% endblock %}

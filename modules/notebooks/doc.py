@@ -38,6 +38,28 @@ from app.services import file_service, indexing_service
 
 EXTENSION = "pdocnb"
 MIME_TYPE = "application/json"
+
+# Dedicated folder per drive holding that drive's notebooks ("separated by
+# context"). Created on demand; the drive UI renders it with a book icon.
+NOTEBOOKS_FOLDER = "DocIndex Notebooks"
+
+
+def notebooks_folder(user, drive):
+    """Get-or-create the drive's notebooks folder. Returns None for synced
+    (read-only) drives — nothing may be created in them."""
+    from app.models import Drive, Folder
+    if drive is None or getattr(drive, "is_synced", False):
+        return None
+    folder = (Folder.query
+              .filter_by(user_id=user.id, drive_id=drive.id,
+                         parent_id=None, name=NOTEBOOKS_FOLDER)
+              .first())
+    if folder is None:
+        folder = Folder(user_id=user.id, drive_id=drive.id,
+                        parent_id=None, name=NOTEBOOKS_FOLDER)
+        db.session.add(folder)
+        db.session.commit()
+    return folder
 SNAPSHOT_INTERVAL = timedelta(minutes=2)
 CELL_TYPES = ("markdown", "richtext", "code", "todo", "table",
               "heading", "separator")
@@ -266,6 +288,110 @@ def _guard_writable_drive(drive):
     if drive.is_synced:
         raise ValueError("Synced drives are read-only — notebooks cannot be "
                          "created there.")
+
+
+# ---------------------------------------------------------------------------
+# Organize: every drive's notebooks into its "DocIndex Notebooks" folder
+# ---------------------------------------------------------------------------
+
+def organize_preview(user):
+    """Notebooks not yet in their drive's notebooks folder.
+
+    Returns (moves, skipped): moves are
+    {file_id, name, from_drive_id, from_folder_id, to_drive_id, to_folder_id}
+    dicts; skipped counts notebooks on synced (read-only) drives, which can
+    never move. Nothing is changed — call apply_organize() to execute."""
+    moves, skipped = [], 0
+    for stored in list_notebooks(user.id):
+        drive = stored.drive
+        if drive is None or getattr(drive, "is_synced", False):
+            skipped += 1
+            continue
+        target = notebooks_folder(user, drive)
+        if stored.folder_id != target.id:
+            moves.append({
+                "file_id": stored.id, "name": stored.name,
+                "from_drive_id": drive.id,
+                "from_drive_name": drive.name,
+                "from_folder_id": stored.folder_id,
+                "from_folder_name": (stored.folder.name
+                                     if stored.folder else None),
+                "to_drive_id": drive.id,
+                "to_drive_name": drive.name,
+                "to_folder_id": target.id,
+                "to_folder_name": target.name,
+            })
+    return moves, skipped
+
+
+def apply_organize(user):
+    """Execute the current organize preview through the normal move path
+    (version history is preserved) and persist the applied moves as a
+    NotebookOrganizePlan for 'Revert last organize'. Returns
+    (record_or_None, applied_count, skipped_count)."""
+    from app.models import NotebookOrganizePlan
+    moves, skipped = organize_preview(user)
+    applied = []
+    for move in moves:
+        stored = get_notebook(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        moved, error = file_service.move_file_to_drive(
+            user, stored.id, move["to_drive_id"], move["to_folder_id"])
+        if error:
+            skipped += 1
+            continue
+        applied.append({
+            "file_id": moved.id, "name": moved.name,
+            "from_drive_id": move["from_drive_id"],
+            "from_folder_id": move["from_folder_id"],
+            "to_drive_id": moved.drive_id,
+            "to_folder_id": moved.folder_id,
+        })
+    record = None
+    if applied:
+        record = NotebookOrganizePlan(user_id=user.id, plan=applied,
+                                      applied=True)
+        db.session.add(record)
+        db.session.commit()
+    return record, len(applied), skipped
+
+
+def revert_organize(user):
+    """Replay the inverse moves of the latest applied, non-reverted plan.
+    Returns (moved_back_count, skipped_count, found)."""
+    from app.models import NotebookOrganizePlan
+    record = (NotebookOrganizePlan.query
+              .filter_by(user_id=user.id, applied=True, reverted=False)
+              .order_by(NotebookOrganizePlan.id.desc())
+              .first())
+    if record is None:
+        return 0, 0, False
+    moved, skipped = 0, 0
+    for move in reversed(record.plan or []):
+        stored = get_notebook(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        _, error = file_service.move_file_to_drive(
+            user, stored.id, move["from_drive_id"], move["from_folder_id"])
+        if error:
+            skipped += 1
+        else:
+            moved += 1
+    record.reverted = True
+    db.session.commit()
+    return moved, skipped, True
+
+
+def last_organize_plan(user):
+    """Latest applied, non-reverted plan (what 'Revert' would undo)."""
+    from app.models import NotebookOrganizePlan
+    return (NotebookOrganizePlan.query
+            .filter_by(user_id=user.id, applied=True, reverted=False)
+            .order_by(NotebookOrganizePlan.id.desc())
+            .first())
 
 
 def save_document(stored, doc, force_checkpoint=False, note="", source="edit",

@@ -13,6 +13,9 @@
             "New Copy button and right-click Copy on files and folders; toolbar badge, menus and toasts show whether the clipboard holds a move or a copy.",
             "Two new AI tools, move_files and copy_files: ask the chat to reorganize files across drives, with live progress chips like every other tool.",
             "New automation node 'Move file to drive' (the Copy node also learned an optional destination folder); both refuse read-only drives.",
+            "Move/copy automation nodes now also take whole folders (new 'Folder from drive' input node): moving a folder relocates its entire tree with the descend-into-itself guard.",
+            "Favorites for personas and behaviors: star any Agency persona or your own behavior (Behaviors page or picker), and a ★ Favorites group pins them at the top of the chat persona picker; starred behaviors sort first in the Automation behavior dropdown.",
+            "Notebook organize: every drive gets a 'DocIndex Notebooks' folder (book icon) where new notebooks land by default; the Notebooks page offers Organize (previewed plan, explicit Confirm — never silent) and Revert last organize, with the plan persisted so it survives restarts; automation notebook pickers group by folder.",
             "Drives now have a trash bin: deleting a drive moves it — and every file in it — to the trash, and restoring brings the files back (files trashed earlier stay trashed). Purge deletes everything permanently; an opt-in 30-day auto-purge cleans old trash.",
             "Synced drives never touch your real files: removing one only clears its DocIndex rows."
           ]

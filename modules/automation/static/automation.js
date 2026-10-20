@@ -1393,11 +1393,24 @@
             const blank = document.createElement('option');
             blank.value = ''; blank.textContent = '— none —';
             input.appendChild(blank);
+            // Group by the organized location (drive / folder) so the
+            // "DocIndex Notebooks" folders read as sections.
+            const byLoc = new Map();
             (window.automationEditorData.notebooks || []).forEach(n => {
-                const o = document.createElement('option');
-                o.value = n.id;
-                o.textContent = n.name;
-                input.appendChild(o);
+                const loc = n.location || 'No drive';
+                if (!byLoc.has(loc)) byLoc.set(loc, []);
+                byLoc.get(loc).push(n);
+            });
+            [...byLoc.entries()].sort((a, b) => a[0].localeCompare(b[0])).forEach(([loc, items]) => {
+                const group = document.createElement('optgroup');
+                group.label = loc;
+                items.forEach(n => {
+                    const o = document.createElement('option');
+                    o.value = n.id;
+                    o.textContent = n.name;
+                    group.appendChild(o);
+                });
+                input.appendChild(group);
             });
         } else if (field.kind === 'notebook_cell') {
             // Cell picker for the "Save to notebook" node — options are

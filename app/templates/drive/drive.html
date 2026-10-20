@@ -112,7 +112,7 @@
     <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
              data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}" draggable="true"
              {%- if drive.is_synced %} data-is-synced="1"{% endif %}>
-        <i class="fas fa-folder text-warning"></i> {{ f.name }}
+        <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
     </summary>
     <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col">
         {% for child in f.children | sort(attribute='name') %}{{ tree_folder(child) }}{% endfor %}
@@ -281,7 +281,7 @@
                 draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
                 <td class="px-4 py-2.5">
                     <span class="flex items-center gap-2 font-medium">
-                        <i class="fas fa-folder text-warning"></i> {{ f.name }}
+                        <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
                     </span>
                 </td>
                 <td class="px-4 py-2.5 opacity-60">Folder</td>
@@ -334,7 +334,7 @@
          style="--i:{{ loop.index }}" data-nav="{{ url_for('drive.index', folder_id=f.id) }}"
          data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}"
          draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
-        <i class="fas fa-folder text-4xl text-warning"></i>
+        <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }} text-4xl"></i>
         <span class="font-medium text-sm text-center break-all line-clamp-2">{{ f.name }}</span>
     </div>
     {% endfor %}

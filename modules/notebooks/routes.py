@@ -2,7 +2,7 @@
 
 import difflib
 
-from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user
 
 from app.extensions import db
@@ -62,7 +62,64 @@ def index():
             "tags": hashtag_service.get_tags(stored.index),
         })
     return render_template("notebooks/list.html",
-                           notebooks=enriched, locations=_locations())
+                           notebooks=enriched,
+                           groups=_group_by_location(enriched),
+                           locations=_locations(),
+                           revertable=doc_service.last_organize_plan(
+                               current_user) is not None)
+
+
+def _group_by_location(enriched):
+    """Notebook cards grouped by drive + folder (gallery stays organized)."""
+    groups, order = {}, []
+    for nb in enriched:
+        stored = nb["file"]
+        drive_name = stored.drive.name if stored.drive else "No drive"
+        folder_name = stored.folder.name if stored.folder else "/"
+        key = (stored.drive_id, stored.folder_id)
+        if key not in groups:
+            groups[key] = {"drive": drive_name, "folder": folder_name,
+                            "items": []}
+            order.append(key)
+        groups[key]["items"].append(nb)
+    return [groups[k] for k in order]
+
+
+@bp.get("/organize/plan")
+def organize_plan():
+    """Preview: notebooks that would move, and where. No changes made —
+    the user must confirm (POST /organize/apply) for anything to move."""
+    moves, skipped = doc_service.organize_preview(current_user)
+    return jsonify({"moves": moves, "skipped_synced": skipped})
+
+
+@bp.post("/organize/apply")
+def organize_apply():
+    """Execute the organize plan (explicit confirmation only — this is the
+    only path that moves notebooks)."""
+    record, applied, skipped = doc_service.apply_organize(current_user)
+    if applied:
+        flash(f"Organized {applied} notebook(s) into 'DocIndex Notebooks' "
+              f"folders." + (f" {skipped} skipped." if skipped else ""),
+              "success")
+    else:
+        flash("Nothing to organize — every notebook is already in place.",
+              "info")
+    return redirect(url_for("notebooks.index"))
+
+
+@bp.post("/organize/revert")
+def organize_revert():
+    """Undo the last organize: replay the inverse moves of its logged plan."""
+    moved, skipped, found = doc_service.revert_organize(current_user)
+    if not found:
+        flash("No organize run to revert.", "info")
+    elif moved:
+        flash(f"Reverted: {moved} notebook(s) moved back."
+              + (f" {skipped} skipped." if skipped else ""), "success")
+    else:
+        flash("Revert found nothing to move back.", "info")
+    return redirect(url_for("notebooks.index"))
 
 
 @bp.post("/new")
@@ -72,6 +129,10 @@ def new():
     drive, folder = None, None
     if location.startswith("drive:"):
         drive = db.session.get(Drive, int(location[6:]))
+        if drive is not None:
+            # Drive root means the drive's notebooks folder — every drive
+            # keeps its notebooks in "DocIndex Notebooks".
+            folder = doc_service.notebooks_folder(current_user, drive)
     elif location.startswith("folder:"):
         folder = db.session.get(Folder, int(location[7:]))
         drive = folder.drive if folder else None

@@ -50,6 +50,89 @@ def _create(app, user_id, drive_id, name="Notes", cells=None):
         return stored.id
 
 
+# ---------------------------------------------------------------------------
+# Organize: "DocIndex Notebooks" folder + plan/apply/revert
+# ---------------------------------------------------------------------------
+
+def test_notebooks_folder_created_per_drive(app, user):
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        folder = nb_doc.notebooks_folder(user_obj, drive)
+        assert folder.name == "DocIndex Notebooks"
+        assert folder.parent_id is None
+        assert folder.drive_id == drive_id
+        # idempotent — second call returns the same folder
+        assert nb_doc.notebooks_folder(user_obj, drive).id == folder.id
+        synced = Drive(name="RO", user_id=user, source_path="/tmp/ro")
+        db.session.add(synced)
+        db.session.commit()
+        assert nb_doc.notebooks_folder(user_obj, synced) is None
+
+
+def test_organize_plan_apply_and_revert(app, auth_client, user, enabled):
+    from app.models import NotebookOrganizePlan
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Loose")
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).folder_id is None
+
+    data = auth_client.get("/m/notebooks/organize/plan").get_json()
+    assert len(data["moves"]) == 1
+    assert data["skipped_synced"] == 0
+    assert data["moves"][0]["to_folder_name"] == "DocIndex Notebooks"
+
+    resp = auth_client.post("/m/notebooks/organize/apply",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.folder.name == "DocIndex Notebooks"
+        plan = NotebookOrganizePlan.query.one()
+        assert plan.applied is True and plan.reverted is False
+
+    # Plan is now empty; revert moves the notebook back to the root.
+    assert auth_client.get("/m/notebooks/organize/plan").get_json()[
+        "moves"] == []
+    auth_client.post("/m/notebooks/organize/revert", follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).folder_id is None
+        assert NotebookOrganizePlan.query.one().reverted is True
+
+    # Nothing left to revert.
+    resp = auth_client.post("/m/notebooks/organize/revert",
+                            follow_redirects=True)
+    assert b"No organize run" in resp.data
+
+
+def test_organize_skips_synced_drives(app, auth_client, user, enabled):
+    drive_id = _drive(app, user, synced=True)
+    with app.app_context():
+        # Notebook file placed directly (creation refuses synced drives).
+        stored = StoredFile(name="RO.pdocnb", stored_name="ro123",
+                            extension="pdocnb", mime_type="application/json",
+                            size=10, checksum="x", user_id=user,
+                            drive_id=drive_id)
+        db.session.add(stored)
+        db.session.commit()
+    data = auth_client.get("/m/notebooks/organize/plan").get_json()
+    assert data["moves"] == [] and data["skipped_synced"] == 1
+
+
+def test_new_notebook_defaults_to_notebooks_folder(app, auth_client, user,
+                                                    enabled):
+    drive_id = _drive(app, user)
+    auth_client.post("/m/notebooks/new",
+                     data={"name": "Fresh", "location": f"drive:{drive_id}"},
+                     follow_redirects=True)
+    with app.app_context():
+        stored = (StoredFile.query
+                  .filter_by(user_id=user, extension="pdocnb").one())
+        assert stored.folder.name == "DocIndex Notebooks"
+        assert stored.folder.drive_id == drive_id
+
+
 def test_create_notebook_indexes_and_searchable(app, user):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id, "Shopping ideas",

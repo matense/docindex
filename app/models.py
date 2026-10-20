@@ -470,3 +470,26 @@ class PersonaPref(db.Model):
 
     def __repr__(self):
         return f"<PersonaPref {self.user_id} {self.persona_key}={self.enabled}>"
+
+
+class NotebookOrganizePlan(db.Model):
+    """A notebook organize run: the plan (moves) that was previewed and
+    confirmed, so 'Revert last organize' can replay the inverse moves even
+    after a restart. Moves go through the normal file-move path, so each
+    notebook keeps its full version history."""
+
+    __tablename__ = "notebook_organize_plans"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    # [{file_id, name, from_drive_id, from_folder_id,
+    #   to_drive_id, to_folder_id}]
+    plan = db.Column(db.JSON, nullable=False, default=list)
+    applied = db.Column(db.Boolean, nullable=False, default=False)
+    reverted = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def __repr__(self):
+        return (f"<NotebookOrganizePlan {self.id} "
+                f"applied={self.applied} reverted={self.reverted}>")

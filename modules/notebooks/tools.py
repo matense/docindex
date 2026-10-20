@@ -113,6 +113,10 @@ def _tool_create(user, args, drive):
                         .order_by(Drive.id).first())
     if target_drive is None:
         return {"error": "No writable drive found — create one first."}
+    if folder is None:
+        # No folder picked: the drive's notebooks folder keeps every
+        # drive's notebooks separated by context.
+        folder = doc_service.notebooks_folder(user, target_drive)
     try:
         cells = [doc_service.new_cell(c.get("type", "markdown"),
                                       c.get("content", ""), c.get("meta"))

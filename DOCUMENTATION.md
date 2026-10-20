@@ -1216,7 +1216,14 @@ tool + table).
   Toolbar flags: **AI lock** (the AI can read but not edit — its tools get
   an error telling it to ask the user to unlock) and **hide from AI**
   (invisible to every core tool via the guard and to the module tools).
-  First enable creates a "My Notebooks" drive via `on_enable`. Rich-text
+  First enable creates a "My Notebooks" drive via `on_enable`. Every drive
+  also has a "DocIndex Notebooks" folder (auto-created, book icon in drive
+  views) holding that drive's notebooks; new notebooks default into it,
+  and the notebooks page offers **Organize** — a previewed plan that moves
+  every stray notebook there (explicit Confirm only, never silent), logged
+  as a `NotebookOrganizePlan` row so **Revert last organize** replays the
+  inverse moves even after a restart. Automation notebook pickers group by
+  the organized drive/folder location. Rich-text
   cells embed images uploaded through `/m/notebooks/<id>/assets` (stored
   as real, indexed files next to the notebook), and rich-text/markdown
   cells can reference drive files. Cells can be dragged into the AI chat
@@ -1260,7 +1267,7 @@ tool + table).
   fed by `/api/notebook-cells` — and workflow
   result preview). Notebook nodes are gated on the notebooks module.
   Data flows as typed payload envelopes (`text`/`json`/
-  `table`/`files`) with coercions between kinds. Runs are persistent
+  `table`/`files`/`folders`/`drive`) with coercions between kinds. Runs are persistent
   rows (`mod_automation_run`) with a per-node log, live-polling detail
   page with an output console and per-node output inspection,
   cooperative stop, startup recovery of interrupted runs, and a

@@ -302,7 +302,8 @@ def editor(workflow_id):
 
 def _notebooks():
     """User's notebooks for the notebook node pickers ([] when the module
-    is disabled)."""
+    is disabled). Each entry carries its drive/folder location so the
+    editor groups the picker by the organized folders."""
     from app.services import module_service
     if not module_service.is_enabled("notebooks"):
         return []
@@ -311,8 +312,13 @@ def _notebooks():
         doc = importlib.import_module("docindex_module_notebooks.doc")
     except ImportError:
         return []
-    return [{"id": n.id, "name": n.name}
-            for n in doc.list_notebooks(current_user.id)]
+    items = []
+    for n in doc.list_notebooks(current_user.id):
+        drive_name = n.drive.name if n.drive else "No drive"
+        folder_name = n.folder.name if n.folder else "/"
+        items.append({"id": n.id, "name": n.name,
+                      "location": f"{drive_name} / {folder_name}"})
+    return items
 
 
 @bp.get("/<int:workflow_id>/graph")
