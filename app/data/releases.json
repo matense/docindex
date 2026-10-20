@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "0.1.5",
+      "date": "2026-10-20",
+      "title": "File mobility: move & copy between drives, drives in the trash",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Move and copy files and folders between drives: cut or copy a selection, switch drives, and paste there — name clashes are renamed automatically and read-only (synced) drives refuse the operation.",
+            "New Copy button and right-click Copy on files and folders; toolbar badge, menus and toasts show whether the clipboard holds a move or a copy.",
+            "Two new AI tools, move_files and copy_files: ask the chat to reorganize files across drives, with live progress chips like every other tool.",
+            "New automation node 'Move file to drive' (the Copy node also learned an optional destination folder); both refuse read-only drives.",
+            "Drives now have a trash bin: deleting a drive moves it — and every file in it — to the trash, and restoring brings the files back (files trashed earlier stay trashed). Purge deletes everything permanently; an opt-in 30-day auto-purge cleans old trash.",
+            "Synced drives never touch your real files: removing one only clears its DocIndex rows."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.4",
       "date": "2026-10-18",
       "title": "Live background work: animated tools, run widgets, smarter tasks",
