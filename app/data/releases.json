@@ -3,7 +3,7 @@
     {
       "version": "0.1.5",
       "date": "2026-10-20",
-      "title": "File mobility: move & copy between drives, drives in the trash",
+      "title": "Organize everything: file mobility, favorites, notebook folders",
       "sections": [
         {
           "title": "New",
@@ -14,9 +14,17 @@
             "Two new AI tools, move_files and copy_files: ask the chat to reorganize files across drives, with live progress chips like every other tool.",
             "New automation node 'Move file to drive' (the Copy node also learned an optional destination folder); both refuse read-only drives.",
             "Move/copy automation nodes now also take whole folders (new 'Folder from drive' input node): moving a folder relocates its entire tree with the descend-into-itself guard.",
-            "Favorites for personas and behaviors: star any Agency persona or your own behavior (Behaviors page or picker), and a ★ Favorites group pins them at the top of the chat persona picker; starred behaviors sort first in the Automation behavior dropdown.",
-            "Notebook organize: every drive gets a 'DocIndex Notebooks' folder (book icon) where new notebooks land by default; the Notebooks page offers Organize (previewed plan, explicit Confirm — never silent) and Revert last organize, with the plan persisted so it survives restarts; automation notebook pickers group by folder.",
-            "Drives now have a trash bin: deleting a drive moves it — and every file in it — to the trash, and restoring brings the files back (files trashed earlier stay trashed). Synced drives skip the trash and are removed immediately. Purge deletes everything permanently; an opt-in 30-day auto-purge cleans old trash."
+            "Favorites for personas and behaviors: star any Agency persona or your own behavior (Behaviors page or picker), and a ★ Favorites group pins them at the top of the chat persona picker; your behaviors can now be picked in the chat like personas, and starred ones sort first in the Automation behavior dropdown.",
+            "Notebook organize: every drive gets a 'DocIndex Notebooks' folder (book icon, backfilled for old drives) where new notebooks land by default; the Notebooks page groups cards by drive and folder in collapsible sections that remember their state, and offers Organize (previewed plan, explicit Confirm — never silent) plus Revert last organize, with the plan persisted so it survives restarts; automation notebook pickers group by folder.",
+            "Drives now have a trash bin: deleting a drive moves it — and every file in it — to the trash, and restoring brings the files back (files trashed earlier stay trashed). Synced drives skip the trash and are removed immediately. Purge deletes everything permanently; an opt-in 30-day auto-purge (now a prominent panel) cleans old trash."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Restoring a file whose drive is still trashed no longer strands it in limbo: a choice page asks whether to restore the original drive too or put the file in another drive.",
+            "Favorite stars were invisible (invalid icon class) on the Behaviors page and chat pickers — now a proper outline/solid star."
           ]
         }
       ]
