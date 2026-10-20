@@ -295,12 +295,14 @@ def _guard_writable_drive(drive):
 # ---------------------------------------------------------------------------
 
 def organize_preview(user):
-    """Notebooks not yet in their drive's notebooks folder.
+    """Notebooks not yet under their drive's notebooks folder.
 
     Returns (moves, skipped): moves are
     {file_id, name, from_drive_id, from_folder_id, to_drive_id, to_folder_id}
     dicts; skipped counts notebooks on synced (read-only) drives, which can
-    never move. Nothing is changed — call apply_organize() to execute."""
+    never move. Notebooks already inside "DocIndex Notebooks" — including
+    its subfolders — are left alone. Nothing is changed — call
+    apply_organize() to execute."""
     moves, skipped = [], 0
     for stored in list_notebooks(user.id):
         drive = stored.drive
@@ -308,8 +310,10 @@ def organize_preview(user):
             skipped += 1
             continue
         target = notebooks_folder(user, drive)
-        if stored.folder_id != target.id:
-            moves.append({
+        if stored.folder_id is not None and _is_within(
+                stored.folder, target.id):
+            continue
+        moves.append({
                 "file_id": stored.id, "name": stored.name,
                 "from_drive_id": drive.id,
                 "from_drive_name": drive.name,
@@ -322,6 +326,17 @@ def organize_preview(user):
                 "to_folder_name": target.name,
             })
     return moves, skipped
+
+
+def _is_within(folder, target_id):
+    """True when folder is target or nested under it (cycle-safe)."""
+    node, seen = folder, set()
+    while node is not None and node.id not in seen:
+        if node.id == target_id:
+            return True
+        seen.add(node.id)
+        node = node.parent
+    return False
 
 
 def apply_organize(user):

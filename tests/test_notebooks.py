@@ -106,6 +106,37 @@ def test_organize_plan_apply_and_revert(app, auth_client, user, enabled):
     assert b"No organize run" in resp.data
 
 
+def test_organize_ignores_notebooks_inside_dedicated_folder(app, auth_client,
+                                                           user, enabled):
+    from app.models import Folder
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        root = nb_doc.notebooks_folder(user_obj, drive)
+        sub = Folder(user_id=user, drive_id=drive_id, parent_id=root.id,
+                     name="Projects")
+        db.session.add(sub)
+        db.session.flush()
+        sub_id = sub.id
+        db.session.commit()
+    fid = _create(app, user, drive_id, "Nested")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        stored.folder_id = sub_id
+        db.session.commit()
+    data = auth_client.get("/m/notebooks/organize/plan").get_json()
+    assert data["moves"] == []
+
+
+def test_notebook_list_grouped_by_drive(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    _create(app, user, drive_id, "One")
+    data = auth_client.get("/m/notebooks/").data.decode()
+    assert "Personal" in data
+    assert "1 notebook" in data
+
+
 def test_organize_skips_synced_drives(app, auth_client, user, enabled):
     drive_id = _drive(app, user, synced=True)
     with app.app_context():

@@ -70,19 +70,29 @@ def index():
 
 
 def _group_by_location(enriched):
-    """Notebook cards grouped by drive + folder (gallery stays organized)."""
-    groups, order = {}, []
+    """Notebook cards grouped by drive, then folder within each drive."""
+    drives, order = {}, []
     for nb in enriched:
         stored = nb["file"]
         drive_name = stored.drive.name if stored.drive else "No drive"
         folder_name = stored.folder.name if stored.folder else "/"
-        key = (stored.drive_id, stored.folder_id)
-        if key not in groups:
-            groups[key] = {"drive": drive_name, "folder": folder_name,
-                            "items": []}
-            order.append(key)
-        groups[key]["items"].append(nb)
-    return [groups[k] for k in order]
+        dkey = stored.drive_id
+        if dkey not in drives:
+            drives[dkey] = {"drive": drive_name, "folders": {},
+                            "folder_order": [], "total": 0}
+            order.append(dkey)
+        group = drives[dkey]
+        fkey = stored.folder_id
+        if fkey not in group["folders"]:
+            group["folders"][fkey] = {"folder": folder_name, "items": []}
+            group["folder_order"].append(fkey)
+        group["folders"][fkey]["items"].append(nb)
+        group["total"] += 1
+    return [{"drive": drives[k]["drive"], "total": drives[k]["total"],
+             "folders": [dict(drives[k]["folders"][f],
+                               folder_id=f)
+                         for f in drives[k]["folder_order"]]}
+            for k in order]
 
 
 @bp.get("/organize/plan")
