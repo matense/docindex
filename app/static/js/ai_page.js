@@ -153,7 +153,7 @@
         star.className = 'flex-shrink-0 px-1 opacity-60 hover:opacity-100'
             + (isFav ? ' text-warning' : '');
         star.title = isFav ? 'Unstar (remove from Favorites)' : 'Star (pin to Favorites)';
-        star.innerHTML = '<i class="fas fa-star' + (isFav ? '' : '-regular') + '"></i>';
+        star.innerHTML = '<i class="' + (isFav ? 'fas' : 'far') + ' fa-star"></i>';
         star.onclick = (e) => { e.stopPropagation(); toggleFav(kind, id, isFav); };
         return star;
     }

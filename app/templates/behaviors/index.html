@@ -51,7 +51,7 @@
                     <button type="button" class="btn btn-ghost btn-xs behavior-fav {{ 'text-warning' if b.favorite }}"
                             data-id="{{ b.id }}" data-fav="{{ '1' if b.favorite else '0' }}"
                             title="{{ 'Starred — pinned in picker Favorites' if b.favorite else 'Star — pin to picker Favorites' }}">
-                        <i class="fas fa-star{{ '' if b.favorite else '-regular' }}"></i>
+                        <i class="{{ 'fas' if b.favorite else 'far' }} fa-star"></i>
                     </button>
                     <button type="button" class="btn btn-ghost btn-xs gap-1" title="Edit"
                             onclick="document.getElementById('behavior-edit-{{ b.id }}').showModal()">
@@ -203,7 +203,7 @@
                       ? 'Starred — pinned in picker Favorites'
                       : 'Star — pin to picker Favorites';
                   btn.querySelector('i').className =
-                      'fas fa-star' + (data.favorite ? '' : '-regular');
+                      data.favorite ? 'fas fa-star' : 'far fa-star';
               })
               .catch(() => {});
         });
@@ -236,7 +236,7 @@
                 <div class="flex gap-1 justify-end">
                     <button type="button" class="btn btn-ghost btn-xs gap-1 ${p.favorite ? 'text-warning' : ''}" data-fav="${esc(p.key)}"
                             title="${p.favorite ? 'Starred — pinned in picker Favorites' : 'Star — pin to picker Favorites'}">
-                        <i class="fas fa-star${p.favorite ? '' : '-regular'}"></i>
+                        <i class="${p.favorite ? 'fas' : 'far'} fa-star"></i>
                     </button>
                     <button type="button" class="btn btn-ghost btn-xs gap-1" data-preview="${esc(p.key)}">
                         <i class="fas fa-eye"></i> Preview
