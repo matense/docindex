@@ -699,11 +699,53 @@ def delete(file_id):
 
 # ---------- Trash (soft-deleted files) ----------
 
-@bp.route("/file/<int:file_id>/restore", methods=["POST"])
+@bp.route("/file/<int:file_id>/restore", methods=["GET", "POST"])
 @login_required
 def restore(file_id):
     stored = _get_file(file_id, include_trashed=True)
     _guard_writable(stored)
+    if stored.deleted_at is None:
+        flash("That file is not in the trash.", "info")
+        return redirect(url_for("settings.trash"))
+    drive = stored.drive
+    if drive is not None and drive.deleted_at is not None:
+        # The file was trashed with its drive: restoring it alone would
+        # land it in limbo (healthy file, trashed drive). Ask whether to
+        # bring the original drive back too, or move it elsewhere.
+        mode = request.form.get("mode") if request.method == "POST" else None
+        if mode not in ("original", "other"):
+            targets = (Drive.query
+                       .filter_by(user_id=current_user.id)
+                       .filter(Drive.deleted_at.is_(None),
+                               Drive.source_path.is_(None))
+                       .order_by(Drive.name).all())
+            return render_template("drive/restore_choice.html",
+                                   stored=stored, drive=drive,
+                                   targets=targets)
+        if mode == "other":
+            target_id = request.form.get("drive_id", type=int)
+            target = (Drive.query
+                      .filter_by(id=target_id, user_id=current_user.id)
+                      .filter(Drive.deleted_at.is_(None),
+                              Drive.source_path.is_(None))
+                      .first())
+            if target is None:
+                flash("Pick a valid destination drive.", "error")
+                return redirect(url_for("drive.restore", file_id=stored.id))
+            file_service.restore_file(stored)
+            moved, error = file_service.move_file_to_drive(
+                current_user, stored.id, target.id)
+            if error:
+                flash(f'Restored, but could not move: {error}', "error")
+            else:
+                flash(f'"{moved.name}" restored to drive '
+                      f'"{target.name}".', "success")
+            return redirect(url_for("settings.trash"))
+        drive_service.restore_drive(current_user, drive.id)
+        file_service.restore_file(stored)  # no-op if joint restore got it
+        flash(f'"{stored.name}" restored with drive "{drive.name}".',
+              "success")
+        return redirect(url_for("settings.trash"))
     file_service.restore_file(stored)
     flash(f'"{stored.name}" restored.', "success")
     return redirect(url_for("settings.trash"))

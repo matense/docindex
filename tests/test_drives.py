@@ -241,6 +241,79 @@ def test_delete_drive_trashes_and_restores(auth_client, app, user):
     assert b"w2.txt" in auth_client.get("/").data
 
 
+def test_restore_file_with_trashed_drive_asks_where(auth_client, app, user):
+    from app.models import Drive as _Drive
+    _upload(auth_client, "homeless.txt", b"data")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="homeless.txt").one().id
+        personal = _Drive.query.filter_by(name="Personal").one().id
+    auth_client.post(f"/drives/{personal}/delete", follow_redirects=True)
+
+    # Direct POST (the old silent path) now shows the choice instead.
+    resp = auth_client.post(f"/file/{fid}/restore")
+    assert resp.status_code == 200
+    assert b"also in the trash" in resp.data
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+
+    # Choice page lists the original drive and the other-drive form.
+    resp = auth_client.get(f"/file/{fid}/restore")
+    assert resp.status_code == 200
+    assert b"Restore the original drive too" in resp.data
+    assert b"Put it in another drive" in resp.data
+
+
+def test_restore_file_with_original_drive(auth_client, app, user):
+    from app.models import Drive as _Drive
+    _upload(auth_client, "homeless.txt", b"data")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="homeless.txt").one().id
+        personal = _Drive.query.filter_by(name="Personal").one().id
+    auth_client.post(f"/drives/{personal}/delete", follow_redirects=True)
+    resp = auth_client.post(f"/file/{fid}/restore", data={"mode": "original"},
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.deleted_at is None
+        assert db.session.get(_Drive, personal).deleted_at is None
+        assert stored.drive_id == personal
+
+
+def test_restore_file_to_another_drive(auth_client, app, user):
+    from app.models import Drive as _Drive
+    _upload(auth_client, "homeless.txt", b"data")
+    auth_client.post("/drives/create", data={"name": "Refuge"},
+                     follow_redirects=True)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="homeless.txt").one().id
+        personal = _Drive.query.filter_by(name="Personal").one().id
+        refuge = _Drive.query.filter_by(name="Refuge").one().id
+    auth_client.post(f"/drives/{personal}/delete", follow_redirects=True)
+    resp = auth_client.post(f"/file/{fid}/restore",
+                            data={"mode": "other",
+                                  "drive_id": str(refuge)},
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.deleted_at is None
+        assert stored.drive_id == refuge
+        # Original drive stays in the trash.
+        assert db.session.get(_Drive, personal).deleted_at is not None
+    # Invalid destination changes nothing.
+    _upload(auth_client, "stuck.txt", b"data")
+    with app.app_context():
+        fid2 = StoredFile.query.filter_by(name="stuck.txt").one().id
+    auth_client.post(f"/drives/{refuge}/delete", follow_redirects=True)
+    resp = auth_client.post(f"/file/{fid2}/restore",
+                            data={"mode": "other", "drive_id": "999999"},
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(StoredFile, fid2).deleted_at is not None
+
+
 def test_restore_drive_keeps_previously_trashed_files(auth_client, app, user):
     from app.models import Drive as _Drive, StoredFile as _SF
     auth_client.post("/drives/create", data={"name": "Work"},

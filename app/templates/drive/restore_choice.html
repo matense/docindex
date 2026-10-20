@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Restore file - DocIndex{% endblock %}
+
+{% block content %}
+<div class="max-w-xl mx-auto w-full flex flex-col gap-4 pb-10">
+
+    <div class="glass-panel rounded-2xl p-6 flex flex-col gap-3">
+        <h1 class="text-xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-warning/15 text-warning flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-rotate-left"></i>
+            </span>
+            Restore "{{ stored.name }}"
+        </h1>
+        <div class="alert alert-warning text-sm py-3 rounded-xl">
+            <i class="fas fa-triangle-exclamation flex-shrink-0"></i>
+            <span>
+                Its drive <strong>{{ drive.name }}</strong> is also in the trash.
+                Restoring just the file would leave it in limbo — pick where it should live:
+            </span>
+        </div>
+
+        <form method="POST" action="{{ url_for('drive.restore', file_id=stored.id) }}"
+              class="rounded-xl border border-base-content/10 p-4 flex flex-col gap-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="mode" value="original">
+            <div class="font-semibold text-sm">
+                <i class="fas fa-hard-drive mr-1 text-primary"></i>
+                Restore the original drive too
+                <span class="badge badge-success badge-sm ml-1">recommended</span>
+            </div>
+            <p class="text-xs opacity-60">
+                Drive "{{ drive.name }}" comes back with everything in it —
+                including this file, right where it was.
+            </p>
+            <button type="submit" class="btn btn-primary btn-sm gap-1 self-start">
+                <i class="fas fa-rotate-left"></i> Restore drive + file
+            </button>
+        </form>
+
+        <form method="POST" action="{{ url_for('drive.restore', file_id=stored.id) }}"
+              class="rounded-xl border border-base-content/10 p-4 flex flex-col gap-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="mode" value="other">
+            <div class="font-semibold text-sm">
+                <i class="fas fa-arrow-right mr-1 text-secondary"></i>
+                Put it in another drive
+            </div>
+            <p class="text-xs opacity-60">
+                The file is restored to the root of the drive you pick.
+                "{{ drive.name }}" stays in the trash.
+            </p>
+            {% if targets %}
+            <div class="flex gap-2 flex-wrap">
+                <select name="drive_id" class="select select-bordered select-sm flex-1 min-w-40">
+                    {% for d in targets %}
+                    <option value="{{ d.id }}">{{ d.name }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-secondary btn-sm gap-1">
+                    <i class="fas fa-check"></i> Restore here
+                </button>
+            </div>
+            {% else %}
+            <p class="text-xs text-warning">No other writable drive — create one first.</p>
+            {% endif %}
+        </form>
+
+        <a href="{{ url_for('settings.trash') }}" class="btn btn-ghost btn-sm self-start">
+            <i class="fas fa-arrow-left"></i> Back to trash
+        </a>
+    </div>
+
+</div>
+{% endblock %}

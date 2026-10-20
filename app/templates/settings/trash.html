@@ -112,18 +112,26 @@
                     <div class="flex-1 min-w-0">
                         <div class="text-sm font-semibold truncate">{{ t.name }}</div>
                         <div class="text-[11px] opacity-45 flex items-center gap-3 mt-1 flex-wrap">
-                            <span><i class="fas fa-hard-drive mr-1"></i>{{ t.drive.name if t.drive else 'No drive' }}</span>
+                            <span><i class="fas fa-hard-drive mr-1"></i>{{ t.drive.name if t.drive else 'No drive' }}{% if t.drive and t.drive.deleted_at %} <span class="badge badge-warning badge-xs">drive trashed</span>{% endif %}</span>
                             <span class="badge badge-ghost badge-xs">{{ human_size(t.size) }}</span>
                             <span><i class="fas fa-clock mr-1"></i>deleted {{ t.deleted_at.strftime('%d %b %Y %H:%M') if t.deleted_at }}</span>
                         </div>
                     </div>
                     <div class="flex gap-2 flex-shrink-0">
+                        {% if t.drive and t.drive.deleted_at %}
+                        <a href="{{ url_for('drive.restore', file_id=t.id) }}"
+                           class="btn btn-ghost btn-sm gap-1"
+                           title="Its drive '{{ t.drive.name }}' is also trashed — pick where to restore">
+                            <i class="fas fa-rotate-left"></i> Restore…
+                        </a>
+                        {% else %}
                         <form method="POST" action="{{ url_for('drive.restore', file_id=t.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-ghost btn-sm gap-1">
                                 <i class="fas fa-rotate-left"></i> Restore
                             </button>
                         </form>
+                        {% endif %}
                         <form method="POST" action="{{ url_for('drive.purge', file_id=t.id) }}"
                               data-confirm="Permanently delete &quot;{{ t.name }}&quot;? The file and its version history will be removed forever."
                               data-confirm-danger>
