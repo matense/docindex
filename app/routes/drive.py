@@ -256,7 +256,8 @@ def delete_drive(drive_id):
             flash(f'Synced drive "{drive.name}" removed. The folder on disk was '
                   "not touched.", "success")
         else:
-            flash(f'Drive "{drive.name}" moved to the trash.', "success")
+            flash(f'Drive "{drive.name}" moved to the trash with its files.',
+                  "success")
     return redirect(request.form.get("next") or url_for("drive.index"))
 
 

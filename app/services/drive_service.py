@@ -140,28 +140,47 @@ def update_drive(user, drive_id, name, description):
 
 
 def trash_drive(user, drive_id):
-    """Soft-delete a drive (restorable from the trash). Synced drives are
-    mirrors of real folders, so they skip the trash and are removed
-    immediately instead. Returns (drive, error)."""
-    from . import sync_service
+    """Soft-delete a drive (restorable from the trash) together with every
+    file in it — trashed files keep their blobs and history. Files share the
+    drive's timestamp so restoring the drive restores exactly those files
+    (anything already in the trash beforehand stays there). Synced drives
+    are mirrors of real folders, so they skip the trash and are removed
+    immediately instead — the real files are never touched.
+    Returns (drive, error)."""
+    from . import file_service, sync_service
     drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
     if not drive or drive.deleted_at is not None:
         return None, "Drive not found."
     if drive.is_synced:
         sync_service.remove_synced_drive(drive)
         return drive, None
-    drive.deleted_at = utcnow()
+    now = utcnow()
+    drive.deleted_at = now
+    db.session.flush()
+    for stored in (StoredFile.query
+                   .filter_by(drive_id=drive.id, user_id=user.id)
+                   .filter(StoredFile.deleted_at.is_(None)).all()):
+        file_service.delete_file(stored)  # own timestamp + FTS cleanup
+        stored.deleted_at = now  # same stamp as the drive (joint restore)
     db.session.commit()
     return drive, None
 
 
 def restore_drive(user, drive_id):
-    """Undo a soft-delete. Returns the drive or None."""
+    """Undo a soft-delete, including the files trashed with the drive.
+    Returns the drive or None."""
+    from . import file_service
     drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
              .filter(Drive.deleted_at.isnot(None)).first())
     if drive is None:
         return None
+    trashed_at = drive.deleted_at
     drive.deleted_at = None
+    db.session.flush()
+    for stored in (StoredFile.query
+                   .filter_by(drive_id=drive.id, user_id=user.id,
+                              deleted_at=trashed_at).all()):
+        file_service.restore_file(stored)
     db.session.commit()
     return drive
 

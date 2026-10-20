@@ -219,9 +219,11 @@ def test_delete_drive_trashes_and_restores(auth_client, app, user):
     assert resp.status_code == 200
     with app.app_context():
         from app.models import Drive as _Drive, StoredFile as _SF
-        assert _Drive.query.get(wid).deleted_at is not None
-        # Files are untouched (restore is a one-liner).
-        assert _SF.query.filter_by(drive_id=wid).count() == 1
+        drive = _Drive.query.get(wid)
+        assert drive.deleted_at is not None
+        # Every file in the drive goes to the trash with it (same stamp).
+        trashed = _SF.query.filter_by(drive_id=wid).one()
+        assert trashed.deleted_at == drive.deleted_at
 
     # Trashed drive disappears from listings; current drive falls back.
     assert b"w2.txt" not in auth_client.get("/").data
@@ -231,10 +233,36 @@ def test_delete_drive_trashes_and_restores(auth_client, app, user):
 
     auth_client.post(f"/drives/{wid}/restore", follow_redirects=True)
     with app.app_context():
-        from app.models import Drive as _Drive2
+        from app.models import Drive as _Drive2, StoredFile as _SF2
         assert _Drive2.query.get(wid).deleted_at is None
+        # Joint restore: the drive's files come back too.
+        assert _SF2.query.filter_by(drive_id=wid).one().deleted_at is None
     auth_client.post(f"/drives/{wid}/select", follow_redirects=True)
     assert b"w2.txt" in auth_client.get("/").data
+
+
+def test_restore_drive_keeps_previously_trashed_files(auth_client, app, user):
+    from app.models import Drive as _Drive, StoredFile as _SF
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    _upload(auth_client, "doomed.txt", b"doomed")
+    _upload(auth_client, "kept.txt", b"kept")
+    wid = _work_drive_id(app, user)
+    with app.app_context():
+        doomed = _SF.query.filter_by(drive_id=wid, name="doomed.txt").one()
+    # Trash one file on its own first.
+    auth_client.post("/selection/delete", data={
+        "file_ids": str(doomed.id), "folder_ids": "",
+    })
+    auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
+    auth_client.post(f"/drives/{wid}/restore", follow_redirects=True)
+    with app.app_context():
+        assert _Drive.query.get(wid).deleted_at is None
+        # The file trashed with the drive is back; the earlier one is not.
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="kept.txt").one().deleted_at is None
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="doomed.txt").one().deleted_at is not None
 
 
 def test_purge_drive_removes_everything(auth_client, app, user):

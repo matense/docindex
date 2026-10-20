@@ -225,7 +225,11 @@ Trash page (`GET /settings/trash`, linked from a card on the profile page)
 lists deleted files with search and pagination, and offers restore /
 delete-forever / empty-trash actions.
 Deleting a folder trashes its files with `folder_id` reset to NULL, so a
-restore lands at the drive root.
+restore lands at the drive root. Deleting a drive moves the drive and every
+file in it to the trash under the same timestamp, so restoring the drive
+restores exactly those files (files trashed earlier stay trashed). Synced
+drives skip the trash: their DocIndex rows are removed immediately and the
+real folder on disk is never touched.
 
 ### `file_versions` (`FileVersion`)
 
