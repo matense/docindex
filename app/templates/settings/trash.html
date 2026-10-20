@@ -55,16 +55,50 @@
 
     <!-- File list -->
     <div class="glass-panel rounded-2xl overflow-hidden">
-        <div class="px-4 py-3 border-b border-base-content/10 flex items-center gap-3 flex-wrap">
-            <span class="font-bold text-sm">Automatic purge</span>
-            <span class="text-[11px] opacity-50">When on, files and whole drives in the trash for over 30 days are permanently deleted.</span>
-            <span class="flex-1"></span>
-            <form method="POST" action="{{ url_for('settings.trash_settings') }}" class="flex items-center gap-2">
+        <div class="px-4 py-3 border-b border-base-content/10">
+            <form method="POST" action="{{ url_for('settings.trash_settings') }}"
+                  class="flex items-center gap-3 flex-wrap rounded-xl px-4 py-3 border
+                         {{ 'border-success/50 bg-success/10' if auto_purge else 'border-base-content/15 bg-base-content/[0.02]' }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="trash_auto_purge" value="{{ '' if auto_purge else 'on' }}">
-                <button type="submit" class="btn btn-xs {{ 'btn-warning' if auto_purge else 'btn-ghost' }}">
-                    {{ 'On — purges after 30 days' if auto_purge else 'Off' }}
+                <span class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-lg
+                             {{ 'bg-success/20 text-success' if auto_purge else 'bg-base-content/5 opacity-40' }}">
+                    <i class="fas fa-clock-rotate-left"></i>
+                </span>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-bold text-sm">Automatic purge</span>
+                        {% if auto_purge %}
+                        <span class="badge badge-success badge-sm gap-1">
+                            <i class="fas fa-circle text-[6px]"></i> ON
+                        </span>
+                        {% else %}
+                        <span class="badge badge-neutral badge-sm gap-1 opacity-70">
+                            <i class="fas fa-circle text-[6px]"></i> OFF
+                        </span>
+                        {% endif %}
+                    </div>
+                    {% if auto_purge %}
+                    <p class="text-[11px] opacity-70">
+                        Files and whole drives in the trash for over 30 days are
+                        <strong>permanently deleted</strong>.
+                    </p>
+                    {% else %}
+                    <p class="text-[11px] opacity-70">
+                        Trash waits forever until you purge it manually.
+                        Turn on to auto-delete anything older than 30 days.
+                    </p>
+                    {% endif %}
+                </div>
+                {% if auto_purge %}
+                <button type="submit" class="btn btn-sm btn-error btn-outline gap-1">
+                    <i class="fas fa-power-off"></i> Turn off
                 </button>
+                {% else %}
+                <button type="submit" class="btn btn-sm btn-success gap-1">
+                    <i class="fas fa-power-off"></i> Turn on
+                </button>
+                {% endif %}
             </form>
         </div>
         {% if drives %}
