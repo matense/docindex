@@ -668,39 +668,74 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
     if len(refs) != 1:
         raise WorkflowError("Copy one file at a time (got "
                             f"{len(refs)}). Use a filter first.")
-    import shutil as _sh
     stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
     if stored is None or stored.user_id != ctx["user"].id:
         raise WorkflowError("The file does not exist.")
+    if getattr(stored, "is_synced", False):
+        raise WorkflowError(f"File '{stored.name}' is read-only.")
     drive = resolve_drive_id(ctx, config, outputs or {})
     if drive.is_synced:
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
-    import uuid as _uuid
-    src = file_service.file_path(stored)
-    ext = stored.extension or ""
-    sname = f"{_uuid.uuid4().hex}.{ext}" if ext else _uuid.uuid4().hex
-    import os as _os
-    dst = _os.path.join(file_service.UPLOAD_FOLDER
-                        if hasattr(file_service, "UPLOAD_FOLDER")
-                        else ctx["app"].config["UPLOAD_FOLDER"], sname)
-    _sh.copyfile(src, dst)
-    import hashlib as _hl
-    h = _hl.sha256()
-    with open(dst, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    copy = StoredFile(name=stored.name, stored_name=sname, extension=ext,
-                      mime_type=stored.mime_type, size=_os.path.getsize(dst),
-                      checksum=h.hexdigest(), folder_id=None,
-                      user_id=ctx["user"].id, drive_id=drive.id)
-    db.session.add(copy)
-    db.session.flush()
-    from app.models import FileIndex
-    db.session.add(FileIndex(file_id=copy.id, status="pending"))
-    db.session.commit()
-    indexing_service.enqueue_index([copy.id])
+    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
+    copy, error = file_service.copy_file_to_drive(
+        ctx["user"], stored.id, drive.id, folder_id)
+    if error:
+        raise WorkflowError(error)
     ctx["log"](f"copied to '{drive.name}'")
     return p_files([{"file_id": copy.id, "name": copy.name}])
+
+
+def _exec_move_file(ctx, config, inputs, outputs=None):
+    """Move one trigger/file payload to another drive (keeps content)."""
+    if "in" not in inputs:
+        raise WorkflowError("No input — connect a file or file list.")
+    payload = inputs["in"]
+    refs = as_files(payload) if payload["kind"] == "files" else None
+    if refs is None:
+        raise WorkflowError("Connect a file (trigger, file, search, folder).")
+    if len(refs) != 1:
+        raise WorkflowError("Move one file at a time (got "
+                            f"{len(refs)}). Use a filter first.")
+    stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
+    if stored is None or stored.user_id != ctx["user"].id:
+        raise WorkflowError("The file does not exist.")
+    if getattr(stored, "is_synced", False):
+        raise WorkflowError(f"File '{stored.name}' is read-only.")
+    drive = resolve_drive_id(ctx, config, outputs or {})
+    if drive.is_synced:
+        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
+    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
+    moved, error = file_service.move_file_to_drive(
+        ctx["user"], stored.id, drive.id, folder_id)
+    if error:
+        raise WorkflowError(error)
+    ctx["log"](f"moved to '{drive.name}'")
+    return p_files([{"file_id": moved.id, "name": moved.name}])
+
+
+def _resolve_dest_folder(ctx, config, outputs, drive):
+    """Optional destination folder id inside *drive* (None = root)."""
+    raw = config.get("folder_id", "")
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, str) and "{{" in raw:
+        raw = render_template(raw, outputs)
+    try:
+        folder_id = int(raw)
+    except (TypeError, ValueError):
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            folder_id = int(data["id"]) if isinstance(data, dict) else None
+        except (TypeError, ValueError, KeyError):
+            folder_id = None
+    if folder_id is None:
+        raise WorkflowError("That destination folder does not exist.")
+    folder = db.session.get(Folder, folder_id)
+    if (folder is None or folder.user_id != ctx["user"].id
+            or folder.drive_id != drive.id):
+        raise WorkflowError("That destination folder does not exist "
+                            "(or is not in the target drive).")
+    return folder.id
 
 
 def _exec_http_get(ctx, config, inputs, outputs):
@@ -1410,7 +1445,28 @@ def register_defaults():
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
              "help": "Must be writable (not synced). {{ n1 }} refs work."},
+            {"name": "folder_id", "label": "Folder (optional)", "kind": "folder",
+             "return": "id", "advanced": True, "default": "",
+             "help": "Empty = the drive root."},
         ]}, lambda ctx, config, inputs: _exec_copy_file(
+            ctx, config, inputs, ctx["_outputs"]))
+
+    register_node_type("output.move_file", {
+        "label": "Move file to drive", "icon": "fa-arrow-right",
+        "category": "Output",
+        "description": "Moves one file (trigger/search result) to another "
+                       "writable drive (original leaves its drive).",
+        "example": "report.pdf → move to Archive drive.",
+        "inputs": [{"name": "in", "kind": "files"}],
+        "outputs": [{"name": "out", "kind": "files"}],
+        "fields": [
+            {"name": "drive_id", "label": "Target drive", "kind": "drive",
+             "required": True, "default": "",
+             "help": "Must be writable (not synced). {{ n1 }} refs work."},
+            {"name": "folder_id", "label": "Folder (optional)", "kind": "folder",
+             "return": "id", "advanced": True, "default": "",
+             "help": "Empty = the drive root."},
+        ]}, lambda ctx, config, inputs: _exec_move_file(
             ctx, config, inputs, ctx["_outputs"]))
 
     register_node_type("input.http", {

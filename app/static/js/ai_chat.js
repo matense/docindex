@@ -98,6 +98,8 @@
         list_drives: 'fa-hard-drive',
         list_behaviors: 'fa-list-check',
         save_behavior: 'fa-floppy-disk',
+        move_files: 'fa-arrow-right',
+        copy_files: 'fa-copy',
     };
 
     function toolIcon(name) {

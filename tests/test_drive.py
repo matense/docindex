@@ -217,3 +217,118 @@ def test_selection_endpoints_ignore_other_users_items(auth_client, app):
     with app.app_context():
         assert StoredFile.query.count() == 1
         assert Folder.query.count() == 0 or True  # drive bootstrap may create none
+
+
+def test_selection_move_file_across_drives(auth_client, app):
+    from app.models import Drive
+    _upload(auth_client, "cross.txt", b"cross drive content")
+    auth_client.post("/drives/create", data={"name": "Archive"},
+                     follow_redirects=True)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="cross.txt").one().id
+        archive = Drive.query.filter_by(name="Archive").one().id
+    resp = auth_client.post("/selection/move", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest": "", "dest_drive_id": str(archive),
+    })
+    assert resp.get_json() == {"ok": True, "moved": 1, "skipped": 0}
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.drive_id == archive
+        assert stored.folder_id is None
+
+
+def test_selection_move_folder_across_drives(auth_client, app):
+    from app.models import Drive, Folder
+    auth_client.post("/folder/create", data={"name": "Pack"},
+                     follow_redirects=True)
+    with app.app_context():
+        pack = Folder.query.filter_by(name="Pack").one().id
+    _upload(auth_client, "inside.txt", b"inside content", folder_id=str(pack))
+    auth_client.post("/drives/create", data={"name": "Archive"},
+                     follow_redirects=True)
+    with app.app_context():
+        archive = Drive.query.filter_by(name="Archive").one().id
+    resp = auth_client.post("/selection/move", data={
+        "file_ids": "", "folder_ids": str(pack),
+        "dest": "", "dest_drive_id": str(archive),
+    })
+    assert resp.get_json()["moved"] == 1
+    with app.app_context():
+        folder = Folder.query.filter_by(name="Pack").one()
+        assert folder.drive_id == archive
+        assert folder.parent_id is None
+        assert StoredFile.query.filter_by(name="inside.txt").one() \
+            .drive_id == archive
+
+
+def test_selection_copy_file_to_another_drive(auth_client, app):
+    from app.models import Drive
+    _upload(auth_client, "orig.txt", b"original content")
+    auth_client.post("/drives/create", data={"name": "Archive"},
+                     follow_redirects=True)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="orig.txt").one().id
+        personal = Drive.query.filter_by(name="Personal").one().id
+        archive = Drive.query.filter_by(name="Archive").one().id
+    resp = auth_client.post("/selection/copy", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest_drive_id": str(archive), "dest_folder_id": "",
+    })
+    assert resp.get_json() == {"ok": True, "copied": 1, "skipped": 0}
+    with app.app_context():
+        copies = StoredFile.query.filter_by(name="orig.txt").all()
+        assert len(copies) == 2
+        by_drive = {c.drive_id: c for c in copies}
+        assert by_drive[personal].id == fid
+        assert by_drive[archive].id != fid
+        assert by_drive[archive].checksum == by_drive[personal].checksum
+
+
+def test_selection_copy_folder_tree_to_another_drive(auth_client, app):
+    from app.models import Drive, Folder
+    auth_client.post("/folder/create", data={"name": "Pack"},
+                     follow_redirects=True)
+    with app.app_context():
+        pack = Folder.query.filter_by(name="Pack").one().id
+    _upload(auth_client, "inside.txt", b"inside content", folder_id=str(pack))
+    auth_client.post("/drives/create", data={"name": "Archive"},
+                     follow_redirects=True)
+    with app.app_context():
+        archive = Drive.query.filter_by(name="Archive").one().id
+    resp = auth_client.post("/selection/copy", data={
+        "file_ids": "", "folder_ids": str(pack),
+        "dest_drive_id": str(archive), "dest_folder_id": "",
+    })
+    assert resp.get_json()["copied"] == 1
+    with app.app_context():
+        new_pack = Folder.query.filter_by(name="Pack",
+                                          drive_id=archive).one()
+        assert StoredFile.query.filter_by(folder_id=new_pack.id).count() == 1
+        # the original tree is untouched
+        assert Folder.query.filter_by(name="Pack").count() == 2
+
+
+def test_selection_move_and_copy_refuse_synced_drive(auth_client, app, user):
+    from app.models import Drive
+    _upload(auth_client, "orig.txt", b"data")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="orig.txt").one().id
+        synced = Drive(name="Synced", user_id=user,
+                       source_path="/tmp/synced-drive")
+        db.session.add(synced)
+        db.session.commit()
+        sid = synced.id
+    resp = auth_client.post("/selection/copy", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest_drive_id": str(sid), "dest_folder_id": "",
+    })
+    assert resp.status_code == 400
+    resp = auth_client.post("/selection/move", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest": "", "dest_drive_id": str(sid),
+    })
+    assert resp.status_code == 400
+    with app.app_context():
+        # nothing was moved or copied
+        assert StoredFile.query.filter_by(name="orig.txt").count() == 1

@@ -122,7 +122,7 @@
 {%- endmacro %}
 
 {% block content %}
-<div data-folder-id="{{ folder.id if folder else '' }}"{% if drive.is_synced %} data-drive-synced="1"{% endif %}></div>
+<div data-folder-id="{{ folder.id if folder else '' }}" data-drive-id="{{ drive.id if drive else '' }}"{% if drive.is_synced %} data-drive-synced="1"{% endif %}></div>
 <!-- Breadcrumb + toolbar + view switcher -->
 <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
     <div class="flex items-center gap-2 flex-wrap">
@@ -143,11 +143,15 @@
                     onclick="document.getElementById('new-folder-modal').showModal()">
                 <i class="fas fa-folder-plus text-amber-500"></i><span class="hidden sm:inline">New Folder</span>
             </button>
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-copy" title="Copy selected (paste anywhere, even another drive)"
+                    onclick="driveCopySelection()" disabled>
+                <i class="fas fa-copy text-info"></i><span class="hidden sm:inline">Copy</span>
+            </button>
             <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-cut" title="Cut selected (Ctrl+click to select)"
                     onclick="driveCutSelection()" disabled>
                 <i class="fas fa-scissors text-secondary"></i><span class="hidden sm:inline">Cut</span>
             </button>
-            <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-paste" title="Paste here"
+            <button type="button" class="btn btn-ghost btn-sm gap-1.5" id="tb-paste" title="Paste here (works across drives)"
                     onclick="drivePasteSelection()" disabled>
                 <i class="fas fa-paste text-primary"></i><span class="hidden sm:inline">Paste</span>
                 <span id="tb-paste-count" class="badge badge-xs badge-primary hidden"></span>

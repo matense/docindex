@@ -55,11 +55,13 @@
 
     function updateToolbar() {
         const cut = document.getElementById('tb-cut');
+        const copy = document.getElementById('tb-copy');
         const del = document.getElementById('tb-delete');
         const paste = document.getElementById('tb-paste');
         if (!cut) return;
         const n = S.selected.size;
         cut.disabled = n === 0;
+        if (copy) copy.disabled = n === 0;
         del.disabled = n === 0;
         const selBadge = document.getElementById('tb-sel-count');
         selBadge.textContent = n;
@@ -145,17 +147,43 @@
         e.dataTransfer.effectAllowed = 'all';
     }
 
-    function moveItems(fileIds, folderIds, dest) {
+    function moveItems(fileIds, folderIds, dest, destDriveId) {
         const body = new URLSearchParams();
         body.set('file_ids', fileIds.join(','));
         body.set('folder_ids', folderIds.join(','));
         body.set('dest', dest || '');
+        if (destDriveId !== undefined) body.set('dest_drive_id', destDriveId || '');
         return fetch('/selection/move', {
             method: 'POST',
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
-        }).then(r => r.json()).then(() => {
+        }).then(r => r.json()).then((data) => {
             S.selected.clear();
+            if (data && data.ok === false && window.uiToast) {
+                window.uiToast(data.error || 'Move failed.', 'error');
+            }
+            refreshPage();
+        });
+    }
+
+    function copyItems(fileIds, folderIds, destFolder, destDriveId) {
+        const body = new URLSearchParams();
+        body.set('file_ids', fileIds.join(','));
+        body.set('folder_ids', folderIds.join(','));
+        body.set('dest_folder_id', destFolder || '');
+        body.set('dest_drive_id', destDriveId || '');
+        return fetch('/selection/copy', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        }).then(r => r.json()).then((data) => {
+            S.selected.clear();
+            if (data && data.ok === false && window.uiToast) {
+                window.uiToast(data.error || 'Copy failed.', 'error');
+            } else if (window.uiToast) {
+                const n = (data && (data.copied || 0)) || 0;
+                window.uiToast(n === 1 ? 'Copied 1 item.' : 'Copied ' + n + ' items.', 'success');
+            }
             refreshPage();
         });
     }
@@ -199,6 +227,10 @@
         return document.querySelector('[data-folder-id]')?.dataset.folderId || '';
     }
 
+    function currentDriveId() {
+        return document.querySelector('[data-folder-id]')?.dataset.driveId || '';
+    }
+
     function refreshPage() {
         if (window.spaInvalidate) window.spaInvalidate();
         if (window.spaNavigate) window.spaNavigate(location.pathname + location.search, { push: false });
@@ -207,19 +239,35 @@
 
     window.driveCutSelection = function () {
         if (!S.selected.size) return;
-        const clip = { files: [], folders: [] };
+        const clip = { files: [], folders: [], mode: 'move', driveId: currentDriveId() };
         S.selected.forEach((s) => clip[s.kind === 'file' ? 'files' : 'folders'].push({ id: s.id, name: s.name }));
         sessionStorage.setItem(CLIP_KEY, JSON.stringify(clip));
         S.selected.clear();
         paint();
     };
 
+    window.driveCopySelection = function () {
+        if (!S.selected.size) return;
+        const clip = { files: [], folders: [], mode: 'copy', driveId: currentDriveId() };
+        S.selected.forEach((s) => clip[s.kind === 'file' ? 'files' : 'folders'].push({ id: s.id, name: s.name }));
+        sessionStorage.setItem(CLIP_KEY, JSON.stringify(clip));
+        paint();
+        if (window.uiToast) {
+            const n = clip.files.length + clip.folders.length;
+            window.uiToast(n === 1 ? 'Copied 1 item — paste it anywhere.' : 'Copied ' + n + ' items — paste them anywhere.', 'info');
+        }
+    };
+
     window.drivePasteSelection = function (destOverride) {
         const clip = getClipboard();
         if (!clip) return;
-        moveItems(clip.files.map(f => f.id), clip.folders.map(f => f.id),
-                  destOverride !== undefined ? destOverride : currentFolderId())
-            .then(() => sessionStorage.removeItem(CLIP_KEY));
+        const dest = destOverride !== undefined ? destOverride : currentFolderId();
+        const p = (clip.mode === 'copy')
+            ? copyItems(clip.files.map(f => f.id), clip.folders.map(f => f.id),
+                        dest, currentDriveId())
+            : moveItems(clip.files.map(f => f.id), clip.folders.map(f => f.id),
+                        dest, currentDriveId());
+        p.then(() => sessionStorage.removeItem(CLIP_KEY));
     };
 
     window.driveDeleteSelection = async function () {
@@ -296,6 +344,7 @@
         const entries = [{ header: S.selected.size + ' items selected' }];
         if (!S.driveSynced) {
             entries.push(
+                { icon: 'fa-copy', label: 'Copy', action: () => window.driveCopySelection() },
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
                 { icon: 'fa-trash', label: 'Delete', danger: true,
                   action: () => window.driveDeleteSelection() });
@@ -327,6 +376,7 @@
                        action: () => openRunWorkflow(id, name) });
         if (!synced) {
             entries.push('-',
+                { icon: 'fa-copy', label: 'Copy', action: () => window.driveCopySelection() },
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
                 { icon: 'fa-trash', label: 'Delete', danger: true,
                   action: () => window.driveDeleteSelection() });
@@ -342,8 +392,9 @@
         ];
         const clip = getClipboard();
         if (!S.driveSynced && clip && (clip.files.length + clip.folders.length) > 0) {
-            entries.push({ icon: 'fa-paste',
-                           label: 'Paste here (' + (clip.files.length + clip.folders.length) + ')',
+            entries.push({ icon: clip.mode === 'copy' ? 'fa-copy' : 'fa-paste',
+                           label: (clip.mode === 'copy' ? 'Copy here (' : 'Paste here (') +
+                               (clip.files.length + clip.folders.length) + ')',
                            action: () => window.drivePasteSelection(id) });
         }
         if (!S.driveSynced) {
@@ -399,8 +450,9 @@
                   action: () => document.getElementById('upload-modal')?.showModal() });
             const clip = getClipboard();
             if (clip && (clip.files.length + clip.folders.length) > 0) {
-                entries.push({ icon: 'fa-paste',
-                               label: 'Paste (' + (clip.files.length + clip.folders.length) + ')',
+                entries.push({ icon: clip.mode === 'copy' ? 'fa-copy' : 'fa-paste',
+                               label: (clip.mode === 'copy' ? 'Copy (' : 'Paste (') +
+                                   (clip.files.length + clip.folders.length) + ')',
                                action: () => window.drivePasteSelection() });
             }
             entries.push('-');

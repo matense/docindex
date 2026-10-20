@@ -123,6 +123,47 @@ def test_list_drives_tool(app, user):
         assert scoped["scoped_to"] == "Personal"
 
 
+def test_move_and_copy_files_tools(app, user):
+    from app.models import Drive
+    fid = _make_indexed_file(app, "moveme.txt", "move me content")
+    with app.app_context():
+        src = Drive(name="Source", user_id=user)
+        dst = Drive(name="Dest", user_id=user)
+        db.session.add_all([src, dst])
+        db.session.commit()
+        db.session.get(StoredFile, fid).drive_id = src.id
+        db.session.commit()
+        src_id, dst_id = src.id, dst.id
+    with app.app_context():
+        u = db.session.get(User, user)
+        out = agent_service.TOOL_HANDLERS["move_files"](
+            u, {"file_ids": [fid], "drive_id": dst_id}, None)
+        assert out == {"moved": 1, "skipped": 0, "details": out["details"]}
+        assert db.session.get(StoredFile, fid).drive_id == dst_id
+        out = agent_service.TOOL_HANDLERS["copy_files"](
+            u, {"file_ids": [fid], "drive_id": src_id}, None)
+        assert out["copied"] == 1 and out["skipped"] == 0
+        copies = StoredFile.query.filter_by(name="moveme.txt").all()
+        assert {c.drive_id for c in copies} == {src_id, dst_id}
+
+
+def test_move_files_tool_refuses_synced_drive(app, user):
+    from app.models import Drive
+    fid = _make_indexed_file(app, "locked.txt", "locked content")
+    with app.app_context():
+        u = db.session.get(User, user)
+        synced = Drive(name="Synced", user_id=user,
+                       source_path="/tmp/synced-drive")
+        db.session.add(synced)
+        db.session.commit()
+        out = agent_service.TOOL_HANDLERS["move_files"](
+            u, {"file_ids": [fid], "drive_id": synced.id}, None)
+        assert "error" in out
+        out = agent_service.TOOL_HANDLERS["copy_files"](
+            u, {"file_ids": [fid], "drive_id": 999999}, None)
+        assert "error" in out
+
+
 def test_conversations_isolated_between_users(auth_client, app, user):
     _make_indexed_file(app, "x.txt", "hello")
 

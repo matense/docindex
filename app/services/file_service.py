@@ -8,7 +8,7 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import FileIndex, FileVersion, StoredFile
+from ..models import FileIndex, FileVersion, Folder, Drive, StoredFile
 
 THUMBNAIL_SIZE = (256, 256)
 
@@ -172,6 +172,242 @@ def restore_file(stored_file):
     # file_index still holds the extracted text — just re-add the FTS row.
     search_service.fts_upsert(stored_file.id, commit=False)
     db.session.commit()
+
+
+def unique_name(user_id, drive_id, folder_id, name, exclude_id=None):
+    """Non-colliding file name within a drive folder (adds ' (copy N)')."""
+    base, dot, ext = name.rpartition(".")
+    if not dot:
+        base, ext = name, ""
+    candidate, n = name, 1
+    while True:
+        q = StoredFile.query.filter_by(
+            user_id=user_id, drive_id=drive_id, folder_id=folder_id,
+            deleted_at=None, name=candidate)
+        if exclude_id is not None:
+            q = q.filter(StoredFile.id != exclude_id)
+        if q.first() is None:
+            return candidate
+        n += 1
+        candidate = f"{base} (copy {n})" + (dot + ext if dot else "")
+
+
+def unique_folder_name(user_id, drive_id, parent_id, name, exclude_id=None):
+    """Non-colliding folder name within a drive folder."""
+    candidate, n = name, 1
+    while True:
+        q = Folder.query.filter_by(
+            user_id=user_id, drive_id=drive_id, parent_id=parent_id,
+            name=candidate)
+        if exclude_id is not None:
+            q = q.filter(Folder.id != exclude_id)
+        if q.first() is None:
+            return candidate
+        n += 1
+        candidate = f"{name} (copy {n})"
+
+
+def _writable_drive(user, drive_id, allow_none=False):
+    """Return (drive_or_None, error). None means root (always writable)."""
+    if drive_id in (None, ""):
+        return None, None
+    try:
+        drive_id = int(drive_id)
+    except (TypeError, ValueError):
+        return None, "Invalid drive."
+    drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
+    if drive is None:
+        return None, "Drive not found."
+    if getattr(drive, "is_synced", False):
+        return None, f"Drive '{drive.name}' is read-only."
+    return drive, None
+
+
+def _owned_folder(user, drive, folder_id):
+    if folder_id in (None, ""):
+        return None, None
+    folder = Folder.query.filter_by(id=folder_id, user_id=user.id).first()
+    if folder is None:
+        return None, "Folder not found."
+    if drive is not None and folder.drive_id != drive.id:
+        return None, "Folder is not in that drive."
+    if folder.drive is not None and getattr(folder.drive, "is_synced", False):
+        return None, f"Folder '{folder.name}' is read-only."
+    return folder, None
+
+
+def _resolve_dest(user, drive_id, folder_id):
+    """Resolve (drive_or_None, folder_or_None, error).
+
+    drive_id None means the root; when a folder is given without a drive,
+    the folder's own drive becomes the destination.
+    """
+    drive, error = _writable_drive(user, drive_id)
+    if error:
+        return None, None, error
+    if drive is None and folder_id not in (None, ""):
+        probe = Folder.query.filter_by(id=folder_id,
+                                       user_id=user.id).first()
+        if probe is None:
+            return None, None, "Folder not found."
+        if probe.drive_id is not None:
+            drive, error = _writable_drive(user, probe.drive_id)
+            if error:
+                return None, None, error
+    folder, error = _owned_folder(user, drive, folder_id)
+    if error:
+        return None, None, error
+    return drive, folder, None
+
+
+def move_file_to_drive(user, file_id, drive_id, folder_id=None):
+    """Move one file to another drive/folder. Returns (stored, error)."""
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return None, "File not found."
+    if getattr(stored, "is_synced", False):
+        return None, f"File '{stored.name}' is read-only."
+    drive, folder, error = _resolve_dest(user, drive_id, folder_id)
+    if error:
+        return None, error
+    new_name = unique_name(user.id, drive.id if drive else None,
+                           folder.id if folder else None, stored.name,
+                           exclude_id=stored.id)
+    stored.drive_id = drive.id if drive else None
+    stored.folder_id = folder.id if folder else None
+    stored.name = new_name
+    db.session.commit()
+    return stored, None
+
+
+def copy_file_to_drive(user, file_id, drive_id, folder_id=None):
+    """Copy one file's blob to another drive/folder. Returns (copy, error)."""
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return None, "File not found."
+    drive, folder, error = _resolve_dest(user, drive_id, folder_id)
+    if error:
+        return None, error
+    src = file_path(stored)
+    if not os.path.exists(src):
+        return None, "Original file missing on disk."
+    ext = stored.extension or ""
+    sname = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
+    dst = os.path.join(current_app.config["UPLOAD_FOLDER"], sname)
+    shutil.copyfile(src, dst)
+    copy = StoredFile(
+        name=unique_name(user.id, drive.id if drive else None,
+                         folder.id if folder else None, stored.name),
+        stored_name=sname, extension=stored.extension,
+        mime_type=stored.mime_type, size=os.path.getsize(dst),
+        checksum=stored.checksum,
+        folder_id=folder.id if folder else None,
+        user_id=user.id, drive_id=drive.id if drive else None)
+    db.session.add(copy)
+    db.session.flush()
+    db.session.add(FileIndex(file_id=copy.id, status="pending"))
+    db.session.commit()
+    try:
+        from . import indexing_service
+        indexing_service.enqueue_index([copy.id])
+    except Exception:  # noqa: BLE001 - index later
+        current_app.logger.exception("Could not enqueue index for copy")
+    return copy, None
+
+
+def move_folder(user, folder_id, drive_id, parent_id=None):
+    """Move a folder (with contents) to another drive/folder."""
+    from ..models import Folder as _Folder
+    folder = _Folder.query.filter_by(id=folder_id, user_id=user.id).first()
+    if not folder:
+        return None, "Folder not found."
+    src_drive = Drive.query.filter_by(id=folder.drive_id,
+                                      user_id=user.id).first()
+    if src_drive is not None and getattr(src_drive, "is_synced", False):
+        return None, f"Folder '{folder.name}' is read-only."
+    drive, parent, error = _resolve_dest(user, drive_id, parent_id)
+    if error:
+        return None, error
+    if parent and (parent.id == folder.id or _is_descendant(parent, folder)):
+        return None, "Cannot move a folder into itself or a subfolder."
+    folder.name = unique_folder_name(
+        user.id, drive.id if drive else None,
+        parent.id if parent else None,
+        folder.name, exclude_id=folder.id)
+    _apply_drive_recursive(folder, drive.id if drive else None,
+                           parent.id if parent else None)
+    db.session.commit()
+    return folder, None
+
+
+def copy_folder(user, folder_id, drive_id, parent_id=None):
+    """Deep-copy a folder and contents to another drive/folder."""
+    from ..models import Folder as _Folder
+    folder = _Folder.query.filter_by(id=folder_id, user_id=user.id).first()
+    if not folder:
+        return None, "Folder not found."
+    drive, parent, error = _resolve_dest(user, drive_id, parent_id)
+    if error:
+        return None, error
+    new_folder, new_ids = _copy_folder_recursive(
+        user, folder, drive.id if drive else None,
+        parent.id if parent else None)
+    db.session.commit()
+    try:
+        from . import indexing_service
+        indexing_service.enqueue_index(new_ids)
+    except Exception:  # noqa: BLE001 - index later
+        current_app.logger.exception("Could not enqueue index for copy")
+    return new_folder, None
+
+
+def _is_descendant(folder, ancestor):
+    node = folder.parent
+    seen = set()
+    while node is not None and node.id not in seen:
+        if node.id == ancestor.id:
+            return True
+        seen.add(node.id)
+        node = node.parent
+    return False
+
+
+def _apply_drive_recursive(folder, drive_id, parent_id):
+    folder.drive_id = drive_id
+    folder.parent_id = parent_id
+    db.session.flush()
+    for sub in list(folder.children or []):
+        _apply_drive_recursive(sub, drive_id, folder.id)
+    for stored in list(folder.files or []):
+        stored.drive_id = drive_id
+        stored.folder_id = folder.id
+    db.session.flush()
+
+
+def _copy_folder_recursive(user, folder, drive_id, parent_id):
+    from ..models import Folder as _Folder
+    new_folder = _Folder(
+        name=unique_folder_name(user.id, drive_id, parent_id, folder.name),
+        user_id=user.id, drive_id=drive_id, parent_id=parent_id)
+    db.session.add(new_folder)
+    db.session.flush()
+    new_ids = []
+    for sub in list(folder.children or []):
+        _, sub_ids = _copy_folder_recursive(user, sub, drive_id,
+                                            new_folder.id)
+        new_ids.extend(sub_ids)
+    for stored in list(folder.files or []):
+        copy, error = copy_file_to_drive(
+            user, stored.id, drive_id, new_folder.id)
+        if copy is not None:
+            new_ids.append(copy.id)
+    return new_folder, new_ids
 
 
 def purge_file(stored_file):

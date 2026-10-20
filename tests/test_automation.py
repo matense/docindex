@@ -650,6 +650,64 @@ def test_save_file_refuses_synced_drive(app, user):
             _execute(_save_graph(drive_id), app, user)
 
 
+# ---------------------------------------------------------------------------
+# Nodes: output.copy_file / output.move_file
+# ---------------------------------------------------------------------------
+
+def _transfer_graph(file_id, drive_id, node_type):
+    return {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(file_id)}},
+        {"id": "m", "type": node_type,
+         "config": {"drive_id": str(drive_id)}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "m", "to_port": "in"}]}
+
+
+def test_move_file_node_moves_between_drives(app, user):
+    # NOTE: input.file reads text files into a text payload — an image hands
+    # the move/copy node the files payload it needs (no decoding involved).
+    fid = _make_file(app, user, "move-me.png", "fake png bytes")
+    src = _drive(app, user, name="Source")
+    dst = _drive(app, user, name="Archive")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.commit()
+        outputs, _, _ = _execute(
+            _transfer_graph(fid, dst, "output.move_file"), app, user)
+        assert outputs["m"]["out"]["data"][0]["file_id"] == fid
+        assert db.session.get(StoredFile, fid).drive_id == dst
+
+
+def test_copy_file_node_keeps_original(app, user):
+    fid = _make_file(app, user, "copy-me.png", "fake png bytes")
+    src = _drive(app, user, name="Source")
+    dst = _drive(app, user, name="Archive")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.commit()
+        outputs, _, _ = _execute(
+            _transfer_graph(fid, dst, "output.copy_file"), app, user)
+        new_id = outputs["m"]["out"]["data"][0]["file_id"]
+        assert new_id != fid
+        assert db.session.get(StoredFile, fid).drive_id == src
+        moved = db.session.get(StoredFile, new_id)
+        assert moved.drive_id == dst
+        assert moved.checksum == db.session.get(StoredFile, fid).checksum
+
+
+def test_transfer_nodes_refuse_synced_drive(app, user):
+    fid = _make_file(app, user, "locked.png", "fake png bytes")
+    dst = _drive(app, user, synced=True, name="Synced")
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="read-only"):
+            _execute(_transfer_graph(fid, dst, "output.move_file"),
+                     app, user)
+        with pytest.raises(engine.WorkflowError, match="read-only"):
+            _execute(_transfer_graph(fid, dst, "output.copy_file"),
+                     app, user)
+
+
 def test_save_file_refuses_missing_folder(app, user):
     drive_id = _drive(app, user)
     with app.app_context():

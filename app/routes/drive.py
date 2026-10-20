@@ -1029,6 +1029,38 @@ def delete_selection():
 @bp.route("/selection/move", methods=["POST"])
 @login_required
 def move_selection():
+    from app.services import file_service as _fs
+    folder_ids = _id_list("folder_ids")
+    file_ids = _id_list("file_ids")
+    if "dest_drive_id" in request.form:
+        # Cross-drive paste (or explicit same-drive paste): destination is
+        # the given drive (empty = root) plus an optional folder there.
+        drive_id = request.form.get("dest_drive_id", type=int)
+        dest_id = request.form.get("dest", type=int)
+        drive = None
+        if drive_id:
+            drive = Drive.query.filter_by(id=drive_id,
+                                          user_id=current_user.id).first()
+            if drive is None:
+                return jsonify({"ok": False,
+                                "error": "Drive not found."}), 404
+            if drive.is_synced:
+                return jsonify({"ok": False,
+                                "error": "Synced drives are read-only."}), 400
+        dest = None
+        if dest_id:
+            dest = Folder.query.filter_by(
+                id=dest_id, user_id=current_user.id).first()
+            if dest is None:
+                return jsonify({"ok": False,
+                                "error": "Folder not found."}), 404
+            if drive is not None and dest.drive_id != drive.id:
+                return jsonify({"ok": False,
+                                "error": "Folder not found."}), 404
+        moved, skipped = _move_to_drive(
+            file_ids, folder_ids, drive, dest, _fs, current_user)
+        db.session.commit()
+        return jsonify({"ok": True, "moved": moved, "skipped": skipped})
     dest_id = request.form.get("dest", type=int)
     dest = None
     if dest_id:
@@ -1038,7 +1070,7 @@ def move_selection():
                             "error": "Synced drives are read-only."}), 400
     moved = 0
     skipped = 0
-    for fid in _id_list("file_ids"):
+    for fid in file_ids:
         stored = (StoredFile.query
                   .filter_by(id=fid, user_id=current_user.id)
                   .filter(StoredFile.deleted_at.is_(None),
@@ -1047,7 +1079,7 @@ def move_selection():
         if stored:
             stored.folder_id = dest.id if dest else None
             moved += 1
-    for fid in _id_list("folder_ids"):
+    for fid in folder_ids:
         folder = Folder.query.filter_by(id=fid, user_id=current_user.id).first()
         if not folder or (folder.drive and folder.drive.is_synced):
             continue
@@ -1059,6 +1091,109 @@ def move_selection():
         moved += 1
     db.session.commit()
     return jsonify({"ok": True, "moved": moved, "skipped": skipped})
+
+
+def _move_to_drive(file_ids, folder_ids, drive, dest, file_service, user):
+    """Cross-drive move used by /selection/move with dest_drive_id."""
+    from app.models import Folder as _Folder
+    drive_id = drive.id if drive else None
+    moved, skipped = 0, 0
+    for fid in file_ids:
+        stored = (StoredFile.query
+                  .filter_by(id=fid, user_id=user.id)
+                  .filter(StoredFile.deleted_at.is_(None))
+                  .first())
+        if not stored or getattr(stored, "is_synced", False):
+            skipped += 1
+            continue
+        _, error = file_service.move_file_to_drive(
+            user, stored.id, drive_id,
+            dest.id if dest else None)
+        if error:
+            skipped += 1
+        else:
+            moved += 1
+    for fid in folder_ids:
+        folder = _Folder.query.filter_by(id=fid, user_id=user.id).first()
+        if not folder or (folder.drive and folder.drive.is_synced):
+            skipped += 1
+            continue
+        if dest and (dest.id == folder.id
+                     or file_service._is_descendant(dest, folder)):
+            skipped += 1
+            continue
+        _, error = file_service.move_folder(
+            user, folder.id, drive_id, dest.id if dest else None)
+        if error:
+            skipped += 1
+        else:
+            moved += 1
+    return moved, skipped
+
+
+@bp.route("/selection/copy", methods=["POST"])
+@login_required
+def copy_selection():
+    """Copy files/folders to another drive (paste-as-copy). Empty = root."""
+    from app.services import file_service as _fs
+    drive_id = request.form.get("dest_drive_id", type=int)
+    folder_id = request.form.get("dest_folder_id", type=int)
+    drive = None
+    if drive_id:
+        drive = Drive.query.filter_by(id=drive_id,
+                                      user_id=current_user.id).first()
+        if drive is None:
+            return jsonify({"ok": False, "error": "Drive not found."}), 404
+        if drive.is_synced:
+            return jsonify({"ok": False,
+                            "error": "Synced drives are read-only."}), 400
+    folder = None
+    if folder_id:
+        folder = Folder.query.filter_by(
+            id=folder_id, user_id=current_user.id).first()
+        if folder is None:
+            return jsonify({"ok": False,
+                            "error": "Folder not found."}), 404
+        if drive is not None and folder.drive_id != drive.id:
+            return jsonify({"ok": False,
+                            "error": "Folder not found."}), 404
+    if folder is not None and folder.drive is not None \
+            and folder.drive.is_synced:
+        return jsonify({"ok": False,
+                        "error": "Synced drives are read-only."}), 400
+    dest_drive_id = drive.id if drive else (
+        folder.drive_id if folder else None)
+    copied, skipped = 0, 0
+    for fid in _id_list("file_ids"):
+        stored = (StoredFile.query
+                  .filter_by(id=fid, user_id=current_user.id)
+                  .filter(StoredFile.deleted_at.is_(None))
+                  .first())
+        if not stored or getattr(stored, "is_synced", False):
+            skipped += 1
+            continue
+        _, error = _fs.copy_file_to_drive(
+            current_user, stored.id, dest_drive_id,
+            folder.id if folder else None)
+        if error:
+            skipped += 1
+        else:
+            copied += 1
+    for fid in _id_list("folder_ids"):
+        folder_src = Folder.query.filter_by(
+            id=fid, user_id=current_user.id).first()
+        if not folder_src or (folder_src.drive and
+                              folder_src.drive.is_synced):
+            skipped += 1
+            continue
+        _, error = _fs.copy_folder(
+            current_user, folder_src.id, dest_drive_id,
+            folder.id if folder else None)
+        if error:
+            skipped += 1
+        else:
+            copied += 1
+    return jsonify({"ok": True, "copied": copied, "skipped": skipped})
 
 
 @bp.route("/folder/<int:folder_id>/delete", methods=["POST"])

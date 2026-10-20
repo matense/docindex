@@ -361,6 +361,80 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_files",
+            "description": (
+                "Move files and/or folders to another drive (and optionally "
+                "into a folder there). Use list_drives first to discover "
+                "drive ids. Refuses read-only drives. When moving between "
+                "drives, files keep their content; provide folder_id to "
+                "place items inside a specific folder (omit for the drive "
+                "root). Moving a folder moves everything inside it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "File ids to move.",
+                    },
+                    "folder_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Folder ids to move (with contents).",
+                    },
+                    "drive_id": {
+                        "type": "integer",
+                        "description": "Destination drive id (must be writable).",
+                    },
+                    "folder_id": {
+                        "type": "integer",
+                        "description": "Destination folder id inside that drive (optional).",
+                    },
+                },
+                "required": ["drive_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "copy_files",
+            "description": (
+                "Copy files and/or folders to another writable drive "
+                "(optionally into one of its folders), keeping the "
+                "originals in place. Use list_drives first to discover "
+                "drive ids. Duplicates are renamed automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "File ids to copy.",
+                    },
+                    "folder_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Folder ids to copy (with contents).",
+                    },
+                    "drive_id": {
+                        "type": "integer",
+                        "description": "Destination drive id (must be writable).",
+                    },
+                    "folder_id": {
+                        "type": "integer",
+                        "description": "Destination folder id inside that drive (optional).",
+                    },
+                },
+                "required": ["drive_id"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are the assistant of DocIndex, a personal file drive.
@@ -904,6 +978,67 @@ def _tool_get_file_info(user, file_id):
     }
 
 
+def _tool_move_files(user, args, drive=None):
+    from . import file_service
+    dest_id = args.get("drive_id")
+    folder_id = args.get("folder_id")
+    dest = Drive.query.filter_by(id=dest_id, user_id=user.id).first()
+    if dest is None:
+        return {"error": "Destination drive not found."}
+    if getattr(dest, "is_synced", False):
+        return {"error": f"Drive '{dest.name}' is read-only."}
+    moved, skipped, details = [], [], []
+    for fid in args.get("file_ids", []) or []:
+        stored, error = file_service.move_file_to_drive(
+            user, fid, dest.id, folder_id)
+        (moved if stored else skipped).append(fid)
+        if stored:
+            details.append(f"moved '{stored.name}'")
+        else:
+            details.append(f"skipped file {fid}: {error}")
+    for fid in args.get("folder_ids", []) or []:
+        folder, error = file_service.move_folder(
+            user, fid, dest.id, folder_id)
+        if folder:
+            moved.append(f"folder:{folder.id}")
+            details.append(f"moved folder '{folder.name}'")
+        else:
+            skipped.append(f"folder:{fid}")
+            details.append(f"skipped folder ({error})")
+    return {"moved": len(moved), "skipped": len(skipped), "details": details}
+
+
+def _tool_copy_files(user, args, drive=None):
+    from . import file_service
+    dest_id = args.get("drive_id")
+    folder_id = args.get("folder_id")
+    dest = Drive.query.filter_by(id=dest_id, user_id=user.id).first()
+    if dest is None:
+        return {"error": "Destination drive not found."}
+    if getattr(dest, "is_synced", False):
+        return {"error": f"Drive '{dest.name}' is read-only."}
+    copied, skipped, details = [], [], []
+    for fid in args.get("file_ids", []) or []:
+        copy, error = file_service.copy_file_to_drive(
+            user, fid, dest.id, folder_id)
+        if copy:
+            copied.append(copy.id)
+            details.append(f"copied '{copy.name}'")
+        else:
+            skipped.append(fid)
+            details.append(f"skipped file {fid}: {error}")
+    for fid in args.get("folder_ids", []) or []:
+        folder, error = file_service.copy_folder(
+            user, fid, dest.id, folder_id)
+        if folder:
+            copied.append(f"folder:{folder.id}")
+            details.append(f"copied folder '{folder.name}'")
+        else:
+            skipped.append(f"folder:{fid}")
+            details.append(f"skipped folder ({error})")
+    return {"copied": len(copied), "skipped": len(skipped), "details": details}
+
+
 def _tool_set_hashtags(user, file_id, hashtags):
     stored = (StoredFile.query
               .filter_by(id=file_id, user_id=user.id)
@@ -997,6 +1132,8 @@ TOOL_HANDLERS = {
     "list_behaviors": lambda user, args, drive: _tool_list_behaviors(user),
     "save_behavior": lambda user, args, drive: _tool_save_behavior(
         user, args.get("name"), args.get("content"), args.get("id")),
+    "move_files": lambda user, args, drive: _tool_move_files(user, args, drive),
+    "copy_files": lambda user, args, drive: _tool_copy_files(user, args, drive),
 }
 
 _STEP_LABELS = {
@@ -1012,6 +1149,8 @@ _STEP_LABELS = {
     "list_drives": "Listed drives",
     "list_behaviors": "Listed behaviors",
     "save_behavior": "Saved behavior",
+    "move_files": "Moved files",
+    "copy_files": "Copied files",
 }
 
 # Present-tense wording for the live "tool is working" chip (tool_start):
@@ -1029,6 +1168,8 @@ _RUNNING_LABELS = {
     "list_drives": "Listing drives",
     "list_behaviors": "Listing behaviors",
     "save_behavior": "Saving behavior",
+    "move_files": "Moving files",
+    "copy_files": "Copying files",
 }
 
 # ---------------------------------------------------------------------------
