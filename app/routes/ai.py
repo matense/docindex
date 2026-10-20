@@ -143,7 +143,8 @@ def _resolve_context(user, data):
     snapshot = {"drive_ids": None, "drive_names": None, "all_drives": False,
                 "file_ids": [], "file_names": [],
                 "context_file_id": None, "context_file_name": None,
-                "context_cell": None, "persona": None}
+                "context_cell": None, "persona": None,
+                "behavior": None, "behavior_name": None}
 
     # Persona injection: a bundled Agency personality the user picked in the
     # chat selector. It goes FIRST — it defines who the AI is; everything
@@ -163,6 +164,24 @@ def _resolve_context(user, data):
                 "conversation:\n\n" + persona["content"])
             snapshot["persona"] = persona_key
             snapshot["persona_name"] = persona["name"]
+    else:
+        # A user-made behavior picked in the chat selector — same slot as a
+        # persona (the picker keeps them mutually exclusive). Disabled
+        # behaviors are treated as inactive.
+        try:
+            behavior_id = int(data.get("behavior_id") or 0)
+        except (TypeError, ValueError):
+            behavior_id = 0
+        if behavior_id:
+            from ..services import behavior_service
+            behavior = behavior_service.get_behavior(behavior_id, user.id)
+            if behavior is not None and behavior.enabled:
+                notes.append(
+                    f'The user activated the behavior "{behavior.name}". '
+                    "Follow these instructions for the whole "
+                    "conversation:\n\n" + behavior.content)
+                snapshot["behavior"] = behavior.id
+                snapshot["behavior_name"] = behavior.name
 
     # Drive scope — resolved first so its note ends up first in the history.
     scope_all_drives = bool(data.get("scope_all_drives"))
@@ -310,17 +329,24 @@ def _resolve_context(user, data):
 @bp.route("/personas")
 @login_required
 def personas():
-    """The bundled Agency persona library (light list, no content).
+    """The bundled Agency persona library (light list, no content) plus the
+    user's own enabled behaviors — what the chat persona selector shows.
 
-    Default: only the personas the user has enabled — what the chat persona
-    selector and the Automation editor show. ``?all=1`` returns everything
-    with per-persona ``enabled`` flags (the Behaviors management page)."""
-    from ..services import persona_service
+    Default: only the personas the user has enabled. ``?all=1`` returns
+    everything with per-persona ``enabled`` flags (the Behaviors page)."""
+    from ..services import behavior_service, persona_service
     if request.args.get("all"):
         return jsonify({"personas": persona_service.list_personas(
             user_id=current_user.id)})
-    return jsonify({"personas": persona_service.list_personas(
-        user_id=current_user.id, enabled_only=True)})
+    return jsonify({
+        "personas": persona_service.list_personas(
+            user_id=current_user.id, enabled_only=True),
+        "behaviors": [
+            {"id": b.id, "name": b.name, "favorite": bool(b.favorite),
+             "preview": (b.content or "")[:140]}
+            for b in behavior_service.list_behaviors(
+                current_user.id, enabled_only=True)],
+    })
 
 
 @bp.route("/personas/<key>")

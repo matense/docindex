@@ -69,6 +69,17 @@ def toggle(behavior_id):
     return jsonify({"ok": True, "enabled": enabled})
 
 
+@bp.post("/<int:behavior_id>/favorite")
+@login_required
+def favorite(behavior_id):
+    behavior = _owned_behavior(behavior_id)
+    data = request.get_json(silent=True) or {}
+    if "favorite" not in data or not isinstance(data["favorite"], bool):
+        abort(400, "Missing boolean 'favorite'.")
+    starred = behavior_service.set_favorite(behavior, data["favorite"])
+    return jsonify({"ok": True, "favorite": starred})
+
+
 @bp.post("/personas/<key>/toggle")
 @login_required
 def persona_toggle(key):
@@ -80,6 +91,19 @@ def persona_toggle(key):
     if enabled is None:
         abort(404)
     return jsonify({"ok": True, "enabled": enabled})
+
+
+@bp.post("/personas/<key>/favorite")
+@login_required
+def persona_favorite(key):
+    data = request.get_json(silent=True) or {}
+    if "favorite" not in data or not isinstance(data["favorite"], bool):
+        abort(400, "Missing boolean 'favorite'.")
+    starred = persona_service.set_persona_favorite(
+        current_user.id, key, data["favorite"])
+    if starred is None:
+        abort(404)
+    return jsonify({"ok": True, "favorite": starred})
 
 
 @bp.post("/personas/division/<path:division>/toggle")
@@ -99,8 +123,11 @@ def persona_division_toggle(division):
 @login_required
 def api_presets():
     """Enabled behaviors as preset options ({label, value=content}) — the
-    Automation editor merges them into the AI nodes' behavior dropdown."""
+    Automation editor merges them into the AI nodes' behavior dropdown.
+    Favorites sort first."""
+    behaviors = behavior_service.list_behaviors(current_user.id,
+                                                enabled_only=True)
+    behaviors.sort(key=lambda b: (not b.favorite, b.name.lower()))
     return jsonify({"behaviors": [
-        {"label": b.name, "value": b.content}
-        for b in behavior_service.list_behaviors(current_user.id,
-                                                 enabled_only=True)]})
+        {"label": ("★ " if b.favorite else "") + b.name, "value": b.content}
+        for b in behaviors]})

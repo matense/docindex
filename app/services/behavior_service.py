@@ -45,6 +45,12 @@ def set_enabled(behavior, enabled):
     return behavior.enabled
 
 
+def set_favorite(behavior, favorite):
+    behavior.favorite = bool(favorite)
+    db.session.commit()
+    return behavior.favorite
+
+
 def delete_behavior(behavior):
     db.session.delete(behavior)
     db.session.commit()

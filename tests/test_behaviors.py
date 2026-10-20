@@ -155,6 +155,86 @@ def test_persona_detail_endpoint(auth_client, app, user):
 
 
 # ---------------------------------------------------------------------------
+# Favorites (starred personas + behaviors)
+# ---------------------------------------------------------------------------
+
+def test_behavior_favorite_toggle_and_presets_order(auth_client, app, user):
+    with app.app_context():
+        bid = _make_behavior(user, name="Zed", content="Z.")
+        _make_behavior(user, name="Alpha", content="A.")
+    resp = auth_client.post(f"/behaviors/{bid}/favorite",
+                            json={"favorite": True})
+    assert resp.get_json() == {"ok": True, "favorite": True}
+    with app.app_context():
+        assert db.session.get(Behavior, bid).favorite is True
+    # Favorites sort first in the Automation dropdown (starred label).
+    presets = auth_client.get("/behaviors/api/presets").get_json()["behaviors"]
+    assert presets[0] == {"label": "★ Zed", "value": "Z."}
+    assert presets[1]["label"] == "Alpha"
+    # Foreign ids 404; bad payload 400.
+    assert auth_client.post("/behaviors/999999/favorite",
+                            json={"favorite": True}).status_code == 404
+    assert auth_client.post(f"/behaviors/{bid}/favorite",
+                            json={"favorite": "yes"}).status_code == 400
+
+
+def test_persona_favorite_roundtrip(auth_client, app, user):
+    key = persona_service.list_personas()[0]["key"]
+    resp = auth_client.post(f"/behaviors/personas/{key}/favorite",
+                            json={"favorite": True})
+    assert resp.get_json() == {"ok": True, "favorite": True}
+    picker = auth_client.get("/ai/personas").get_json()
+    entry = next(p for p in picker["personas"] if p["key"] == key)
+    assert entry["favorite"] is True
+    # Management endpoint also flags it.
+    allp = auth_client.get("/ai/personas?all=1").get_json()["personas"]
+    assert next(p for p in allp if p["key"] == key)["favorite"] is True
+    assert auth_client.post("/behaviors/personas/nope/favorite",
+                            json={"favorite": True}).status_code == 404
+    resp = auth_client.post(f"/behaviors/personas/{key}/favorite",
+                            json={"favorite": False})
+    assert resp.get_json()["favorite"] is False
+
+
+def test_personas_endpoint_includes_behaviors(auth_client, app, user):
+    with app.app_context():
+        bid = _make_behavior(user, name="Helper", content="Help.")
+    data = auth_client.get("/ai/personas").get_json()
+    assert data["behaviors"] == [{"id": bid, "name": "Helper",
+                                  "favorite": False, "preview": "Help."}]
+
+
+def test_chat_applies_behavior_instructions(auth_client, app, user):
+    from unittest.mock import patch
+    with app.app_context():
+        bid = _make_behavior(user, name="Pirate", content="Talk like a pirate.")
+    app.config["AI_ENABLED"] = True
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "Arr!"}) as mock:
+        resp = auth_client.post("/ai/chat", json={"message": "hi",
+                                                  "behavior_id": bid})
+        _ = resp.data  # consume the stream inside the patch
+    assert mock.called
+    assert "Talk like a pirate." in str(mock.call_args)
+
+
+def test_chat_ignores_disabled_behavior(auth_client, app, user):
+    from unittest.mock import patch
+    with app.app_context():
+        bid = _make_behavior(user, name="Pirate", content="Talk like a pirate.")
+        behavior = db.session.get(Behavior, bid)
+        behavior_service.set_enabled(behavior, False)
+    app.config["AI_ENABLED"] = True
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "Hi."}) as mock:
+        resp = auth_client.post("/ai/chat", json={"message": "hi",
+                                                  "behavior_id": bid})
+        _ = resp.data
+    assert mock.called
+    assert "Talk like a pirate." not in str(mock.call_args)
+
+
+# ---------------------------------------------------------------------------
 # Core AI tools (moved out of the Automation module)
 # ---------------------------------------------------------------------------
 

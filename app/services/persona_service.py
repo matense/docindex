@@ -38,15 +38,17 @@ def _load():
 def list_personas(user_id=None, enabled_only=False):
     """Light persona summaries (no content), grouped by division.
 
-    With ``user_id`` each summary gains an ``enabled`` flag (default True);
-    with ``enabled_only`` the disabled ones are filtered out."""
+    With ``user_id`` each summary gains ``enabled`` (default True) and
+    ``favorite`` (default False) flags; with ``enabled_only`` the disabled
+    ones are filtered out."""
     prefs = {}
     if user_id is not None:
-        prefs = {p.persona_key: p.enabled
+        prefs = {p.persona_key: p
                  for p in PersonaPref.query.filter_by(user_id=user_id)}
     items = []
     for p in _load().values():
-        enabled = prefs.get(p["key"], True)
+        pref = prefs.get(p["key"])
+        enabled = pref.enabled if pref else True
         if enabled_only and not enabled:
             continue
         item = {"key": p["key"], "name": p["name"], "division": p["division"],
@@ -54,6 +56,7 @@ def list_personas(user_id=None, enabled_only=False):
                 "color": p["color"], "vibe": p["vibe"]}
         if user_id is not None:
             item["enabled"] = bool(enabled)
+            item["favorite"] = bool(pref.favorite) if pref else False
         items.append(item)
     return sorted(items, key=lambda p: (p["division"], p["name"]))
 
@@ -97,6 +100,20 @@ def set_persona_enabled(user_id, key, enabled):
     pref.enabled = bool(enabled)
     db.session.commit()
     return pref.enabled
+
+
+def set_persona_favorite(user_id, key, favorite):
+    """Star/unstar one persona for a user. Unknown keys are rejected."""
+    if key not in _load():
+        return None
+    pref = (PersonaPref.query
+            .filter_by(user_id=user_id, persona_key=key).first())
+    if pref is None:
+        pref = PersonaPref(user_id=user_id, persona_key=key)
+        db.session.add(pref)
+    pref.favorite = bool(favorite)
+    db.session.commit()
+    return pref.favorite
 
 
 def set_division_enabled(user_id, division, enabled):

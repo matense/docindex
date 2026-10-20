@@ -58,6 +58,7 @@
     let backgroundMode = false; // send as a long-horizon background task
     let convFilter = 'all'; // history filter: all | tasks
     let personaRef = null; // {key, name, emoji} — sticky per conversation
+    let behaviorRef = null; // {id, name} — user behavior, same slot
     let taskAbort = null;  // AbortController of the live task stream
 
     // Long-horizon mode: the next message starts a server-side background
@@ -115,21 +116,144 @@
     const personaPopup = document.getElementById('aip-persona-popup');
     const personaSearch = document.getElementById('aip-persona-search');
     const personaList = document.getElementById('aip-persona-list');
-    let personaCache = null; // light list from /ai/personas (fetched once)
+    let personaCache = null; // {personas, behaviors} from /ai/personas (fetched once)
 
     function hidePersonaPopup() {
         personaPopup.classList.add('hidden');
     }
 
-    function renderPersonaList(items) {
+    function csrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.content || '';
+    }
+
+    function toggleFav(kind, id, fav) {
+        const url = kind === 'behavior'
+            ? '/behaviors/' + id + '/favorite'
+            : '/behaviors/personas/' + encodeURIComponent(id) + '/favorite';
+        fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
+            body: JSON.stringify({ favorite: !fav }),
+        }).then(r => (r.ok ? r.json() : Promise.reject()))
+          .then(data => {
+              const list = kind === 'behavior'
+                  ? personaCache.behaviors : personaCache.personas;
+              const item = list.find(x => kind === 'behavior'
+                  ? x.id === id : x.key === id);
+              if (item) item.favorite = !!data.favorite;
+              filterPersonaList();
+          }).catch(() => {
+              if (window.uiToast) window.uiToast('Could not update favorite.', 'error');
+          });
+    }
+
+    function favStar(kind, id, isFav) {
+        const star = document.createElement('button');
+        star.type = 'button';
+        star.className = 'flex-shrink-0 px-1 opacity-60 hover:opacity-100'
+            + (isFav ? ' text-warning' : '');
+        star.title = isFav ? 'Unstar (remove from Favorites)' : 'Star (pin to Favorites)';
+        star.innerHTML = '<i class="fas fa-star' + (isFav ? '' : '-regular') + '"></i>';
+        star.onclick = (e) => { e.stopPropagation(); toggleFav(kind, id, isFav); };
+        return star;
+    }
+
+    function personaRow(p) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'w-full text-left px-2 py-1.5 rounded-lg hover:bg-primary/10 flex items-start gap-2';
+        const emoji = document.createElement('span');
+        emoji.textContent = p.emoji || '🎭';
+        const txt = document.createElement('span');
+        txt.className = 'min-w-0 flex-1';
+        const nm = document.createElement('span');
+        nm.className = 'block text-xs font-semibold truncate';
+        nm.textContent = p.name;
+        const ds = document.createElement('span');
+        ds.className = 'block text-[10px] opacity-50 leading-snug';
+        ds.textContent = p.description.length > 110
+            ? p.description.slice(0, 110) + '…' : p.description;
+        txt.appendChild(nm);
+        txt.appendChild(ds);
+        row.appendChild(emoji);
+        row.appendChild(txt);
+        row.appendChild(favStar('persona', p.key, !!p.favorite));
+        row.title = p.vibe || p.description;
+        row.onclick = () => {
+            personaRef = { key: p.key, name: p.name, emoji: p.emoji };
+            behaviorRef = null;
+            hidePersonaPopup();
+            renderChips();
+            input.focus();
+        };
+        return row;
+    }
+
+    function behaviorRow(b) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'w-full text-left px-2 py-1.5 rounded-lg hover:bg-primary/10 flex items-start gap-2';
+        const emoji = document.createElement('span');
+        emoji.textContent = '🧩';
+        const txt = document.createElement('span');
+        txt.className = 'min-w-0 flex-1';
+        const nm = document.createElement('span');
+        nm.className = 'block text-xs font-semibold truncate';
+        nm.textContent = b.name;
+        const ds = document.createElement('span');
+        ds.className = 'block text-[10px] opacity-50 leading-snug';
+        ds.textContent = b.preview && b.preview.length > 110
+            ? b.preview.slice(0, 110) + '…' : (b.preview || 'Your behavior');
+        txt.appendChild(nm);
+        txt.appendChild(ds);
+        row.appendChild(emoji);
+        row.appendChild(txt);
+        row.appendChild(favStar('behavior', b.id, !!b.favorite));
+        row.title = b.preview || b.name;
+        row.onclick = () => {
+            behaviorRef = { id: b.id, name: b.name };
+            personaRef = null;
+            hidePersonaPopup();
+            renderChips();
+            input.focus();
+        };
+        return row;
+    }
+
+    function sectionHeader(text) {
+        const h = document.createElement('div');
+        h.className = 'text-[10px] font-bold uppercase tracking-wide opacity-60 px-2 pt-2 pb-0.5 flex items-center gap-1';
+        h.textContent = text;
+        return h;
+    }
+
+    function matchPersona(p, q) {
+        return !q || p.name.toLowerCase().includes(q)
+            || p.description.toLowerCase().includes(q)
+            || p.division.toLowerCase().includes(q);
+    }
+
+    function matchBehavior(b, q) {
+        return !q || b.name.toLowerCase().includes(q)
+            || (b.preview || '').toLowerCase().includes(q);
+    }
+
+    function renderPersonaList(personas, behaviors) {
         personaList.innerHTML = '';
-        if (!items.length) {
-            personaList.innerHTML =
-                '<div class="text-center opacity-50 text-xs p-3">No persona matches.</div>';
-            return;
+        const favP = personas.filter(p => p.favorite);
+        const favB = behaviors.filter(b => b.favorite);
+        if (favP.length || favB.length) {
+            personaList.appendChild(sectionHeader('★ Favorites'));
+            favP.forEach(p => personaList.appendChild(personaRow(p)));
+            favB.forEach(b => personaList.appendChild(behaviorRow(b)));
+        }
+        const restB = behaviors.filter(b => !b.favorite);
+        if (restB.length) {
+            personaList.appendChild(sectionHeader('Your behaviors'));
+            restB.forEach(b => personaList.appendChild(behaviorRow(b)));
         }
         let lastDiv = null;
-        items.forEach(p => {
+        personas.filter(p => !p.favorite).forEach(p => {
             if (p.division !== lastDiv) {
                 lastDiv = p.division;
                 const h = document.createElement('div');
@@ -137,42 +261,20 @@
                 h.textContent = p.division;
                 personaList.appendChild(h);
             }
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'w-full text-left px-2 py-1.5 rounded-lg hover:bg-primary/10 flex items-start gap-2';
-            const emoji = document.createElement('span');
-            emoji.textContent = p.emoji || '🎭';
-            const txt = document.createElement('span');
-            txt.className = 'min-w-0';
-            const nm = document.createElement('span');
-            nm.className = 'block text-xs font-semibold truncate';
-            nm.textContent = p.name;
-            const ds = document.createElement('span');
-            ds.className = 'block text-[10px] opacity-50 leading-snug';
-            ds.textContent = p.description.length > 110
-                ? p.description.slice(0, 110) + '…' : p.description;
-            txt.appendChild(nm);
-            txt.appendChild(ds);
-            row.appendChild(emoji);
-            row.appendChild(txt);
-            row.title = p.vibe || p.description;
-            row.onclick = () => {
-                personaRef = { key: p.key, name: p.name, emoji: p.emoji };
-                hidePersonaPopup();
-                renderChips();
-                input.focus();
-            };
-            personaList.appendChild(row);
+            personaList.appendChild(personaRow(p));
         });
+        if (!personaList.children.length) {
+            personaList.innerHTML =
+                '<div class="text-center opacity-50 text-xs p-3">No persona matches.</div>';
+        }
     }
 
     function filterPersonaList() {
         const q = personaSearch.value.trim().toLowerCase();
-        const items = personaCache || [];
-        renderPersonaList(!q ? items : items.filter(p =>
-            p.name.toLowerCase().includes(q)
-            || p.description.toLowerCase().includes(q)
-            || p.division.toLowerCase().includes(q)));
+        const cache = personaCache || { personas: [], behaviors: [] };
+        renderPersonaList(
+            cache.personas.filter(p => matchPersona(p, q)),
+            cache.behaviors.filter(b => matchBehavior(b, q)));
     }
 
     document.getElementById('aip-attach-persona').addEventListener('click', () => {
@@ -189,8 +291,14 @@
             personaList.innerHTML =
                 '<div class="text-center opacity-50 text-xs p-3">Loading personas…</div>';
             fetch('/ai/personas')
-                .then(r => (r.ok ? r.json() : { personas: [] }))
-                .then(data => { personaCache = data.personas || []; show(); })
+                .then(r => (r.ok ? r.json() : { personas: [], behaviors: [] }))
+                .then(data => {
+                    personaCache = {
+                        personas: data.personas || [],
+                        behaviors: data.behaviors || [],
+                    };
+                    show();
+                })
                 .catch(() => {
                     personaList.innerHTML =
                         '<div class="text-center opacity-50 text-xs p-3">Could not load the persona library.</div>';
@@ -230,6 +338,21 @@
             rm.onclick = () => { personaRef = null; renderChips(); };
             pc.appendChild(rm);
             chipsEl.appendChild(pc);
+        }
+        if (behaviorRef) {
+            const bc = document.createElement('span');
+            bc.className = 'badge badge-secondary badge-outline gap-1 text-xs';
+            bc.innerHTML = '<i class="fas fa-puzzle-piece"></i>';
+            bc.appendChild(document.createTextNode(behaviorRef.name));
+            bc.title = 'Behavior active — the AI follows these instructions; remove to go back to the default assistant';
+            const rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'btn btn-ghost btn-xs btn-circle w-3 h-3 min-h-0';
+            rm.innerHTML = '<i class="fas fa-xmark"></i>';
+            rm.title = 'Remove the behavior';
+            rm.onclick = () => { behaviorRef = null; renderChips(); };
+            bc.appendChild(rm);
+            chipsEl.appendChild(bc);
         }
         // Removable chip: a notebook cell dropped into the chat.
         if (cellRef) {
@@ -1349,6 +1472,10 @@
             name: c.persona_name || c.persona,
             emoji: null,
         } : null;
+        behaviorRef = (c && c.behavior) ? {
+            id: c.behavior,
+            name: c.behavior_name || ('Behavior #' + c.behavior),
+        } : null;
         contextDismissedId = null;
         workflowDismissedId = null;
         renderChips();
@@ -1776,6 +1903,7 @@
                             ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
                             : null,
                         persona: personaRef ? personaRef.key : null,
+                        behavior_id: behaviorRef ? behaviorRef.id : null,
                         // Automation editor open on this page (if any).
                         context_workflow_id: (window.currentWorkflow
                             && window.currentWorkflow.id !== workflowDismissedId)
@@ -1845,6 +1973,8 @@
                         : null,
                     // Persona picked for this conversation.
                     persona: personaRef ? personaRef.key : null,
+                    // User-made behavior picked instead (same slot).
+                    behavior_id: behaviorRef ? behaviorRef.id : null,
                     // Automation editor open on this page (if any).
                     context_workflow_id: (window.currentWorkflow
                         && window.currentWorkflow.id !== workflowDismissedId)
@@ -1906,6 +2036,7 @@
             driveRefs = [];
             scopeAllDrives = false;
             personaRef = null;
+            behaviorRef = null;
             renderChips();
             hideMentions();
             clearMessages();

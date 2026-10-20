@@ -48,6 +48,11 @@
                        data-id="{{ b.id }}" {{ 'checked' if b.enabled }}
                        title="{{ 'Enabled — shown in pickers' if b.enabled else 'Disabled — hidden from pickers' }}">
                 <div class="flex gap-1 flex-shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs behavior-fav {{ 'text-warning' if b.favorite }}"
+                            data-id="{{ b.id }}" data-fav="{{ '1' if b.favorite else '0' }}"
+                            title="{{ 'Starred — pinned in picker Favorites' if b.favorite else 'Star — pin to picker Favorites' }}">
+                        <i class="fas fa-star{{ '' if b.favorite else '-regular' }}"></i>
+                    </button>
                     <button type="button" class="btn btn-ghost btn-xs gap-1" title="Edit"
                             onclick="document.getElementById('behavior-edit-{{ b.id }}').showModal()">
                         <i class="fas fa-pen"></i>
@@ -150,6 +155,8 @@
     const personaToggleUrl = "{{ url_for('behaviors.persona_toggle', key='__KEY__') }}";
     const divisionToggleUrl = "{{ url_for('behaviors.persona_division_toggle', division='__DIV__') }}";
     const behaviorToggleUrl = "{{ url_for('behaviors.toggle', behavior_id=0) }}";
+    const behaviorFavUrl = "{{ url_for('behaviors.favorite', behavior_id=0) }}";
+    const personaFavUrl = "{{ url_for('behaviors.persona_favorite', key='__KEY__') }}";
     const container = document.getElementById('persona-divisions');
     const search = document.getElementById('persona-search');
     const countEl = document.getElementById('persona-count');
@@ -180,6 +187,36 @@
         });
     });
 
+    // --- favorites (star toggles) -------------------------------------------
+    document.querySelectorAll('.behavior-fav').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const want = btn.dataset.fav !== '1';
+            fetch(behaviorFavUrl.replace(/0$/, btn.dataset.id), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+                body: JSON.stringify({ favorite: want })
+            }).then(r => r.ok ? r.json() : Promise.reject())
+              .then(data => {
+                  btn.dataset.fav = data.favorite ? '1' : '0';
+                  btn.classList.toggle('text-warning', !!data.favorite);
+                  btn.title = data.favorite
+                      ? 'Starred — pinned in picker Favorites'
+                      : 'Star — pin to picker Favorites';
+                  btn.querySelector('i').className =
+                      'fas fa-star' + (data.favorite ? '' : '-regular');
+              })
+              .catch(() => {});
+        });
+    });
+
+    function togglePersonaFav(key, want) {
+        return fetch(personaFavUrl.replace('__KEY__', encodeURIComponent(key)), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+            body: JSON.stringify({ favorite: want })
+        }).then(r => r.ok ? r.json() : Promise.reject());
+    }
+
     // --- persona library ---------------------------------------------------
     function personaCard(p) {
         return `
@@ -197,6 +234,10 @@
                 </div>
                 <p class="text-[11px] opacity-60 line-clamp-2 flex-1">${esc(p.description || '')}</p>
                 <div class="flex gap-1 justify-end">
+                    <button type="button" class="btn btn-ghost btn-xs gap-1 ${p.favorite ? 'text-warning' : ''}" data-fav="${esc(p.key)}"
+                            title="${p.favorite ? 'Starred — pinned in picker Favorites' : 'Star — pin to picker Favorites'}">
+                        <i class="fas fa-star${p.favorite ? '' : '-regular'}"></i>
+                    </button>
                     <button type="button" class="btn btn-ghost btn-xs gap-1" data-preview="${esc(p.key)}">
                         <i class="fas fa-eye"></i> Preview
                     </button>
@@ -317,6 +358,18 @@
         }
         const pv = ev.target.closest('[data-preview]');
         const us = ev.target.closest('[data-use]');
+        const fv = ev.target.closest('[data-fav]');
+        if (fv) {
+            const key = fv.dataset.fav;
+            const p = personas.find(x => x.key === key);
+            togglePersonaFav(key, !(p && p.favorite))
+                .then(data => {
+                    if (p) p.favorite = data.favorite;
+                    applyFilter();  // re-render cards (Favorites order)
+                })
+                .catch(() => {});
+            return;
+        }
         if (pv) openPreview(pv.dataset.preview);
         else if (us) usePersona(us.dataset.use);
     });

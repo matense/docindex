@@ -440,6 +440,7 @@ class Behavior(db.Model):
     name = db.Column(db.String(120), nullable=False)
     content = db.Column(db.Text, nullable=False, default="")
     enabled = db.Column(db.Boolean, nullable=False, default=True)
+    favorite = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=utcnow)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 
@@ -449,8 +450,9 @@ class Behavior(db.Model):
 
 class PersonaPref(db.Model):
     """Per-user enable/disable flag for a bundled persona (Agency library).
+
     Personas are enabled by default; a row exists only once the user
-    toggles one."""
+    toggles one (on/off) or stars it as a favorite."""
 
     __tablename__ = "persona_prefs"
 
@@ -459,6 +461,7 @@ class PersonaPref(db.Model):
                         nullable=False, index=True)
     persona_key = db.Column(db.String(160), nullable=False)
     enabled = db.Column(db.Boolean, nullable=False, default=True)
+    favorite = db.Column(db.Boolean, nullable=False, default=False)
 
     __table_args__ = (
         db.UniqueConstraint("user_id", "persona_key",
