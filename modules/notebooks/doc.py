@@ -180,18 +180,35 @@ def extract(stored_file):
 
 def get_notebook(file_id, user_id):
     """Owned, non-trashed notebook StoredFile or None."""
-    return (StoredFile.query
+    stored = (StoredFile.query
             .filter_by(id=file_id, user_id=user_id, extension=EXTENSION)
             .filter(StoredFile.deleted_at.is_(None))
             .first())
+    if stored is not None:
+        ensure_uuid(stored)
+    return stored
 
 
 def list_notebooks(user_id):
-    return (StoredFile.query
+    notebooks = (StoredFile.query
             .filter_by(user_id=user_id, extension=EXTENSION)
             .filter(StoredFile.deleted_at.is_(None))
             .order_by(StoredFile.updated_at.desc())
             .all())
+    for stored in notebooks:
+        ensure_uuid(stored, commit=False)
+    if notebooks:
+        db.session.commit()
+    return notebooks
+
+
+def ensure_uuid(stored, commit=True):
+    """Backfill the internal global identifier (pre-UUID notebooks only)."""
+    if not stored.uuid:
+        stored.uuid = str(uuid.uuid4())
+        if commit:
+            db.session.commit()
+    return stored.uuid
 
 
 def cell_count(stored):
@@ -275,6 +292,7 @@ def create_notebook(user, drive, name, folder=None, cells=None):
                           content_type=MIME_TYPE)
     stored = file_service.save_upload(storage, user, folder=folder)
     stored.drive_id = drive.id
+    stored.uuid = ensure_uuid(stored, commit=False)
     db.session.commit()
     indexing_service.enqueue_index([stored.id])
     return stored

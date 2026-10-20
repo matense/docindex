@@ -121,6 +121,9 @@ class StoredFile(db.Model):
     drive_id = db.Column(db.Integer, db.ForeignKey("drives.id"), nullable=True, index=True)
     source_path = db.Column(db.String(500), nullable=True)  # real path (synced files)
     deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete (trash)
+    # Internal global identifier for notebooks (.pdocnb) — never shown in
+    # the UI. Assigned at creation; older notebooks get one on next access.
+    uuid = db.Column(db.String(36), nullable=True, unique=True, index=True)
     created_at = db.Column(db.DateTime, default=utcnow)
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 

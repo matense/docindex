@@ -54,6 +54,33 @@ def _create(app, user_id, drive_id, name="Notes", cells=None):
 # Organize: "DocIndex Notebooks" folder + plan/apply/revert
 # ---------------------------------------------------------------------------
 
+def test_notebook_uuid_assigned_and_backfilled(app, user):
+    import uuid as _uuid
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Uuid")
+    with app.app_context():
+        first = db.session.get(StoredFile, fid).uuid
+        assert first and len(first) == 36
+        _uuid.UUID(first)  # parses as a UUID
+        # Simulate a pre-UUID notebook: cleared, then regenerated on access.
+        db.session.get(StoredFile, fid).uuid = None
+        db.session.commit()
+    with app.app_context():
+        assert nb_doc.get_notebook(fid, user).uuid is not None
+        db.session.get(StoredFile, fid).uuid = None
+        db.session.commit()
+        nb_doc.list_notebooks(user)
+        second = db.session.get(StoredFile, fid).uuid
+        assert second and second != first
+    # Globally unique across many notebooks.
+    with app.app_context():
+        seen = {db.session.get(StoredFile, fid).uuid}
+        for i in range(5):
+            seen.add(db.session.get(
+                StoredFile, _create(app, user, drive_id, f"N{i}")).uuid)
+        assert len(seen) == 6
+
+
 def test_notebooks_folder_created_per_drive(app, user):
     drive_id = _drive(app, user)
     with app.app_context():
