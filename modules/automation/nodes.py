@@ -17,11 +17,13 @@ from app.services import ai_service, file_service, indexing_service, search_serv
 from .engine import (
     WorkflowError,
     as_files,
+    as_folders,
     as_json,
     as_table,
     as_text,
     p_drive,
     p_files,
+    p_folders,
     p_json,
     p_table,
     p_text,
@@ -656,11 +658,37 @@ def _exec_folder_list(ctx, config, inputs, outputs=None):
     return p_files(files)
 
 
+def _exec_input_folder(ctx, config, inputs, outputs=None):
+    """A single folder from a drive, as a folders payload."""
+    drive = resolve_drive_id(ctx, config, outputs or {}, field="drive_id")
+    raw = config.get("folder_id", "")
+    if raw in (None, ""):
+        raise WorkflowError("Pick a folder.")
+    if isinstance(raw, str) and "{{" in raw:
+        raw = render_template(raw, outputs)
+    try:
+        folder_id = int(raw)
+    except (TypeError, ValueError) as err:
+        raise WorkflowError("Pick a folder.") from err
+    folder = db.session.get(Folder, folder_id)
+    if (folder is None or folder.user_id != ctx["user"].id
+            or folder.drive_id != drive.id):
+        raise WorkflowError("The folder is not in that drive.")
+    ctx["log"](f"folder '{folder.name}'")
+    return p_folders([{"folder_id": folder.id, "name": folder.name}])
+
+
 def _exec_copy_file(ctx, config, inputs, outputs=None):
-    """Copy one trigger/file payload to another drive (keeps content)."""
+    """Copy one file — or one folder tree — to another drive."""
     if "in" not in inputs:
-        raise WorkflowError("No input — connect a file or file list.")
+        raise WorkflowError("No input — connect a file, file list or folder.")
     payload = inputs["in"]
+    drive = resolve_drive_id(ctx, config, outputs or {})
+    if drive.is_synced:
+        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
+    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
+    if payload["kind"] == "folders":
+        return _copy_folder_payload(ctx, payload, drive, folder_id)
     refs = as_files(payload) if payload["kind"] == "files" else None
     if refs is None:
         # Single file content passthrough is not copyable — require files.
@@ -673,10 +701,6 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
         raise WorkflowError("The file does not exist.")
     if getattr(stored, "is_synced", False):
         raise WorkflowError(f"File '{stored.name}' is read-only.")
-    drive = resolve_drive_id(ctx, config, outputs or {})
-    if drive.is_synced:
-        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
-    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
     copy, error = file_service.copy_file_to_drive(
         ctx["user"], stored.id, drive.id, folder_id)
     if error:
@@ -685,11 +709,36 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
     return p_files([{"file_id": copy.id, "name": copy.name}])
 
 
+def _copy_folder_payload(ctx, payload, drive, folder_id):
+    """Copy one folder payload (whole tree) to another drive."""
+    refs = as_folders(payload)
+    if len(refs) != 1:
+        raise WorkflowError("Copy one folder at a time (got "
+                            f"{len(refs)}).")
+    folder = db.session.get(Folder, int(refs[0]["folder_id"]))
+    if folder is None or folder.user_id != ctx["user"].id:
+        raise WorkflowError("The folder does not exist.")
+    if folder.drive is not None and folder.drive.is_synced:
+        raise WorkflowError(f"Folder '{folder.name}' is read-only.")
+    new_folder, error = file_service.copy_folder(
+        ctx["user"], folder.id, drive.id, folder_id)
+    if error:
+        raise WorkflowError(error)
+    ctx["log"](f"copied folder '{folder.name}' to '{drive.name}'")
+    return p_folders([{"folder_id": new_folder.id, "name": new_folder.name}])
+
+
 def _exec_move_file(ctx, config, inputs, outputs=None):
-    """Move one trigger/file payload to another drive (keeps content)."""
+    """Move one file — or one folder tree — to another drive."""
     if "in" not in inputs:
-        raise WorkflowError("No input — connect a file or file list.")
+        raise WorkflowError("No input — connect a file, file list or folder.")
     payload = inputs["in"]
+    drive = resolve_drive_id(ctx, config, outputs or {})
+    if drive.is_synced:
+        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
+    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
+    if payload["kind"] == "folders":
+        return _move_folder_payload(ctx, payload, drive, folder_id)
     refs = as_files(payload) if payload["kind"] == "files" else None
     if refs is None:
         raise WorkflowError("Connect a file (trigger, file, search, folder).")
@@ -701,16 +750,29 @@ def _exec_move_file(ctx, config, inputs, outputs=None):
         raise WorkflowError("The file does not exist.")
     if getattr(stored, "is_synced", False):
         raise WorkflowError(f"File '{stored.name}' is read-only.")
-    drive = resolve_drive_id(ctx, config, outputs or {})
-    if drive.is_synced:
-        raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
-    folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
     moved, error = file_service.move_file_to_drive(
         ctx["user"], stored.id, drive.id, folder_id)
     if error:
         raise WorkflowError(error)
     ctx["log"](f"moved to '{drive.name}'")
     return p_files([{"file_id": moved.id, "name": moved.name}])
+
+
+def _move_folder_payload(ctx, payload, drive, folder_id):
+    """Move one folder payload (whole tree) to another drive."""
+    refs = as_folders(payload)
+    if len(refs) != 1:
+        raise WorkflowError("Move one folder at a time (got "
+                            f"{len(refs)}).")
+    folder = db.session.get(Folder, int(refs[0]["folder_id"]))
+    if folder is None or folder.user_id != ctx["user"].id:
+        raise WorkflowError("The folder does not exist.")
+    moved, error = file_service.move_folder(
+        ctx["user"], folder.id, drive.id, folder_id)
+    if error:
+        raise WorkflowError(error)
+    ctx["log"](f"moved folder '{moved.name}' to '{drive.name}'")
+    return p_folders([{"folder_id": moved.id, "name": moved.name}])
 
 
 def _resolve_dest_folder(ctx, config, outputs, drive):
@@ -1436,11 +1498,11 @@ def register_defaults():
     register_node_type("output.copy_file", {
         "label": "Copy file to drive", "icon": "fa-copy",
         "category": "Output",
-        "description": "Copies one file (trigger/search result) to another "
-                       "writable drive.",
+        "description": "Copies one file (trigger/search result) — or one "
+                       "whole folder — to another writable drive.",
         "example": "report.pdf → copy to Work drive.",
-        "inputs": [{"name": "in", "kind": "files"}],
-        "outputs": [{"name": "out", "kind": "files"}],
+        "inputs": [{"name": "in", "kind": "any"}],
+        "outputs": [{"name": "out", "kind": "any"}],
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
@@ -1454,11 +1516,12 @@ def register_defaults():
     register_node_type("output.move_file", {
         "label": "Move file to drive", "icon": "fa-arrow-right",
         "category": "Output",
-        "description": "Moves one file (trigger/search result) to another "
-                       "writable drive (original leaves its drive).",
+        "description": "Moves one file (trigger/search result) — or one "
+                       "whole folder — to another writable drive (the "
+                       "original leaves its drive).",
         "example": "report.pdf → move to Archive drive.",
-        "inputs": [{"name": "in", "kind": "files"}],
-        "outputs": [{"name": "out", "kind": "files"}],
+        "inputs": [{"name": "in", "kind": "any"}],
+        "outputs": [{"name": "out", "kind": "any"}],
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
@@ -1467,6 +1530,22 @@ def register_defaults():
              "return": "id", "advanced": True, "default": "",
              "help": "Empty = the drive root."},
         ]}, lambda ctx, config, inputs: _exec_move_file(
+            ctx, config, inputs, ctx["_outputs"]))
+
+    register_node_type("input.folder", {
+        "label": "Folder from drive", "icon": "fa-folder",
+        "category": "Input",
+        "description": "A folder from one of your drives, as a folder "
+                       "payload — chain with Move or Copy to relocate the "
+                       "whole tree.",
+        "example": "Reports/ → move the whole folder to Archive.",
+        "inputs": [], "outputs": [{"name": "out", "kind": "folders"}],
+        "fields": [
+            {"name": "drive_id", "label": "Drive", "kind": "drive",
+             "required": True, "default": ""},
+            {"name": "folder_id", "label": "Folder", "kind": "folder",
+             "return": "id", "required": True, "default": ""},
+        ]}, lambda ctx, config, inputs: _exec_input_folder(
             ctx, config, inputs, ctx["_outputs"]))
 
     register_node_type("input.http", {

@@ -60,6 +60,10 @@ def p_files(files):
     return {"kind": "files", "data": list(files)}
 
 
+def p_folders(folders):
+    return {"kind": "folders", "data": list(folders)}
+
+
 def p_drive(drive_id, name=""):
     return {"kind": "drive", "data": {"id": int(drive_id), "name": name}}
 
@@ -74,6 +78,8 @@ def as_text(payload):
     if kind == "table":
         return table_to_csv(data)
     if kind == "files":
+        return "\n".join(f.get("name", "") for f in data)
+    if kind == "folders":
         return "\n".join(f.get("name", "") for f in data)
     if kind == "drive":
         return data.get("name", "") if isinstance(data, dict) else str(data)
@@ -118,6 +124,13 @@ def as_files(payload):
     if kind == "files":
         return data
     raise WorkflowError(f"Cannot use a {kind} payload as a file list.")
+
+
+def as_folders(payload):
+    kind, data = payload["kind"], payload["data"]
+    if kind == "folders":
+        return data
+    raise WorkflowError(f"Cannot use a {kind} payload as a folder list.")
 
 
 def table_to_csv(table):

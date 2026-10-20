@@ -664,6 +664,18 @@ def _transfer_graph(file_id, drive_id, node_type):
         {"from": "f", "from_port": "out", "to": "m", "to_port": "in"}]}
 
 
+def _folder_transfer_graph(folder_id, src_drive_id, dst_drive_id, node_type,
+                           dest_folder=""):
+    return {"nodes": [
+        {"id": "f", "type": "input.folder",
+         "config": {"drive_id": str(src_drive_id),
+                    "folder_id": str(folder_id)}},
+        {"id": "m", "type": node_type,
+         "config": {"drive_id": str(dst_drive_id), "folder_id": dest_folder}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "m", "to_port": "in"}]}
+
+
 def test_move_file_node_moves_between_drives(app, user):
     # NOTE: input.file reads text files into a text payload — an image hands
     # the move/copy node the files payload it needs (no decoding involved).
@@ -706,6 +718,78 @@ def test_transfer_nodes_refuse_synced_drive(app, user):
         with pytest.raises(engine.WorkflowError, match="read-only"):
             _execute(_transfer_graph(fid, dst, "output.copy_file"),
                      app, user)
+
+
+def _make_folder_tree(app, user, drive_id, name="Pack"):
+    """Folder with a subfolder and a file inside; returns (pack_id, sub_id)."""
+    with app.app_context():
+        pack = Folder(drive_id=drive_id, name=name, user_id=user)
+        db.session.add(pack)
+        db.session.flush()
+        sub = Folder(drive_id=drive_id, name="Sub", user_id=user,
+                     parent_id=pack.id)
+        db.session.add(sub)
+        db.session.flush()
+        pack_id, sub_id = pack.id, sub.id
+        db.session.commit()
+        return pack_id, sub_id
+
+
+def test_move_folder_payload_moves_whole_tree(app, user):
+    fid = _make_file(app, user, "inside.png", "fake png bytes")
+    src = _drive(app, user, name="Source")
+    dst = _drive(app, user, name="Archive")
+    pack_id, _ = _make_folder_tree(app, user, src, name="Pack")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.get(StoredFile, fid).folder_id = pack_id
+        db.session.commit()
+        outputs, _, _ = _execute(
+            _folder_transfer_graph(pack_id, src, dst, "output.move_file"),
+            app, user)
+        assert outputs["m"]["out"]["data"][0]["folder_id"] == pack_id
+        assert db.session.get(Folder, pack_id).drive_id == dst
+        assert db.session.get(StoredFile, fid).drive_id == dst
+
+
+def test_copy_folder_payload_keeps_original(app, user):
+    fid = _make_file(app, user, "inside.png", "fake png bytes")
+    src = _drive(app, user, name="Source")
+    dst = _drive(app, user, name="Archive")
+    pack_id, _ = _make_folder_tree(app, user, src, name="Pack")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.get(StoredFile, fid).folder_id = pack_id
+        db.session.commit()
+        outputs, _, _ = _execute(
+            _folder_transfer_graph(pack_id, src, dst, "output.copy_file"),
+            app, user)
+        new_id = outputs["m"]["out"]["data"][0]["folder_id"]
+        assert new_id != pack_id
+        assert db.session.get(Folder, pack_id).drive_id == src
+        assert db.session.get(Folder, new_id).drive_id == dst
+        assert db.session.get(StoredFile, fid).folder_id == pack_id
+
+
+def test_move_folder_into_own_subfolder_refused(app, user):
+    src = _drive(app, user, name="Source")
+    pack_id, sub_id = _make_folder_tree(app, user, src, name="Pack")
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="subfolder"):
+            _execute(_folder_transfer_graph(
+                pack_id, src, src, "output.move_file",
+                dest_folder=str(sub_id)), app, user)
+
+
+def test_input_folder_rejects_foreign_drive(app, user):
+    src = _drive(app, user, name="Source")
+    other = _drive(app, user, name="Other")
+    pack_id, _ = _make_folder_tree(app, user, src, name="Pack")
+    with app.app_context():
+        # drive_id in the folder node does not match the folder's drive.
+        with pytest.raises(engine.WorkflowError, match="not in that drive"):
+            _execute(_folder_transfer_graph(
+                pack_id, other, other, "output.move_file"), app, user)
 
 
 def test_save_file_refuses_missing_folder(app, user):

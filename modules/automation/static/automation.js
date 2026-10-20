@@ -498,7 +498,8 @@
     // Friendly names for payload kinds, used in the per-node help chips.
     const KIND_LABELS = {
         text: 'text', json: 'JSON data', table: 'a table (rows & columns)',
-        files: 'a list of files', drive: 'a drive', any: 'anything',
+        files: 'a list of files', folders: 'a folder',
+        drive: 'a drive', any: 'anything',
     };
 
     function kindLabel(kind) {
