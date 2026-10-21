@@ -19,11 +19,16 @@
             <a href="{{ url_for('drive.download', file_id=file.id) }}" class="btn btn-ghost btn-sm">
                 <i class="fas fa-download"></i> Download
             </a>
-            {% if file.is_synced %}
+            {% if file.is_synced and (not file.drive or file.drive.is_readonly) %}
             <span class="badge badge-info badge-outline gap-1 self-center" title="This file maps to a real file on disk and cannot be modified here">
                 <i class="fas fa-lock"></i> Synced · read-only
             </span>
-            {% elif file.is_editable %}
+            {% elif file.is_synced %}
+            <span class="badge badge-success badge-outline gap-1 self-center" title="Shared drive: edits write through to the real file, with history">
+                <i class="fas fa-arrows-rotate"></i> Shared · two-way sync
+            </span>
+            {% endif %}
+            {% if not (file.is_synced and (not file.drive or file.drive.is_readonly)) and file.is_editable %}
             <a href="{{ url_for('drive.edit', file_id=file.id) }}" class="btn btn-primary btn-sm">
                 <i class="fas fa-pen"></i> Edit
             </a>

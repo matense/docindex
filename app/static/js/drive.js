@@ -17,11 +17,11 @@
         selected: new Map(),   // key -> { kind, id, name }
         lastClicked: null,     // anchor for shift-range selection
         ctxMenu: null,
-        driveSynced: false,
+        driveReadonly: false,
     });
     S.selected.clear();
     S.lastClicked = null;
-    S.driveSynced = !!document.querySelector('[data-drive-synced]');
+    S.driveReadonly = !!document.querySelector('[data-drive-readonly]');
     const CLIP_KEY = 'docindex-clipboard';
 
     function onDrivePage() {
@@ -197,7 +197,7 @@
         card.addEventListener('click', (e) => handleItemClick(card, e));
         card.addEventListener('dragstart', (e) => onDragStart(card, e));
 
-        if (S.driveSynced) return; // read-only drive: no drop targets
+        if (S.driveReadonly) return; // read-only drive: no drop targets
         card.addEventListener('dragover', (e) => {
             if (!e.dataTransfer.types.includes('application/x-docindex-items')) return;
             e.preventDefault();
@@ -342,7 +342,7 @@
     function selectionEntries() {
         // Actions for a multi-item selection.
         const entries = [{ header: S.selected.size + ' items selected' }];
-        if (!S.driveSynced) {
+        if (!S.driveReadonly) {
             entries.push(
                 { icon: 'fa-copy', label: 'Copy', action: () => window.driveCopySelection() },
                 { icon: 'fa-scissors', label: 'Cut', action: () => window.driveCutSelection() },
@@ -391,13 +391,13 @@
               action: () => navigateTo(el.dataset.nav || ('/folder/' + id)) },
         ];
         const clip = getClipboard();
-        if (!S.driveSynced && clip && (clip.files.length + clip.folders.length) > 0) {
+        if (!S.driveReadonly && clip && (clip.files.length + clip.folders.length) > 0) {
             entries.push({ icon: clip.mode === 'copy' ? 'fa-copy' : 'fa-paste',
                            label: (clip.mode === 'copy' ? 'Copy here (' : 'Paste here (') +
                                (clip.files.length + clip.folders.length) + ')',
                            action: () => window.drivePasteSelection(id) });
         }
-        if (!S.driveSynced) {
+        if (!S.driveReadonly) {
             entries.push('-', { icon: 'fa-trash', label: 'Delete folder', danger: true,
                 action: async () => {
                     const ok = await window.uiConfirm(
@@ -442,7 +442,7 @@
     // background right-clicks.
     function backgroundEntries() {
         const entries = [];
-        if (!S.driveSynced) {
+        if (!S.driveReadonly) {
             entries.push(
                 { icon: 'fa-folder-plus', label: 'New folder',
                   action: () => document.getElementById('new-folder-modal')?.showModal() },

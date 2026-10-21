@@ -913,7 +913,8 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
             ],
             "files": [
                 {"file_id": f.id, "name": f.name, "folder_id": f.folder_id,
-                 "size": f.size, "read_only": f.is_synced}
+                 "size": f.size,
+                 "read_only": file_service.is_readonly_file(f)}
                 for f in files[:200]
             ],
             "truncated": len(files) > 200,
@@ -930,7 +931,7 @@ def _tool_list_files(user, folder_id=None, drive=None, recursive=False):
         "folders": [{"folder_id": f.id, "name": f.name} for f in folders_q.all()],
         "files": [
             {"file_id": f.id, "name": f.name, "size": f.size,
-             "read_only": f.is_synced}
+             "read_only": file_service.is_readonly_file(f)}
             for f in _guard_visible(user, files_q.limit(100).all())
         ],
     }
@@ -985,7 +986,7 @@ def _tool_move_files(user, args, drive=None):
     dest = Drive.query.filter_by(id=dest_id, user_id=user.id).first()
     if dest is None:
         return {"error": "Destination drive not found."}
-    if getattr(dest, "is_synced", False):
+    if getattr(dest, "is_readonly", False):
         return {"error": f"Drive '{dest.name}' is read-only."}
     moved, skipped, details = [], [], []
     for fid in args.get("file_ids", []) or []:
@@ -1015,7 +1016,7 @@ def _tool_copy_files(user, args, drive=None):
     dest = Drive.query.filter_by(id=dest_id, user_id=user.id).first()
     if dest is None:
         return {"error": "Destination drive not found."}
-    if getattr(dest, "is_synced", False):
+    if getattr(dest, "is_readonly", False):
         return {"error": f"Drive '{dest.name}' is read-only."}
     copied, skipped, details = [], [], []
     for fid in args.get("file_ids", []) or []:
@@ -1077,7 +1078,7 @@ def _tool_list_drives(user, drive=None):
         "scoped_to": scoped,
         "drives": [{
             "id": d.id, "name": d.name,
-            "read_only": bool(d.is_synced),
+            "read_only": bool(d.is_readonly),
             "files": stats.get(d.id, (0, 0))[0],
             "bytes": stats.get(d.id, (0, 0))[1],
         } for d in drives],

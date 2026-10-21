@@ -103,7 +103,7 @@ def _tool_create(user, args, drive):
         # notebooks need exactly one writable target, so take the first
         # non-synced drive in scope.
         candidates = list(drive) if isinstance(drive, (list, tuple)) else [drive]
-        target_drive = next((d for d in candidates if not d.is_synced), None)
+        target_drive = next((d for d in candidates if not d.is_readonly), None)
         if target_drive is None and candidates:
             return {"error": "All drives in context are synced (read-only) — "
                              "pick a writable drive with drive_id."}

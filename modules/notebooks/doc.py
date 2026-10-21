@@ -265,19 +265,20 @@ def ai_file_guard(_user, stored):
 # ---------------------------------------------------------------------------
 
 def _guard_writable(stored):
-    if stored.is_synced or (stored.drive and stored.drive.is_synced):
+    from app.services.file_service import is_readonly_file
+    if is_readonly_file(stored):
         raise ValueError("Synced drives are read-only.")
 
 
 def create_notebook(user, drive, name, folder=None, cells=None):
-    """Create a notebook file in a (non-synced) drive. Returns StoredFile."""
+    """Create a notebook file in a writable drive. Returns StoredFile."""
     # Defensive: agent multi-drive context is a list — callers should resolve
     # to one writable drive first (see tools._tool_create), but never crash
     # with "'list' object has no attribute 'is_synced'".
     if isinstance(drive, (list, tuple)):
         candidates = list(drive)
         drive = next((d for d in candidates
-                      if not getattr(d, "is_synced", False)), None)
+                      if not getattr(d, "is_readonly", False)), None)
         if drive is None:
             raise ValueError("All drives in context are synced (read-only) — "
                              "pick a writable drive.")
@@ -290,7 +291,8 @@ def create_notebook(user, drive, name, folder=None, cells=None):
     storage = FileStorage(stream=BytesIO(data),
                           filename=f"{title}.{EXTENSION}",
                           content_type=MIME_TYPE)
-    stored = file_service.save_upload(storage, user, folder=folder)
+    stored = file_service.save_upload(storage, user, folder=folder,
+                                      drive=drive)
     stored.drive_id = drive.id
     stored.uuid = ensure_uuid(stored, commit=False)
     db.session.commit()
@@ -303,7 +305,7 @@ def _guard_writable_drive(drive):
     if isinstance(drive, (list, tuple)):
         raise ValueError("A single target drive is required — pick one with "
                          "drive_id.")
-    if drive.is_synced:
+    if drive.is_readonly:
         raise ValueError("Synced drives are read-only — notebooks cannot be "
                          "created there.")
 

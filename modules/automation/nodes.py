@@ -684,7 +684,7 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
         raise WorkflowError("No input — connect a file, file list or folder.")
     payload = inputs["in"]
     drive = resolve_drive_id(ctx, config, outputs or {})
-    if drive.is_synced:
+    if _drive_readonly(drive):
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
     folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
     if payload["kind"] == "folders":
@@ -699,7 +699,7 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
     stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
     if stored is None or stored.user_id != ctx["user"].id:
         raise WorkflowError("The file does not exist.")
-    if getattr(stored, "is_synced", False):
+    if _file_readonly(stored):
         raise WorkflowError(f"File '{stored.name}' is read-only.")
     copy, error = file_service.copy_file_to_drive(
         ctx["user"], stored.id, drive.id, folder_id)
@@ -707,6 +707,17 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
         raise WorkflowError(error)
     ctx["log"](f"copied to '{drive.name}'")
     return p_files([{"file_id": copy.id, "name": copy.name}])
+
+
+def _drive_readonly(drive):
+    return drive.is_readonly
+
+
+def _file_readonly(stored):
+    if not stored.is_synced:
+        return False
+    drive = stored.drive
+    return drive is None or drive.is_readonly
 
 
 def _copy_folder_payload(ctx, payload, drive, folder_id):
@@ -718,7 +729,7 @@ def _copy_folder_payload(ctx, payload, drive, folder_id):
     folder = db.session.get(Folder, int(refs[0]["folder_id"]))
     if folder is None or folder.user_id != ctx["user"].id:
         raise WorkflowError("The folder does not exist.")
-    if folder.drive is not None and folder.drive.is_synced:
+    if folder.drive is not None and folder.drive.is_readonly:
         raise WorkflowError(f"Folder '{folder.name}' is read-only.")
     new_folder, error = file_service.copy_folder(
         ctx["user"], folder.id, drive.id, folder_id)
@@ -734,7 +745,7 @@ def _exec_move_file(ctx, config, inputs, outputs=None):
         raise WorkflowError("No input — connect a file, file list or folder.")
     payload = inputs["in"]
     drive = resolve_drive_id(ctx, config, outputs or {})
-    if drive.is_synced:
+    if _drive_readonly(drive):
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
     folder_id = _resolve_dest_folder(ctx, config, outputs or {}, drive)
     if payload["kind"] == "folders":
@@ -748,7 +759,7 @@ def _exec_move_file(ctx, config, inputs, outputs=None):
     stored = db.session.get(StoredFile, int(refs[0]["file_id"]))
     if stored is None or stored.user_id != ctx["user"].id:
         raise WorkflowError("The file does not exist.")
-    if getattr(stored, "is_synced", False):
+    if _file_readonly(stored):
         raise WorkflowError(f"File '{stored.name}' is read-only.")
     moved, error = file_service.move_file_to_drive(
         ctx["user"], stored.id, drive.id, folder_id)
@@ -1119,7 +1130,7 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
     drive = db.session.get(Drive, drive_id)
     if drive is None or drive.user_id != ctx["user"].id:
         raise WorkflowError("The selected drive does not exist.")
-    if drive.is_synced:
+    if _drive_readonly(drive):
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced).")
     try:
         stored = doc.create_notebook(ctx["user"], drive, name, cells=[cell])
@@ -1142,7 +1153,7 @@ def _save_blob_to_drive(ctx, config, blob, name, outputs=None):
         raise WorkflowError("The file name cannot contain path separators.")
 
     drive = resolve_drive_id(ctx, config, outputs or {})
-    if drive.is_synced:
+    if _drive_readonly(drive):
         raise WorkflowError(f"Drive '{drive.name}' is read-only (synced) — "
                             "pick a writable drive.")
 
@@ -1159,7 +1170,8 @@ def _save_blob_to_drive(ctx, config, blob, name, outputs=None):
                                     f"in drive '{drive.name}'.")
 
     stored = file_service.save_upload(
-        FileStorage(io.BytesIO(blob), filename=name), ctx["user"], folder)
+        FileStorage(io.BytesIO(blob), filename=name), ctx["user"], folder,
+        drive=drive)
     stored.drive_id = drive.id
     db.session.commit()
     indexing_service.enqueue_index([stored.id])

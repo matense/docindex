@@ -124,7 +124,7 @@
                 <div class="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs opacity-50 mt-2">
                     <span title="Drive">
                         <i class="fas fa-hard-drive mr-1"></i>{{ f.drive.name if f.drive else 'My Drive' }}
-                        {% if f.drive and f.drive.is_synced %}<i class="fas fa-lock ml-1" title="Synced · read-only"></i>{% endif %}
+                        {% if f.drive and f.drive.is_readonly %}<i class="fas fa-lock ml-1" title="Synced · read-only"></i>{% endif %}
                     </span>
                     {% if f.folder %}
                     <span title="Folder">

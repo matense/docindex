@@ -305,8 +305,10 @@
                         <div><i class="fas fa-magnifying-glass text-info mr-1"></i>
                             Everything indexable is indexed — text, PDF, DOCX and images (OCR / AI captions).</div>
                         <div><i class="fas fa-lock text-info mr-1"></i>
-                            The drive is <strong>read-only</strong>: files stay on your disk and are never
-                            modified, renamed or deleted by DocIndex. Re-sync anytime with the Sync button.</div>
+                            Mirror drives are <strong>read-only</strong>: files stay on your disk and are never
+                            modified, renamed or deleted by DocIndex. Re-sync anytime with the Sync button.
+                            Shared drives allow edits: changes write through to the real files (with history),
+                            and changes made elsewhere are picked up on sync.</div>
                     </div>
                     <form method="POST" action="{{ url_for('drive.sync_create') }}" class="flex flex-col gap-3">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -316,6 +318,14 @@
                                    placeholder="C:\Users\me\Documents  or  /home/me/documents"
                                    class="input input-bordered w-full font-mono text-sm">
                             <span class="text-xs opacity-50">Path on the machine running DocIndex. Subfolders are included.</span>
+                        </label>
+                        <label class="flex flex-col gap-1">
+                            <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Sync mode</span>
+                            <select name="sync_mode" class="select select-bordered w-full">
+                                <option value="mirror" selected>Mirror — read-only (safe, recommended)</option>
+                                <option value="shared">Shared — two-way sync with write + history</option>
+                            </select>
+                            <span class="text-xs opacity-50">Shared lets DocIndex and other apps (e.g. Dropbox) edit the same files; external changes are kept as history.</span>
                         </label>
                         <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
                             <label class="flex items-center gap-2 cursor-pointer">

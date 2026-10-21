@@ -1,30 +1,26 @@
-"""Synced drives: mirror a local folder into a read-only drive.
+"""Synced drives: mirror a local folder into DocIndex.
 
-A synced drive maps to a real folder on the server's disk. Files are NOT
-copied — each StoredFile keeps the absolute `source_path` of the real file
-and all reads (preview, indexing, search, AI) go straight to it. The drive
-is strictly read-only: nothing in DocIndex may modify, rename, move or
-delete the real files.
+Two modes (Drive.sync_mode): 'mirror' is strictly read-only. 'shared' is
+a writable two-way sync (e.g. a Dropbox/OneDrive folder): local edits
+write through to the real files with a version snapshot first, and remote
+changes detected on re-scan are adopted with the last-seen content kept
+as a version (collapsed history).
 
-Syncs run in a background thread with progress tracking and pause/resume
-(`start_sync`, `pause_sync`, `resume_sync`, `get_status`); `sync_drive` is
-the synchronous core (used in tests and by the worker). Job state lives in
-memory — it is progress bookkeeping, not source of truth.
-
-CRITICAL: never call file_service.purge_file/delete_file on synced files —
-that would delete the user's real data. Removals only delete DB rows.
+CRITICAL: never delete real files. Removals only delete DB rows.
+Shared-drive purges are DB-only by construction (see purge_file).
 """
 
 import hashlib
 import json
 import os
+import shutil
 import threading
 import uuid
 
 from flask import current_app, session
 
 from ..extensions import db
-from ..models import Drive, FileIndex, Folder, StoredFile, utcnow
+from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile, utcnow
 from . import file_service, indexing_service
 
 # --------------------------------------------------------------------------
@@ -250,6 +246,16 @@ def remove_synced_drive(drive):
     from . import search_service
     search_service.fts_delete_many(file_ids)
 
+    # Shadows are ours (generated under SHADOW_FOLDER) — remove them.
+    for fid in file_ids:
+        try:
+            shadow = os.path.join(current_app.config["SHADOW_FOLDER"],
+                                  f"{fid}.blob")
+            if os.path.exists(shadow):
+                os.remove(shadow)
+        except OSError:
+            pass
+
 
 # --------------------------------------------------------------------------
 # Drive creation
@@ -300,14 +306,18 @@ def validate_path(path):
     return abs_path, None
 
 
-def create_synced_drive(user, path, captions_enabled=True, index_workers=1):
+def create_synced_drive(user, path, captions_enabled=True, index_workers=1,
+                          sync_mode="mirror"):
     """Create a synced drive for a local folder and start the first sync.
 
+    sync_mode is 'mirror' (read-only) or 'shared' (writable two-way sync).
     Returns (drive, job, error).
     """
     abs_path, error = validate_path(path)
     if error:
         return None, None, error
+    if sync_mode not in ("mirror", "shared"):
+        return None, None, "Unknown sync mode."
     clash = Drive.query.filter_by(user_id=user.id, source_path=abs_path).first()
     if clash:
         return None, None, f'That folder is already synced as drive "{clash.name}".'
@@ -322,6 +332,7 @@ def create_synced_drive(user, path, captions_enabled=True, index_workers=1):
     drive = Drive(name=name, user_id=user.id, source_path=abs_path,
                   description=f"Synced from {abs_path}",
                   captions_enabled=captions_enabled,
+                  sync_mode=sync_mode,
                   index_workers=max(1, min(int(index_workers or 1), 8)))
     db.session.add(drive)
     db.session.commit()
@@ -388,6 +399,37 @@ def _count_files(root):
     return total
 
 
+def _adopt_remote_change(stored, checksum, size):
+    """Shared drive: the real file changed outside DocIndex (another user).
+
+    Keeps the last-seen content as a FileVersion (collapsed history: the
+    initial state the user saw + the current one), then adopts the remote
+    content and refreshes the shadow. Returns True when a version was kept.
+    """
+    versioned = False
+    shadow = file_service.shadow_path(stored)
+    if os.path.exists(shadow):
+        ext = stored.extension or ""
+        sname = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
+        versions_dir = current_app.config["VERSIONS_FOLDER"]
+        os.makedirs(versions_dir, exist_ok=True)
+        shutil.copyfile(shadow, os.path.join(versions_dir, sname))
+        next_version = ((stored.versions[0].version + 1)
+                        if stored.versions else 1)
+        db.session.add(FileVersion(
+            file_id=stored.id, version=next_version, stored_name=sname,
+            size=stored.size, checksum=stored.checksum, source="sync",
+            note="External change detected during sync"))
+        versioned = True
+    stored.checksum = checksum
+    stored.size = size
+    stored.updated_at = utcnow()
+    if stored.index:
+        stored.index.status = "pending"
+    file_service.refresh_shadow(stored)
+    return versioned
+
+
 def sync_drive(drive, job=None):
     """Re-scan the drive's local folder and reconcile DB rows with disk.
 
@@ -407,15 +449,26 @@ def sync_drive(drive, job=None):
 
     stats = job.stats if job else {"added": 0, "updated": 0, "removed": 0,
                                    "skipped": 0}
+    stats.setdefault("versions", 0)
     root = drive.source_path
 
     if job:
         job.total = _count_files(root)
 
     # Existing state, keyed by path relative to the root (read-only).
+    # Trashed rows and ignored paths are invisible to the scan: a trashed
+    # file whose real file is still on disk must not be re-added, and
+    # purged shared files must not resurrect.
+    ignored = file_service._ignored_sync_paths(drive)
     existing_files = {}
+    trashed_paths = set()
     for f in StoredFile.query.filter_by(drive_id=drive.id).all():
-        rel = os.path.relpath(f.source_path, root)
+        if not f.source_path:
+            continue
+        rel = os.path.normpath(os.path.relpath(f.source_path, root))
+        if f.deleted_at is not None:
+            trashed_paths.add(rel)
+            continue
         existing_files[rel] = f
     existing_folders = {}
     for folder in Folder.query.filter_by(drive_id=drive.id).all():
@@ -450,6 +503,10 @@ def sync_drive(drive, job=None):
                 job.checkpoint()
                 job.current = rel
 
+            if rel in ignored or rel in trashed_paths:
+                if job:
+                    job.processed += 1
+                continue
             seen_files.add(rel)
             stored = existing_files.get(rel)
             if stored is None:
@@ -521,12 +578,18 @@ def sync_drive(drive, job=None):
         to_index.append(stored.id)
         pending += 1
         flush_batch()
+        if drive.is_shared:
+            file_service.refresh_shadow(stored)
     for stored, checksum, size in updates:
-        stored.checksum = checksum
-        stored.size = size
-        stored.updated_at = utcnow()
-        if stored.index:
-            stored.index.status = "pending"
+        if drive.is_shared:
+            if _adopt_remote_change(stored, checksum, size):
+                stats["versions"] += 1
+        else:
+            stored.checksum = checksum
+            stored.size = size
+            stored.updated_at = utcnow()
+            if stored.index:
+                stored.index.status = "pending"
         to_index.append(stored.id)
         pending += 1
         flush_batch()
@@ -542,6 +605,7 @@ def sync_drive(drive, job=None):
                     os.remove(thumb)
                 except OSError:
                     current_app.logger.exception("Failed to remove thumbnail %s", thumb)
+            file_service.drop_shadow(stored)
             db.session.delete(stored)
             stats["removed"] += 1
 

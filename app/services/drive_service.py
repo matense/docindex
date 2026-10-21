@@ -143,15 +143,16 @@ def trash_drive(user, drive_id):
     """Soft-delete a drive (restorable from the trash) together with every
     file in it — trashed files keep their blobs and history. Files share the
     drive's timestamp so restoring the drive restores exactly those files
-    (anything already in the trash beforehand stays there). Synced drives
-    are mirrors of real folders, so they skip the trash and are removed
-    immediately instead — the real files are never touched.
+    (anything already in the trash beforehand stays there). Mirror synced
+    drives skip the trash and are removed immediately instead — the real
+    files are never touched. Shared (writable sync) drives trash normally
+    (rows only).
     Returns (drive, error)."""
     from . import file_service, sync_service
     drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
     if not drive or drive.deleted_at is not None:
         return None, "Drive not found."
-    if drive.is_synced:
+    if drive.is_readonly:
         sync_service.remove_synced_drive(drive)
         return drive, None
     now = utcnow()

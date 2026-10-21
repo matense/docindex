@@ -53,8 +53,9 @@ def _get_file(file_id, include_trashed=False):
 
 
 def _guard_writable(stored):
-    """Synced files map to real files on disk and are read-only."""
-    if stored.is_synced:
+    """Mirror synced drives are read-only (shared ones allow writes)."""
+    drive = stored.drive
+    if stored.is_synced and (drive is None or drive.is_readonly):
         abort(400, "Synced drives are read-only — the file maps to a real file on disk.")
 
 
@@ -146,11 +147,14 @@ def create_drive():
 @bp.route("/drives/sync-create", methods=["POST"])
 @login_required
 def sync_create():
-    """Create a read-only drive that mirrors a local folder."""
+    """Create a drive that mirrors a local folder (mirror) or two-way
+    syncs it with writes + history (shared)."""
+    mode = request.form.get("sync_mode", "mirror")
     drive, job, error = sync_service.create_synced_drive(
         current_user, request.form.get("path", ""),
         captions_enabled=bool(request.form.get("captions_enabled")),
-        index_workers=request.form.get("index_workers", type=int) or 1)
+        index_workers=request.form.get("index_workers", type=int) or 1,
+        sync_mode=mode if mode in ("mirror", "shared") else "mirror")
     if error:
         flash(error, "error")
     elif job.state == "done":
@@ -244,15 +248,15 @@ def sync_settings(drive_id):
 @bp.route("/drives/<int:drive_id>/delete", methods=["POST"])
 @login_required
 def delete_drive(drive_id):
-    """Trash a drive (restorable). Synced drives skip the trash: their rows
-    are removed immediately, the real folder is never touched."""
+    """Trash a drive (restorable). Mirror synced drives skip the trash:
+    their rows are removed immediately, the real folder is never touched."""
     drive, error = drive_service.trash_drive(current_user, drive_id)
     if drive is None:
         flash(error or "Drive not found.", "error")
     else:
         if session.get("drive_id") == drive.id:
             session.pop("drive_id", None)  # get_current_drive() falls back
-        if drive.is_synced:
+        if drive.is_synced and not drive.is_shared:
             flash(f'Synced drive "{drive.name}" removed. The folder on disk was '
                   "not touched.", "success")
         else:
@@ -539,7 +543,7 @@ def file_summary(file_id):
 @login_required
 def upload():
     drive = drive_service.get_current_drive(current_user)
-    if drive.is_synced:
+    if drive.is_readonly:
         if request.accept_mimetypes.best == "application/json":
             return jsonify({"error": "Synced drives are read-only — upload "
                                      "to a regular drive instead.",
@@ -585,7 +589,8 @@ def upload():
                                     "versioned": result == "replaced",
                                     "duplicates": []})
                 continue
-            stored = file_service.save_upload(file_storage, current_user, folder)
+            stored = file_service.save_upload(file_storage, current_user, folder,
+                                               drive=drive)
             stored.drive_id = drive.id
             db.session.commit()
             _trigger_indexing(stored.id)
@@ -674,7 +679,7 @@ def move(file_id):
     folder_id = request.form.get("folder_id", type=int)
     if folder_id:
         dest = _get_owned(Folder, folder_id)
-        if dest.drive and dest.drive.is_synced:
+        if dest.drive and dest.drive.is_readonly:
             abort(400, "Synced drives are read-only.")
         # Same-drive guard: keep drive/folder consistent.
         if dest.drive_id != stored.drive_id:
@@ -1108,7 +1113,7 @@ def move_selection():
     dest = None
     if dest_id:
         dest = _get_owned(Folder, dest_id)
-        if dest.drive and dest.drive.is_synced:
+        if dest.drive and dest.drive.is_readonly:
             return jsonify({"ok": False,
                             "error": "Synced drives are read-only."}), 400
     moved = 0
@@ -1116,22 +1121,33 @@ def move_selection():
     for fid in file_ids:
         stored = (StoredFile.query
                   .filter_by(id=fid, user_id=current_user.id)
-                  .filter(StoredFile.deleted_at.is_(None),
-                          StoredFile.source_path.is_(None))  # synced = read-only
+                  .filter(StoredFile.deleted_at.is_(None))
                   .first())
-        if stored:
-            stored.folder_id = dest.id if dest else None
+        if not stored:
+            continue
+        _, error = _fs.move_file_to_drive(
+            current_user, stored.id, stored.drive_id,
+            dest.id if dest else None)
+        if error:
+            skipped += 1
+        else:
             moved += 1
     for fid in folder_ids:
         folder = Folder.query.filter_by(id=fid, user_id=current_user.id).first()
-        if not folder or (folder.drive and folder.drive.is_synced):
+        if not folder or (folder.drive and folder.drive.is_readonly):
+            skipped += 1
             continue
         # Guard: cannot move a folder into itself or one of its descendants.
         if dest and (dest.id == folder.id or _is_descendant(dest, folder)):
             skipped += 1
             continue
-        folder.parent_id = dest.id if dest else None
-        moved += 1
+        _, error = _fs.move_folder(
+            current_user, folder.id, folder.drive_id,
+            dest.id if dest else None)
+        if error:
+            skipped += 1
+        else:
+            moved += 1
     db.session.commit()
     return jsonify({"ok": True, "moved": moved, "skipped": skipped})
 
@@ -1146,7 +1162,7 @@ def _move_to_drive(file_ids, folder_ids, drive, dest, file_service, user):
                   .filter_by(id=fid, user_id=user.id)
                   .filter(StoredFile.deleted_at.is_(None))
                   .first())
-        if not stored or getattr(stored, "is_synced", False):
+        if not stored or file_service.is_readonly_file(stored):
             skipped += 1
             continue
         _, error = file_service.move_file_to_drive(
@@ -1158,7 +1174,7 @@ def _move_to_drive(file_ids, folder_ids, drive, dest, file_service, user):
             moved += 1
     for fid in folder_ids:
         folder = _Folder.query.filter_by(id=fid, user_id=user.id).first()
-        if not folder or (folder.drive and folder.drive.is_synced):
+        if not folder or (folder.drive and folder.drive.is_readonly):
             skipped += 1
             continue
         if dest and (dest.id == folder.id
@@ -1187,7 +1203,7 @@ def copy_selection():
                                       user_id=current_user.id).first()
         if drive is None:
             return jsonify({"ok": False, "error": "Drive not found."}), 404
-        if drive.is_synced:
+        if drive.is_readonly:
             return jsonify({"ok": False,
                             "error": "Synced drives are read-only."}), 400
     folder = None
@@ -1201,7 +1217,7 @@ def copy_selection():
             return jsonify({"ok": False,
                             "error": "Folder not found."}), 404
     if folder is not None and folder.drive is not None \
-            and folder.drive.is_synced:
+            and folder.drive.is_readonly:
         return jsonify({"ok": False,
                         "error": "Synced drives are read-only."}), 400
     dest_drive_id = drive.id if drive else (
@@ -1212,7 +1228,7 @@ def copy_selection():
                   .filter_by(id=fid, user_id=current_user.id)
                   .filter(StoredFile.deleted_at.is_(None))
                   .first())
-        if not stored or getattr(stored, "is_synced", False):
+        if not stored or _fs.is_readonly_file(stored):
             skipped += 1
             continue
         _, error = _fs.copy_file_to_drive(
@@ -1226,7 +1242,7 @@ def copy_selection():
         folder_src = Folder.query.filter_by(
             id=fid, user_id=current_user.id).first()
         if not folder_src or (folder_src.drive and
-                              folder_src.drive.is_synced):
+                              folder_src.drive.is_readonly):
             skipped += 1
             continue
         _, error = _fs.copy_folder(
@@ -1243,7 +1259,7 @@ def copy_selection():
 @login_required
 def delete_folder(folder_id):
     folder = _get_owned(Folder, folder_id)
-    if folder.drive and folder.drive.is_synced:
+    if folder.drive and folder.drive.is_readonly:
         abort(400, "Synced drives are read-only.")
     parent_id = folder.parent_id
     _delete_folder_recursive(folder)

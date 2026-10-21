@@ -46,7 +46,7 @@
     <a href="{{ url_for('drive.download', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Download" aria-label="Download {{ f.name }}" onclick="event.stopPropagation()">
         <i class="fas fa-download" aria-hidden="true"></i>
     </a>
-    {% if not f.is_synced %}
+    {% if not (f.is_synced and drive.is_readonly) %}
         {% if f.extension in editable_exts %}
         <a href="{{ url_for('drive.edit', file_id=f.id) }}" class="btn btn-circle btn-xs btn-ghost" title="Edit" aria-label="Edit {{ f.name }}">
             <i class="fas fa-pen" aria-hidden="true"></i>
@@ -62,7 +62,7 @@
             onclick="event.stopPropagation(); showFileInfo({{ f.id }})">
         <i class="fas fa-circle-info" aria-hidden="true"></i>
     </button>
-    {% if not f.is_synced %}
+    {% if not (f.is_synced and drive.is_readonly) %}
     <form method="POST" action="{{ url_for('drive.delete', file_id=f.id) }}" class="inline"
           data-confirm="Move &quot;{{ f.name }}&quot; to the trash?" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -98,8 +98,8 @@
 <div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
      data-nav="{{ url_for('drive.view', file_id=f.id) }}"
      draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
-     {%- if f.is_synced %} data-is-synced="1"{% endif %}
-     {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
+     {%- if f.is_synced and drive.is_readonly %} data-is-synced="1"{% endif %}
+     {%- if not (f.is_synced and drive.is_readonly) and f.extension in editable_exts %} data-editable="1"{% endif %}>
     <i class="fas {{ file_icon(f) }} w-4 text-center"></i>
     <span class="truncate flex-1">{{ f.name }}</span>
     {% if f.checksum in dupe_checksums %}<i class="fas fa-clone text-warning text-xs" title="Duplicate content"></i>{% endif %}
@@ -111,7 +111,7 @@
 <details class="tree-node" open>
     <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
              data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}" draggable="true"
-             {%- if drive.is_synced %} data-is-synced="1"{% endif %}>
+             {%- if drive.is_readonly %} data-is-synced="1"{% endif %}>
         <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
     </summary>
     <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col">
@@ -122,7 +122,7 @@
 {%- endmacro %}
 
 {% block content %}
-<div data-folder-id="{{ folder.id if folder else '' }}" data-drive-id="{{ drive.id if drive else '' }}"{% if drive.is_synced %} data-drive-synced="1"{% endif %}></div>
+<div data-folder-id="{{ folder.id if folder else '' }}" data-drive-id="{{ drive.id if drive else '' }}"{% if drive.is_readonly %} data-drive-readonly="1"{% endif %}></div>
 <!-- Breadcrumb + toolbar + view switcher -->
 <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
     <div class="flex items-center gap-2 flex-wrap">
@@ -137,7 +137,7 @@
             </ul>
         </div>
         <!-- Selection toolbar -->
-        {% if not drive.is_synced %}
+        {% if not drive.is_readonly %}
         <div class="glass-panel rounded-xl px-2 py-1 flex items-center gap-1" id="drive-toolbar">
             <button type="button" class="btn btn-ghost btn-sm gap-1.5" title="New folder"
                     onclick="document.getElementById('new-folder-modal').showModal()">
@@ -186,7 +186,7 @@
                 <i class="fas fa-folder-tree"></i>
             </a>
         </div>
-        {% if folder and not drive.is_synced %}
+        {% if folder and not drive.is_readonly %}
         <form method="POST" action="{{ url_for('drive.delete_folder', folder_id=folder.id) }}"
               data-confirm="Delete this folder? Its files will be moved to the trash." data-confirm-danger>
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -204,8 +204,11 @@
     </span>
     <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 text-sm font-bold">
-            Synced drive
+            {% if drive.is_shared %}Shared drive
+            <span class="badge badge-success badge-outline badge-sm gap-1"><i class="fas fa-arrows-rotate"></i> two-way sync</span>
+            {% else %}Synced drive
             <span class="badge badge-info badge-outline badge-sm gap-1"><i class="fas fa-lock"></i> read-only</span>
+            {% endif %}
         </div>
         <div class="text-xs opacity-50 truncate" title="{{ drive.source_path }}">
             {{ drive.source_path }}
@@ -278,7 +281,7 @@
             {% for f in folders %}
             <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors"
                 data-nav="{{ url_for('drive.index', folder_id=f.id) }}" data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}"
-                draggable="true"{% if drive.is_synced %} data-is-synced="1"{% endif %}>
+                draggable="true"{% if drive.is_readonly %} data-is-synced="1"{% endif %}>
                 <td class="px-4 py-2.5">
                     <span class="flex items-center gap-2 font-medium">
                         <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
@@ -295,8 +298,8 @@
             <tr class="border-b border-base-content/5 hover:bg-primary/5 cursor-pointer transition-colors group"
                 data-nav="{{ url_for('drive.view', file_id=f.id) }}"
                 draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
-                {%- if f.is_synced %} data-is-synced="1"{% endif %}
-                {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
+                {%- if f.is_synced and drive.is_readonly %} data-is-synced="1"{% endif %}
+                {%- if not (f.is_synced and drive.is_readonly) and f.extension in editable_exts %} data-editable="1"{% endif %}>
                 <td class="px-4 py-2.5">
                     <span class="flex items-center gap-2 font-medium min-w-0">
                         <i class="fas {{ file_icon(f) }} w-4 text-center flex-shrink-0"></i>
@@ -343,8 +346,8 @@
     <div class="drive-card glass-panel rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 relative group cursor-pointer"
          style="--i:{{ loop.index + (folders | length) }}" data-nav="{{ url_for('drive.view', file_id=f.id) }}"
          draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
-         {%- if f.is_synced %} data-is-synced="1"{% endif %}
-         {%- if not f.is_synced and f.extension in editable_exts %} data-editable="1"{% endif %}>
+         {%- if f.is_synced and drive.is_readonly %} data-is-synced="1"{% endif %}
+         {%- if not (f.is_synced and drive.is_readonly) and f.extension in editable_exts %} data-editable="1"{% endif %}>
         {% if f.is_image %}
             <div class="h-16 w-full flex items-center justify-center overflow-hidden rounded-lg bg-base-200/50">
                 <img src="{{ url_for('drive.thumbnail', file_id=f.id) }}" alt="{{ f.name }}" class="max-h-16 object-contain"

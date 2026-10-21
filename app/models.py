@@ -60,6 +60,12 @@ class Drive(db.Model):
     captions_enabled = db.Column(db.Boolean, nullable=False, default=True)  # AI image captions
     index_workers = db.Column(db.Integer, nullable=False, default=1)  # parallel indexing workers
     deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete: trash, restorable
+    # 'mirror' = read-only local-folder mirror; 'shared' = writable two-way
+    # sync (e.g. a Dropbox/OneDrive folder) with version history.
+    sync_mode = db.Column(db.String(20), nullable=False, default="mirror")
+    # JSON list of drive-relative paths the sync must ignore (e.g. purged
+    # files on shared drives, whose real blobs are never deleted).
+    sync_ignored = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",
@@ -71,6 +77,17 @@ class Drive(db.Model):
     def is_synced(self):
         """Synced drives mirror a local folder and are read-only."""
         return self.source_path is not None
+
+    @property
+    def is_shared(self):
+        """Writable two-way sync drive (Dropbox/OneDrive style)."""
+        return (self.source_path is not None
+                and (self.sync_mode or "mirror") == "shared")
+
+    @property
+    def is_readonly(self):
+        """Mirror (read-only) synced drive."""
+        return self.source_path is not None and not self.is_shared
 
     def __repr__(self):
         return f"<Drive {self.name}>"

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import uuid
@@ -33,9 +34,25 @@ def file_path(stored_file):
 
 
 def _guard_not_synced(stored_file):
-    """Synced files are real files on disk and must never be modified."""
+    """Synced files are real files on disk; their blobs are never deleted."""
     if stored_file.is_synced:
         raise ValueError("Synced files are read-only.")
+
+
+def is_readonly_file(stored_file):
+    """True when the file lives on a read-only (mirror) synced drive.
+
+    Shared (writable) sync drives allow edits, which write through to the
+    real file with a version snapshot first."""
+    if not stored_file.is_synced:
+        return False
+    drive = stored_file.drive
+    return drive is None or not drive.is_shared
+
+
+def _guard_readonly(stored_file):
+    if is_readonly_file(stored_file):
+        raise ValueError(f"File '{stored_file.name}' is read-only.")
 
 
 def thumbnail_path(stored_file):
@@ -64,8 +81,18 @@ def _make_thumbnail(path, stored_name):
         return False
 
 
-def save_upload(file_storage, user, folder=None):
-    """Persist an uploaded file and create its DB rows. Returns StoredFile."""
+def save_upload(file_storage, user, folder=None, drive=None):
+    """Persist an uploaded file and create its DB rows. Returns StoredFile.
+
+    When the target is a shared (writable sync) drive, bytes go straight
+    into the real folder tree and source_path is set; otherwise the
+    managed uploads folder is used as before."""
+    target_drive = drive
+    if folder is not None and folder.drive_id is not None:
+        target_drive = Drive.query.get(folder.drive_id)
+    if target_drive is not None and target_drive.is_shared:
+        return _save_upload_to_shared(file_storage, user, target_drive,
+                                      folder)
     # Pre-check the declared size before touching disk (disk-fill DoS).
     try:
         declared = file_storage.content_length
@@ -112,11 +139,210 @@ def save_upload(file_storage, user, folder=None):
     return stored
 
 
+def _save_upload_to_shared(file_storage, user, drive, folder):
+    """Upload bytes directly into a shared drive's real folder tree."""
+    original_name = secure_filename(file_storage.filename) or "unnamed"
+    ext = get_extension(original_name)
+    if not allowed_file(original_name):
+        raise ValueError(f"File type not allowed: {original_name}")
+    try:
+        declared = file_storage.content_length
+    except Exception:
+        declared = None
+    if declared is not None and declared > current_app.config["MAX_FILE_SIZE"]:
+        raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
+    path = _disk_destination(drive, folder, original_name)
+    file_storage.save(path)
+    size = os.path.getsize(path)
+    if size > current_app.config["MAX_FILE_SIZE"]:
+        os.remove(path)
+        raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
+    stored = StoredFile(
+        name=os.path.basename(path),
+        stored_name=f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex,
+        extension=ext,
+        mime_type=file_storage.mimetype,
+        size=size,
+        checksum=_sha256_of(path),
+        folder_id=folder.id if folder else None,
+        user_id=user.id,
+        drive_id=drive.id,
+        source_path=os.path.abspath(path),
+    )
+    db.session.add(stored)
+    db.session.flush()
+    db.session.add(FileIndex(file_id=stored.id, status="pending"))
+    _unignore_sync_path(drive, _drive_relpath(drive, stored.source_path))
+    db.session.commit()
+    if stored.is_image:
+        _make_thumbnail(path, stored.stored_name)
+    refresh_shadow(stored)
+    return stored
+
+
+def _purge_shared_row(stored_file, drive):
+    """DB-only purge for shared-drive files (real blob is never touched)."""
+    from ..models import FileEmbedding, IndexJob
+    file_id = stored_file.id
+    for version in stored_file.versions:
+        try:
+            path = version_path(version)
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            current_app.logger.exception("Failed to remove version blob %s",
+                                         version.stored_name)
+    try:
+        thumb = thumbnail_path(stored_file)
+        if os.path.exists(thumb):
+            os.remove(thumb)
+    except OSError:
+        current_app.logger.exception("Failed to remove thumbnail")
+    IndexJob.query.filter_by(file_id=file_id).delete()
+    FileEmbedding.query.filter_by(file_id=file_id).delete()
+    rel = _drive_relpath(drive, stored_file.source_path)
+    if rel:
+        _ignore_sync_path(drive, rel)
+    drop_shadow(stored_file)
+    db.session.delete(stored_file)
+    db.session.flush()
+    from . import search_service
+    search_service.fts_delete(file_id, commit=False)
+    db.session.commit()
+
+
+def _drive_relpath(drive, path):
+    """Drive-relative normpath, or None when outside the drive root."""
+    try:
+        rel = os.path.normpath(os.path.relpath(path, drive.source_path))
+    except ValueError:
+        return None
+    if rel.startswith(".."):
+        return None
+    return rel
+
+
+def _ignored_sync_paths(drive):
+    try:
+        paths = json.loads(drive.sync_ignored or "[]")
+        return set(paths) if isinstance(paths, list) else set()
+    except (ValueError, TypeError):
+        return set()
+
+
+def _ignore_sync_path(drive, rel):
+    paths = _ignored_sync_paths(drive)
+    if rel not in paths:
+        paths.add(rel)
+        drive.sync_ignored = json.dumps(sorted(paths))
+        db.session.flush()
+
+
+def _unignore_sync_path(drive, rel):
+    paths = _ignored_sync_paths(drive)
+    if rel in paths:
+        paths.discard(rel)
+        drive.sync_ignored = json.dumps(sorted(paths))
+        db.session.flush()
+
+
 def _drive_condition(drive_id):
     """Match files in the same drive (NULL-safe for legacy drive-less rows)."""
     if drive_id is None:
         return StoredFile.drive_id.is_(None)
     return StoredFile.drive_id == drive_id
+
+
+def shadow_path(stored_file):
+    """Last-seen content copy for shared-drive files (outside the sync root)."""
+    return os.path.join(current_app.config["SHADOW_FOLDER"],
+                       f"{stored_file.id}.blob")
+
+
+def refresh_shadow(stored_file):
+    """Record the current content as last-seen. Skips files over the cap."""
+    try:
+        cap = current_app.config.get("SHARED_SHADOW_MAX_BYTES",
+                                     10 * 1024 * 1024)
+        path = file_path(stored_file)
+        if (not os.path.exists(path)
+                or os.path.getsize(path) > cap):
+            drop_shadow(stored_file)
+            return False
+        os.makedirs(current_app.config["SHADOW_FOLDER"], exist_ok=True)
+        shutil.copyfile(path, shadow_path(stored_file))
+        return True
+    except OSError:
+        current_app.logger.exception("Could not refresh shadow for %s",
+                                     stored_file.id)
+        return False
+
+
+def drop_shadow(stored_file):
+    try:
+        path = shadow_path(stored_file)
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def shadow_checksum(stored_file):
+    """Checksum of the last-seen copy, or None when there is none."""
+    try:
+        path = shadow_path(stored_file)
+        if not os.path.exists(path):
+            return None
+        return _sha256_of(path)
+    except OSError:
+        return None
+
+
+def _disk_destination(drive, folder, name):
+    """Unique real path inside a shared drive's folder tree (contained)."""
+    parts = [f.name for f in folder.breadcrumb()] if folder else []
+    directory = (os.path.join(drive.source_path, *parts)
+                 if parts else drive.source_path)
+    os.makedirs(directory, exist_ok=True)
+    root = os.path.abspath(drive.source_path)
+    candidate = os.path.join(directory, name)
+    if not os.path.abspath(candidate).startswith(root + os.sep):
+        raise ValueError("Invalid file name.")
+    base, dot, ext = name.rpartition(".")
+    if not dot:
+        base, ext = name, ""
+    n = 1
+    while os.path.exists(candidate):
+        n += 1
+        candidate = os.path.join(
+            directory, f"{base} (copy {n})" + (dot + ext if dot else ""))
+        if not os.path.abspath(candidate).startswith(root + os.sep):
+            raise ValueError("Invalid file name.")
+    return candidate
+
+
+def _move_bytes_for_drive(stored, drive, folder, name):
+    """Relocate a file's bytes for a drive change.
+
+    Returns (source_path_or_None, stored_name, size). No-op when neither
+    side is a shared drive. Raises FileNotFoundError when shared bytes
+    are involved but the blob is missing."""
+    src = file_path(stored)
+    target_shared = drive is not None and drive.is_shared
+    source_shared = stored.source_path is not None
+    if not target_shared and not source_shared:
+        return stored.source_path, stored.stored_name, stored.size
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Original file missing on disk: {src}")
+    if target_shared:
+        dst = _disk_destination(drive, folder, name)
+        shutil.move(src, dst)
+        return dst, stored.stored_name, os.path.getsize(dst)
+    ext = stored.extension or ""
+    sname = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
+    dst = os.path.join(current_app.config["UPLOAD_FOLDER"], sname)
+    shutil.move(src, dst)
+    return None, sname, os.path.getsize(dst)
 
 
 def find_duplicates(stored_file):
@@ -154,7 +380,7 @@ def duplicate_checksums(user_id, drive_id):
 
 def delete_file(stored_file):
     """Soft-delete: move the file to the trash (blob and history are kept)."""
-    _guard_not_synced(stored_file)
+    _guard_readonly(stored_file)
     from ..models import utcnow
     stored_file.deleted_at = utcnow()
     db.session.flush()
@@ -165,7 +391,7 @@ def delete_file(stored_file):
 
 def restore_file(stored_file):
     """Bring a trashed file back to its drive."""
-    _guard_not_synced(stored_file)
+    _guard_readonly(stored_file)
     stored_file.deleted_at = None
     db.session.flush()
     from . import search_service
@@ -218,7 +444,7 @@ def _writable_drive(user, drive_id, allow_none=False):
     drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
     if drive is None:
         return None, "Drive not found."
-    if getattr(drive, "is_synced", False):
+    if getattr(drive, "is_readonly", False):
         return None, f"Drive '{drive.name}' is read-only."
     return drive, None
 
@@ -231,7 +457,8 @@ def _owned_folder(user, drive, folder_id):
         return None, "Folder not found."
     if drive is not None and folder.drive_id != drive.id:
         return None, "Folder is not in that drive."
-    if folder.drive is not None and getattr(folder.drive, "is_synced", False):
+    if folder.drive is not None and getattr(folder.drive, "is_readonly",
+                                                  False):
         return None, f"Folder '{folder.name}' is read-only."
     return folder, None
 
@@ -268,7 +495,7 @@ def move_file_to_drive(user, file_id, drive_id, folder_id=None):
               .first())
     if not stored:
         return None, "File not found."
-    if getattr(stored, "is_synced", False):
+    if is_readonly_file(stored):
         return None, f"File '{stored.name}' is read-only."
     drive, folder, error = _resolve_dest(user, drive_id, folder_id)
     if error:
@@ -276,10 +503,21 @@ def move_file_to_drive(user, file_id, drive_id, folder_id=None):
     new_name = unique_name(user.id, drive.id if drive else None,
                            folder.id if folder else None, stored.name,
                            exclude_id=stored.id)
+    try:
+        source_path, stored_name, size = _move_bytes_for_drive(
+            stored, drive, folder, new_name)
+    except (OSError, ValueError) as exc:
+        return None, f"Could not move file: {exc}"
+    stored.source_path = source_path
+    stored.stored_name = stored_name
+    stored.size = size
     stored.drive_id = drive.id if drive else None
     stored.folder_id = folder.id if folder else None
     stored.name = new_name
     db.session.commit()
+    refresh_shadow(stored)
+    if stored.is_image and not has_thumbnail(stored):
+        _make_thumbnail(file_path(stored), stored.stored_name)
     return stored, None
 
 
@@ -298,17 +536,34 @@ def copy_file_to_drive(user, file_id, drive_id, folder_id=None):
     if not os.path.exists(src):
         return None, "Original file missing on disk."
     ext = stored.extension or ""
-    sname = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
-    dst = os.path.join(current_app.config["UPLOAD_FOLDER"], sname)
-    shutil.copyfile(src, dst)
+    target_shared = drive is not None and drive.is_shared
+    try:
+        if target_shared:
+            name = unique_name(user.id, drive.id,
+                               folder.id if folder else None, stored.name)
+            dst = _disk_destination(drive, folder, name)
+            shutil.copyfile(src, dst)
+            source_path = dst
+            size = os.path.getsize(dst)
+        else:
+            sname = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
+            dst = os.path.join(current_app.config["UPLOAD_FOLDER"], sname)
+            shutil.copyfile(src, dst)
+            source_path = None
+            size = os.path.getsize(dst)
+    except (OSError, ValueError) as exc:
+        return None, f"Could not copy file: {exc}"
     copy = StoredFile(
         name=unique_name(user.id, drive.id if drive else None,
                          folder.id if folder else None, stored.name),
-        stored_name=sname, extension=stored.extension,
-        mime_type=stored.mime_type, size=os.path.getsize(dst),
+        stored_name=sname if not target_shared else (
+            f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex),
+        extension=stored.extension,
+        mime_type=stored.mime_type, size=size,
         checksum=stored.checksum,
         folder_id=folder.id if folder else None,
-        user_id=user.id, drive_id=drive.id if drive else None)
+        user_id=user.id, drive_id=drive.id if drive else None,
+        source_path=source_path)
     db.session.add(copy)
     db.session.flush()
     db.session.add(FileIndex(file_id=copy.id, status="pending"))
@@ -318,6 +573,9 @@ def copy_file_to_drive(user, file_id, drive_id, folder_id=None):
         indexing_service.enqueue_index([copy.id])
     except Exception:  # noqa: BLE001 - index later
         current_app.logger.exception("Could not enqueue index for copy")
+    refresh_shadow(copy)
+    if copy.is_image and not has_thumbnail(copy):
+        _make_thumbnail(file_path(copy), copy.stored_name)
     return copy, None
 
 
@@ -329,7 +587,7 @@ def move_folder(user, folder_id, drive_id, parent_id=None):
         return None, "Folder not found."
     src_drive = Drive.query.filter_by(id=folder.drive_id,
                                       user_id=user.id).first()
-    if src_drive is not None and getattr(src_drive, "is_synced", False):
+    if src_drive is not None and getattr(src_drive, "is_readonly", False):
         return None, f"Folder '{folder.name}' is read-only."
     drive, parent, error = _resolve_dest(user, drive_id, parent_id)
     if error:
@@ -382,11 +640,22 @@ def _apply_drive_recursive(folder, drive_id, parent_id):
     folder.drive_id = drive_id
     folder.parent_id = parent_id
     db.session.flush()
+    drive = Drive.query.get(drive_id) if drive_id else None
     for sub in list(folder.children or []):
         _apply_drive_recursive(sub, drive_id, folder.id)
     for stored in list(folder.files or []):
         stored.drive_id = drive_id
         stored.folder_id = folder.id
+        if drive is not None and drive.is_shared or stored.source_path:
+            try:
+                source_path, stored_name, size = _move_bytes_for_drive(
+                    stored, drive, folder, stored.name)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Could not move '{stored.name}': {exc}")
+            stored.source_path = source_path
+            stored.stored_name = stored_name
+            stored.size = size
+            refresh_shadow(stored)
     db.session.flush()
 
 
@@ -411,7 +680,15 @@ def _copy_folder_recursive(user, folder, drive_id, parent_id):
 
 
 def purge_file(stored_file):
-    """Permanently delete: DB rows (index/versions cascade) and disk blobs."""
+    """Permanently delete: DB rows (index/versions cascade) and disk blobs.
+
+    Shared-drive files are DB-only removals — the real blob is never
+    touched — and their path is added to the drive's sync ignore list so
+    the next sync does not resurrect them."""
+    drive = stored_file.drive
+    if stored_file.is_synced and drive is not None and drive.is_shared:
+        _purge_shared_row(stored_file, drive)
+        return
     _guard_not_synced(stored_file)
     file_id = stored_file.id
     for version in stored_file.versions:
@@ -464,7 +741,7 @@ def _sha256_of(path):
 
 def snapshot_version(stored_file, source, note=""):
     """Snapshot the file's current content as a FileVersion before overwriting."""
-    _guard_not_synced(stored_file)
+    _guard_readonly(stored_file)
     ext = stored_file.extension
     stored_name = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
     shutil.copyfile(file_path(stored_file), os.path.join(
@@ -499,7 +776,7 @@ def replace_with_upload(stored_file, file_storage):
     Returns "replaced" (a version was snapshotted) or "identical" (same
     content — no-op, no version churn).
     """
-    _guard_not_synced(stored_file)
+    _guard_readonly(stored_file)
     ext = stored_file.extension
     tmp_name = f"tmp_{uuid.uuid4().hex}.{ext}" if ext else f"tmp_{uuid.uuid4().hex}"
     tmp_path = os.path.join(current_app.config["UPLOAD_FOLDER"], tmp_name)
@@ -523,6 +800,7 @@ def replace_with_upload(stored_file, file_storage):
     if stored_file.is_image:
         _make_thumbnail(file_path(stored_file), stored_file.stored_name)
     db.session.commit()
+    refresh_shadow(stored_file)
     return "replaced"
 
 
@@ -536,6 +814,7 @@ def restore_version(stored_file, version):
     if stored_file.is_image:
         _make_thumbnail(file_path(stored_file), stored_file.stored_name)
     db.session.commit()
+    refresh_shadow(stored_file)
 
 
 def update_file_content(stored_file, content, source="edit", note=""):
@@ -551,6 +830,7 @@ def update_file_content(stored_file, content, source="edit", note=""):
     checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
     stored_file.checksum = checksum
     db.session.commit()
+    refresh_shadow(stored_file)
 
 
 def read_text_content(stored_file, max_chars=200_000):

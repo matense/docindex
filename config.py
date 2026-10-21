@@ -42,6 +42,10 @@ class Config:
     UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
     THUMBNAIL_FOLDER = os.path.join(basedir, "uploads", "thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "uploads", "versions")
+    # Last-seen copies for writable shared sync drives (outside any sync
+    # root). Cap bounds disk use; bigger files skip content history.
+    SHADOW_FOLDER = os.path.join(basedir, "uploads", "shadow")
+    SHARED_SHADOW_MAX_BYTES = 10 * 1024 * 1024
     # Extension modules: each subdirectory with a valid module.json is a
     # discoverable module (disabled by default; admin enables them).
     MODULES_FOLDER = os.environ.get(
@@ -160,5 +164,6 @@ class TestConfig(Config):
     UPLOAD_FOLDER = os.path.join(basedir, "instance", "test_uploads")
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")
+    SHADOW_FOLDER = os.path.join(basedir, "instance", "test_shadow")
     # Tests point at the bundled example module.
     MODULES_FOLDER = os.path.join(basedir, "modules")
