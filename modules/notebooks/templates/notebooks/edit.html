@@ -40,6 +40,10 @@
                 title="Visible to the AI — click to hide">
             <i class="fas fa-eye"></i>
         </button>
+        <button id="nb-fullhist-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Full history is off — keep every change (larger file)">
+            <i class="fas fa-clock-rotate-left"></i>
+        </button>
         <button id="nb-print-btn" class="btn btn-ghost btn-sm gap-1"
                 title="Print this notebook">
             <i class="fas fa-print"></i> Print
@@ -360,6 +364,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
 /* AI access flags: tinted when active */
 #nb-lock-btn.nb-on { color: oklch(var(--wa)); }
 #nb-hide-btn.nb-on { color: oklch(var(--in)); }
+#nb-fullhist-btn.nb-on { color: oklch(var(--wa)); }
 
 /* File reference picker modal (created by notebook.js) */
 .nb-picker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);

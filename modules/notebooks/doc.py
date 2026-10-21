@@ -39,6 +39,9 @@ from app.services import file_service, indexing_service
 EXTENSION = "pdocnb"
 MIME_TYPE = "application/json"
 
+# Cap for history entries embedded in the file itself (mode B).
+MAX_EMBEDDED_HISTORY = 50
+
 # Dedicated folder per drive holding that drive's notebooks ("separated by
 # context"). Created on demand; the drive UI renders it with a book icon.
 NOTEBOOKS_FOLDER = "DocIndex Notebooks"
@@ -130,6 +133,10 @@ def validate(doc):
     # access (read, search and listing) to this notebook.
     doc["ai_lock"] = bool(doc.get("ai_lock"))
     doc["ai_hidden"] = bool(doc.get("ai_hidden"))
+    # Full-history mode (step 3/4 of shared sync): once on, always on —
+    # enforced in save_document, never here (validate has no stored row).
+    if "full_history" in doc:
+        doc["full_history"] = bool(doc["full_history"])
     return doc
 
 
@@ -147,6 +154,14 @@ def parse(text):
 def load(stored):
     return parse(file_service.read_text_content(
         stored, max_chars=indexing_service.MAX_TEXT_CHARS))
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def extract(stored_file):
@@ -442,8 +457,17 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
     """
     _guard_writable(stored)
     validate(doc)
+    # Full-history mode is sticky: once enabled it can never be turned
+    # off again (the toggle confirms this with the user).
+    if not doc.get("full_history"):
+        try:
+            if load(stored).get("full_history"):
+                doc["full_history"] = True
+        except (ValueError, OSError):
+            pass
     latest = stored.versions[0] if stored.versions else None
     snapshotted = False
+    snap = None
     last_snapshot_at = latest.created_at if latest else None
     if last_snapshot_at is not None and last_snapshot_at.tzinfo is None:
         # SQLite returns naive datetimes; utcnow() is timezone-aware.
@@ -451,18 +475,54 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
     if (not skip_snapshot
             and (force_checkpoint or last_snapshot_at is None
                  or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL)):
-        file_service.snapshot_version(stored, source, note=note)
+        snap = file_service.snapshot_version(stored, source, note=note)
         snapshotted = True
+
+    if snapshotted and doc.get("full_history"):
+        # Embed the pre-save state in the file itself (without nested
+        # history — otherwise the file would grow exponentially) so every
+        # collaborator's sync reconstructs the full history.
+        try:
+            prev = load(stored)
+        except (ValueError, OSError):
+            prev = None
+        if prev is not None:
+            prev = {k: v for k, v in prev.items()
+                    if k != "synced_history"}
+            entries = [e for e in (doc.get("synced_history") or [])
+                       if isinstance(e, dict)]
+            entries.append({
+                "version": snap.version if snap else None,
+                "created_at": utcnow().isoformat(),
+                "source": snap.source if snap else source,
+                "note": note,
+                "checksum": stored.checksum,
+                "doc": prev,
+            })
+            doc["synced_history"] = entries[-MAX_EMBEDDED_HISTORY:]
 
     data = serialize(doc)
     path = file_service.file_path(stored)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(data)
+    with file_service.file_lock(stored.id):
+        # Atomic write (tmp + replace): a crash or concurrent reader never
+        # sees a half-written notebook. Binary mode: no newline translation,
+        # so the verification hash matches exactly.
+        tmp_path = f"{path}.tmp-{uuid.uuid4().hex}"
+        with open(tmp_path, "wb") as fh:
+            fh.write(data.encode("utf-8"))
+        if hashlib.sha256(data.encode("utf-8")).hexdigest() != _sha256_file(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise ValueError("Notebook write failed verification.")
+        os.replace(tmp_path, path)
     stored.size = os.path.getsize(path)
     stored.checksum = hashlib.sha256(data.encode("utf-8")).hexdigest()
     stored.updated_at = utcnow()
     db.session.commit()
     indexing_service.enqueue_index([stored.id])
+    file_service.refresh_shadow(stored)
     return snapshotted
 
 

@@ -353,9 +353,12 @@ def _sha256_of(path):
     return checksum.hexdigest()
 
 
-def _allowed(name, size):
+def _allowed(name, size, drive=None):
     if not file_service.allowed_file(name):
-        return False
+        # Notebooks only travel on shared (writable) drives.
+        if not (drive is not None and drive.is_shared
+                and file_service.get_extension(name) == "pdocnb"):
+            return False
     return size <= current_app.config["MAX_FILE_SIZE"]
 
 
@@ -399,14 +402,86 @@ def _count_files(root):
     return total
 
 
+def _notebook_doc_module():
+    """Notebooks doc module, or None when the module is disabled."""
+    import importlib
+    try:
+        return importlib.import_module("docindex_module_notebooks.doc")
+    except ImportError:
+        return None
+
+
+def _remote_notebook_valid(path):
+    """Corruption guard: a remote .pdocnb must still parse as a notebook
+    before it is allowed to replace local content."""
+    doc_mod = _notebook_doc_module()
+    if doc_mod is None:
+        return True
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc_mod.parse(fh.read())
+        return True
+    except (ValueError, OSError, UnicodeError):
+        return False
+
+
+def _import_embedded_history(stored):
+    """Mode B: materialize embedded history entries as local FileVersions.
+
+    Returns the number of versions created. Invalid entries are skipped
+    individually — one bad entry never blocks the rest."""
+    doc_mod = _notebook_doc_module()
+    if doc_mod is None:
+        return 0
+    try:
+        doc = doc_mod.load(stored)
+    except (ValueError, OSError):
+        return 0
+    if not doc.get("full_history"):
+        return 0
+    entries = [e for e in (doc.get("synced_history") or [])
+               if isinstance(e, dict) and isinstance(e.get("doc"), dict)]
+    if not entries:
+        return 0
+    known = {v.checksum for v in stored.versions if v.checksum}
+    known.add(stored.checksum)
+    added = 0
+    versions_dir = current_app.config["VERSIONS_FOLDER"]
+    os.makedirs(versions_dir, exist_ok=True)
+    for entry in entries[:200]:
+        try:
+            entry_doc = doc_mod.validate(dict(entry["doc"]))
+        except ValueError:
+            continue
+        blob = json.dumps(entry_doc, ensure_ascii=False, separators=(",", ":"))
+        checksum = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        if checksum in known:
+            continue
+        sname = f"{uuid.uuid4().hex}.pdocnb"
+        with open(os.path.join(versions_dir, sname), "w",
+                  encoding="utf-8") as fh:
+            fh.write(blob)
+        next_version = ((stored.versions[0].version + 1)
+                        if stored.versions else 1)
+        remote_v = entry.get("version")
+        db.session.add(FileVersion(
+            file_id=stored.id, version=next_version, stored_name=sname,
+            size=len(blob.encode("utf-8")), checksum=checksum,
+            source=entry.get("source") or "sync",
+            note="Full history" + (f" v{remote_v}" if remote_v else "")))
+        known.add(checksum)
+        added += 1
+    return added
+
+
 def _adopt_remote_change(stored, checksum, size):
     """Shared drive: the real file changed outside DocIndex (another user).
 
     Keeps the last-seen content as a FileVersion (collapsed history: the
     initial state the user saw + the current one), then adopts the remote
-    content and refreshes the shadow. Returns True when a version was kept.
-    """
-    versioned = False
+    content and refreshes the shadow. Mode-B notebooks additionally
+    materialize embedded history entries. Returns versions kept."""
+    kept = 0
     shadow = file_service.shadow_path(stored)
     if os.path.exists(shadow):
         ext = stored.extension or ""
@@ -420,14 +495,19 @@ def _adopt_remote_change(stored, checksum, size):
             file_id=stored.id, version=next_version, stored_name=sname,
             size=stored.size, checksum=stored.checksum, source="sync",
             note="External change detected during sync"))
-        versioned = True
+        kept += 1
     stored.checksum = checksum
     stored.size = size
     stored.updated_at = utcnow()
     if stored.index:
         stored.index.status = "pending"
     file_service.refresh_shadow(stored)
-    return versioned
+    if stored.extension == "pdocnb":
+        try:
+            kept += _import_embedded_history(stored)
+        except Exception:  # noqa: BLE001 - never break a sync on history
+            current_app.logger.exception("Could not import embedded history")
+    return kept
 
 
 def sync_drive(drive, job=None):
@@ -494,7 +574,7 @@ def sync_drive(drive, job=None):
             except OSError:
                 stats["skipped"] += 1
                 continue
-            if not _allowed(filename, size):
+            if not _allowed(filename, size, drive):
                 stats["skipped"] += 1
                 continue
 
@@ -536,6 +616,17 @@ def sync_drive(drive, job=None):
                     continue
                 checksum = _sha256_of(path)
                 if checksum != stored.checksum or size != stored.size:
+                    if (drive.is_shared and stored.extension == "pdocnb"
+                            and not _remote_notebook_valid(path)):
+                        # Corrupt remote notebook: quarantine it — keep the
+                        # local content, log, and skip (never adopt garbage).
+                        current_app.logger.warning(
+                            "Shared sync: remote notebook %s failed "
+                            "validation — kept local content.", rel)
+                        stats["skipped"] += 1
+                        if job:
+                            job.processed += 1
+                        continue
                     updates.append((stored, checksum, size))
                     if stored.is_image:
                         thumbnails.append((path, stored.stored_name))
@@ -582,15 +673,22 @@ def sync_drive(drive, job=None):
             file_service.refresh_shadow(stored)
     for stored, checksum, size in updates:
         if drive.is_shared:
-            if _adopt_remote_change(stored, checksum, size):
-                stats["versions"] += 1
+            # Another writer (editor save) may hold the file: skip and
+            # pick it up on the next sync instead of racing it.
+            with file_service.try_file_lock(stored.id) as locked:
+                if not locked:
+                    stats["skipped"] += 1
+                    continue
+                kept = _adopt_remote_change(stored, checksum, size)
+                stats["versions"] += kept
+                to_index.append(stored.id)
         else:
             stored.checksum = checksum
             stored.size = size
             stored.updated_at = utcnow()
             if stored.index:
                 stored.index.status = "pending"
-        to_index.append(stored.id)
+            to_index.append(stored.id)
         pending += 1
         flush_batch()
     flush_batch(force=True)

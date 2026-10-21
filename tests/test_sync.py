@@ -256,6 +256,120 @@ def test_mirror_sync_still_keeps_no_versions(auth_client, app, local_folder):
         assert stats.get("versions", 0) == 0
 
 
+def test_full_history_sticky_and_embedded(auth_client, app, local_folder):
+    from modules.notebooks import doc as nb_doc
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with app.app_context():
+        user = User.query.first()
+        drive = db.session.get(Drive, drive_id)
+        stored = nb_doc.create_notebook(user, drive, "Hist")
+        fid = stored.id
+        doc = nb_doc.load(stored)
+        doc["full_history"] = True
+        nb_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert nb_doc.load(stored)["full_history"] is True
+        assert len(stored.versions) == 1
+        # second checkpoint embeds the pre-save state (no nesting)
+        doc = nb_doc.load(stored)
+        doc["cells"].append(nb_doc.new_cell("markdown", "second"))
+        nb_doc.save_document(stored, doc, force_checkpoint=True)
+        doc = nb_doc.load(stored)
+        assert len(doc["synced_history"]) == 2
+        for entry in doc["synced_history"]:
+            assert "synced_history" not in entry["doc"]
+        # sticky: saving without the flag keeps it on
+        doc = nb_doc.load(stored)
+        del doc["full_history"]
+        nb_doc.save_document(stored, doc)
+        assert nb_doc.load(stored).get("full_history") is True
+
+
+def test_shared_corrupt_notebook_quarantined(auth_client, app, local_folder):
+    from modules.notebooks import doc as nb_doc
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with app.app_context():
+        user = User.query.first()
+        drive = db.session.get(Drive, drive_id)
+        stored = nb_doc.create_notebook(user, drive, "Fragile")
+        fid, real = stored.id, stored.source_path
+    with open(real, "w", encoding="utf-8") as fh:
+        fh.write("{not valid json")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stats = sync_service.sync_drive(drive)
+    assert stats["skipped"] >= 1
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored is not None  # row kept, nothing adopted
+        assert stored.versions == []  # nothing snapshotted
+        import hashlib as _hl
+        with open(real, "rb") as fh:
+            assert stored.checksum != _hl.sha256(fh.read()).hexdigest()
+
+
+def test_shared_full_history_import(auth_client, app, local_folder):
+    import json as _json
+    from modules.notebooks import doc as nb_doc
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with app.app_context():
+        user = User.query.first()
+        drive = db.session.get(Drive, drive_id)
+        stored = nb_doc.create_notebook(user, drive, "HistImport")
+        fid, real = stored.id, stored.source_path
+        doc = nb_doc.load(stored)
+        doc["full_history"] = True
+        nb_doc.save_document(stored, doc, force_checkpoint=True)
+    # external change carrying an embedded older revision with a marker
+    with open(real, encoding="utf-8") as fh:
+        remote = _json.load(fh)
+    marker = nb_doc.new_cell("markdown", "embedded-marker-xyz")
+    remote["cells"].append(marker)
+    remote["synced_history"] = [{
+        "version": 1, "created_at": "2026-10-21T00:00:00",
+        "source": "edit", "note": "", "checksum": "x",
+        "doc": {"version": 1, "title": "Old",
+                "cells": [nb_doc.new_cell("markdown",
+                                           "embedded-marker-xyz")]},
+    }]
+    with open(real, "w", encoding="utf-8") as fh:
+        fh.write(_json.dumps(remote))
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stats = sync_service.sync_drive(drive)
+    assert stats["versions"] >= 2  # shadow state + embedded entry
+    with app.app_context():
+        from app.services.file_service import version_path
+        stored = db.session.get(StoredFile, fid)
+        texts = []
+        for v in stored.versions:
+            with open(version_path(v), "rb") as fh:
+                texts.append(fh.read().decode("utf-8"))
+        assert any("embedded-marker-xyz" in t for t in texts)
+
+
+def test_sync_skips_locked_file(auth_client, app, local_folder):
+    from app.services import file_service as _fs
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with open(os.path.join(local_folder, "hello.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("locked change")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stored = StoredFile.query.filter_by(name="hello.txt").one()
+        with _fs.file_lock(stored.id, timeout=5):
+            stats = sync_service.sync_drive(drive)
+        assert stats["skipped"] >= 1
+        # released: the next sync adopts it
+        stats = sync_service.sync_drive(drive)
+        assert stats["updated"] == 1
+
+
 def test_resync_picks_up_changes(auth_client, app, local_folder):
     _sync_create(auth_client, local_folder)
     drive_id = _synced_drive(app)

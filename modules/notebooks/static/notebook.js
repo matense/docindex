@@ -370,6 +370,34 @@
             renderAccessButtons();
             scheduleSave();
         });
+        // --- Full-history mode (shared sync): keep every change ----------
+        const fullHistBtn = root.querySelector("#nb-fullhist-btn");
+        function renderFullHistButton() {
+            if (!fullHistBtn) return;
+            const on = !!doc.full_history;
+            fullHistBtn.innerHTML = '<i class="fas fa-clock-rotate-left"></i>';
+            fullHistBtn.classList.toggle("nb-on", on);
+            fullHistBtn.classList.toggle("text-warning", on);
+            fullHistBtn.title = on
+                ? "Full history is ON — every change is kept (cannot be turned off)"
+                : "Full history is off — click to keep every change (file may get larger)";
+        }
+        if (fullHistBtn) fullHistBtn.addEventListener("click", async () => {
+            if (doc.full_history) return; // sticky: once on, stays on
+            const ok = window.uiConfirm
+                ? await window.uiConfirm(
+                    "Keep the FULL history of this notebook?\n\n"
+                    + "Every change will be stored with the file, so nothing is ever "
+                    + "collapsed away when syncing. The file may get noticeably larger, "
+                    + "and this cannot be turned off afterwards.",
+                    { title: "Full history", confirmText: "Keep everything" })
+                : window.confirm("Keep the FULL history of this notebook? This cannot be undone.");
+            if (!ok) return;
+            doc.full_history = true;
+            renderFullHistButton();
+            save(true); // checkpoint now so the mode switch itself is versioned
+        });
+        renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
 
@@ -388,6 +416,10 @@
                 doc.title = data.doc.title;
                 doc.ai_lock = !!data.doc.ai_lock;
                 doc.ai_hidden = !!data.doc.ai_hidden;
+                if (data.doc.full_history && !doc.full_history) {
+                    doc.full_history = true;
+                    renderFullHistButton();
+                }
                 renderAccessButtons();
                 lastChecksum = data.checksum;
                 doc.cells.forEach((c) => { c._editing = false; });

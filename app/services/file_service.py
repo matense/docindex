@@ -1,7 +1,9 @@
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 
 from flask import current_app
@@ -143,8 +145,6 @@ def _save_upload_to_shared(file_storage, user, drive, folder):
     """Upload bytes directly into a shared drive's real folder tree."""
     original_name = secure_filename(file_storage.filename) or "unnamed"
     ext = get_extension(original_name)
-    if not allowed_file(original_name):
-        raise ValueError(f"File type not allowed: {original_name}")
     try:
         declared = file_storage.content_length
     except Exception:
@@ -244,6 +244,95 @@ def _unignore_sync_path(drive, rel):
         paths.discard(rel)
         drive.sync_ignored = json.dumps(sorted(paths))
         db.session.flush()
+
+
+def _lock_path(file_id):
+    return os.path.join(current_app.config["SHADOW_FOLDER"], "locks",
+                        f"{file_id}.lock")
+
+
+def _lock_is_stale(path, steal_after):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            stamp = float((fh.read().strip().split() or ["0"])[0])
+    except (OSError, ValueError):
+        return True
+    return (time.time() - stamp) > steal_after
+
+
+@contextlib.contextmanager
+def file_lock(file_id, timeout=30, steal_after=120):
+    """Cross-process per-file mutex (editor save vs sync adopt).
+
+    Blocking: waits up to timeout seconds, then raises TimeoutError.
+    Stale locks (crashed holder) are stolen after steal_after seconds.
+    """
+    directory = os.path.join(current_app.config["SHADOW_FOLDER"], "locks")
+    os.makedirs(directory, exist_ok=True)
+    path = _lock_path(file_id)
+    deadline = time.time() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{time.time()} {os.getpid()}".encode())
+            break
+        except FileExistsError:
+            if _lock_is_stale(path, steal_after):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            elif time.time() >= deadline:
+                raise TimeoutError(f"File {file_id} is locked.")
+            time.sleep(0.05)
+    try:
+        yield True
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def try_file_lock(file_id, steal_after=120):
+    """Non-blocking file_lock: yields True (held) or False (busy)."""
+    directory = os.path.join(current_app.config["SHADOW_FOLDER"], "locks")
+    os.makedirs(directory, exist_ok=True)
+    path = _lock_path(file_id)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        if _lock_is_stale(path, steal_after):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                yield False
+                return
+        else:
+            yield False
+            return
+    os.write(fd, f"{time.time()} {os.getpid()}".encode())
+    try:
+        yield True
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def _drive_condition(drive_id):
@@ -793,7 +882,8 @@ def replace_with_upload(stored_file, file_storage):
         return "identical"
 
     snapshot_version(stored_file, "upload")
-    os.replace(tmp_path, file_path(stored_file))
+    with file_lock(stored_file.id):
+        os.replace(tmp_path, file_path(stored_file))
     stored_file.size = size
     stored_file.checksum = new_checksum
     stored_file.mime_type = file_storage.mimetype
@@ -808,12 +898,14 @@ def restore_version(stored_file, version):
     """Roll the file back to a past version (current state is snapshotted)."""
     snapshot_version(stored_file, "restore",
                      note=f"Before restore to v{version.version}")
-    shutil.copyfile(version_path(version), file_path(stored_file))
+    with file_lock(stored_file.id):
+        shutil.copyfile(version_path(version), file_path(stored_file))
     stored_file.size = version.size
     stored_file.checksum = version.checksum
     if stored_file.is_image:
         _make_thumbnail(file_path(stored_file), stored_file.stored_name)
     db.session.commit()
+    refresh_shadow(stored_file)
     refresh_shadow(stored_file)
 
 
@@ -824,8 +916,9 @@ def update_file_content(stored_file, content, source="edit", note=""):
         raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
     snapshot_version(stored_file, source, note=note)
     path = file_path(stored_file)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    with file_lock(stored_file.id):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
     stored_file.size = os.path.getsize(path)
     checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
     stored_file.checksum = checksum
