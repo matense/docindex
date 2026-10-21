@@ -51,7 +51,7 @@ def test_items_carry_interaction_attributes_in_all_views(auth_client, app):
         assert 'data-editable="1"' in txt_tag
         assert 'data-editable="1"' not in bin_tag
         # Not a synced drive.
-        assert 'data-drive-synced' not in html
+        assert 'data-drive-readonly' not in html
         assert 'data-is-synced' not in html
 
 
@@ -66,8 +66,28 @@ def test_synced_drive_marks_container_and_items_readonly(auth_client, app, tmp_p
     auth_client.post(f"/drives/{drive_id}/select", follow_redirects=True)
 
     html = auth_client.get("/?view=grid").data.decode()
-    assert 'data-drive-synced="1"' in html
+    assert 'data-drive-readonly="1"' in html
     tag = _file_tag(html, file_id)
     assert 'data-is-synced="1"' in tag
     # Synced files are never editable, even with an editable extension.
     assert 'data-editable="1"' not in tag
+
+
+def test_shared_drive_marks_container_writable(auth_client, app, tmp_path):
+    (tmp_path / "hello.txt").write_text("hello shared", encoding="utf-8")
+    auth_client.post("/drives/sync-create",
+                     data={"path": str(tmp_path), "sync_mode": "shared"},
+                     follow_redirects=True)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        assert drive.is_shared and not drive.is_readonly
+        drive_id = drive.id
+        file_id = StoredFile.query.filter_by(name="hello.txt").one().id
+    auth_client.post(f"/drives/{drive_id}/select", follow_redirects=True)
+
+    html = auth_client.get("/?view=grid").data.decode()
+    assert 'data-drive-readonly' not in html
+    tag = _file_tag(html, file_id)
+    assert 'data-is-synced="1"' not in tag
+    # Shared .txt files are editable in place.
+    assert 'data-editable="1"' in tag

@@ -167,17 +167,32 @@ drive" is stored in the Flask session (`session["drive_id"]`).
 | `last_sync_stats` | Text, nullable | JSON stats of the last sync (added/updated/removed/skipped) |
 | `captions_enabled` | Boolean, default true | synced drives: AI image captions on/off |
 | `index_workers` | Integer, default 1 | synced drives: parallel indexing workers (1–8) |
+| `sync_mode` | String(20), default 'mirror' | 'mirror' = read-only, 'shared' = writable two-way sync |
+| `sync_ignored` | Text, nullable | JSON list of drive-relative paths the sync skips |
 | `created_at` | DateTime | |
 
 Relationships: `folders`, `files` (cascade delete-orphan).
-Property: `is_synced` (`source_path IS NOT NULL`). **Synced drives** mirror a
-local folder and are strictly read-only: files are not copied (`StoredFile.
-source_path` points at the real file and `file_service.file_path()` resolves
-it), upload/rename/move/delete/edit/merge/folder ops are blocked (routes
+Property: `is_synced` (`source_path IS NOT NULL`). **Mirror synced drives**
+are strictly read-only: files are not copied (`StoredFile.source_path`
+points at the real file and `file_service.file_path()` resolves it),
+upload/rename/move/delete/edit/merge/folder ops are blocked (routes
 abort 400 and `file_service` guards raise `ValueError`), no version history
 is kept, and sync is on-demand via `sync_service.sync_drive`. CRITICAL:
 never call `purge_file`/`delete_file` on a synced file — removals during
 sync only delete DB rows; the real file belongs to the user.
+**Shared synced drives** (`sync_mode='shared'`, e.g. a Dropbox/OneDrive
+folder) are writable both ways: local edits write through to the real file
+with a version snapshot first (atomic tmp+replace, per-file lock shared
+with the sync worker); remote changes detected on re-scan keep the
+last-seen content as a `FileVersion` (`source='sync'`, collapsed history —
+initial + current only) via last-seen shadow copies under `SHADOW_FOLDER`
+(capped by `SHARED_SHADOW_MAX_BYTES`); trashed and purged paths are skipped
+so the trash never resurrects and purges are DB-only (path added to
+`sync_ignored`). Notebooks add an opt-in sticky `full_history` flag (toolbar
+toggle with size warning) that embeds each snapshotted state in the file
+(`synced_history`, capped) so collaborators reconstruct every version on
+sync; corrupt remote notebooks are quarantined (logged + skipped, local
+content kept).
 
 ### `folders`
 
