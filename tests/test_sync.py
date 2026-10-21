@@ -105,6 +105,157 @@ def test_service_guards_raise_on_synced_files(auth_client, app, local_folder):
             file_service.update_file_content(stored, "x")
 
 
+def _shared_create(client, path):
+    return client.post("/drives/sync-create",
+                       data={"path": path, "sync_mode": "shared"},
+                       follow_redirects=True)
+
+
+def _shared_drive(app):
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        assert drive.is_shared and not drive.is_readonly
+        return drive.id
+
+
+def test_shared_drive_create_and_upload_writes_through(auth_client, app,
+                                                       local_folder):
+    resp = _shared_create(auth_client, local_folder)
+    assert resp.status_code == 200
+    drive_id = _shared_drive(app)
+    _upload_shared(auth_client, "fresh.txt", b"written through")
+    with app.app_context():
+        stored = StoredFile.query.filter_by(name="fresh.txt").one()
+        assert stored.drive_id == drive_id
+        assert stored.source_path and os.path.exists(stored.source_path)
+        assert stored.source_path.startswith(local_folder)
+        assert open(stored.source_path, "rb").read() == b"written through"
+        # last-seen shadow recorded
+        assert os.path.exists(file_service.shadow_path(stored))
+
+
+def _upload_shared(client, name, content, folder_id=""):
+    return client.post("/upload", data={
+        "folder_id": folder_id,
+        "files": (io.BytesIO(content), name),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+
+def test_shared_remote_change_keeps_initial_version(auth_client, app,
+                                                    local_folder):
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with app.app_context():
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        assert hello.versions == []
+
+    # two external edits, one sync: collapsed into a single version
+    # (initial state the user saw + current).
+    with open(os.path.join(local_folder, "hello.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("intermediate nobody saw")
+    with open(os.path.join(local_folder, "hello.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("final remote content")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stats = sync_service.sync_drive(drive)
+    assert stats["updated"] == 1 and stats["versions"] == 1
+    with app.app_context():
+        from app.services.file_service import version_path
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        assert len(hello.versions) == 1
+        assert hello.versions[0].source == "sync"
+        with open(version_path(hello.versions[0]), "rb") as fh:
+            assert fh.read() == b"hello world uniqueword"
+        assert file_service.read_text_content(hello) == "final remote content"
+
+    # another remote change: one more version (each sync keeps one step)
+    with open(os.path.join(local_folder, "hello.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("second wave")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        sync_service.sync_drive(drive)
+    with app.app_context():
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        assert len(hello.versions) == 2
+
+
+def test_shared_trash_and_purge_never_resurrect(auth_client, app,
+                                                local_folder):
+    _shared_create(auth_client, local_folder)
+    _shared_drive(app)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="hello.txt").one().id
+        real = StoredFile.query.filter_by(name="hello.txt").one().source_path
+
+    auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        sync_service.sync_drive(drive)
+    with app.app_context():
+        # still trashed (not re-added), real file untouched
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+        assert os.path.exists(real)
+
+    auth_client.post(f"/file/{fid}/purge", follow_redirects=True)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        stats = sync_service.sync_drive(drive)
+        assert db.session.get(StoredFile, fid) is None
+        assert stats["added"] == 0  # ignore list blocks resurrection
+        assert os.path.exists(real)  # real blob never deleted
+
+
+def test_shared_move_in_and_out_relocates_bytes(auth_client, app,
+                                                local_folder):
+    auth_client.get("/")  # bootstrap the Personal drive
+    _shared_create(auth_client, local_folder)
+    drive_id = _shared_drive(app)
+    with app.app_context():
+        personal = Drive.query.filter_by(name="Personal").one().id
+    _upload_shared(auth_client, "traveler.txt", b"travel data")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="traveler.txt").one().id
+
+    # out of the shared drive: blob back in uploads, no source path
+    resp = auth_client.post("/selection/move", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest": "", "dest_drive_id": str(personal)})
+    assert resp.get_json()["moved"] == 1
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.drive_id == personal
+        assert stored.source_path is None
+        assert os.path.exists(file_service.file_path(stored))
+
+    # back in: bytes land in the real tree
+    resp = auth_client.post("/selection/move", data={
+        "file_ids": str(fid), "folder_ids": "",
+        "dest": "", "dest_drive_id": str(drive_id)})
+    assert resp.get_json()["moved"] == 1
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.source_path.startswith(local_folder)
+        assert open(stored.source_path, "rb").read() == b"travel data"
+
+
+def test_mirror_sync_still_keeps_no_versions(auth_client, app, local_folder):
+    _sync_create(auth_client, local_folder)
+    with open(os.path.join(local_folder, "hello.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("mirror change")
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        stats = sync_service.sync_drive(drive)
+    assert stats["updated"] == 1
+    with app.app_context():
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        assert hello.versions == []
+        assert stats.get("versions", 0) == 0
+
+
 def test_resync_picks_up_changes(auth_client, app, local_folder):
     _sync_create(auth_client, local_folder)
     drive_id = _synced_drive(app)

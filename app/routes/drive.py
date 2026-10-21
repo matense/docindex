@@ -1092,7 +1092,7 @@ def move_selection():
             if drive is None:
                 return jsonify({"ok": False,
                                 "error": "Drive not found."}), 404
-            if drive.is_synced:
+            if drive.is_readonly:
                 return jsonify({"ok": False,
                                 "error": "Synced drives are read-only."}), 400
         dest = None
