@@ -3480,6 +3480,12 @@ body.search-hero-mode #search-dock-container {
     box-shadow: 0 3px 12px rgba(99, 102, 241, 0.4);
 }
 
+/* Drive card worker pills (segmented alternative to the select) */
+.wpill-wrap { display: inline-flex; background: rgba(127,127,127,.15); border-radius: .65rem; padding: .2rem; gap: .15rem; }
+.wpill { border: none; background: transparent; color: inherit; opacity: .6; font-weight: 700; font-size: .75rem; padding: .3rem .7rem; border-radius: .5rem; cursor: pointer; transition: all .15s ease; }
+.wpill:hover { opacity: 1; }
+.wpill.on { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; box-shadow: 0 2px 8px rgba(99,102,241,.45); opacity: 1; }
+
 /* AI page suggestion chips */
 .aip-suggestion {
     padding: 0.55rem 1rem;
