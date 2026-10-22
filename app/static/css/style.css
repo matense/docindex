@@ -3459,8 +3459,10 @@ body.search-hero-mode #search-dock-container {
 .ai-mode-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.4rem;
     padding: 0.4rem 1.1rem;
+    min-width: 7.5rem;
     border-radius: 9999px;
     font-size: 0.85rem;
     font-weight: 600;
@@ -4002,7 +4004,8 @@ html[data-theme="dark"] .ai-notice {
 
 /* AI chat */
 [data-theme="dark"] .ai-mode-switch { background: rgba(15, 23, 42, 0.6); }
-[data-theme="dark"] .ai-mode-btn { color: oklch(var(--bc) / 0.6); }
+[data-theme="dark"] .ai-mode-btn { color: oklch(var(--bc) / 0.85); }
+[data-theme="dark"] .ai-mode-btn.active { color: #fff; }
 [data-theme="dark"] .aip-suggestion { background: rgba(15, 23, 42, 0.65); }
 [data-theme="dark"] #aip-messages {
     background: rgba(15, 23, 42, 0.55);
