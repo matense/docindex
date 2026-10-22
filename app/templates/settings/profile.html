@@ -139,24 +139,39 @@
 
     <!-- AI usage -->
     <div class="glass-panel rounded-2xl p-6">
-        <h2 class="font-bold text-lg mb-4"><i class="fas fa-robot text-primary"></i> AI usage</h2>
-        <div class="flex flex-wrap gap-6 text-sm">
-            <div class="text-center">
-                <div class="font-bold text-lg">{{ ai_stats.conversations }}</div>
-                <div class="text-xs opacity-50">conversations</div>
+        <div class="flex items-center gap-2 mb-4">
+            <h2 class="font-bold text-lg"><i class="fas fa-robot text-primary"></i> AI usage</h2>
+            <a href="{{ url_for('settings.ai_settings') }}" class="btn btn-ghost btn-xs gap-1 ml-auto" title="Manage AI connections">
+                <i class="fas fa-gear"></i> Manage
+            </a>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight">{{ ai_stats.conversations }}</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70"><i class="fas fa-comments mr-1"></i>conversations</div>
             </div>
-            <div class="text-center">
-                <div class="font-bold text-lg">{{ ai_stats.messages }}</div>
-                <div class="text-xs opacity-50">messages</div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight">{{ ai_stats.messages }}</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70"><i class="fas fa-message mr-1"></i>messages</div>
             </div>
-            <div class="flex-1 min-w-[12rem]">
-                <div class="text-xs opacity-50 uppercase tracking-wide font-semibold">Active connection</div>
-                {% if ai_stats.active_connection %}
-                <div class="font-bold truncate">{{ ai_stats.active_connection.name }}</div>
-                <div class="text-xs opacity-50 truncate">{{ ai_stats.active_connection.model }}</div>
-                {% else %}
-                <div class="opacity-50">None — <a href="{{ url_for('settings.ai_settings') }}" class="link link-primary">configure one</a></div>
-                {% endif %}
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2 sm:col-span-2 flex items-center gap-3">
+                <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+                    {% if ai_stats.active_connection %}
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-60"></span>
+                    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-success"></span>
+                    {% else %}
+                    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-base-300"></span>
+                    {% endif %}
+                </span>
+                <div class="min-w-0">
+                    <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">Active connection</div>
+                    {% if ai_stats.active_connection %}
+                    <div class="font-bold truncate leading-tight">{{ ai_stats.active_connection.name }}</div>
+                    <div class="text-xs opacity-50 truncate">{{ ai_stats.active_connection.model }}</div>
+                    {% else %}
+                    <div class="text-sm opacity-50">None — <a href="{{ url_for('settings.ai_settings') }}" class="link link-primary">configure one</a></div>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
