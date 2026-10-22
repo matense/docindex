@@ -327,7 +327,7 @@ def validate_path(path):
     return abs_path, None
 
 
-def create_synced_drive(user, path, captions_enabled=True, index_workers=1,
+def create_synced_drive(user, path, captions_enabled=False, index_workers=1,
                           sync_mode="mirror"):
     """Create a synced drive for a local folder and start the first sync.
 
