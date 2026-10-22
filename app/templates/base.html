@@ -111,6 +111,12 @@
                                     <i class="fas fa-arrows-rotate text-info"></i>
                                     <span class="flex-1 text-left">Sync a local folder...</span>
                                 </button>
+                                {% if gitdrives_enabled %}
+                                <a href="{{ url_for('gitdrives.index') }}" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors">
+                                    <i class="fas fa-code-branch text-secondary"></i>
+                                    <span class="flex-1 text-left">Clone a Git repository...</span>
+                                </a>
+                                {% endif %}
                                 <form method="POST" action="{{ url_for('drive.create_drive') }}" class="drive-create-row">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <input type="hidden" name="next" value="{{ request.full_path }}">

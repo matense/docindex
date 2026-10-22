@@ -137,3 +137,22 @@ def test_provider_registered(app):
     assert drive_service.get_drive_source("git") is not None
     assert drive_service.get_drive_source("folder") is None
     assert drive_service.get_drive_source("nope") is None
+
+
+def test_no_dock_entry_but_dropdown_link_when_enabled(auth_client, app,
+                                                     enabled):
+    html = auth_client.get("/").data.decode()
+    # No dedicated top menu: the module is reached from Profile/drives.
+    assert 'href="/m/gitdrives/"' not in html or \
+        html.count('href="/m/gitdrives/"') == 1
+    # Drive selector offers the clone entry point.
+    assert "Clone a Git repository" in html
+    html = auth_client.get("/settings/profile").data.decode()
+    assert "Clone a Git repo" in html
+
+
+def test_no_clone_entry_when_disabled(auth_client):
+    html = auth_client.get("/").data.decode()
+    assert "Clone a Git repository" not in html
+    html = auth_client.get("/settings/profile").data.decode()
+    assert "Clone a Git repo" not in html

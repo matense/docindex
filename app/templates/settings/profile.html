@@ -195,7 +195,14 @@
 
     <!-- Drive summary -->
     <div class="glass-panel rounded-2xl p-6">
-        <h2 class="font-bold text-lg mb-4"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
+        <div class="flex items-center gap-2 mb-4 flex-wrap">
+            <h2 class="font-bold text-lg"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
+            {% if gitdrives_enabled %}
+            <a href="{{ url_for('gitdrives.index') }}" class="btn btn-ghost btn-sm gap-1 ml-auto" title="Clone a Git repository as a read-only mirror drive">
+                <i class="fas fa-code-branch text-secondary"></i> Clone a Git repo
+            </a>
+            {% endif %}
+        </div>
         {% macro synced_card(s) -%}
             <!-- Synced drive card (shared or mirror) -->
             <div class="rounded-2xl border border-base-content/10 bg-base-100/30 overflow-hidden">

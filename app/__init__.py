@@ -184,6 +184,7 @@ def create_app(config_class=Config):
                     "current_drive": drive_service.get_current_drive(cu),
                     "module_nav": module_service.nav_items(),
                     "user_drives": drive_service.list_drives(cu),
+                    "gitdrives_enabled": module_service.is_enabled("gitdrives"),
                 }
             cached = _g._docindex_globals
             return {
@@ -193,6 +194,7 @@ def create_app(config_class=Config):
                 "current_drive": cached["current_drive"],
                 "module_nav": cached["module_nav"],
                 "user_drives": cached["user_drives"],
+                "gitdrives_enabled": cached["gitdrives_enabled"],
             }
         return {
             "ai_enabled": False,
@@ -201,6 +203,7 @@ def create_app(config_class=Config):
             "current_drive": None,
             "module_nav": [],
             "user_drives": [],
+            "gitdrives_enabled": False,
         }
 
     return app
