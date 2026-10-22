@@ -1,7 +1,6 @@
 from datetime import UTC, datetime
 
 from flask_login import UserMixin
-from sqlalchemy import false as sa_false
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .extensions import db
@@ -60,8 +59,7 @@ class Drive(db.Model):
     source_path = db.Column(db.String(500), nullable=True)  # local folder root (synced drive)
     last_synced_at = db.Column(db.DateTime, nullable=True)
     last_sync_stats = db.Column(db.Text, nullable=True)  # JSON stats of the last sync
-    captions_enabled = db.Column(db.Boolean, nullable=False, default=False,
-                                 server_default=sa_false())  # AI image captions
+    captions_enabled = db.Column(db.Boolean, nullable=False, default=True)  # AI image captions
     index_workers = db.Column(db.Integer, nullable=False, default=1)  # parallel indexing workers
     deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete: trash, restorable
     # 'mirror' = read-only local-folder mirror; 'shared' = writable two-way
