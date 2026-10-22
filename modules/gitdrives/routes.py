@@ -78,6 +78,7 @@ def create():
                   source_kind="git", repo_url=url,
                   repo_branch=branch, repo_username=username,
                   repo_token=ai_service.encrypt_api_key(token or ""),
+                  captions_enabled=False,
                   description=f"Git mirror of {url}")
     db.session.add(drive)
     db.session.commit()

@@ -135,6 +135,14 @@ def test_remove_drive_clears_clone_cache(auth_client, app, gitrepo, enabled):
     assert not os.path.exists(cache)
 
 
+def test_git_drive_defaults_captions_off(auth_client, app, gitrepo, enabled):
+    _create(auth_client, gitrepo)
+    with app.app_context():
+        from app.models import Drive
+        drive = Drive.query.filter_by(source_kind="git").one()
+        assert drive.captions_enabled is False
+
+
 def test_provider_registered(app):
     assert drive_service.get_drive_source("git") is not None
     assert drive_service.get_drive_source("folder") is None
