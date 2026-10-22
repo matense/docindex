@@ -12,15 +12,17 @@ from app.services import drive_service, sync_service
 @pytest.fixture()
 def gitrepo(tmp_path, app):
     """A real local git repo with one committed file; returns its path."""
+    import importlib
     from dulwich import porcelain
 
     # The clone cache (instance/test_git_repos/<id>) survives across tests
-    # while drive ids restart at 1 — wipe it for isolation.
-    import shutil
+    # while drive ids restart at 1 — wipe it for isolation (with retries:
+    # dulwich handles may still be open on Windows).
     from flask import current_app
     with app.app_context():
-        shutil.rmtree(current_app.config["GIT_REPOS_FOLDER"],
-                      ignore_errors=True)
+        git_source = importlib.import_module(
+            "docindex_module_gitdrives.source")
+        git_source.remove_tree(current_app.config["GIT_REPOS_FOLDER"])
     repo = str(tmp_path / "origin")
     os.makedirs(repo)
     porcelain.init(repo)

@@ -7,8 +7,25 @@ Drives are read-only; the remote is never written to.
 
 import os
 import shutil
+import time
 
 from dulwich import porcelain
+
+
+def remove_tree(path, tries=5):
+    """Best-effort recursive delete, tolerant of Windows file locks held
+    by not-yet-collected dulwich handles."""
+    import gc
+    gc.collect()
+    for _ in range(tries):
+        try:
+            if not os.path.exists(path):
+                return
+            shutil.rmtree(path)
+            return
+        except OSError:
+            time.sleep(0.2)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _credentials(drive):
@@ -65,10 +82,7 @@ def clone_repo(url, target, branch=None, username=None, password=None):
         porcelain.clone(url, target, depth=1,
                         branch=branch or None, **kwargs)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user
-        try:
-            shutil.rmtree(target, ignore_errors=False)
-        except OSError:
-            pass
+        remove_tree(target)
         return str(exc)[:500]
     return None
 
@@ -138,4 +152,4 @@ class GitDriveSource:
         return pull_repo(target, **_auth_kwargs(drive))
 
     def cleanup(self, drive):
-        shutil.rmtree(cache_path(drive.id), ignore_errors=True)
+        remove_tree(cache_path(drive.id))
