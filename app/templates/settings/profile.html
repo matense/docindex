@@ -128,10 +128,8 @@
     <!-- Drive summary -->
     <div class="glass-panel rounded-2xl p-6">
         <h2 class="font-bold text-lg mb-4"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
-        <div class="flex flex-col gap-3">
-            {% for s in drive_stats %}
-            {% if s.drive.is_synced %}
-            <!-- Synced drive card -->
+        {% macro synced_card(s) -%}
+            <!-- Synced drive card (shared or mirror) -->
             <div class="rounded-xl border border-info/25 bg-info/5 overflow-hidden">
                 <!-- Header: name + badge, actions on the right -->
                 <div class="flex items-center gap-3 px-4 pt-4 pb-3">
@@ -235,7 +233,18 @@
                     {% endif %}
                 </div>
             </div>
-            {% else %}
+        {%- endmacro %}
+        {% set native = drive_stats | selectattr("drive.is_synced", "equalto", false) | list %}
+        {% set synced = drive_stats | selectattr("drive.is_synced", "equalto", true) | list %}
+        {% set shared = synced | selectattr("drive.is_shared", "equalto", true) | list %}
+        {% set mirror = synced | selectattr("drive.is_readonly", "equalto", true) | list %}
+        <div class="flex flex-col gap-3">
+            {% if native %}
+            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+                <i class="fas fa-database"></i> Native drives
+                <span class="badge badge-ghost badge-xs ml-auto">{{ native|length }}</span>
+            </div>
+            {% for s in native %}
             <!-- Regular drive card -->
             <div class="rounded-xl border border-base-content/10 p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
                 <div class="min-w-0 flex-1">
@@ -266,13 +275,28 @@
                     </div>
                 </div>
             </div>
+            {% endfor %}
             {% endif %}
-            {% else %}
+            {% if shared %}
+            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+                <i class="fas fa-arrows-rotate"></i> Shared sync drives
+                <span class="badge badge-ghost badge-xs ml-auto">{{ shared|length }}</span>
+            </div>
+            {% for s in shared %}{{ synced_card(s) }}{% endfor %}
+            {% endif %}
+            {% if mirror %}
+            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+                <i class="fas fa-lock"></i> Mirror drives
+                <span class="badge badge-ghost badge-xs ml-auto">{{ mirror|length }}</span>
+            </div>
+            {% for s in mirror %}{{ synced_card(s) }}{% endfor %}
+            {% endif %}
+            {% if not drive_stats %}
             <div class="text-center opacity-50 py-4">
                 <i class="fas fa-hard-drive text-2xl mb-2 block"></i>
                 No drives yet — create one from the drive selector in the top bar.
             </div>
-            {% endfor %}
+            {% endif %}
         </div>
     </div>
 

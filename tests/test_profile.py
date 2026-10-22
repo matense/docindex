@@ -62,6 +62,35 @@ def test_profile_lists_drive_stats_with_files(auth_client):
     assert b"files" in resp.data
 
 
+def test_profile_groups_drives_by_kind(auth_client, app, tmp_path):
+    import io
+    # Native drive with a file.
+    auth_client.post("/upload", data={
+        "folder_id": "",
+        "files": (io.BytesIO(b"hello"), "notes.txt"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    # Mirror + shared synced drives.
+    (tmp_path / "m.txt").write_text("mirror", encoding="utf-8")
+    (tmp_path / "s.txt").write_text("shared", encoding="utf-8")
+    mirror = tmp_path / "mirror"
+    shared = tmp_path / "shared"
+    mirror.mkdir()
+    shared.mkdir()
+    (mirror / "m.txt").write_text("mirror", encoding="utf-8")
+    (shared / "s.txt").write_text("shared", encoding="utf-8")
+    auth_client.post("/drives/sync-create", data={"path": str(mirror)},
+                     follow_redirects=True)
+    auth_client.post("/drives/sync-create",
+                     data={"path": str(shared), "sync_mode": "shared"},
+                     follow_redirects=True)
+    html = auth_client.get("/settings/profile").data.decode()
+    for section in ("Native drives", "Shared sync drives", "Mirror drives"):
+        assert section in html
+    # Sections render in native → shared → mirror order.
+    assert html.index("Native drives") < html.index("Shared sync drives") \
+        < html.index("Mirror drives")
+
+
 # --- Email / password changes ---
 
 def test_change_email(auth_client, app):
