@@ -48,6 +48,23 @@ def test_profile_shows_admin_section_for_admin(admin_client):
     assert b"New user registration" in resp.data
 
 
+def test_profile_sections_order_and_collapsible_drives(auth_client):
+    import io
+    auth_client.post("/upload", data={
+        "folder_id": "",
+        "files": (io.BytesIO(b"hello"), "notes.txt"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    html = auth_client.get("/settings/profile").data.decode()
+    order = ["account-card", "Display", "Behaviors &amp; personas",
+             "AI usage", "Indexing queue", "Your drives",
+             ">Trash<", "Error logs", "Administration"]
+    positions = [html.index(m) for m in order]
+    assert positions == sorted(positions)
+    # Drive groups are collapsible with memory; queue card hides when idle.
+    assert "profile-drive-group" in html
+    assert 'id="iq-card"' in html
+
+
 def test_profile_lists_drive_stats_with_files(auth_client):
     """Regression: the grouped file-stats query returns 3-column rows —
     the profile crashed turning them straight into a dict (ValueError:

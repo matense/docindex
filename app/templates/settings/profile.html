@@ -125,6 +125,74 @@
         </div>
     </div>
 
+    <!-- Behaviors & personas -->
+    <a href="{{ url_for('behaviors.index') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-primary/30 transition-colors">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg flex-shrink-0">
+            <i class="fas fa-masks-theater"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h2 class="font-bold text-lg">Behaviors &amp; personas</h2>
+            <p class="text-xs opacity-50">Reusable AI instructions and the Agency persona library — enable only the ones you use.</p>
+        </div>
+        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
+    </a>
+
+    <!-- AI usage -->
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4"><i class="fas fa-robot text-primary"></i> AI usage</h2>
+        <div class="flex flex-wrap gap-6 text-sm">
+            <div class="text-center">
+                <div class="font-bold text-lg">{{ ai_stats.conversations }}</div>
+                <div class="text-xs opacity-50">conversations</div>
+            </div>
+            <div class="text-center">
+                <div class="font-bold text-lg">{{ ai_stats.messages }}</div>
+                <div class="text-xs opacity-50">messages</div>
+            </div>
+            <div class="flex-1 min-w-[12rem]">
+                <div class="text-xs opacity-50 uppercase tracking-wide font-semibold">Active connection</div>
+                {% if ai_stats.active_connection %}
+                <div class="font-bold truncate">{{ ai_stats.active_connection.name }}</div>
+                <div class="text-xs opacity-50 truncate">{{ ai_stats.active_connection.model }}</div>
+                {% else %}
+                <div class="opacity-50">None — <a href="{{ url_for('settings.ai_settings') }}" class="link link-primary">configure one</a></div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Indexing queue (hidden unless there is work: running or paused with jobs left) -->
+    <div class="glass-panel rounded-2xl p-6" id="iq-card">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-bold text-lg"><i class="fas fa-list-check text-primary"></i> Indexing queue</h2>
+            <div class="flex gap-2">
+                <button type="button" id="iq-toggle" class="btn btn-ghost btn-sm hidden">
+                    <i class="fas fa-pause"></i> <span>Pause</span>
+                </button>
+            </div>
+        </div>
+        <div id="iq-idle" class="text-sm opacity-50 flex items-center gap-2">
+            <i class="fas fa-circle-check text-success"></i> Queue empty — everything is indexed.
+        </div>
+        <div id="iq-active" class="hidden">
+            <div class="flex items-center gap-3">
+                <i id="iq-spinner" class="fas fa-arrows-rotate fa-spin text-info text-sm"></i>
+                <progress id="iq-bar" class="progress progress-primary flex-1" value="0" max="100"></progress>
+                <span id="iq-pct" class="text-xs font-bold w-10 text-right">0%</span>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mt-2">
+                <span class="badge badge-ghost badge-sm" id="iq-pending">0 pending</span>
+                <span class="badge badge-ghost badge-sm text-info" id="iq-running">0 running</span>
+                <span class="badge badge-ghost badge-sm text-success" id="iq-done">0 done</span>
+                <span class="badge badge-ghost badge-sm text-error" id="iq-error">0 errors</span>
+            </div>
+            <div id="iq-current" class="text-[11px] opacity-50 truncate mt-1"></div>
+            <div id="iq-paused-note" class="text-[11px] text-warning mt-1 hidden">
+                <i class="fas fa-pause"></i> Paused — pending jobs are kept safely in the database and resume when you do.
+            </div>
+        </div>
+    </div>
+
     <!-- Drive summary -->
     <div class="glass-panel rounded-2xl p-6">
         <h2 class="font-bold text-lg mb-4"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
@@ -257,10 +325,13 @@
         {% set mirror = synced | selectattr("drive.is_readonly", "equalto", true) | list %}
         <div class="flex flex-col gap-3">
             {% if native %}
-            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+            <details class="profile-drive-group group" data-drive-group="native" open>
+            <summary class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60 cursor-pointer select-none list-none">
+                <i class="fas fa-chevron-down text-[10px] opacity-40 transition-transform group-open:rotate-180"></i>
                 <i class="fas fa-database"></i> Native drives
                 <span class="badge badge-ghost badge-xs ml-auto">{{ native|length }}</span>
-            </div>
+            </summary>
+            <div class="flex flex-col gap-3 mt-2">
             {% for s in native %}
             <!-- Native drive card -->
             <div class="rounded-2xl border border-base-content/10 bg-base-100/30 overflow-hidden">
@@ -296,20 +367,32 @@
                 </div>
             </div>
             {% endfor %}
+            </div>
+            </details>
             {% endif %}
             {% if shared %}
-            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+            <details class="profile-drive-group group" data-drive-group="shared" open>
+            <summary class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60 cursor-pointer select-none list-none">
+                <i class="fas fa-chevron-down text-[10px] opacity-40 transition-transform group-open:rotate-180"></i>
                 <i class="fas fa-arrows-rotate"></i> Shared sync drives
                 <span class="badge badge-ghost badge-xs ml-auto">{{ shared|length }}</span>
-            </div>
+            </summary>
+            <div class="flex flex-col gap-3 mt-2">
             {% for s in shared %}{{ synced_card(s) }}{% endfor %}
+            </div>
+            </details>
             {% endif %}
             {% if mirror %}
-            <div class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60">
+            <details class="profile-drive-group group" data-drive-group="mirror" open>
+            <summary class="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wide opacity-60 cursor-pointer select-none list-none">
+                <i class="fas fa-chevron-down text-[10px] opacity-40 transition-transform group-open:rotate-180"></i>
                 <i class="fas fa-lock"></i> Mirror drives
                 <span class="badge badge-ghost badge-xs ml-auto">{{ mirror|length }}</span>
-            </div>
+            </summary>
+            <div class="flex flex-col gap-3 mt-2">
             {% for s in mirror %}{{ synced_card(s) }}{% endfor %}
+            </div>
+            </details>
             {% endif %}
             {% if not drive_stats %}
             <div class="text-center opacity-50 py-4">
@@ -320,61 +403,22 @@
         </div>
     </div>
 
-    <!-- AI usage -->
-    <div class="glass-panel rounded-2xl p-6">
-        <h2 class="font-bold text-lg mb-4"><i class="fas fa-robot text-primary"></i> AI usage</h2>
-        <div class="flex flex-wrap gap-6 text-sm">
-            <div class="text-center">
-                <div class="font-bold text-lg">{{ ai_stats.conversations }}</div>
-                <div class="text-xs opacity-50">conversations</div>
-            </div>
-            <div class="text-center">
-                <div class="font-bold text-lg">{{ ai_stats.messages }}</div>
-                <div class="text-xs opacity-50">messages</div>
-            </div>
-            <div class="flex-1 min-w-[12rem]">
-                <div class="text-xs opacity-50 uppercase tracking-wide font-semibold">Active connection</div>
-                {% if ai_stats.active_connection %}
-                <div class="font-bold truncate">{{ ai_stats.active_connection.name }}</div>
-                <div class="text-xs opacity-50 truncate">{{ ai_stats.active_connection.model }}</div>
-                {% else %}
-                <div class="opacity-50">None — <a href="{{ url_for('settings.ai_settings') }}" class="link link-primary">configure one</a></div>
-                {% endif %}
-            </div>
+    <!-- Trash -->
+    <a href="{{ url_for('settings.trash') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-warning/30 transition-colors">
+        <span class="w-11 h-11 rounded-xl bg-warning/15 text-warning flex items-center justify-center text-lg flex-shrink-0">
+            <i class="fas fa-trash-can"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h2 class="font-bold text-lg">Trash</h2>
+            <p class="text-xs opacity-50">Deleted files wait here — restore them or purge them forever.</p>
         </div>
-    </div>
-
-    <!-- Indexing queue -->
-    <div class="glass-panel rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-4">
-            <h2 class="font-bold text-lg"><i class="fas fa-list-check text-primary"></i> Indexing queue</h2>
-            <div class="flex gap-2">
-                <button type="button" id="iq-toggle" class="btn btn-ghost btn-sm hidden">
-                    <i class="fas fa-pause"></i> <span>Pause</span>
-                </button>
-            </div>
-        </div>
-        <div id="iq-idle" class="text-sm opacity-50 flex items-center gap-2">
-            <i class="fas fa-circle-check text-success"></i> Queue empty — everything is indexed.
-        </div>
-        <div id="iq-active" class="hidden">
-            <div class="flex items-center gap-3">
-                <i id="iq-spinner" class="fas fa-arrows-rotate fa-spin text-info text-sm"></i>
-                <progress id="iq-bar" class="progress progress-primary flex-1" value="0" max="100"></progress>
-                <span id="iq-pct" class="text-xs font-bold w-10 text-right">0%</span>
-            </div>
-            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mt-2">
-                <span class="badge badge-ghost badge-sm" id="iq-pending">0 pending</span>
-                <span class="badge badge-ghost badge-sm text-info" id="iq-running">0 running</span>
-                <span class="badge badge-ghost badge-sm text-success" id="iq-done">0 done</span>
-                <span class="badge badge-ghost badge-sm text-error" id="iq-error">0 errors</span>
-            </div>
-            <div id="iq-current" class="text-[11px] opacity-50 truncate mt-1"></div>
-            <div id="iq-paused-note" class="text-[11px] text-warning mt-1 hidden">
-                <i class="fas fa-pause"></i> Paused — pending jobs are kept safely in the database and resume when you do.
-            </div>
-        </div>
-    </div>
+        {% if trash_count %}
+        <span class="badge badge-warning gap-1"><i class="fas fa-trash-can"></i> {{ trash_count }} file{{ 's' if trash_count != 1 }}</span>
+        {% else %}
+        <span class="badge badge-success badge-outline gap-1"><i class="fas fa-circle-check"></i> empty</span>
+        {% endif %}
+        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
+    </a>
 
     {% if current_user.is_admin %}
     <!-- Error logs (admin) -->
@@ -394,35 +438,6 @@
         <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
     </a>
     {% endif %}
-
-    <!-- Trash -->
-    <a href="{{ url_for('settings.trash') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-warning/30 transition-colors">
-        <span class="w-11 h-11 rounded-xl bg-warning/15 text-warning flex items-center justify-center text-lg flex-shrink-0">
-            <i class="fas fa-trash-can"></i>
-        </span>
-        <div class="flex-1 min-w-0">
-            <h2 class="font-bold text-lg">Trash</h2>
-            <p class="text-xs opacity-50">Deleted files wait here — restore them or purge them forever.</p>
-        </div>
-        {% if trash_count %}
-        <span class="badge badge-warning gap-1"><i class="fas fa-trash-can"></i> {{ trash_count }} file{{ 's' if trash_count != 1 }}</span>
-        {% else %}
-        <span class="badge badge-success badge-outline gap-1"><i class="fas fa-circle-check"></i> empty</span>
-        {% endif %}
-        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
-    </a>
-
-    <!-- Behaviors & personas -->
-    <a href="{{ url_for('behaviors.index') }}" class="glass-panel rounded-2xl p-6 flex items-center gap-4 group hover:border-primary/30 transition-colors">
-        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg flex-shrink-0">
-            <i class="fas fa-masks-theater"></i>
-        </span>
-        <div class="flex-1 min-w-0">
-            <h2 class="font-bold text-lg">Behaviors &amp; personas</h2>
-            <p class="text-xs opacity-50">Reusable AI instructions and the Agency persona library — enable only the ones you use.</p>
-        </div>
-        <i class="fas fa-chevron-right opacity-30 group-hover:opacity-70 group-hover:translate-x-0.5 transition-all"></i>
-    </a>
 
     <!-- Admin: registration toggle -->
     {% if current_user.is_admin %}
@@ -527,12 +542,15 @@
 
     async function tickQueue() {
         if (!document.contains(idle)) return false; // page swapped away
+        const card = document.getElementById('iq-card');
         try {
             const resp = await fetch('/settings/index-queue/status');
             if (!resp.ok) return true;
             const s = await resp.json();
             paused = s.paused;
             const isActive = s.active > 0;
+            const showCard = isActive || (paused && s.total > 0);
+            if (card) card.classList.toggle('hidden', !showCard);
             idle.classList.toggle('hidden', isActive || (paused && s.total > 0));
             active.classList.toggle('hidden', !isActive && !(paused && s.total > 0));
             toggle.classList.toggle('hidden', !isActive && !paused);
@@ -570,6 +588,24 @@
             window.__indexQueueTimer = null;
         }
     }, 2000);
+})();
+
+// Drive group sections: collapsible with memory (localStorage).
+(function () {
+    const KEY = 'profile-drive-groups';
+    function load() {
+        try { return JSON.parse(localStorage.getItem(KEY) || '{}'); }
+        catch (e) { return {}; }
+    }
+    document.querySelectorAll('.profile-drive-group').forEach((sec) => {
+        const id = sec.dataset.driveGroup;
+        if (load()[id]) sec.removeAttribute('open');
+        sec.addEventListener('toggle', () => {
+            const state = load();
+            state[id] = !sec.open;
+            try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+        });
+    });
 })();
 
 // Drive word counts: loaded lazily — summing FileIndex.word_count over large
