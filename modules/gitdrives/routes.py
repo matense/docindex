@@ -10,6 +10,8 @@ from app.extensions import db
 from app.models import Drive, StoredFile
 from app.services import ai_service, drive_service, sync_service
 
+from . import source as git_source
+
 bp = Blueprint("gitdrives", __name__,
                template_folder="templates", static_folder="static")
 
@@ -31,15 +33,22 @@ def index():
               .filter(Drive.source_kind == "git")
               .filter(Drive.deleted_at.is_(None))
               .order_by(Drive.name).all())
-    return render_template("gitdrives/index.html", drives=drives)
+    lfs = {}
+    for drive in drives:
+        try:
+            total, sample = git_source.find_lfs_pointers(
+                git_source.cache_path(drive.id))
+        except Exception:  # noqa: BLE001 - advisory only, never break the page
+            total, sample = 0, []
+        if total:
+            lfs[drive.id] = {"total": total, "sample": sample}
+    return render_template("gitdrives/index.html", drives=drives, lfs=lfs)
 
 
 @bp.post("/create")
 @login_required
 def create():
     """Validate the remote, create the drive row and clone (mirror)."""
-    from . import source as git_source
-
     url = (request.form.get("repo_url") or "").strip()
     branch = (request.form.get("branch") or "").strip() or None
     username = (request.form.get("username") or "").strip() or None
@@ -55,7 +64,7 @@ def create():
     name = (request.form.get("name") or "").strip()
     if not name:
         # Friendly default from the repo URL (…/org/my-repo[.git]).
-        tail = url.rstrip("/").rsplit("/", 1)[-1]
+        tail = url.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         if tail.endswith(".git"):
             tail = tail[:-4]
         name = tail or "Git repo"
@@ -92,6 +101,15 @@ def create():
     else:
         flash(f'Git drive "{drive.name}" created — cloning finished, '
               "the first scan is running in the background.", "success")
+    total, sample = git_source.find_lfs_pointers(
+        git_source.cache_path(drive.id))
+    if total:
+        shown = ", ".join(sample[:3]) + ("…" if total > 3 else "")
+        flash(f"Warning: this repository uses Git LFS, which is not "
+              f"fetched — {total} file(s) ({shown}) will appear as small "
+              f"pointer text (or be skipped when the extension is not "
+              f"indexed). Search sees only pointer metadata, not the real "
+              f"content.", "warning")
     return redirect(url_for("drive.index"))
 
 

@@ -6,6 +6,7 @@
   "help": [
     "Git drives mirror a remote Git repository (GitHub, Azure DevOps Git, TFS Git — TFVC centralizado não é suportado) as a read-only DocIndex drive: files are indexed and searchable like any synced drive.",
     "Create one with the repository URL, branch (default: remote HEAD) and, for private repos, a username plus personal access token (stored encrypted). The first sync clones; later syncs pull and re-scan.",
-    "Removing a git drive only deletes DocIndex rows and the local clone cache — the remote repository is never touched."
+    "Removing a git drive only deletes DocIndex rows and the local clone cache — the remote repository is never touched.",
+    "Git LFS is not fetched: LFS-tracked files appear as pointer text (search sees only pointer metadata). A warning is shown wherever pointers are detected."
   ]
 }

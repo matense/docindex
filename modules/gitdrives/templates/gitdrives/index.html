@@ -72,6 +72,13 @@
                 <div class="min-w-0 flex-1">
                     <div class="font-semibold truncate">{{ d.name }}</div>
                     <div class="text-xs opacity-50 truncate font-mono" title="{{ d.repo_url }}">{{ d.repo_url }}{% if d.repo_branch %} · {{ d.repo_branch }}{% endif %}</div>
+                    {% if lfs.get(d.id) %}
+                    <div class="mt-1 flex items-start gap-1 text-xs text-warning">
+                        <i class="fas fa-triangle-exclamation mt-0.5 flex-shrink-0"></i>
+                        <span>LFS not fetched — {{ lfs[d.id].total }} file(s) show as pointer text (or are skipped when not indexable)
+                        <span class="opacity-70">(search sees only pointer metadata; history still tracks pointer changes; nothing is lost — real blobs stay on the LFS server)</span></span>
+                    </div>
+                    {% endif %}
                 </div>
                 <form method="POST" action="{{ url_for('drive.sync_now', drive_id=d.id) }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

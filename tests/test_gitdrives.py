@@ -158,3 +158,27 @@ def test_no_clone_entry_when_disabled(auth_client):
     assert "Clone a Git repository" not in html
     html = auth_client.get("/settings/profile").data.decode()
     assert "Clone a Git repo" not in html
+
+
+POINTER = (b"version https://git-lfs.github.com/spec/v1\n"
+           b"oid sha256:" + b"4" * 64 + b"\nsize 12345\n")
+
+
+def test_lfs_pointers_warn_but_do_not_block(auth_client, app, gitrepo,
+                                            enabled):
+    from dulwich import porcelain
+
+    with open(os.path.join(gitrepo, "notes.txt"), "wb") as fh:
+        fh.write(POINTER)
+    porcelain.add(gitrepo, paths=["notes.txt"])
+    porcelain.commit(gitrepo, message=b"lfs",
+                     author=b"T <t@t>", committer=b"T <t@t>")
+    resp = _create(auth_client, gitrepo)
+    assert resp.status_code == 200
+    html = auth_client.get("/m/gitdrives/").data.decode()
+    assert "LFS not fetched" in html
+    with app.app_context():
+        from app.models import StoredFile
+        stored = StoredFile.query.filter_by(name="notes.txt").one()
+        with open(stored.source_path, encoding="utf-8") as fh:
+            assert "git-lfs.github.com" in fh.read()
