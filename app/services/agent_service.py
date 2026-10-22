@@ -435,6 +435,59 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_folder",
+            "description": (
+                "Create a folder in a drive (optionally inside another "
+                "folder). Use list_drives first to discover drive ids; omit "
+                "drive_id to use the drive in scope. Refuses read-only "
+                "drives. Names that already exist are renamed automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Folder name (required).",
+                    },
+                    "drive_id": {
+                        "type": "integer",
+                        "description": "Drive id (defaults to the drive in scope).",
+                    },
+                    "parent_id": {
+                        "type": "integer",
+                        "description": "Parent folder id inside that drive (optional).",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_folder",
+            "description": (
+                "Delete a folder by id: its files are moved to the trash "
+                "(restorable from the Trash page) and the folder itself is "
+                "removed. Refuses read-only drives. This cannot be undone "
+                "for the folder itself, so confirm with the user first when "
+                "unsure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "folder_id": {
+                        "type": "integer",
+                        "description": "Folder id to delete.",
+                    },
+                },
+                "required": ["folder_id"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are the assistant of DocIndex, a personal file drive.
@@ -1040,6 +1093,67 @@ def _tool_copy_files(user, args, drive=None):
     return {"copied": len(copied), "skipped": len(skipped), "details": details}
 
 
+def _resolve_tool_drive(user, args, drive=None):
+    """Drive for a folder tool: explicit drive_id wins, otherwise the
+    single drive in scope. Returns (drive, error)."""
+    from ..models import Drive as _Drive
+    dest_id = args.get("drive_id")
+    if dest_id:
+        dest = _Drive.query.filter_by(id=dest_id, user_id=user.id).first()
+        if dest is None:
+            return None, "Drive not found."
+        return dest, None
+    ids = search_service.drive_id_list(drive) or []
+    if len(ids) != 1:
+        return None, ("Pass drive_id (use list_drives to discover drives)."
+                      if not ids else
+                      "Several drives are in scope — pass one drive_id.")
+    dest = _Drive.query.filter_by(id=ids[0], user_id=user.id).first()
+    if dest is None:
+        return None, "Drive not found."
+    return dest, None
+
+
+def _tool_create_folder(user, args, drive=None):
+    from ..models import Folder as _Folder
+    from . import file_service
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "A folder name is required."}
+    dest, error = _resolve_tool_drive(user, args, drive)
+    if error:
+        return {"error": error}
+    if getattr(dest, "is_readonly", False):
+        return {"error": f"Drive '{dest.name}' is read-only."}
+    parent = None
+    parent_id = args.get("parent_id")
+    if parent_id:
+        parent = _Folder.query.filter_by(id=parent_id,
+                                        user_id=user.id).first()
+        if parent is None or parent.drive_id != dest.id:
+            return {"error": "Parent folder not found in that drive."}
+    folder = _Folder(name=file_service.unique_folder_name(
+        user.id, dest.id, parent.id if parent else None, name[:255]),
+        user_id=user.id, drive_id=dest.id,
+        parent_id=parent.id if parent else None)
+    db.session.add(folder)
+    db.session.commit()
+    return {"folder_id": folder.id, "name": folder.name,
+            "drive_id": dest.id, "parent_id": folder.parent_id}
+
+
+def _tool_delete_folder(user, args, drive=None):
+    from . import file_service
+    folder_id = args.get("folder_id")
+    if not folder_id:
+        return {"error": "A folder_id is required."}
+    trashed, error = file_service.delete_folder_tree(user, folder_id)
+    if error:
+        return {"error": error}
+    return {"deleted": True, "folder_id": folder_id,
+            "files_trashed": trashed}
+
+
 def _tool_set_hashtags(user, file_id, hashtags):
     stored = (StoredFile.query
               .filter_by(id=file_id, user_id=user.id)
@@ -1135,6 +1249,8 @@ TOOL_HANDLERS = {
         user, args.get("name"), args.get("content"), args.get("id")),
     "move_files": lambda user, args, drive: _tool_move_files(user, args, drive),
     "copy_files": lambda user, args, drive: _tool_copy_files(user, args, drive),
+    "create_folder": lambda user, args, drive: _tool_create_folder(user, args, drive),
+    "delete_folder": lambda user, args, drive: _tool_delete_folder(user, args, drive),
 }
 
 _STEP_LABELS = {
@@ -1152,6 +1268,8 @@ _STEP_LABELS = {
     "save_behavior": "Saved behavior",
     "move_files": "Moved files",
     "copy_files": "Copied files",
+    "create_folder": "Created folder",
+    "delete_folder": "Deleted folder",
 }
 
 # Present-tense wording for the live "tool is working" chip (tool_start):
@@ -1171,6 +1289,8 @@ _RUNNING_LABELS = {
     "save_behavior": "Saving behavior",
     "move_files": "Moving files",
     "copy_files": "Copying files",
+    "create_folder": "Creating folder",
+    "delete_folder": "Deleting folder",
 }
 
 # ---------------------------------------------------------------------------

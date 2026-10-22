@@ -164,6 +164,71 @@ def test_move_files_tool_refuses_synced_drive(app, user):
         assert "error" in out
 
 
+def test_create_and_delete_folder_tools(app, user):
+    from app.models import Drive, Folder
+    with app.app_context():
+        u = db.session.get(User, user)
+        drive = Drive(name="Personal", user_id=user)
+        db.session.add(drive)
+        db.session.commit()
+        did = drive.id
+        out = agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": "Reports", "drive_id": did}, None)
+        assert out["name"] == "Reports" and out["drive_id"] == did
+        assert out["parent_id"] is None
+        sub = agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": "2026", "drive_id": did,
+                "parent_id": out["folder_id"]}, None)
+        assert sub["parent_id"] == out["folder_id"]
+        # duplicate name auto-renamed
+        dup = agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": "Reports", "drive_id": did}, None)
+        assert dup["name"] != "Reports"
+        assert Folder.query.filter_by(drive_id=did).count() == 3
+        out = agent_service.TOOL_HANDLERS["delete_folder"](
+            u, {"folder_id": out["folder_id"]}, None)
+        assert out == {"deleted": True, "folder_id": out["folder_id"],
+                      "files_trashed": 0}
+        assert Folder.query.filter_by(drive_id=did).count() == 1
+        assert db.session.get(Folder, out["folder_id"]) is None
+
+
+def test_folder_tools_guardrails(app, user):
+    from app.models import Drive, Folder
+    fid = _make_indexed_file(app, "keep.txt", "keep me")
+    with app.app_context():
+        u = db.session.get(User, user)
+        drive = Drive(name="Personal", user_id=user)
+        synced = Drive(name="Synced", user_id=user,
+                       source_path="/tmp/synced-drive")
+        db.session.add_all([drive, synced])
+        db.session.commit()
+        did, sid = drive.id, synced.id
+        # files inside a deleted folder go to the trash, not purged
+        folder = Folder(name="Doomed", user_id=user, drive_id=did)
+        db.session.add(folder)
+        db.session.commit()
+        db.session.get(StoredFile, fid).folder_id = folder.id
+        db.session.get(StoredFile, fid).drive_id = did
+        db.session.commit()
+        folder_id = folder.id
+        out = agent_service.TOOL_HANDLERS["delete_folder"](
+            u, {"folder_id": folder_id}, None)
+        assert out["files_trashed"] == 1
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+        # missing name / folder, foreign drive, read-only drive
+        assert "error" in agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": ""}, None)
+        assert "error" in agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": "X", "drive_id": 999999}, None)
+        assert "error" in agent_service.TOOL_HANDLERS["create_folder"](
+            u, {"name": "X", "drive_id": sid}, None)
+        assert "error" in agent_service.TOOL_HANDLERS["delete_folder"](
+            u, {}, None)
+        assert "error" in agent_service.TOOL_HANDLERS["delete_folder"](
+            u, {"folder_id": 999999}, None)
+
+
 def test_conversations_isolated_between_users(auth_client, app, user):
     _make_indexed_file(app, "x.txt", "hello")
 

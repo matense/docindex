@@ -720,6 +720,39 @@ def copy_folder(user, folder_id, drive_id, parent_id=None):
     return new_folder, None
 
 
+def delete_folder_tree(user, folder_id):
+    """Trash a folder's files (restorable) and remove the folder rows.
+
+    Returns (trashed_file_count, error). Refuses read-only drives.
+    """
+    from ..models import Folder as _Folder
+    folder = _Folder.query.filter_by(id=folder_id, user_id=user.id).first()
+    if not folder:
+        return 0, "Folder not found."
+    if folder.drive is not None and getattr(folder.drive, "is_readonly",
+                                            False):
+        return 0, f"Folder '{folder.name}' is read-only."
+    trashed = _trash_folder_contents(folder)
+    db.session.delete(folder)
+    db.session.commit()
+    return trashed, None
+
+
+def _trash_folder_contents(folder):
+    trashed = 0
+    for child in list(folder.children or []):
+        trashed += _trash_folder_contents(child)
+        db.session.delete(child)
+    for stored in list(folder.files or []):
+        if stored.deleted_at is None:
+            # Detach first: folders cascade delete-orphan to their files.
+            stored.folder_id = None
+            delete_file(stored)
+            trashed += 1
+    db.session.flush()
+    return trashed
+
+
 def _is_descendant(folder, ancestor):
     node = folder.parent
     seen = set()

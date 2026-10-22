@@ -100,6 +100,8 @@
         save_behavior: 'fa-floppy-disk',
         move_files: 'fa-arrow-right',
         copy_files: 'fa-copy',
+        create_folder: 'fa-folder-plus',
+        delete_folder: 'fa-trash-can',
     };
 
     function toolIcon(name) {
