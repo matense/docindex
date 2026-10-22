@@ -11,7 +11,7 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import FileIndex, FileVersion, Folder, Drive, StoredFile
+from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile
 
 THUMBNAIL_SIZE = (256, 256)
 
@@ -290,7 +290,7 @@ def file_lock(file_id, timeout=30, steal_after=120):
                 except OSError:
                     pass
             elif time.time() >= deadline:
-                raise TimeoutError(f"File {file_id} is locked.")
+                raise TimeoutError(f"File {file_id} is locked.") from None
             time.sleep(0.05)
     try:
         yield True
@@ -779,7 +779,7 @@ def _apply_drive_recursive(folder, drive_id, parent_id):
                 source_path, stored_name, size = _move_bytes_for_drive(
                     stored, drive, folder, stored.name)
             except (OSError, ValueError) as exc:
-                raise ValueError(f"Could not move '{stored.name}': {exc}")
+                raise ValueError(f"Could not move '{stored.name}': {exc}") from exc
             stored.source_path = source_path
             stored.stored_name = stored_name
             stored.size = size

@@ -6,13 +6,14 @@ import pytest
 
 from app.extensions import db
 from app.models import Drive, ModuleState, StoredFile
-from app.services import drive_service, sync_service
+from app.services import drive_service
 
 
 @pytest.fixture()
 def gitrepo(tmp_path, app):
     """A real local git repo with one committed file; returns its path."""
     import importlib
+
     from dulwich import porcelain
 
     # The clone cache (instance/test_git_repos/<id>) survives across tests

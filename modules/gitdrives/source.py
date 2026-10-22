@@ -12,7 +12,6 @@ import time
 
 from dulwich import porcelain
 
-
 # First line of a Git LFS pointer file (the real blob lives on the LFS
 # server; what we see is ~130 bytes of text).
 LFS_POINTER_RE = re.compile(

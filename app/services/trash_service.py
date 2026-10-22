@@ -12,7 +12,7 @@ touches the real folder), so there is nothing to auto-purge for them.
 
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from flask import current_app
 
@@ -23,7 +23,7 @@ TRASH_RETENTION_DAYS = 30
 
 
 def _cutoff():
-    return datetime.now(timezone.utc) - timedelta(days=TRASH_RETENTION_DAYS)
+    return datetime.now(UTC) - timedelta(days=TRASH_RETENTION_DAYS)
 
 
 def purge_expired(app=None):

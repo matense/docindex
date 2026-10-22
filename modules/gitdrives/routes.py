@@ -1,9 +1,7 @@
 """Git drives: clone a remote repository as a read-only mirror drive."""
 
-import os
 
-from flask import (Blueprint, flash, jsonify, redirect, render_template,
-                   request, url_for)
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db

@@ -313,6 +313,7 @@ def test_shared_corrupt_notebook_quarantined(auth_client, app, local_folder):
 
 def test_shared_full_history_import(auth_client, app, local_folder):
     import json as _json
+
     from modules.notebooks import doc as nb_doc
     _shared_create(auth_client, local_folder)
     drive_id = _shared_drive(app)

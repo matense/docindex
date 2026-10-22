@@ -50,7 +50,7 @@ NOTEBOOKS_FOLDER = "DocIndex Notebooks"
 def notebooks_folder(user, drive):
     """Get-or-create the drive's notebooks folder. Returns None for synced
     (read-only) drives — nothing may be created in them."""
-    from app.models import Drive, Folder
+    from app.models import Folder
     if drive is None or getattr(drive, "is_synced", False):
         return None
     folder = (Folder.query

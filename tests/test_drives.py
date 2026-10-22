@@ -218,7 +218,8 @@ def test_delete_drive_trashes_and_restores(auth_client, app, user):
     resp = auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
     assert resp.status_code == 200
     with app.app_context():
-        from app.models import Drive as _Drive, StoredFile as _SF
+        from app.models import Drive as _Drive
+        from app.models import StoredFile as _SF
         drive = _Drive.query.get(wid)
         assert drive.deleted_at is not None
         # Every file in the drive goes to the trash with it (same stamp).
@@ -233,7 +234,8 @@ def test_delete_drive_trashes_and_restores(auth_client, app, user):
 
     auth_client.post(f"/drives/{wid}/restore", follow_redirects=True)
     with app.app_context():
-        from app.models import Drive as _Drive2, StoredFile as _SF2
+        from app.models import Drive as _Drive2
+        from app.models import StoredFile as _SF2
         assert _Drive2.query.get(wid).deleted_at is None
         # Joint restore: the drive's files come back too.
         assert _SF2.query.filter_by(drive_id=wid).one().deleted_at is None
@@ -315,7 +317,8 @@ def test_restore_file_to_another_drive(auth_client, app, user):
 
 
 def test_restore_drive_keeps_previously_trashed_files(auth_client, app, user):
-    from app.models import Drive as _Drive, StoredFile as _SF
+    from app.models import Drive as _Drive
+    from app.models import StoredFile as _SF
     auth_client.post("/drives/create", data={"name": "Work"},
                      follow_redirects=True)
     _upload(auth_client, "doomed.txt", b"doomed")
@@ -353,7 +356,9 @@ def test_purge_drive_removes_everything(auth_client, app, user):
     auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
     auth_client.post(f"/drives/{wid}/purge", follow_redirects=True)
     with app.app_context():
-        from app.models import Drive as _Drive, FileIndex as _FI, StoredFile as _SF2
+        from app.models import Drive as _Drive
+        from app.models import FileIndex as _FI
+        from app.models import StoredFile as _SF2
         assert _Drive.query.get(wid) is None
         assert _SF2.query.filter_by(drive_id=wid).count() == 0
         assert _FI.query.count() == 0
@@ -377,7 +382,10 @@ def test_synced_drive_delete_removes_immediately(auth_client, app, user):
 
 def test_trash_auto_purge_toggle_and_30_day_rule(auth_client, app, user):
     from datetime import datetime, timedelta
-    from app.models import Drive as _Drive, StoredFile as _SF, User as _U
+
+    from app.models import Drive as _Drive
+    from app.models import StoredFile as _SF
+    from app.models import User as _U
     from app.services import trash_service
 
     _upload(auth_client, "old.txt", b"old")
