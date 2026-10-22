@@ -42,7 +42,9 @@ modules/
 - `capabilities` is a whitelist — only `routes`, `tools`, `models` are valid.
   Unknown capabilities make the module be skipped (with a log warning).
 - `nav` is optional: when the module is enabled, the entry shows up in the
-  profile dropdown under "Modules". `url` is relative to `/m/<name>`.
+  top navigation dock (`module_nav` in `base.html`). `url` is relative to
+  `/m/<name>`. Omit `nav` for modules that live elsewhere in the UI (e.g.
+  `gitdrives` is reached from the drive selector and the profile page).
 - `help` is optional: a list of paragraphs shown on the app's help page
   (Settings → Help) while the module is enabled, under its `description`.
 
@@ -118,6 +120,23 @@ module_service.register_file_viewer(
 Prefer storing module documents as regular files (see `modules/notebooks/`):
 they get ownership, drives/folders, trash, `FileVersion` history, FTS search
 and the AI agent's core tools (search/read/grep/hashtags) for free.
+
+## Drive sources
+
+Modules can own non-folder drives via the provider registry:
+
+```python
+from app.services import drive_service
+
+drive_service.register_drive_source("git", GitDriveSource())
+# provider: validate(user, config) / materialize(drive) /
+#           pre_sync(drive) / cleanup(drive)
+```
+
+`pre_sync` runs before every sync of that drive (e.g. `git pull` into a
+local checkout that the core folder scan then indexes); `cleanup` runs on
+drive removal. See `modules/gitdrives/` for a complete example (read-only
+Git mirrors, encrypted credentials).
 
 ## AI file guards
 

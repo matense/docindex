@@ -165,9 +165,13 @@ drive" is stored in the Flask session (`session["drive_id"]`).
 | `source_path` | String(500), nullable | absolute local folder root — set = synced drive |
 | `last_synced_at` | DateTime, nullable | last successful sync |
 | `last_sync_stats` | Text, nullable | JSON stats of the last sync (added/updated/removed/skipped) |
-| `captions_enabled` | Boolean, default true | synced drives: AI image captions on/off |
+| `captions_enabled` | Boolean, default false | synced drives: AI image captions on/off |
 | `index_workers` | Integer, default 1 | synced drives: parallel indexing workers (1–8) |
 | `sync_mode` | String(20), default 'mirror' | 'mirror' = read-only, 'shared' = writable two-way sync |
+| `source_kind` | String(20), default 'folder' | 'folder' = local folder; 'git' = gitdrives module (mirror of a remote repo) |
+| `repo_url`, `repo_branch`, `repo_username` | nullable | git drives: remote URL, branch (default: remote HEAD), username; PAT stored encrypted in `repo_token` |
+| `repo_token` | Text, nullable | encrypted ("enc:" + Fernet) personal access token |
+| `sync_ignored` | Text (JSON list), nullable | drive-relative paths the sync skips (e.g. purged shared files) |
 | `sync_ignored` | Text, nullable | JSON list of drive-relative paths the sync skips |
 | `created_at` | DateTime | |
 
@@ -222,7 +226,8 @@ Relationships: `children` (self-ref, cascade delete-orphan), `files`.
 | `folder_id` | FK -> folders.id, nullable, indexed | NULL = drive root |
 | `user_id` | FK -> users.id, indexed | |
 | `drive_id` | FK -> drives.id, nullable, indexed | |
-| `source_path` | String(500), nullable | absolute path of the real file (synced files) |
+| `source_path` | String(500), nullable | absolute path of the real file (synced files); git drives point at the local clone cache |
+| `uuid` | String(36), unique, nullable | internal global notebook id (invisible in the UI; backfilled on next access) |
 | `deleted_at` | DateTime, nullable, indexed | set = in the trash (soft-delete) |
 | `created_at`, `updated_at` | DateTime | `updated_at` auto-bumps |
 
@@ -242,7 +247,10 @@ delete-forever / empty-trash actions.
 Deleting a folder trashes its files with `folder_id` reset to NULL, so a
 restore lands at the drive root. Deleting a drive moves the drive and every
 file in it to the trash under the same timestamp, so restoring the drive
-restores exactly those files (files trashed earlier stay trashed). Synced
+restores exactly those files (files trashed earlier stay trashed). Restoring
+a single file whose drive is still trashed asks where it should live
+(restore the original drive too, or move it into another drive) instead of
+stranding it in limbo. Synced
 drives skip the trash: their DocIndex rows are removed immediately and the
 real folder on disk is never touched.
 
@@ -755,7 +763,14 @@ as `interrupted` at startup.
   current drive from the session, lazily creates the default "Personal"
   drive, and migrates pre-drives files/folders (`drive_id IS NULL`) into the
   first drive. `create_drive`/`select_drive`/`update_drive` manage drives and
-  the session pointer.
+  the session pointer. `trash_drive` soft-deletes a drive together with its
+  files (shared timestamp, so joint restore works); `restore_drive` brings
+  them back; `purge_drive` deletes everything permanently; the Trash page
+  offers an opt-in 30-day auto-purge (`User.trash_auto_purge`, default off).
+  Move/copy selections go through `file_service` (cross-drive relocation
+  included). Drive *sources* are pluggable: `register_drive_source(kind,
+  provider)` lets modules (e.g. gitdrives) own non-folder drives —
+  `pre_sync` runs before each sync, `cleanup` on removal.
 - **sync_service** — synced (read-only) drives. `create_synced_drive(user,
   path)` validates the local folder (exists, is dir, readable, not already
   synced) and creates a drive named after it; `sync_drive(drive)` walks the
@@ -786,6 +801,13 @@ as `interrupted` at startup.
   (`config.py`), so background threads never hit the QueuePool limit;
   in-memory test databases keep the default pool (NullPool would give each
   connection its own empty DB).
+  Shared (`sync_mode='shared'`) drives are writable both ways: local edits
+  write through with a pre-snapshot (atomic tmp+replace, per-file lock
+  shared with the editor), and remote changes keep the last-seen content
+  as a `source='sync'` FileVersion via last-seen shadow copies under
+  `SHADOW_FOLDER` (capped by `SHARED_SHADOW_MAX_BYTES`). Trashed and
+  purged paths (the latter kept in `Drive.sync_ignored`) are invisible to
+  the scan so the trash never resurrects and purges stay DB-only.
 - **file_service** — physical storage: path helpers (`file_path` returns the
   real `source_path` for synced files), `save_upload`,
   thumbnails, SHA-256 checksums + per-drive duplicate detection
@@ -856,7 +878,7 @@ the answer falls back to asking the user to rephrase.
 
 ### Tools
 
-`TOOLS` defines twelve OpenAI function-calling tools; `TOOL_HANDLERS` maps
+`TOOLS` defines eighteen OpenAI function-calling tools; `TOOL_HANDLERS` maps
 names to implementations. All tools are scoped to the calling user, and
 search/list/count are additionally scoped to the current drive.
 
@@ -910,6 +932,20 @@ search/list/count are additionally scoped to the current drive.
   `hashtag_service.get_all_tags()`. The system prompt steers the model to
   call this first when the user mentions a tag/topic, then search with the
   exact tag terms.
+- `list_drives()` — every drive owned (id, name, read-only flag from
+  `is_readonly`, file count, bytes); `scoped_to` names the drive(s) in the
+  current chat scope.
+- `list_behaviors()` / `save_behavior(name, content, id?)` — manage the
+  user's reusable AI instructions (create or update by id/name).
+- `move_files(file_ids[], folder_ids[], drive_id, folder_id?)` — move
+  files/folders to another writable drive (optionally into a folder);
+  refuses read-only drives.
+- `copy_files(file_ids[], folder_ids[], drive_id, folder_id?)` — copy
+  instead of moving; duplicates are renamed automatically.
+- `create_folder(name, drive_id?, parent_id?)` — create a folder (defaults
+  to the drive in scope; auto-renames on clash); refuses read-only drives.
+- `delete_folder(folder_id)` — trash a folder's files (restorable) and
+  remove the folder row; refuses read-only drives.
 
 ### System prompt
 
@@ -1216,6 +1252,12 @@ tool + table).
 ### Bundled modules
 
 - `hello` — minimal example (page + echo tool + table).
+- `gitdrives` — read-only Git mirror drives (GitHub, Azure DevOps Git):
+  clone a repo into a local checkout and pull-then-scan on every sync
+  (pure-Python dulwich, no git binary). Registers the `git` source via
+  `drive_service.register_drive_source()`, so the core scan/index/trash
+  machinery works unchanged. LFS is not fetched — LFS-tracked files stay
+  as pointer text (flagged wherever detected).
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
   (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`
@@ -1243,7 +1285,12 @@ tool + table).
   as real, indexed files next to the notebook), and rich-text/markdown
   cells can reference drive files. Cells can be dragged into the AI chat
   as a context chip (`context_cell` on `/ai/chat` → system note naming
-  the notebook and cell id).
+  the notebook and cell id). Notebooks carry an invisible global `uuid`
+  (backfilled on next access) and an opt-in sticky `full_history` mode
+  (toolbar toggle with a size warning — cannot be turned off): every
+  snapshotted state is then also embedded in the file (`synced_history`,
+  capped), so shared-drive collaborators reconstruct the full history on
+  sync; corrupt remote notebooks are quarantined instead of adopted.
 - `automation` — visual workflow builder. Workflows are DAGs of
   typed nodes edited on a drag & drop canvas (Drawflow, vendored) and
   executed server-side. Node categories: **Input** (text/JSON, file from
@@ -1253,7 +1300,9 @@ tool + table).
   run form before it starts, or falls back to a static default for
   scheduled/triggered/AI runs; kinds: short/long text, number, file —
   the answers ride on `AutomationRun.params` and duplicate/unnamed
-  parameters are rejected at validation; notebook input), **Transform**
+  parameters are rejected at validation; notebook input; folder input — a
+  single folder from a drive, as a `folders` payload for the copy/move
+  nodes), **Transform**
   (template with `{{ node.port.path }}` references — its input port is a
   fan-in port (`"multiple": true` in the spec): several nodes may be wired
   in, their texts arrive as a list and are exposed to the template as
@@ -1276,10 +1325,13 @@ tool + table).
   optional instruction), **Logic** (condition with true/false ports —
   both sides accept literal text or `{{ node }}` references picked from
   a datalist, the right side hides for the empty/not-empty operators —
-  and merge), **Output** (save file to a writable drive — synced drives
-  are refused — save table as CSV/Excel, notebook output: append a cell,
-  replace all cells, or update one specific cell picked from a live list
-  fed by `/api/notebook-cells` — and workflow
+  and merge), **Output** (save file to a writable drive — read-only
+  drives are refused — save table as CSV/Excel, copy or move one file or
+  a whole folder tree to another writable drive (`output.copy_file` /
+  `output.move_file`, with an optional destination folder; folders arrive
+  as a `folders` payload, e.g. from the `input.folder` node), notebook
+  output: append a cell, replace all cells, or update one specific cell
+  picked from a live list fed by `/api/notebook-cells` — and workflow
   result preview). Notebook nodes are gated on the notebooks module.
   Data flows as typed payload envelopes (`text`/`json`/
   `table`/`files`/`folders`/`drive`) with coercions between kinds. Runs are persistent
@@ -1330,7 +1382,7 @@ tool + table).
 
 ## Testing
 
-pytest suite in `tests/`, 540+ tests across 20+ modules:
+pytest suite in `tests/`, 650+ tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

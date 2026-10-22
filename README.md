@@ -17,20 +17,31 @@ questions about your files by searching and reading them step by step.
 ## Features
 
 - **File drive** — folders, multi-file upload, download, rename, move, delete,
-  and in-place editing of text/code files.
-- **Trash bin** — deleting a file moves it to the trash bin, a dedicated
-  page (linked from your profile) where you can search deleted files,
-  restore them or delete them forever (nothing is lost until you purge it).
+  and in-place editing of text/code files. Cut/copy/paste works across
+  drives (toolbar, right-click, or ask the AI to reorganize for you).
+- **Trash bin** — deleting files *and drives* moves them to the trash bin,
+  a dedicated page (linked from your profile) where you can search deleted
+  files, restore them or delete them forever (nothing is lost until you
+  purge it). Restoring a drive brings its files back; restoring a file
+  whose drive is still trashed asks where it should live. An opt-in
+  30-day auto-purge cleans old trash automatically.
 - **Folder sync** — point DocIndex at a local folder and it creates a
-  read-only drive that mirrors it: files are indexed (text, PDF, DOCX,
+  **mirror** drive: read-only files are indexed (text, PDF, DOCX,
   OCR/images) and searchable by the AI, but never copied or modified — they
-  stay on your disk. Sync runs in the background with a floating progress
+  stay on your disk. **Shared** drives sync both ways instead (e.g. a
+  Dropbox/OneDrive folder): local edits write through with history, and
+  remote changes are kept as versions. Sync runs in the background with a floating progress
   popup (percentage, pause/resume/stop) and a per-drive sync summary on your
-  profile page — where you can also toggle AI image captions and set the
+  profile page — where you can also toggle AI image captions (off by
+  default) and set the
   number of parallel indexing workers (1–8). Removing a synced drive clears
   it and its index from
   DocIndex — the real folder is never touched. Note: the folder path is read
   with the permissions of the process running DocIndex.
+- **Git drives (module)** — clone a Git repository (GitHub, Azure DevOps)
+  as a read-only mirror drive; every sync pulls and re-indexes. The
+  personal access token is stored encrypted. Enable it in
+  *Settings → Modules*. Git LFS is not fetched (LFS files stay pointers).
 - **Version history** — re-uploading a file with the same name into the same
   folder creates a new version instead of a duplicate. The file page has a
   history timeline with diffs and one-click restore for text files, and
@@ -61,7 +72,9 @@ questions about your files by searching and reading them step by step.
   conversation remembers the context you last used. Attach files straight
   from your device (images land captioned, tables with a head preview), ask
   about what images show (the AI looks at them through the vision model),
-  and run workflows on attachments from the chip.
+  run workflows on attachments from the chip, pick a persona or one of your
+  behaviors (starred favorites pin to the top), and ask it to create,
+  delete, move or copy files and folders.
 - **Background AI tasks (long horizon)** — flip the Background toggle and
   your question runs as a server-side task: the agent keeps working (with a
   much larger step budget, throttling itself to your connection's rate
@@ -74,12 +87,17 @@ questions about your files by searching and reading them step by step.
   your drives: markdown, rich text (images + file references), code, todo,
   table, heading and separator cells. Autosave with version history and
   side-by-side diffs, read/print mode, full AI editing tools with lock and
-  hide-from-AI toggles, and drag-a-cell-into-the-chat context.
+  hide-from-AI toggles, and drag-a-cell-into-the-chat context. Every drive
+  keeps its notebooks in a dedicated "DocIndex Notebooks" folder; the
+  Notebooks page groups by drive and folder and offers one-click
+  **Organize** (with preview) and **Revert last organize**, plus an opt-in
+  full-history mode per notebook.
 - **Automation (module)** — visual workflows on a drag & drop canvas:
   chain file inputs (text/CSV/Excel/JSON), notebooks, transforms, AI
   prompts (with custom behavior) and logic into flows that run manually,
   on a schedule, straight from a file's context menu, or from the AI
   chat — and the AI assistant can design new workflows for you.
+  Output nodes can copy or move whole folders between drives.
   Ready-made examples (translate a file, summarize into a notebook, …)
   get you started, and results can be saved back to your drives as new,
   editable files or notebooks. Enable it in *Settings → Modules*.

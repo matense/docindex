@@ -30,6 +30,7 @@
 - **Config**: settings in `config.py` read from environment (`os.environ.get`), loaded from `.env` via python-dotenv. Never hardcode secrets.
 - **Indexing**: files are indexed asynchronously in a background thread on upload (`INDEX_ASYNC`); text extraction via pdfplumber / python-docx / pytesseract; images get AI captions when a vision model is configured.
 - **AI chat**: `routes/ai.py` streams NDJSON events (`thinking`, `step`, `tool_result`, `answer`, `error`); `agent_service` runs the tool-call loop (max steps per connection, `AI_MAX_STEPS` default). Conversation state is saved only when a run completes.
+- **Drives**: read-only when `Drive.is_readonly`; writable shared/git drives go through guarded write paths. Non-folder drives come from module source providers (`drive_service.register_drive_source`).
 
 ### Frontend (HTML/JS/CSS)
 - **Styling**: Tailwind utility classes + DaisyUI components.

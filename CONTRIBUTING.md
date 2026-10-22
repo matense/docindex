@@ -7,16 +7,21 @@ installations compatible. Read this before making changes.
 
 1. **Database changes always go through migrations** — never edit the
    database directly or ship code that requires manual schema fixes.
-2. **Run the tests before every push** — `pytest` must be green (540+ tests).
+2. **Run the tests before every push** — `pytest` must be green (650+ tests).
 3. **Never commit secrets or runtime data** — `.env`, `instance/`,
    `uploads/` and `venv/` are gitignored; keep it that way.
 4. **Keep the docs in sync** — if you change the architecture, update
    `DOCUMENTATION.md` and `.github/copilot-instructions.md` in the same
    commit.
 5. **Synced files are sacred** — any code that deletes or overwrites files
-   must check `StoredFile.is_synced` / `Drive.is_synced` first and never
-   touch `source_path` files on disk (no `purge_file`, no writes). Synced
-   drives mirror the user's real folders; removals only delete DB rows.
+   must respect read-only (mirror) drives: check `Drive.is_readonly` /
+   `file_service.is_readonly_file()` first and never touch `source_path`
+   files on disk there (no `purge_file`, no writes). Mirror drives reflect
+   the user's real folders; removals only delete DB rows. *Shared* (writable
+   sync) drives are the exception: writes go through to the real file, but
+   only via the guarded paths (`save_upload`, `replace_with_upload`,
+   `move/copy` with byte relocation, notebook `save_document`) that snapshot
+   a version first.
 
 ## Development setup
 
