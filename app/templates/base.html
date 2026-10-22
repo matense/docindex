@@ -59,7 +59,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=11">
     {% block head %}{% endblock %}
 </head>
-<body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
+<body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'static-background' if current_user.is_authenticated and current_user.static_background }} {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
     {% if current_user.is_authenticated %}
         <div class="flex flex-col h-full w-full relative" id="app-container">
 

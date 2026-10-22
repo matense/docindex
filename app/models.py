@@ -22,6 +22,8 @@ class User(UserMixin, db.Model):
                       default="light", server_default="light")
     trash_auto_purge = db.Column(db.Boolean, nullable=False, default=False,
                                  server_default="false")  # purge trash older than 30 days
+    static_background = db.Column(db.Boolean, nullable=False, default=False,
+                                  server_default="false")  # no animated background
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",

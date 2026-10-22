@@ -89,6 +89,26 @@
         </div>
     </div>
 
+    <!-- Static background (no animation) -->
+    <div class="glass-panel rounded-2xl px-5 py-4 flex items-center gap-4 flex-wrap">
+        <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
+            <span class="w-9 h-9 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-image"></i>
+            </span>
+            <div>
+                <h2 class="font-bold leading-tight">Static background</h2>
+                <p class="text-xs opacity-50">Disables the animated background — easier on screen-sharing codecs</p>
+            </div>
+        </div>
+        <form method="POST" action="{{ url_for('settings.profile_background') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="checkbox" name="enabled" class="toggle toggle-success"
+                   {{ 'checked' if current_user.static_background }}
+                   title="Static background on/off"
+                   onchange="document.getElementById('app-body').classList.toggle('static-background', this.checked); this.form.submit()">
+        </form>
+    </div>
+
     <!-- Drive summary -->
     <div class="glass-panel rounded-2xl p-6">
         <h2 class="font-bold text-lg mb-4"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>

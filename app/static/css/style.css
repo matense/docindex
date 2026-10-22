@@ -50,6 +50,14 @@ body {
     animation: gradient-bg 20s ease infinite;
 }
 
+/* Static background (per-user Profile toggle): flat, no animation —
+   easier on screen-sharing codecs. */
+.animated-background.static-background {
+    animation: none;
+    background: #f4f6fb;
+    background-size: auto;
+}
+
 /* Typography Improvements */
 h1 {
     font-weight: 300;
@@ -3892,6 +3900,12 @@ html[data-theme="dark"] .ai-notice {
 [data-theme="dark"] .animated-background {
     background: linear-gradient(-45deg, #0b1120, #0f172a, #131c33, #0b1120);
     background-size: 400% 400%;
+}
+
+[data-theme="dark"] .animated-background.static-background {
+    animation: none;
+    background: #101828;
+    background-size: auto;
 }
 
 /* Sidebar */

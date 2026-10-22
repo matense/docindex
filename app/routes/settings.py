@@ -431,6 +431,19 @@ def profile_theme():
     return redirect(url_for("settings.profile"))
 
 
+@bp.route("/profile/background", methods=["POST"])
+@login_required
+def profile_background():
+    """Static background (no animation) — easier on screen-sharing codecs."""
+    current_user.static_background = request.form.get("enabled") == "on"
+    db.session.commit()
+    flash(("Static background on — the animated background is disabled."
+           if current_user.static_background else
+           "Static background off — the animated background is back."),
+          "success")
+    return redirect(url_for("settings.profile"))
+
+
 @bp.route("/profile/registration", methods=["POST"])
 @login_required
 def profile_registration():
