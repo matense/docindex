@@ -42,9 +42,11 @@
             <a href="#help-hashtags" class="link link-hover"><i class="fas fa-hashtag w-5 text-primary/70"></i> Hashtags</a>
             <a href="#help-duplicates" class="link link-hover"><i class="fas fa-clone w-5 text-primary/70"></i> Duplicates</a>
             <a href="#help-trash" class="link link-hover"><i class="fas fa-trash w-5 text-primary/70"></i> Trash bin</a>
-            <a href="#help-sync" class="link link-hover"><i class="fas fa-arrows-rotate w-5 text-primary/70"></i> Synced drives</a>
+            <a href="#help-sync" class="link link-hover"><i class="fas fa-arrows-rotate w-5 text-primary/70"></i> Shared &amp; synced drives</a>
             <a href="#help-ai-chat" class="link link-hover"><i class="fas fa-robot w-5 text-primary/70"></i> AI assistant chat</a>
             <a href="#help-ai-search" class="link link-hover"><i class="fas fa-wand-magic-sparkles w-5 text-primary/70"></i> AI search page</a>
+            <a href="#help-behaviors" class="link link-hover"><i class="fas fa-masks-theater w-5 text-primary/70"></i> Behaviors &amp; personas</a>
+            <a href="#help-notebooks" class="link link-hover"><i class="fas fa-book-open w-5 text-primary/70"></i> Notebooks</a>
             <a href="#help-profile" class="link link-hover"><i class="fas fa-user w-5 text-primary/70"></i> Profile page</a>
             <a href="#help-ai-settings" class="link link-hover"><i class="fas fa-gear w-5 text-primary/70"></i> AI settings</a>
             {% if enabled_modules %}
@@ -76,6 +78,14 @@
         <span class="badge badge-xs badge-success">ok</span>
         <span class="badge badge-xs badge-error">error</span>. The profile
         page shows the live indexing queue.</p>
+        <p><strong>Moving &amp; copying</strong> — select files and folders
+        (Ctrl/Cmd-click, Shift-click, or drag a rubber band), then
+        <strong>Cut</strong> or <strong>Copy</strong> and <strong>Paste</strong>
+        anywhere — even on another drive. Cutting moves (originals leave),
+        copying duplicates (originals stay). The toolbar badge and menus show
+        whether the clipboard holds a move or a copy, and name clashes are
+        renamed automatically. You can also ask the AI to reorganize files
+        across drives for you.</p>
     {% endcall %}
 
     {% call section('help-search', 'fa-magnifying-glass', 'Search') %}
@@ -124,27 +134,46 @@
     {% endcall %}
 
     {% call section('help-trash', 'fa-trash', 'Trash bin') %}
-        <p>Deleted files go to the trash, on its own page (profile → Trash).
-        From there you can search deleted files, <strong>restore</strong>
-        them to their original folder or <strong>purge</strong> them
+        <p>Deleted files and drives go to the trash, on its own page
+        (profile → Trash). From there you can search deleted files,
+        <strong>restore</strong> them or <strong>purge</strong> them
         permanently (this also deletes versions and thumbnails). A
         confirmation dialog always asks before anything is destroyed.</p>
+        <p>Deleting a drive moves the drive <em>and every file in it</em> to
+        the trash; restoring the drive brings the files back (files you had
+        already trashed individually stay trashed). If you restore a single
+        file whose drive is still trashed, DocIndex asks where it should
+        live: restore the original drive too, or put the file in another
+        drive — so nothing ever ends up in limbo.</p>
+        <p><strong>Automatic purge</strong> (off by default) permanently
+        deletes files and whole drives that have been in the trash for over
+        30 days. Turn it on from the prominent panel at the top of the trash
+        list.</p>
     {% endcall %}
 
-    {% call section('help-sync', 'fa-arrows-rotate', 'Synced drives (local folders)') %}
+    {% call section('help-sync', 'fa-arrows-rotate', 'Shared & synced drives (local folders)') %}
         <p>A synced drive mirrors a real folder on this computer. Create one
         from the drive dropdown → "Sync a local folder" and paste the path.
-        Everything inside is indexed and searchable — but
-        <strong>read-only</strong>: files in it cannot be edited, renamed or
-        deleted in DocIndex, and removing the drive never touches the real
-        folder.</p>
+        Everything inside is indexed and searchable. There are two kinds:</p>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            <li><strong>Mirror</strong> (default) — strictly
+            <strong>read-only</strong>: files cannot be edited, renamed or
+            deleted in DocIndex, and removing the drive never touches the
+            real folder.</li>
+            <li><strong>Shared</strong> — two-way sync (e.g. a Dropbox or
+            OneDrive folder): edits in DocIndex write through to the real
+            files with a version snapshot first, and changes made elsewhere
+            are picked up on sync with the previous state kept as history,
+            so collaborators never lose work.</li>
+        </ul>
         <p>Syncs run on demand (Sync now on the profile page or the drive
-        view), with live progress in the bottom-right widget and on the
-        profile card — you can pause, resume or stop a running sync. Per
-        synced drive you can choose the number of indexing workers and toggle
-        AI image captions. Changed files are re-indexed, vanished files are
-        removed from the drive, and the last-sync stats (+added / updated /
-        −removed / skipped) stay on the card.</p>
+        view), with live progress on the card — you can pause, resume or stop
+        a running sync. Per drive you can choose the number of indexing
+        workers and toggle AI image captions. Changed files are re-indexed,
+        vanished files are removed from the drive, and the last-sync stats
+        (+added / updated / −removed / skipped) stay on the card. Corrupt
+        remote notebooks are quarantined instead of adopted: the local
+        content is kept and the sync log tells you.</p>
     {% endcall %}
 
     {% call section('help-ai-chat', 'fa-robot', 'AI assistant chat') %}
@@ -182,6 +211,12 @@
             <li><strong>Conversations</strong> — the clock button lists past
             conversations, grouped by period (today, yesterday, …); reopen
             or delete them there.</li>
+            <li><strong>Personas &amp; behaviors</strong> — the "Choose a
+            persona" menu offers the Agency persona library and your own
+            behaviors. Star anything to pin it to the <strong>★
+            Favorites</strong> group at the top; picking one makes the AI
+            answer in that personality (or follow your behavior's
+            instructions) for the whole conversation.</li>
             <li><strong>Stop</strong> — while the assistant works, the send
             button becomes a red stop button that cancels the answer.</li>
             <li><strong>Summarize &amp; reset</strong> — the compress button
@@ -203,18 +238,52 @@
         work the same way.</p>
     {% endcall %}
 
+    {% call section('help-behaviors', 'fa-masks-theater', 'Behaviors & personas') %}
+        <p>Behaviors are your own reusable AI instructions ("system prompts",
+        e.g. a translator); personas are the bundled, read-only Agency
+        library. Manage both on the <strong>Behaviors</strong> page (profile →
+        Behaviors &amp; personas): enable/disable what pickers show,
+        <strong>star favorites</strong> (pinned to the ★ Favorites group at
+        the top of the chat persona picker, and listed first in Automation
+        AI nodes), preview personas, and save any persona as an editable
+        copy of your own.</p>
+    {% endcall %}
+
+    {% call section('help-notebooks', 'fa-book-open', 'Notebooks') %}
+        <p>Notebooks are cell-based documents (markdown, code, to-do lists,
+        tables) saved as files on your drives — indexed, searchable and fully
+        available to the AI. Each drive keeps its notebooks in a dedicated
+        <strong>DocIndex Notebooks</strong> folder (book icon), created
+        automatically; new notebooks land there by default.</p>
+        <p>The Notebooks page groups cards by drive and folder in collapsible
+        sections. <strong>Organize</strong> previews a plan that moves every
+        stray notebook into its drive's folder — nothing moves until you
+        confirm — and <strong>Revert last organize</strong> moves everything
+        back. Every notebook has full version history, and an opt-in
+        <strong>full-history mode</strong> (clock button in the editor, with a
+        size warning, cannot be turned off) keeps every change — on shared
+        drives the history travels inside the file so collaborators see it
+        too.</p>
+    {% endcall %}
+
     {% call section('help-profile', 'fa-user', 'Profile page') %}
         <p>Your profile centralizes everything about your account:</p>
         <ul class="list-disc pl-5 flex flex-col gap-1">
             <li><strong>Account details</strong> — change email and
             password.</li>
+            <li><strong>Display</strong> — light/dark theme plus a static
+            (non-animated) background option, easier on screen-sharing
+            codecs.</li>
             <li><strong>Drive cards</strong> — files, folders, space used and
-            indexed words per drive; synced drives also show sync controls
-            and stats.</li>
+            indexed words per drive, grouped into collapsible
+            <strong>Native</strong>, <strong>Shared sync</strong> and
+            <strong>Mirror</strong> sections; synced drives also show sync
+            controls and stats.</li>
             <li><strong>AI usage</strong> — conversation and message counts
             and the active connection.</li>
-            <li><strong>Indexing queue</strong> — live progress of background
-            indexing, with pause/resume.</li>
+            <li><strong>Indexing queue</strong> — appears only while there is
+            work: live progress of background indexing, with
+            pause/resume.</li>
             <li><strong>Error logs</strong> — every warning and error the app
             records (AI, database, indexing…), in a searchable table, with
             CSV export to share with support.</li>
