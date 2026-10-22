@@ -65,6 +65,16 @@ class Drive(db.Model):
     # 'mirror' = read-only local-folder mirror; 'shared' = writable two-way
     # sync (e.g. a Dropbox/OneDrive folder) with version history.
     sync_mode = db.Column(db.String(20), nullable=False, default="mirror")
+    # Drive source: 'folder' (local folder mirror/shared) or a module
+    # provided kind such as 'git' (gitdrives module: clone + pull).
+    source_kind = db.Column(db.String(20), nullable=False, default="folder",
+                            server_default="folder")
+    # Git source (gitdrives module): remote URL, branch, credentials.
+    # The PAT is encrypted (same enc: scheme as AI API keys).
+    repo_url = db.Column(db.String(2000), nullable=True)
+    repo_branch = db.Column(db.String(255), nullable=True)
+    repo_username = db.Column(db.String(255), nullable=True)
+    repo_token = db.Column(db.Text, nullable=True)
     # JSON list of drive-relative paths the sync must ignore (e.g. purged
     # files on shared drives, whose real blobs are never deleted).
     sync_ignored = db.Column(db.Text, nullable=True)

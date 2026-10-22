@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Git drives - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-4 pb-10">
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-code-branch text-white"></i>
+            </span>
+            Git drives
+        </h1>
+        <p class="opacity-60 text-sm mt-2">
+            Mirror a remote Git repository (GitHub, Azure DevOps Git) as a
+            <strong>read-only</strong> drive. Clone once, then every sync
+            pulls the latest changes and re-indexes. The remote is never
+            written to; removing the drive only clears local rows and the
+            clone cache.
+        </p>
+    </div>
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4">Clone a repository</h2>
+        <form method="POST" action="{{ url_for('gitdrives.create') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="flex flex-col gap-1">
+                <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Repository URL</span>
+                <input type="text" name="repo_url" required
+                       placeholder="https://github.com/org/repo.git  or  /srv/git/repo"
+                       class="input input-bordered w-full font-mono text-sm">
+            </label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Branch (optional)</span>
+                    <input type="text" name="branch" placeholder="main (remote default)"
+                           class="input input-bordered w-full font-mono text-sm">
+                </label>
+                <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Display name (optional)</span>
+                    <input type="text" name="name" placeholder="Taken from the URL"
+                           class="input input-bordered w-full text-sm">
+                </label>
+                <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Username (private repos)</span>
+                    <input type="text" name="username" placeholder="anything (Azure DevOps accepts any)"
+                           class="input input-bordered w-full font-mono text-sm" autocomplete="off">
+                </label>
+                <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Token / password (private repos)</span>
+                    <input type="password" name="token" placeholder="Personal access token (stored encrypted)"
+                           class="input input-bordered w-full font-mono text-sm" autocomplete="new-password">
+                    <span class="text-xs opacity-50">Needed once per clone/pull — e.g. an Azure DevOps PAT with <em>Code: Read</em>.</span>
+                </label>
+            </div>
+            <div class="modal-action">
+                <button type="submit" class="btn btn-primary gap-1">
+                    <i class="fas fa-cloud-arrow-down"></i> Clone as drive
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4">Your git drives</h2>
+        {% if drives %}
+        <div class="flex flex-col gap-2">
+            {% for d in drives %}
+            <div class="flex items-center gap-3 rounded-xl border border-base-content/10 px-4 py-3">
+                <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-code-branch"></i>
+                </span>
+                <div class="min-w-0 flex-1">
+                    <div class="font-semibold truncate">{{ d.name }}</div>
+                    <div class="text-xs opacity-50 truncate font-mono" title="{{ d.repo_url }}">{{ d.repo_url }}{% if d.repo_branch %} · {{ d.repo_branch }}{% endif %}</div>
+                </div>
+                <form method="POST" action="{{ url_for('drive.sync_now', drive_id=d.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next" value="{{ url_for('gitdrives.index') }}">
+                    <button type="submit" class="btn btn-info btn-sm gap-1" title="Pull latest changes and re-scan">
+                        <i class="fas fa-arrows-rotate"></i> Pull &amp; sync
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('drive.remove_drive', drive_id=d.id) }}"
+                      data-confirm="Remove git drive &quot;{{ d.name }}&quot;? This deletes the drive and its index from DocIndex — the remote repository is NOT touched."
+                      data-confirm-danger>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline btn-error btn-sm gap-1">
+                        <i class="fas fa-link-slash"></i> Remove
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-sm opacity-50">No git drives yet — clone one above.</p>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

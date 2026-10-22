@@ -13,6 +13,27 @@ from ..models import Drive, Folder, StoredFile, utcnow
 
 DEFAULT_DRIVE_NAME = "Personal"
 
+# Drive source providers (module-pluggable). The core only knows local
+# folders ("folder" kind, no provider needed); modules such as gitdrives
+# register their kind here. A provider implements:
+#   validate(user, config) -> error str | None
+#   materialize(drive)     -> error str | None  (initial fetch, e.g. clone)
+#   pre_sync(drive)         -> error str | None  (refresh before the scan)
+#   cleanup(drive)         -> None               (best-effort local cleanup)
+_DRIVE_SOURCES = {}
+
+
+def register_drive_source(kind, provider):
+    """Register a module-provided drive source (e.g. gitdrives -> 'git')."""
+    _DRIVE_SOURCES[kind] = provider
+
+
+def get_drive_source(kind):
+    """The provider for a source kind, or None for local folders."""
+    if not kind or kind == "folder":
+        return None
+    return _DRIVE_SOURCES.get(kind)
+
 
 def list_drives(user):
     """Non-trashed drives (trash lives separately)."""

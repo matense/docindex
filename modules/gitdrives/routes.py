@@ -1,0 +1,125 @@
+"""Git drives: clone a remote repository as a read-only mirror drive."""
+
+import os
+
+from flask import (Blueprint, flash, jsonify, redirect, render_template,
+                   request, url_for)
+from flask_login import current_user, login_required
+
+from app.extensions import db
+from app.models import Drive, StoredFile
+from app.services import ai_service, drive_service, sync_service
+
+bp = Blueprint("gitdrives", __name__,
+               template_folder="templates", static_folder="static")
+
+
+def _owned_git_drive(drive_id):
+    drive = Drive.query.filter_by(id=drive_id,
+                                  user_id=current_user.id).first()
+    if drive is None or drive.source_kind != "git":
+        from flask import abort
+        abort(404)
+    return drive
+
+
+@bp.get("/")
+@login_required
+def index():
+    drives = (Drive.query
+              .filter_by(user_id=current_user.id)
+              .filter(Drive.source_kind == "git")
+              .filter(Drive.deleted_at.is_(None))
+              .order_by(Drive.name).all())
+    return render_template("gitdrives/index.html", drives=drives)
+
+
+@bp.post("/create")
+@login_required
+def create():
+    """Validate the remote, create the drive row and clone (mirror)."""
+    from . import source as git_source
+
+    url = (request.form.get("repo_url") or "").strip()
+    branch = (request.form.get("branch") or "").strip() or None
+    username = (request.form.get("username") or "").strip() or None
+    token = (request.form.get("token") or "").strip() or None
+    provider = drive_service.get_drive_source("git")
+    error = provider.validate(current_user, {
+        "repo_url": url, "branch": branch,
+        "username": username, "token": token})
+    if error:
+        flash(error, "error")
+        return redirect(url_for("gitdrives.index"))
+
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        # Friendly default from the repo URL (…/org/my-repo[.git]).
+        tail = url.rstrip("/").rsplit("/", 1)[-1]
+        if tail.endswith(".git"):
+            tail = tail[:-4]
+        name = tail or "Git repo"
+    base, suffix, candidate = name, 2, name
+    while Drive.query.filter(Drive.user_id == current_user.id,
+                            Drive.name.ilike(candidate)).first():
+        candidate = f"{base} ({suffix})"
+        suffix += 1
+
+    drive = Drive(name=candidate, user_id=current_user.id,
+                  source_kind="git", repo_url=url,
+                  repo_branch=branch, repo_username=username,
+                  repo_token=ai_service.encrypt_api_key(token or ""),
+                  description=f"Git mirror of {url}")
+    db.session.add(drive)
+    db.session.commit()
+    # The checkout dir doubles as source_path: the regular folder scan
+    # indexes it like any synced drive.
+    drive.source_path = git_source.cache_path(drive.id)
+    db.session.commit()
+
+    error = provider.materialize(drive)
+    if error:
+        db.session.delete(drive)
+        db.session.commit()
+        flash(f"Clone failed: {error}", "error")
+        return redirect(url_for("gitdrives.index"))
+
+    job = sync_service.start_sync(drive)
+    if job.state == "done":
+        s = job.stats
+        flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
+              f'imported, {s["skipped"]} skipped.', "success")
+    else:
+        flash(f'Git drive "{drive.name}" created — cloning finished, '
+              "the first scan is running in the background.", "success")
+    return redirect(url_for("drive.index"))
+
+
+@bp.get("/api/check")
+@login_required
+def check():
+    """Validate a remote without creating anything (live form feedback)."""
+    provider = drive_service.get_drive_source("git")
+    if provider is None:
+        return jsonify({"ok": False, "error": "Git module not ready."}), 500
+    error = provider.validate(current_user, {
+        "repo_url": request.args.get("repo_url", ""),
+        "branch": request.args.get("branch", ""),
+        "username": request.args.get("username", ""),
+        "token": request.args.get("token", "")})
+    if error:
+        return jsonify({"ok": False, "error": error})
+    return jsonify({"ok": True})
+
+
+@bp.get("/<int:drive_id>/files")
+@login_required
+def files(drive_id):
+    """Light file listing for pickers (mirrors /api/search scoping)."""
+    drive = _owned_git_drive(drive_id)
+    rows = (StoredFile.query
+            .filter_by(user_id=current_user.id, drive_id=drive.id)
+            .filter(StoredFile.deleted_at.is_(None))
+            .order_by(StoredFile.name).limit(500).all())
+    return jsonify({"drive": {"id": drive.id, "name": drive.name},
+                    "files": [{"id": f.id, "name": f.name} for f in rows]})

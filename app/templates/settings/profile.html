@@ -239,12 +239,12 @@
                         <form method="POST" action="{{ url_for('drive.sync_now', drive_id=s.drive.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="next" value="{{ url_for('settings.profile') }}">
-                            <button type="submit" class="btn btn-info btn-sm gap-1.5" title="Re-scan the local folder">
+                            <button type="submit" class="btn btn-info btn-sm gap-1.5" title="{{ 'Pull latest changes and re-scan' if s.drive.source_kind == 'git' else 'Re-scan the local folder' }}">
                                 <i class="fas fa-arrows-rotate"></i> Sync now
                             </button>
                         </form>
                         <form method="POST" action="{{ url_for('drive.remove_drive', drive_id=s.drive.id) }}"
-                              data-confirm="Remove synced drive &quot;{{ s.drive.name }}&quot;? This deletes the drive and its index from DocIndex — the real folder on disk is NOT touched."
+                              data-confirm="Remove synced drive &quot;{{ s.drive.name }}&quot;? {% if s.drive.source_kind == 'git' %}This deletes the drive, its index and the local clone cache — the remote repository is NOT touched.{% else %}This deletes the drive and its index from DocIndex — the real folder on disk is NOT touched.{% endif %}"
                               data-confirm-danger>
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-outline btn-error btn-sm gap-1.5 bg-base-100/60"
@@ -255,11 +255,11 @@
                     </div>
                 </div>
                 <div class="mx-4 mb-3 px-3 py-2 rounded-lg bg-base-200/60 font-mono text-xs break-all flex items-center gap-2"
-                     title="{{ s.drive.source_path }}">
-                    <i class="fas fa-folder-open opacity-40 flex-shrink-0"></i>
-                    <span class="flex-1 truncate">{{ s.drive.source_path }}</span>
+                     title="{{ s.drive.repo_url if s.drive.source_kind == 'git' else s.drive.source_path }}">
+                    <i class="fas {{ 'fa-code-branch' if s.drive.source_kind == 'git' else 'fa-folder-open' }} opacity-40 flex-shrink-0"></i>
+                    <span class="flex-1 truncate">{{ s.drive.repo_url if s.drive.source_kind == 'git' else s.drive.source_path }}{% if s.drive.source_kind == 'git' and s.drive.repo_branch %} · {{ s.drive.repo_branch }}{% endif %}</span>
                     <button type="button" class="opacity-50 hover:opacity-100 flex-shrink-0" title="Copy path"
-                            data-path="{{ s.drive.source_path }}"
+                            data-path="{{ s.drive.repo_url if s.drive.source_kind == 'git' else s.drive.source_path }}"
                             onclick="navigator.clipboard.writeText(this.dataset.path);var i=this.querySelector('i');i.className='fas fa-check text-success';var b=this;setTimeout(function(){i.className='fas fa-copy'},1500)">
                         <i class="fas fa-copy"></i>
                     </button>

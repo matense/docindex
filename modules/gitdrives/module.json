@@ -1,0 +1,12 @@
+{
+  "name": "gitdrives",
+  "version": "1.0.0",
+  "description": "Git-backed drives (mirror): clone a repository (GitHub, Azure DevOps Git/TFS Git) into DocIndex and keep it in sync with pull-then-scan. Read-only.",
+  "capabilities": ["routes"],
+  "nav": {"label": "Git drives", "icon": "fa-code-branch", "url": "/"},
+  "help": [
+    "Git drives mirror a remote Git repository (GitHub, Azure DevOps Git, TFS Git — TFVC centralizado não é suportado) as a read-only DocIndex drive: files are indexed and searchable like any synced drive.",
+    "Create one with the repository URL, branch (default: remote HEAD) and, for private repos, a username plus personal access token (stored encrypted). The first sync clones; later syncs pull and re-scan.",
+    "Removing a git drive only deletes DocIndex rows and the local clone cache — the remote repository is never touched."
+  ]
+}

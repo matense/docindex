@@ -182,6 +182,15 @@ def _sync_worker(drive_id, job, app):
             if drive is None:
                 job.finish("cancelled")
                 return
+            # Module-provided sources refresh first (e.g. git pull), then
+            # the regular folder scan runs over the materialized tree.
+            from . import drive_service
+            provider = drive_service.get_drive_source(
+                getattr(drive, "source_kind", None))
+            if provider is not None:
+                error = provider.pre_sync(drive)
+                if error:
+                    raise RuntimeError(error)
             sync_drive(drive, job=job)
             job.finish("done")
         except _SyncCancelled:
@@ -238,6 +247,18 @@ def remove_synced_drive(drive):
         chunk = file_ids[i:i + 500]
         IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
             synchronize_session=False)
+
+    # Module-provided sources clean up their local materialization
+    # (e.g. the git clone cache — the remote is never touched). Runs
+    # before the row delete while drive attributes are still readable.
+    try:
+        from . import drive_service
+        provider = drive_service.get_drive_source(
+            getattr(drive, "source_kind", None))
+        if provider is not None:
+            provider.cleanup(drive)
+    except Exception:
+        current_app.logger.exception("Drive source cleanup failed")
 
     db.session.delete(drive)  # cascades: files -> index/versions, folders
     db.session.commit()

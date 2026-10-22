@@ -42,6 +42,8 @@ class Config:
     UPLOAD_FOLDER = os.path.join(basedir, "uploads", "files")
     THUMBNAIL_FOLDER = os.path.join(basedir, "uploads", "thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "uploads", "versions")
+    # Local checkouts for git-backed drives (gitdrives module).
+    GIT_REPOS_FOLDER = os.path.join(basedir, "uploads", "git-repos")
     # Last-seen copies for writable shared sync drives (outside any sync
     # root). Cap bounds disk use; bigger files skip content history.
     SHADOW_FOLDER = os.path.join(basedir, "uploads", "shadow")
@@ -165,5 +167,6 @@ class TestConfig(Config):
     THUMBNAIL_FOLDER = os.path.join(basedir, "instance", "test_thumbnails")
     VERSIONS_FOLDER = os.path.join(basedir, "instance", "test_versions")
     SHADOW_FOLDER = os.path.join(basedir, "instance", "test_shadow")
+    GIT_REPOS_FOLDER = os.path.join(basedir, "instance", "test_git_repos")
     # Tests point at the bundled example module.
     MODULES_FOLDER = os.path.join(basedir, "modules")

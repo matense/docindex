@@ -13,3 +13,12 @@ DocIndex bundles the AI persona library from
 The personas power the core Behaviors & personas page (`/behaviors`) and the
 chat persona selector. All credit for the personality content goes to the
 Agency Agents community.
+
+## Dulwich — pure-Python Git implementation
+
+DocIndex depends on [dulwich](https://github.com/jelmer/dulwich) (used by
+the optional `gitdrives` module to clone and pull Git repositories with no
+git binary required).
+
+- License: Apache License 2.0 (dual-licensed Apache-2.0 OR GPL-2.0-or-later;
+  DocIndex uses it under the Apache License 2.0)
