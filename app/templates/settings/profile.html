@@ -539,6 +539,10 @@
     const csrfMeta = document.querySelector('meta[name="csrf-token"]');
     const csrf = csrfMeta ? csrfMeta.getAttribute('content') : '';
     let paused = false;
+    // Grace period: completed jobs are deleted from the queue, so a fast
+    // drain can look idle between two polls. Only hide the card after a
+    // few consecutive idle ticks.
+    let idleTicks = 0;
 
     async function tickQueue() {
         if (!document.contains(idle)) return false; // page swapped away
@@ -550,7 +554,8 @@
             paused = s.paused;
             const isActive = s.active > 0;
             const showCard = isActive || (paused && s.total > 0);
-            if (card) card.classList.toggle('hidden', !showCard);
+            idleTicks = showCard ? 0 : idleTicks + 1;
+            if (card) card.classList.toggle('hidden', !showCard && idleTicks >= 3);
             idle.classList.toggle('hidden', isActive || (paused && s.total > 0));
             active.classList.toggle('hidden', !isActive && !(paused && s.total > 0));
             toggle.classList.toggle('hidden', !isActive && !paused);
