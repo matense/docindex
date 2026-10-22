@@ -64,49 +64,61 @@
     </details>
 
     <!-- Appearance -->
-    <div class="glass-panel rounded-2xl px-5 py-4 flex items-center gap-4 flex-wrap">
-        <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
-            <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
-                <i class="fas fa-palette"></i>
-            </span>
-            <div>
-                <h2 class="font-bold leading-tight">Appearance</h2>
-                <p class="text-xs opacity-50">Light is the default</p>
+    <div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-3">
+        <div class="flex items-center gap-4 flex-wrap">
+            <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
+                <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-palette"></i>
+                </span>
+                <div>
+                    <h2 class="font-bold leading-tight">Appearance</h2>
+                    <p class="text-xs opacity-50">Light is the default</p>
+                </div>
+            </div>
+            <div class="ai-mode-switch">
+                {% for value, label, icon in [("light", "Light", "fa-sun"), ("dark", "Dark", "fa-moon")] %}
+                <form method="POST" action="{{ url_for('settings.profile_theme') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="theme" value="{{ value }}">
+                    <button type="submit" onclick="document.documentElement.dataset.theme='{{ value }}'"
+                            class="ai-mode-btn {{ 'active' if current_user.theme == value }}"
+                            title="Switch to {{ label }} theme">
+                        <i class="fas {{ icon }}"></i><span>{{ label }}</span>
+                    </button>
+                </form>
+                {% endfor %}
             </div>
         </div>
-        <div class="ai-mode-switch">
-            {% for value, label, icon in [("light", "Light", "fa-sun"), ("dark", "Dark", "fa-moon")] %}
-            <form method="POST" action="{{ url_for('settings.profile_theme') }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="theme" value="{{ value }}">
-                <button type="submit" onclick="document.documentElement.dataset.theme='{{ value }}'"
-                        class="ai-mode-btn {{ 'active' if current_user.theme == value }}"
-                        title="Switch to {{ label }} theme">
-                    <i class="fas {{ icon }}"></i><span>{{ label }}</span>
-                </button>
-            </form>
-            {% endfor %}
-        </div>
-    </div>
-
-    <!-- Static background (no animation) -->
-    <div class="glass-panel rounded-2xl px-5 py-4 flex items-center gap-4 flex-wrap">
-        <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
-            <span class="w-9 h-9 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center flex-shrink-0">
-                <i class="fas fa-image"></i>
-            </span>
-            <div>
-                <h2 class="font-bold leading-tight">Static background</h2>
-                <p class="text-xs opacity-50">Disables the animated background — easier on screen-sharing codecs</p>
+        <div class="flex items-center gap-4 flex-wrap border-t border-base-content/10 pt-3">
+            <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
+                <span class="w-9 h-9 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-image"></i>
+                </span>
+                <div>
+                    <h2 class="font-bold leading-tight text-sm">Static background</h2>
+                    <p class="text-xs opacity-50">Flat background, no animation — easier on screen-sharing codecs</p>
+                </div>
+            </div>
+            <div class="ai-mode-switch">
+                <form method="POST" action="{{ url_for('settings.profile_background') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" onclick="document.getElementById('app-body').classList.remove('static-background')"
+                            class="ai-mode-btn {{ 'active' if not current_user.static_background }}"
+                            title="Animated background">
+                        <i class="fas fa-film"></i><span>Animated</span>
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('settings.profile_background') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="enabled" value="on">
+                    <button type="submit" onclick="document.getElementById('app-body').classList.add('static-background')"
+                            class="ai-mode-btn {{ 'active' if current_user.static_background }}"
+                            title="Static background">
+                        <i class="fas fa-image"></i><span>Static</span>
+                    </button>
+                </form>
             </div>
         </div>
-        <form method="POST" action="{{ url_for('settings.profile_background') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="checkbox" name="enabled" class="toggle toggle-success"
-                   {{ 'checked' if current_user.static_background }}
-                   title="Static background on/off"
-                   onchange="document.getElementById('app-body').classList.toggle('static-background', this.checked); this.form.submit()">
-        </form>
     </div>
 
     <!-- Drive summary -->
