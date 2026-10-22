@@ -56,10 +56,12 @@ def test_profile_sections_order_and_collapsible_drives(auth_client):
     }, content_type="multipart/form-data", follow_redirects=True)
     html = auth_client.get("/settings/profile").data.decode()
     order = ["account-card", "Display", "Behaviors &amp; personas",
-             "AI usage", "Indexing queue", "Your drives",
-             ">Trash<", "Error logs", "Administration"]
+             "AI usage", "Indexing queue", "Your drives", ">Trash<"]
     positions = [html.index(m) for m in order]
     assert positions == sorted(positions)
+    # Admin-only sections come last and are hidden for regular users.
+    assert "Error logs" not in html
+    assert "Administration" not in html
     # Drive groups are collapsible with memory; queue card hides when idle.
     assert "profile-drive-group" in html
     assert 'id="iq-card"' in html
