@@ -78,6 +78,12 @@ def _make_thumbnail(path, stored_name):
                 img = img.convert("RGB")
             img.save(thumb, "PNG")
         return True
+    except Image.UnidentifiedImageError:
+        # Not actually an image (e.g. renamed extension) — expected case,
+        # not an error: just skip the thumbnail quietly.
+        current_app.logger.warning("Skipping thumbnail (not an image): %s",
+                                   stored_name)
+        return False
     except Exception:
         current_app.logger.exception("Failed to create thumbnail for %s", stored_name)
         return False
