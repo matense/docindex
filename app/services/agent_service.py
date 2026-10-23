@@ -1492,9 +1492,13 @@ def _complete(messages, tools, config, block=False):
             # Expose deltas to the caller as chat events.
             yield ("thinking_token" if kind == "reasoning" else "answer_token",
                    payload)
-    except ai_service.AIError:
+    except ai_service.AIError as exc:
         if got_delta:
             raise  # mid-stream failure: the route reports it as an error event
+        # A 404 means the model/endpoint does not exist on the provider —
+        # retrying non-streaming would fail identically, so surface it now.
+        if getattr(exc, "status_code", None) == 404:
+            raise
         current_app.logger.warning(
             "AI streaming failed before any delta; retrying non-streaming.")
         return ai_service.chat_completion(messages, tools=tools, config=config,

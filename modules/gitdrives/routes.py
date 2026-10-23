@@ -81,13 +81,14 @@ def create():
     db.session.add(drive)
     db.session.commit()
     # The checkout dir doubles as source_path: the regular folder scan
-    # indexes it like any synced drive. Clone + first scan run in the
-    # background worker (pre_sync materializes, then sync_drive scans),
-    # with live progress in the sync widget — big repos would otherwise
-    # hang this request.
+    # indexes it like any synced drive.
     drive.source_path = git_source.cache_path(drive.id)
     db.session.commit()
-
+    # Clone + first scan run in the background (the sync worker calls
+    # provider.pre_sync, which materializes the checkout for git drives).
+    # This keeps the request fast even for large repositories — the floating
+    # sync widget shows live progress instead of the page hanging on the
+    # synchronous clone.
     job = sync_service.start_sync(drive)
     if job.state == "error":
         flash(f'Git drive "{drive.name}" could not be cloned: '
@@ -99,6 +100,7 @@ def create():
         flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
               f'imported, {s["skipped"]} skipped.', "success")
         return redirect(url_for("drive.index"))
+    _flash_lfs_warning(drive)
     flash(f'Git drive "{drive.name}" is cloning — follow the progress '
           f"in the sync widget; files appear as they land.", "success")
     return redirect(url_for("drive.index"))

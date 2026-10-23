@@ -854,7 +854,10 @@ raising (background tasks throttle themselves).
 - `("thinking_token", text)` / `("answer_token", text)` — live token deltas
   (only when `AI_STREAMING` is on; see "AI chat streaming"). Model calls go
   through the internal `_complete()` helper, which streams when enabled and
-  falls back once to non-streaming if the provider fails before any delta.
+  falls back once to non-streaming if the provider fails before any delta —
+  except for HTTP 404 (model/endpoint not found), where the retry would fail
+  identically, so the error is surfaced directly (the chat route maps it to a
+  friendly "check the model in AI Settings" message).
 - `("thinking", text)` — the model's intermediate reasoning (message content
   alongside tool calls, or a `reasoning_content`/`reasoning` field from
   Kimi/DeepSeek-style thinking models).
@@ -1220,7 +1223,12 @@ tool + table).
 - **Routes** — module blueprints are always mounted under `/m/<name>/`
   with a `before_request` guard that forces login and 404s while the
   module is disabled (Flask forbids registering blueprints after serving
-  requests, so enable/disable governs exposure, not registration).
+  requests, so enable/disable governs exposure, not registration). Core
+  templates that reference module assets (e.g. the automation CSS in the
+  drive page, the automation background-runs widget in `base.html`) gate
+  them on the module's enabled state (injected via the context processor as
+  `automation_enabled` / `gitdrives_enabled`), so a disabled module never
+  produces 404s for its static files or polling endpoints.
 - **Enable/disable** — persisted in the `module_states` table, toggled by
   admins on `/settings/modules` (linked from the profile dropdown as
   "Manage modules"). Effective immediately: route guards and tool
@@ -1256,8 +1264,12 @@ tool + table).
   clone a repo into a local checkout and pull-then-scan on every sync
   (pure-Python dulwich, no git binary). Registers the `git` source via
   `drive_service.register_drive_source()`, so the core scan/index/trash
-  machinery works unchanged. LFS is not fetched — LFS-tracked files stay
-  as pointer text (flagged wherever detected).
+  machinery works unchanged. Creating a drive validates the remote (fast
+  `ls-remote`), persists the drive row and starts the sync in the background
+  — the sync worker's `pre_sync` performs the clone, so large repositories
+  never block the HTTP request; the floating sync widget shows live progress.
+  LFS is not fetched — LFS-tracked files stay as pointer text (flagged
+  wherever detected).
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
   (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`

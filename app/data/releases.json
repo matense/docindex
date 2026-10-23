@@ -1,6 +1,29 @@
 {
   "releases": [
     {
+      "version": "0.1.6",
+      "date": "2026-10-23",
+      "title": "Smarter AI errors, background git clones, quieter modules",
+      "sections": [
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Cloning a Git repository no longer blocks the page: the drive is created instantly and the clone + first scan run in the background, with the floating sync widget showing live progress — large repositories no longer leave the top bar spinning forever.",
+            "When the AI server can't find the configured model (HTTP 404), the chat now explains that the connection is fine but the model/base URL needs checking in Settings → AI, instead of retrying a doomed non-streaming call and showing a cryptic provider error."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "A disabled Automation module no longer spams the browser console with 404s: its stylesheet and background-runs widget are only loaded while the module is enabled.",
+            "The non-streaming fallback no longer fires for HTTP 404 (model not found) — the error is surfaced directly instead of making a second, identical failing request."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.5",
       "date": "2026-10-22",
       "title": "Organize everything: file mobility, favorites, notebook folders",

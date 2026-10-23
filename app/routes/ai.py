@@ -708,6 +708,15 @@ def chat():
                        "context window. Use the Summarize & reset button to "
                        "compact it, start a new conversation, or raise the "
                        "prompt budget in AI Settings.")
+            elif getattr(exc, "status_code", None) == 404:
+                # The model/endpoint does not exist on the provider. The
+                # connection itself is fine — the configured model is not.
+                msg = ("Your AI connection is configured, but the server "
+                       "could not find the configured model (HTTP 404). "
+                       "The model may not be available on the server, or the "
+                       "base URL may be incorrect. Go to Settings → AI, "
+                       "check the base URL and model (use the Test button to "
+                       "see the available models), and try again.")
             yield json.dumps({"type": "error", "error": msg},
                              ensure_ascii=False) + "\n"
         except Exception as exc:
