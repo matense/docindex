@@ -23,6 +23,60 @@ _LFS_MAX_FILES = 3000
 _LFS_MAX_BYTES = 2048
 _LFS_MAX_HITS = 50
 
+# Progress lines look like "receiving objects:  45% (123/274), 1.2 MiB".
+_PROGRESS_PCT = re.compile(r"(\d+)%")
+_PROGRESS_COUNT = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+def parse_progress_line(line):
+    """Split a dulwich progress line into (percent|None, text).
+
+    Prefers the explicit N% figure; falls back to an N/M count scaled to
+    100. Returns (None, text) when neither is present (phase text only).
+    """
+    text = (line or "").strip()
+    m = _PROGRESS_PCT.search(text)
+    if m:
+        pct = max(0, min(100, int(m.group(1))))
+        return pct, text
+    m = _PROGRESS_COUNT.search(text)
+    if m:
+        have, total = int(m.group(1)), int(m.group(2))
+        if total > 0:
+            return max(0, min(100, round(100 * have / total))), text
+    return None, text
+
+
+class _ProgressCapture:
+    """Binary errstream sink that forwards dulwich's carriage-return
+    progress lines to an on_progress(percent|None, text) callback."""
+
+    def __init__(self, on_progress):
+        self._text = ""
+        self._last = None
+        self._on_progress = on_progress
+
+    def write(self, data):
+        if isinstance(data, (bytes, bytearray)):
+            data = bytes(data).decode("utf-8", "replace")
+        self._text += str(data)
+        chunk = self._text.replace("\r", "\n").split("\n")
+        line = next((m.strip() for m in reversed(chunk) if m.strip()), "")
+        if line and line != self._last:
+            self._last = line
+            try:
+                percent, _text = parse_progress_line(line)
+                self._on_progress(percent, line.strip())
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
 
 def remove_tree(path, tries=5):
     """Best-effort recursive delete, tolerant of Windows file locks held
@@ -144,20 +198,28 @@ def _current_branch(path):
     return None
 
 
-def _checkout_head_raw(path):
+def _checkout_head_raw(path, on_progress=None):
     """Write the worktree from HEAD blobs directly (no filters).
 
     Dulwich would otherwise shell out to git-lfs for LFS-tracked files,
     which hangs or fails without an LFS server. Raw checkout keeps files
     exactly as committed (real content or pointer text). Stale files and
     empty dirs are removed, so the worktree always mirrors HEAD.
+    on_progress(done, total) is called every 200 files.
     """
     from dulwich.object_store import iter_tree_contents
     from dulwich.repo import Repo
     with Repo(path) as repo:
         commit = repo[repo.refs[b"HEAD"]]
+        entries = list(iter_tree_contents(repo.object_store, commit.tree))
+        total = len(entries)
+        if on_progress is not None:
+            try:
+                on_progress(0, total)
+            except Exception:
+                pass
         written = set()
-        for entry in iter_tree_contents(repo.object_store, commit.tree):
+        for i, entry in enumerate(entries):
             rel = os.path.normpath(entry.path.decode())
             if rel.startswith(".."):
                 continue
@@ -166,45 +228,87 @@ def _checkout_head_raw(path):
             with open(full, "wb") as fh:
                 fh.write(repo[entry.sha].data)
             written.add(rel)
-        for dirpath, dirnames, filenames in os.walk(path, topdown=True):
-            if ".git" in dirnames:
-                dirnames.remove(".git")
-            for filename in filenames:
-                full = os.path.join(dirpath, filename)
-                if os.path.normpath(os.path.relpath(full, path)) not in written:
-                    try:
-                        os.remove(full)
-                    except OSError:
-                        pass
-        for dirpath, dirnames, filenames in os.walk(path, topdown=False):
-            if ".git" in dirpath.split(os.sep):
-                continue
-            if not dirnames and not filenames and dirpath != path:
+            if on_progress is not None and (i + 1) % 200 == 0:
                 try:
-                    os.rmdir(dirpath)
+                    on_progress(i + 1, total)
+                except Exception:
+                    pass
+    for dirpath, dirnames, filenames in os.walk(path, topdown=True):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for filename in filenames:
+            full = os.path.join(dirpath, filename)
+            if os.path.normpath(os.path.relpath(full, path)) not in written:
+                try:
+                    os.remove(full)
                 except OSError:
                     pass
+    for dirpath, dirnames, filenames in os.walk(path, topdown=False):
+        if ".git" in dirpath.split(os.sep):
+            continue
+        if not dirnames and not filenames and dirpath != path:
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass
+    if on_progress is not None:
+        try:
+            on_progress(total, total)
+        except Exception:
+            pass
     return written
 
 
-def clone_repo(url, target, branch=None, username=None, password=None):
+def _capture(label, on_progress):
+    """Wrap an on_progress callback with a phase label.
+
+    Dulwich calls it as on_progress(percent|None, text); the wrapper
+    prefixes the phase name unless the text already says it.
+    """
+    if on_progress is None:
+        return None
+
+    def _cb(percent, text):
+        text = text or ""
+        if label.lower() not in text.lower():
+            text = f"{label}: {text}" if text else label
+        try:
+            on_progress(percent, text)
+        except Exception:
+            pass
+
+    return _cb
+
+
+def clone_repo(url, target, branch=None, username=None, password=None,
+               on_progress=None):
     """Clone (shallow) and check out a branch. Returns error str or None."""
     kwargs = {}
     if password:
         kwargs = {"username": username, "password": password}
+    capture = _ProgressCapture(_capture("Cloning", on_progress)) if on_progress else None
     try:
         porcelain.clone(url, target, depth=1,
-                        branch=branch or None, checkout=False, **kwargs)
+                        branch=branch or None, checkout=False,
+                        errstream=capture, **kwargs)
         _neuter_lfs_filters(target)
-        _checkout_head_raw(target)
+
+        def _checkout_progress(done, total):
+            if on_progress is None:
+                return
+            pct = round(100 * done / total) if total else None
+            on_progress(pct, f"Checking out {done}/{total} files")
+
+        _checkout_head_raw(target, on_progress=_checkout_progress)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user
         remove_tree(target)
         return str(exc)[:500]
     return None
 
 
-def pull_repo(path, url=None, branch=None, username=None, password=None):
-    """Fetch remote changes and fast-forward the local branch, then
+def pull_repo(path, url=None, branch=None, username=None, password=None,
+              on_progress=None):
+    """Fetch remote changes, fast-forward the local branch, then
     re-materialize the worktree without filters. Error str or None."""
     from dulwich.repo import Repo
     _neuter_lfs_filters(path)  # also repairs checkouts made before this
@@ -212,8 +316,10 @@ def pull_repo(path, url=None, branch=None, username=None, password=None):
     if password:
         kwargs = {"username": username, "password": password}
     try:
+        capture = _ProgressCapture(_capture("Pulling", on_progress)) if on_progress else None
         if url:
-            result = porcelain.fetch(path, url, **kwargs)
+            result = porcelain.fetch(path, url, depth=1,
+                                     errstream=capture, **kwargs)
             br = branch.encode() if isinstance(branch, str) else branch
             if not br:
                 current = _current_branch(path)
@@ -227,8 +333,15 @@ def pull_repo(path, url=None, branch=None, username=None, password=None):
             with Repo(path) as repo:
                 repo.refs[want] = result.refs[want]
         else:
-            porcelain.pull(path, **kwargs)
-        _checkout_head_raw(path)
+            porcelain.pull(path, errstream=capture, **kwargs)
+
+        def _checkout_progress(done, total):
+            if on_progress is None:
+                return
+            pct = round(100 * done / total) if total else None
+            on_progress(pct, f"Checking out {done}/{total} files")
+
+        _checkout_head_raw(path, on_progress=_checkout_progress)
     except Exception as exc:  # noqa: BLE001 - surfaced as sync error
         return str(exc)[:500]
     return None
@@ -255,7 +368,7 @@ class GitDriveSource:
                 return f"Branch '{branch}' not found on the remote."
         return None
 
-    def materialize(self, drive):
+    def materialize(self, drive, on_progress=None):
         target = cache_path(drive.id)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if os.path.exists(os.path.join(target, ".git")):
@@ -266,6 +379,7 @@ class GitDriveSource:
             remove_tree(target)
         return clone_repo(drive.repo_url, target,
                           branch=(drive.repo_branch or None),
+                          on_progress=on_progress,
                           **_auth_kwargs(drive))
 
     @staticmethod
@@ -278,14 +392,14 @@ class GitDriveSource:
         except Exception:
             return None
 
-    def pre_sync(self, drive):
+    def pre_sync(self, drive, on_progress=None):
         target = cache_path(drive.id)
         if not os.path.exists(os.path.join(target, ".git")):
-            error = self.materialize(drive)
+            error = self.materialize(drive, on_progress=on_progress)
             if error:
                 return error
         return pull_repo(target, url=drive.repo_url,
-                         branch=drive.repo_branch,
+                         branch=drive.repo_branch, on_progress=on_progress,
                          **_auth_kwargs(drive))
 
     def cleanup(self, drive):

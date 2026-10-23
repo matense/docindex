@@ -150,6 +150,49 @@ def test_provider_registered(app):
     assert drive_service.get_drive_source("nope") is None
 
 
+def test_parse_progress_line():
+    from modules.gitdrives import source as gs
+    assert gs.parse_progress_line(
+        "receiving objects:  45% (123/274), 1.2 MiB | 500 KiB/s") == (
+            45, "receiving objects:  45% (123/274), 1.2 MiB | 500 KiB/s")
+    assert gs.parse_progress_line(
+        "resolving deltas: 3/10 done") == (
+            30, "resolving deltas: 3/10 done")
+    assert gs.parse_progress_line("counting objects: 5, done") == (
+        None, "counting objects: 5, done")
+    assert gs.parse_progress_line("") == (None, "")
+
+
+def test_clone_reports_progress(auth_client, app, tmp_path, enabled):
+    from dulwich import porcelain
+    from modules.gitdrives import source as gs
+
+    seen = []
+    repo = str(tmp_path / "big")
+    os.makedirs(repo)
+    porcelain.init(repo)
+    for i in range(3):
+        with open(os.path.join(repo, f"f{i}.txt"), "w") as fh:
+            fh.write("x" * 1000)
+    porcelain.add(repo, paths=[f"f{i}.txt" for i in range(3)])
+    porcelain.commit(repo, message=b"big", author=b"T <t@t>",
+                     committer=b"T <t@t>")
+    with app.app_context():
+        from app.models import Drive
+        from app.extensions import db
+        drive = Drive(name="P", user_id=1, source_kind="git",
+                      repo_url=repo)
+        db.session.add(drive)
+        db.session.commit()
+        target = gs.cache_path(drive.id)
+        gs.remove_tree(target)  # isolation: ids restart per test
+    err = gs.clone_repo(repo, target,
+                        on_progress=lambda p, t: seen.append((p, t)))
+    assert err is None
+    assert seen, "expected progress callbacks during clone"
+    assert any(p == 100 for p, _ in seen)
+
+
 def test_no_dock_entry_but_dropdown_link_when_enabled(auth_client, app,
                                                      enabled):
     html = auth_client.get("/").data.decode()

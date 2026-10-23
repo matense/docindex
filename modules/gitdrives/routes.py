@@ -81,25 +81,30 @@ def create():
     db.session.add(drive)
     db.session.commit()
     # The checkout dir doubles as source_path: the regular folder scan
-    # indexes it like any synced drive.
+    # indexes it like any synced drive. Clone + first scan run in the
+    # background worker (pre_sync materializes, then sync_drive scans),
+    # with live progress in the sync widget — big repos would otherwise
+    # hang this request.
     drive.source_path = git_source.cache_path(drive.id)
     db.session.commit()
 
-    error = provider.materialize(drive)
-    if error:
-        db.session.delete(drive)
-        db.session.commit()
-        flash(f"Clone failed: {error}", "error")
-        return redirect(url_for("gitdrives.index"))
-
     job = sync_service.start_sync(drive)
+    if job.state == "error":
+        flash(f'Git drive "{drive.name}" could not be cloned: '
+              f"{job.error or 'unknown error'}.", "error")
+        return redirect(url_for("gitdrives.index"))
     if job.state == "done":
         s = job.stats
+        _flash_lfs_warning(drive)
         flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
               f'imported, {s["skipped"]} skipped.', "success")
-    else:
-        flash(f'Git drive "{drive.name}" created — cloning finished, '
-              "the first scan is running in the background.", "success")
+        return redirect(url_for("drive.index"))
+    flash(f'Git drive "{drive.name}" is cloning — follow the progress '
+          f"in the sync widget; files appear as they land.", "success")
+    return redirect(url_for("drive.index"))
+
+
+def _flash_lfs_warning(drive):
     total, sample = git_source.find_lfs_pointers(
         git_source.cache_path(drive.id))
     if total:
@@ -109,7 +114,6 @@ def create():
               f"pointer text (or be skipped when the extension is not "
               f"indexed). Search sees only pointer metadata, not the real "
               f"content.", "warning")
-    return redirect(url_for("drive.index"))
 
 
 @bp.get("/api/check")

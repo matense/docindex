@@ -188,8 +188,24 @@ def _sync_worker(drive_id, job, app):
             provider = drive_service.get_drive_source(
                 getattr(drive, "source_kind", None))
             if provider is not None:
-                error = provider.pre_sync(drive)
+                def _git_progress(percent, text):
+                    # Percent-capable phases drive the bar; text-only
+                    # updates keep the current-file line alive.
+                    if percent is not None:
+                        job.total = 100
+                        job.processed = max(0, min(100, int(percent)))
+                    job.current = text
+                error = provider.pre_sync(drive, on_progress=_git_progress)
                 if error:
+                    # Clone never completed (no files indexed): remove the
+                    # empty row so no contentless drive lingers. The widget
+                    # still shows the job error with the reason.
+                    has_files = (db.session.query(StoredFile.id)
+                                 .filter_by(drive_id=drive.id).first()
+                                 is not None)
+                    if not has_files:
+                        db.session.delete(drive)
+                        db.session.commit()
                     raise RuntimeError(error)
             sync_drive(drive, job=job)
             job.finish("done")
