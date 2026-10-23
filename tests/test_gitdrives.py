@@ -165,6 +165,7 @@ def test_parse_progress_line():
 
 def test_clone_reports_progress(auth_client, app, tmp_path, enabled):
     from dulwich import porcelain
+
     from modules.gitdrives import source as gs
 
     seen = []
@@ -178,8 +179,8 @@ def test_clone_reports_progress(auth_client, app, tmp_path, enabled):
     porcelain.commit(repo, message=b"big", author=b"T <t@t>",
                      committer=b"T <t@t>")
     with app.app_context():
-        from app.models import Drive
         from app.extensions import db
+        from app.models import Drive
         drive = Drive(name="P", user_id=1, source_kind="git",
                       repo_url=repo)
         db.session.add(drive)
