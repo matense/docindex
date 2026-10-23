@@ -15,7 +15,7 @@ MIGRATIONS_DIR = os.path.join(
 
 # App version — bump on every release and tag it (see CONTRIBUTING.md);
 # shown in the user menu and on the release notes page (/settings/releases).
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 
 # Aggregate module migrations (independent alembic roots under
 # modules/<name>/migrations/versions) into every flask-migrate command.
@@ -185,6 +185,7 @@ def create_app(config_class=Config):
                     "module_nav": module_service.nav_items(),
                     "user_drives": drive_service.list_drives(cu),
                     "gitdrives_enabled": module_service.is_enabled("gitdrives"),
+                    "automation_enabled": module_service.is_enabled("automation"),
                 }
             cached = _g._docindex_globals
             return {
@@ -195,6 +196,7 @@ def create_app(config_class=Config):
                 "module_nav": cached["module_nav"],
                 "user_drives": cached["user_drives"],
                 "gitdrives_enabled": cached["gitdrives_enabled"],
+                "automation_enabled": cached["automation_enabled"],
             }
         return {
             "ai_enabled": False,
@@ -204,6 +206,7 @@ def create_app(config_class=Config):
             "module_nav": [],
             "user_drives": [],
             "gitdrives_enabled": False,
+            "automation_enabled": False,
         }
 
     return app

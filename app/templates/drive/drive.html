@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block head %}
+{% if automation_enabled %}
 <link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=6">
+{% endif %}
 {% endblock %}
 {% block title %}{{ folder.name if folder else (drive.name if drive else 'My Drive') }} - DocIndex{% endblock %}
 

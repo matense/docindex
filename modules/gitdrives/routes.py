@@ -85,30 +85,20 @@ def create():
     drive.source_path = git_source.cache_path(drive.id)
     db.session.commit()
 
-    error = provider.materialize(drive)
-    if error:
-        db.session.delete(drive)
-        db.session.commit()
-        flash(f"Clone failed: {error}", "error")
-        return redirect(url_for("gitdrives.index"))
-
+    # Clone + first scan run in the background (the sync worker calls
+    # provider.pre_sync, which materializes the checkout for git drives).
+    # This keeps the request fast even for large repositories — the floating
+    # sync widget shows live progress instead of the page hanging on the
+    # synchronous clone.
     job = sync_service.start_sync(drive)
     if job.state == "done":
         s = job.stats
         flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
               f'imported, {s["skipped"]} skipped.', "success")
     else:
-        flash(f'Git drive "{drive.name}" created — cloning finished, '
-              "the first scan is running in the background.", "success")
-    total, sample = git_source.find_lfs_pointers(
-        git_source.cache_path(drive.id))
-    if total:
-        shown = ", ".join(sample[:3]) + ("…" if total > 3 else "")
-        flash(f"Warning: this repository uses Git LFS, which is not "
-              f"fetched — {total} file(s) ({shown}) will appear as small "
-              f"pointer text (or be skipped when the extension is not "
-              f"indexed). Search sees only pointer metadata, not the real "
-              f"content.", "warning")
+        flash(f'Git drive "{drive.name}" created — cloning and indexing '
+              "are running in the background. Watch the sync progress "
+              "widget for status.", "success")
     return redirect(url_for("drive.index"))
 
 

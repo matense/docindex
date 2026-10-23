@@ -690,6 +690,26 @@ def test_agent_falls_back_when_streaming_fails_before_deltas(app, user):
     assert plain.call_count == 1
 
 
+def test_agent_no_fallback_when_streaming_404(app, user):
+    # A 404 means the model/endpoint does not exist on the provider — the
+    # non-streaming retry would fail identically, so it must not be attempted.
+    app.config["AI_STREAMING"] = True
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion_stream",
+                   side_effect=agent_service.ai_service.AIError(
+                       "AI backend returned 404: No matching route found.",
+                       status_code=404)), \
+             patch("app.services.ai_service.chat_completion") as plain:
+            with pytest.raises(agent_service.ai_service.AIError) as excinfo:
+                list(agent_service.run_agent_events(
+                    user_obj, [{"role": "user", "content": "hello"}]))
+
+    assert plain.call_count == 0  # no non-streaming retry on 404
+    assert excinfo.value.status_code == 404
+
+
 def test_agent_midstream_failure_propagates(app, user):
     app.config["AI_STREAMING"] = True
 

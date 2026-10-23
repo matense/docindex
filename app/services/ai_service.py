@@ -10,7 +10,16 @@ from ..models import AIConnection
 
 
 class AIError(Exception):
-    """Raised when the AI backend is unreachable or returns an error."""
+    """Raised when the AI backend is unreachable or returns an error.
+
+    ``status_code`` carries the HTTP status when the failure came from a
+    non-200 provider response (e.g. 404 model-not-found, 429 rate limit),
+    so callers can react to specific failures instead of parsing the message.
+    """
+
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 # Sliding-window rate limiter: rate_key -> deque of request timestamps.
@@ -199,9 +208,11 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
         raise AIError(
             "The provider's rate limit was hit (HTTP 429)"
             + (f" — retry in ~{retry}s." if retry else ".")
-            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.")
+            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.",
+            status_code=429)
     if resp.status_code != 200:
-        raise AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}")
+        raise AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}",
+                      status_code=resp.status_code)
 
     try:
         data = resp.json()
@@ -267,11 +278,13 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
         raise AIError(
             "The provider's rate limit was hit (HTTP 429)"
             + (f" — retry in ~{retry}s." if retry else ".")
-            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.")
+            + " Lower your request rate or adjust the connection's requests/minute limit in AI Settings.",
+            status_code=429)
     if resp.status_code != 200:
         excerpt = resp.text[:300]
         resp.close()
-        raise AIError(f"AI backend returned {resp.status_code}: {excerpt}")
+        raise AIError(f"AI backend returned {resp.status_code}: {excerpt}",
+                      status_code=resp.status_code)
 
     content_parts = []
     reasoning_parts = []
