@@ -1,6 +1,12 @@
 {
   "releases": [
     {
+      "version": "0.1.7",
+      "date": "2026-10-25",
+      "title": "In development",
+      "sections": []
+    },
+    {
       "version": "0.1.6",
       "date": "2026-10-23",
       "title": "Smarter AI errors, background git clones, quieter modules",
