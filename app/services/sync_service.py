@@ -426,7 +426,8 @@ def _index_batch(file_ids, app):
 def _count_files(root):
     """Fast pre-pass: how many files will be scanned (for the % progress)."""
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             if os.path.islink(path):
@@ -597,7 +598,8 @@ def sync_drive(drive, job=None):
     seen_files, needed_dirs = set(), set()
     adds, updates, thumbnails = [], [], []
 
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir != ".":
             needed_dirs.add(rel_dir)

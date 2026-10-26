@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Git Sync - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full pb-32">
+    <h1 class="text-2xl font-bold"><i class="fas fa-code-branch mr-2"></i>Git Sync</h1>
+    <div class="alert alert-warning mt-4" role="status">
+        <i class="fas fa-flask"></i>
+        <span>Preview: local repositories, change review and read-only indexing. Remote clone, commit, push and merge are not available yet.</span>
+    </div>
+    <section class="py-6 border-b border-base-content/10">
+        <h2 class="text-lg font-semibold mb-3">Connect local repository</h2>
+        <form method="POST" action="{{ url_for('gitsync.connect') }}" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="form-control sm:col-span-2">
+                <span class="label-text mb-1">Repository folder on the server</span>
+                <input class="input input-bordered w-full" name="path" required placeholder="C:\Repos\project or /srv/repos/project">
+            </label>
+            <label class="form-control">
+                <span class="label-text mb-1">Name</span>
+                <input class="input input-bordered w-full" name="name" maxlength="120">
+            </label>
+            <label class="form-control">
+                <span class="label-text mb-1">Preferred Git account</span>
+                <input class="input input-bordered w-full" name="account" list="gitsync-accounts" maxlength="120" placeholder="System default">
+                <datalist id="gitsync-accounts">
+                    {% for account in accounts %}<option value="{{ account }}">{% endfor %}
+                </datalist>
+            </label>
+            <div class="text-sm opacity-70 sm:col-span-2">Account preference only; no sign-in or credential validation is performed. Listed accounts come from Git Credential Manager (GitHub). Azure DevOps account names can be entered manually.</div>
+            <div class="sm:col-span-2"><button class="btn btn-primary" type="submit"><i class="fas fa-link"></i>Connect repository</button></div>
+        </form>
+    </section>
+    <section class="py-6">
+        <h2 class="text-lg font-semibold mb-3">Repositories</h2>
+        {% for repository in repositories %}
+        <div class="flex flex-wrap gap-3 items-center py-4 border-b border-base-content/10">
+            <div class="min-w-0 flex-1">
+                <a class="link font-semibold" href="{{ url_for('gitsync.detail', repository_id=repository.id) }}">{{ repository.name }}</a>
+                <div class="text-sm opacity-60 break-all">{{ repository.path }}</div>
+            </div>
+            <span class="badge badge-outline">{{ repository.account or 'System default' }}</span>
+        </div>
+        {% else %}<p class="text-sm opacity-60">No repositories connected.</p>{% endfor %}
+    </section>
+</div>
+{% endblock %}

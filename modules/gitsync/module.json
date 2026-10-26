@@ -1,0 +1,7 @@
+{
+  "name": "gitsync",
+  "version": "0.1.0",
+  "description": "Git Sync: connect local Git repositories, inspect changes and review differences before synchronizing.",
+  "capabilities": ["routes", "models"],
+  "nav": {"label": "Git Sync", "icon": "fa-code-branch", "url": "/"}
+}

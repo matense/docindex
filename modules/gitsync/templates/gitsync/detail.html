@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}{{ repository.name }} - Git Sync{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto w-full pb-32">
+    <a class="link text-sm" href="{{ url_for('gitsync.index') }}"><i class="fas fa-arrow-left"></i> Git Sync</a>
+    <header class="flex flex-wrap gap-3 items-center py-4">
+        <h1 class="text-2xl font-bold break-all flex-1 min-w-0">{{ repository.name }}</h1>
+        <a class="btn btn-sm btn-ghost" title="Refresh repository status" href="{{ url_for('gitsync.detail', repository_id=repository.id, basis=basis) }}"><i class="fas fa-arrows-rotate"></i>Refresh</a>
+        <form method="POST" action="{{ url_for('gitsync.scan', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-magnifying-glass"></i>Index local files</button>
+        </form>
+        {% if repository.drive %}
+        <form method="POST" action="{{ url_for('drive.select_drive', drive_id=repository.drive_id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm" type="submit"><i class="fas fa-folder-open"></i>Open drive</button>
+        </form>
+        {% endif %}
+    </header>
+    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 py-4 border-y border-base-content/10 text-sm">
+        <div><dt class="opacity-60">Folder</dt><dd class="break-all">{{ repository.path }}</dd></div>
+        <div><dt class="opacity-60">Origin</dt><dd class="break-all">{{ state.remote or 'No origin configured' }}</dd></div>
+        <div><dt class="opacity-60">Branch</dt><dd>{{ state.branch }} <span class="font-mono">{{ state.head[:12] }}</span></dd></div>
+        <div><dt class="opacity-60">Commit identity (local Git)</dt><dd class="break-all">{{ state.author_name or 'Not configured' }} {{ state.author_email }}</dd></div>
+        <div><dt class="opacity-60">Preferred authentication account (not verified)</dt><dd>{{ repository.account or 'System default' }}</dd></div>
+        <div><dt class="opacity-60">Upstream (last fetched locally)</dt><dd class="break-all">{{ state.upstream or 'Not configured' }}{% if state.ahead_behind %} / ahead, behind: {{ state.ahead_behind }}{% endif %}</dd></div>
+    </dl>
+    {% if state.conflict_count %}
+    <div class="alert alert-error my-4" role="alert"><i class="fas fa-code-compare"></i><span>{{ state.conflict_count }} unresolved conflict(s). Resolve them in your Git client; Git Sync will not overwrite conflict files.</span></div>
+    {% endif %}
+    <section class="py-5">
+        <h2 class="font-semibold text-lg mb-3">Working tree changes <span class="badge">{{ state.change_count }}</span></h2>
+        <div class="overflow-x-auto">
+            <table class="table table-sm w-full"><thead><tr><th>Status</th><th>File</th></tr></thead><tbody>
+            {% for change in state.changes %}<tr><td class="font-mono whitespace-pre">{{ change.status }}{% if change.conflict %} <span class="badge badge-error">Conflict</span>{% endif %}</td><td class="break-all">{% if change.original %}{{ change.original }} &rarr; {% endif %}{{ change.path }}</td></tr>
+            {% else %}<tr><td colspan="2">Working tree clean.</td></tr>{% endfor %}
+            </tbody></table>
+        </div>
+        {% if state.changes_truncated %}<p class="text-warning text-sm">Showing the first 500 changes.</p>{% endif %}
+    </section>
+    <section class="border-t border-base-content/10 py-5">
+        <div class="flex flex-wrap items-center gap-3 mb-3">
+            <h2 class="font-semibold text-lg flex-1">Tracked file differences</h2>
+            <div class="tabs tabs-boxed" role="tablist">
+                <a role="tab" class="tab {{ 'tab-active' if basis == 'head' }}" href="{{ url_for('gitsync.detail', repository_id=repository.id, basis='head') }}">Last commit</a>
+                {% if repository.baseline %}<a role="tab" class="tab {{ 'tab-active' if basis == 'initial' }}" href="{{ url_for('gitsync.detail', repository_id=repository.id, basis='initial') }}">When connected</a>{% endif %}
+            </div>
+        </div>
+        {% if state.diff %}<pre class="overflow-auto max-h-[36rem] bg-base-200 p-4 rounded text-xs font-mono"><code>{{ state.diff }}</code></pre>
+        {% else %}<p class="text-sm opacity-60">No tracked differences against this reference. Untracked files appear in the list above.</p>{% endif %}
+        {% if state.diff_truncated %}<p class="text-warning text-sm">Diff truncated at 200,000 characters.</p>{% endif %}
+    </section>
+</div>
+{% endblock %}
