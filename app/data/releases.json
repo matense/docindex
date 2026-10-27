@@ -1,6 +1,32 @@
 {
   "releases": [
     {
+      "version": "0.1.7",
+      "date": "2026-10-27",
+      "title": "Git Sync: local commits and safe remote review",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Git Sync connects an existing local repository from Drive > Git Repo, indexes its files and reviews working-tree changes against the last commit or the connection baseline.",
+            "Create local commits from selected files with an explicit message. Git Sync refuses pre-staged changes and unresolved conflicts rather than including unrelated work.",
+            "Fetch upstream changes, review a merge without creating a commit, resolve conflicts per file by keeping the current or incoming version, then explicitly abort or complete the merge locally.",
+            "Push local commits to the configured upstream with an explicit action; commits are never pushed automatically.",
+            "Disconnect stale Git Sync entries and reconnect the same checkout; disconnecting preserves the local folder, Git data, and any linked drive and files."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Remote errors do not display raw Git output or credential data. The saved account is only a username hint for Git's server-side credential manager; the authenticated identity cannot be verified by the generic Git protocol.",
+            "App-created commits and merge commits do not run repository hooks or use GPG signing."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.6",
       "date": "2026-10-23",
       "title": "Smarter AI errors, background git clones, quieter modules",

@@ -1,44 +1,253 @@
 {% extends "base.html" %}
 {% block title %}{{ repository.name }} - Git Sync{% endblock %}
 {% block content %}
-<div class="max-w-6xl mx-auto w-full pb-32">
-    <a class="link text-sm" href="{{ url_for('gitsync.index') }}"><i class="fas fa-arrow-left"></i> Git Sync</a>
-    <header class="flex flex-wrap gap-3 items-center py-4">
-        <h1 class="text-2xl font-bold break-all flex-1 min-w-0">{{ repository.name }}</h1>
+{% macro render_diff(diff) %}
+<div class="text-xs opacity-70 mb-2">
+    Lines prefixed with <span class="diff-del px-1">-</span> exist only in the old version,
+    lines with <span class="diff-add px-1">+</span> only in the new one.
+</div>
+<pre class="diff-view bg-base-200/60 rounded-xl p-4 overflow-x-auto max-h-[36rem] text-sm leading-relaxed">{% for line in diff.splitlines() %}{% if line.startswith('+++') or line.startswith('---') %}<span class="diff-meta">{{ line }}
+</span>{% elif line.startswith('@@') %}<span class="diff-hunk">{{ line }}
+</span>{% elif line.startswith('+') %}<span class="diff-add">{{ line }}
+</span>{% elif line.startswith('-') %}<span class="diff-del">{{ line }}
+</span>{% else %}<span class="diff-ctx">{{ line }}
+</span>{% endif %}{% endfor %}</pre>
+{% endmacro %}
+{% macro render_diff_files(files, group_name) %}
+<div class="flex flex-wrap gap-2 items-center mb-3" data-diff-browser>
+    <label class="form-control flex-1 min-w-48">
+        <span class="label-text text-xs">Find file in diff</span>
+        <input class="input input-bordered input-sm gitsync-diff-search" type="search" placeholder="Filter file paths">
+    </label>
+    <label class="form-control min-w-64 flex-1">
+        <span class="label-text text-xs">Jump to file</span>
+        <select class="select select-bordered select-sm gitsync-diff-navigator" aria-label="Jump to a diff file">
+            {% for file in files %}<option value="{{ loop.index0 }}">{{ file.header }}</option>{% endfor %}
+        </select>
+    </label>
+</div>
+<div class="space-y-2" data-diff-files="{{ group_name }}">
+    {% for file in files %}
+    <details class="gitsync-diff-file border border-base-content/10 rounded-lg" data-diff-path="{{ file.header|lower }}">
+        <summary class="cursor-pointer px-3 py-2 font-mono text-sm break-all">{{ file.header }}</summary>
+        {{ render_diff(file.diff) }}
+    </details>
+    {% endfor %}
+</div>
+{% endmacro %}
+<div class="max-w-6xl mx-auto w-full pb-32 flex flex-col gap-4">
+    {% set drive_stale = not repository.drive or repository.drive.deleted_at is not none or repository.drive.user_id != current_user.id %}
+    <section class="glass-panel rounded-2xl p-4 sm:p-6">
+    <a class="link text-sm inline-flex items-center gap-2 mb-4" href="{{ url_for('gitsync.index') }}"><i class="fas fa-arrow-left"></i> Git Sync</a>
+    <header class="flex flex-col gap-4">
+        <div class="flex flex-wrap gap-3 items-start">
+            <div class="flex-1 min-w-0">
+                <h1 class="text-2xl font-bold break-all">{{ repository.name }}</h1>
+                <p class="text-sm opacity-60 mt-1">Local repository workspace</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                {% if drive_stale %}<span class="badge badge-warning gap-1"><i class="fas fa-link-slash"></i> Drive needs reconnect</span>
+                {% else %}<span class="badge badge-success badge-outline gap-1"><i class="fas fa-circle-check"></i> Drive linked</span>{% endif %}
+                {% if state.merge_in_progress %}<span class="badge badge-warning gap-1"><i class="fas fa-code-merge"></i> Merge review active</span>
+                {% elif state.conflict_count %}<span class="badge badge-error gap-1"><i class="fas fa-triangle-exclamation"></i> {{ state.conflict_count }} conflict{{ 's' if state.conflict_count != 1 }}</span>
+                {% elif state.change_count %}<span class="badge badge-info badge-outline">{{ state.change_count }} working change{{ 's' if state.change_count != 1 }}</span>
+                {% else %}<span class="badge badge-success badge-outline">Working tree clean</span>{% endif %}
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2" aria-label="Repository status">
+            <span class="badge badge-primary badge-outline gap-1"><i class="fas fa-code-branch"></i> {{ state.branch }}</span>
+            <span class="badge badge-ghost font-mono" title="Current commit">{{ state.head[:12] }}</span>
+            {% if state.ahead_behind %}
+            <span class="badge {{ 'badge-info' if state.ahead_behind.ahead else 'badge-ghost' }}">{{ state.ahead_behind.ahead }} ahead</span>
+            <span class="badge {{ 'badge-warning' if state.ahead_behind.behind else 'badge-ghost' }}">{{ state.ahead_behind.behind }} behind</span>
+            <span class="sr-only">ahead {{ state.ahead_behind.ahead }}, behind {{ state.ahead_behind.behind }}</span>
+            {% else %}<span class="badge badge-ghost">Upstream not compared</span>{% endif %}
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
         <a class="btn btn-sm btn-ghost" title="Refresh repository status" href="{{ url_for('gitsync.detail', repository_id=repository.id, basis=basis) }}"><i class="fas fa-arrows-rotate"></i>Refresh</a>
+        {% if drive_stale %}
+        <form method="POST" action="{{ url_for('gitsync.reconnect', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-link"></i>Reconnect drive and index</button>
+        </form>
+        {% else %}
         <form method="POST" action="{{ url_for('gitsync.scan', repository_id=repository.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-magnifying-glass"></i>Index local files</button>
         </form>
-        {% if repository.drive %}
         <form method="POST" action="{{ url_for('drive.select_drive', drive_id=repository.drive_id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="btn btn-sm" type="submit"><i class="fas fa-folder-open"></i>Open drive</button>
         </form>
         {% endif %}
+        </div>
     </header>
-    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 py-4 border-y border-base-content/10 text-sm">
-        <div><dt class="opacity-60">Folder</dt><dd class="break-all">{{ repository.path }}</dd></div>
-        <div><dt class="opacity-60">Origin</dt><dd class="break-all">{{ state.remote or 'No origin configured' }}</dd></div>
-        <div><dt class="opacity-60">Branch</dt><dd>{{ state.branch }} <span class="font-mono">{{ state.head[:12] }}</span></dd></div>
-        <div><dt class="opacity-60">Commit identity (local Git)</dt><dd class="break-all">{{ state.author_name or 'Not configured' }} {{ state.author_email }}</dd></div>
-        <div><dt class="opacity-60">Preferred authentication account (not verified)</dt><dd>{{ repository.account or 'System default' }}</dd></div>
-        <div><dt class="opacity-60">Upstream (last fetched locally)</dt><dd class="break-all">{{ state.upstream or 'Not configured' }}{% if state.ahead_behind %} / ahead, behind: {{ state.ahead_behind }}{% endif %}</dd></div>
-    </dl>
-    {% if state.conflict_count %}
-    <div class="alert alert-error my-4" role="alert"><i class="fas fa-code-compare"></i><span>{{ state.conflict_count }} unresolved conflict(s). Resolve them in your Git client; Git Sync will not overwrite conflict files.</span></div>
+    </section>
+    {% if drive_stale %}
+    <div class="alert alert-warning mb-3" role="status">
+        <i class="fas fa-triangle-exclamation"></i>
+        <span>The Git checkout still exists, but its DocIndex drive {% if repository.drive and repository.drive.deleted_at is not none %}is in the trash{% else %}is no longer available{% endif %}. Reconnect to restore or recreate the drive and index local files. Git files and metadata will not be changed.</span>
+    </div>
     {% endif %}
-    <section class="py-5">
-        <h2 class="font-semibold text-lg mb-3">Working tree changes <span class="badge">{{ state.change_count }}</span></h2>
+    <section class="glass-panel rounded-2xl p-4 sm:p-5">
+        <h2 class="font-semibold mb-3">Repository details</h2>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 text-sm">
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Local folder</dt><dd class="break-all font-mono text-xs">{{ repository.path }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Origin</dt><dd class="break-all">{{ state.remote or 'No origin configured' }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Configured upstream</dt><dd class="break-all">{{ state.upstream or 'Not configured' }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Commit identity (repository-local Git)</dt><dd class="break-all">{{ state.author_name or 'Not configured' }} {{ state.author_email }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Preferred username hint, not verified identity</dt><dd class="break-all">{{ repository.account or 'No username hint; system credentials' }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Git execution</dt><dd>Server account credentials; hooks and GPG signing are disabled for app-created commits.</dd></div>
+        </dl>
+        <p class="text-xs opacity-60 mt-3">Git uses credentials configured for the DocIndex server account. The preferred username is passed only as a command-scoped hint. Git's generic remote protocol does not report the authenticated account identity.</p>
+    </section>
+    <section class="glass-panel rounded-2xl p-4 sm:p-5">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h2 class="font-semibold">Remote actions</h2>
+            <span class="text-xs opacity-60">Explicit operations; none run automatically</span>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-3">
+            <h3 class="text-xs font-semibold uppercase opacity-60 mb-2">Access and fetch</h3>
+            <div class="flex flex-wrap gap-2 items-center">
+        <form method="POST" action="{{ url_for('gitsync.check_access', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-outline" type="submit" {% if not state.remote %}disabled{% endif %}><i class="fas fa-shield-halved"></i>Check remote read access</button>
+        </form>
+        {% if not state.remote %}<span class="text-xs opacity-70">Configure an origin remote first.</span>{% endif %}
+        <form method="POST" action="{{ url_for('gitsync.fetch', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-outline" type="submit" {% if not state.upstream %}disabled{% endif %}><i class="fas fa-cloud-arrow-down"></i>Fetch upstream</button>
+        </form>
+        {% if not state.upstream %}<span class="text-xs opacity-70">Configure a branch upstream before fetching.</span>{% endif %}
+            </div>
+        </div>
+        <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-3">
+            <h3 class="text-xs font-semibold uppercase opacity-60 mb-2">Push and merge review</h3>
+            <div class="flex flex-wrap gap-2 items-center">
+        {% set can_push = state.change_count == 0 and state.ahead_behind and state.ahead_behind.ahead > 0 and state.ahead_behind.behind == 0 %}
+        {% set push_reason = 'Resolve or abort the current merge first.' if state.merge_in_progress else 'Resolve conflicts before pushing.' if state.conflict_count else 'Unstage files before pushing.' if state.staged_count else 'Commit or set aside working-tree changes first.' if state.change_count else 'Configure a branch upstream first.' if not state.upstream else 'Fetch and review the upstream before pushing.' if not state.has_upstream_commit or (state.ahead_behind and state.ahead_behind.behind > 0) else 'There are no local commits ahead to push.' if not state.ahead_behind or state.ahead_behind.ahead == 0 else '' %}
+        <form method="POST" action="{{ url_for('gitsync.push', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-primary" type="submit" data-confirm="Push {{ state.ahead_behind.ahead if state.ahead_behind else 0 }} local commit(s) to the configured remote?" {% if not can_push %}disabled{% endif %}><i class="fas fa-cloud-arrow-up"></i>Push local commits</button>
+        </form>
+        {% if push_reason %}<span class="text-xs opacity-70">{{ push_reason }}</span>{% endif %}
+        {% set can_merge = state.change_count == 0 and state.ahead_behind and state.ahead_behind.behind > 0 and state.has_upstream_commit and not state.merge_in_progress %}
+        {% set merge_reason = 'Complete or abort the current merge first.' if state.merge_in_progress else 'Resolve or abort existing conflicts first.' if state.conflict_count else 'Unstage files before reviewing a merge.' if state.staged_count else 'Commit or set aside working-tree changes first.' if state.change_count else 'Configure a branch upstream first.' if not state.upstream else 'Fetch the upstream before reviewing a merge.' if not state.has_upstream_commit else 'There are no fetched upstream commits to merge.' if not state.ahead_behind or state.ahead_behind.behind == 0 else '' %}
+        <form method="POST" action="{{ url_for('gitsync.start_merge', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-outline" type="submit" data-confirm="Start a local merge review? This can change working-tree files but will not create a commit or push." {% if not can_merge %}disabled{% endif %}><i class="fas fa-code-merge"></i>Review upstream merge</button>
+        </form>
+        {% if merge_reason %}<span class="text-xs opacity-70">{{ merge_reason }}</span>{% endif %}
+            </div>
+        </div>
+        </div>
+    </section>
+    {% if state.merge_in_progress %}
+    <section class="glass-panel rounded-2xl p-4 sm:p-6 border border-warning/30 bg-warning/5">
+        <div class="flex flex-wrap items-center gap-3 mb-3">
+            <h2 class="font-semibold text-lg flex-1">Merge review</h2>
+            <form method="POST" action="{{ url_for('gitsync.abort_merge', repository_id=repository.id) }}" data-confirm="Abort this merge and discard its staged merge result and conflict choices?" data-confirm-danger>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-sm btn-error btn-outline" type="submit"><i class="fas fa-xmark"></i>Abort merge</button>
+            </form>
+        </div>
+        <div class="alert alert-warning mb-4" role="status"><i class="fas fa-circle-info"></i><span>No merge commit has been created. Review the diff and choose a version for each conflict. Completing the merge commits the staged result locally; it does not push.</span></div>
+        {% if state.conflicts %}
         <div class="overflow-x-auto">
-            <table class="table table-sm w-full"><thead><tr><th>Status</th><th>File</th></tr></thead><tbody>
-            {% for change in state.changes %}<tr><td class="font-mono whitespace-pre">{{ change.status }}{% if change.conflict %} <span class="badge badge-error">Conflict</span>{% endif %}</td><td class="break-all">{% if change.original %}{{ change.original }} &rarr; {% endif %}{{ change.path }}</td></tr>
-            {% else %}<tr><td colspan="2">Working tree clean.</td></tr>{% endfor %}
+            <table class="table table-sm w-full"><thead><tr><th>Status</th><th>Conflicted file</th><th>Resolution</th></tr></thead><tbody>
+            {% for conflict in state.conflicts %}<tr>
+                <td class="font-mono">{{ conflict.status }}</td><td class="break-all">{{ conflict.path }}</td>
+                <td class="text-sm opacity-70">Review both versions below before choosing.</td>
+            </tr>
+            <tr><td colspan="3">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {% for side, label in [('ours', 'Current branch'), ('theirs', 'Incoming')] %}
+                    {% set version = conflict.preview[side] %}
+                    <section class="min-w-0 border border-base-content/10 rounded-lg p-3">
+                        <h3 class="font-semibold text-sm mb-2">{{ label }}</h3>
+                        {% if version.kind == 'text' %}
+                        <pre class="bg-base-200/60 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap break-words text-xs">{{ version.text }}</pre>
+                        {% else %}
+                        <p class="text-sm opacity-80">{{ version.text }}</p>
+                        {% endif %}
+                    </section>
+                    {% endfor %}
+                </div>
+            </td></tr>{% endfor %}
+            {% for conflict in state.conflicts %}<tr><td colspan="3"><div class="flex flex-wrap gap-2">
+                {% for choice, label in [('ours', 'Keep current'), ('theirs', 'Use incoming')] %}
+                <form method="POST" action="{{ url_for('gitsync.resolve_merge', repository_id=repository.id) }}" data-confirm="{{ label }} version for {{ conflict.path }} and stage this resolution?">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="paths" value="{{ conflict.path }}">
+                    <input type="hidden" name="choice" value="{{ choice }}">
+                    <button class="btn btn-xs btn-outline" type="submit">{{ label }}</button>
+                </form>
+                {% endfor %}
+            </div></td></tr>{% endfor %}
             </tbody></table>
         </div>
-        {% if state.changes_truncated %}<p class="text-warning text-sm">Showing the first 500 changes.</p>{% endif %}
+        {% else %}<p class="text-sm text-success mb-3">All conflicts are resolved. Review the staged merge result before completing.</p>{% endif %}
+        {% if state.merge_diff_truncated %}
+        <div class="alert alert-error my-4" role="alert"><i class="fas fa-triangle-exclamation"></i><span><strong>Merge diff truncated at 200,000 characters.</strong> The full merge result is not visible here. Review the remaining changes in your local Git client before completing.</span></div>
+        {% endif %}
+        {% if state.merge_diff_files %}{{ render_diff_files(state.merge_diff_files, 'merge') }}{% endif %}
+        {% set can_complete_merge = not state.conflict_count and not state.merge_unstaged_count and not state.merge_untracked_count and state.author_name and state.author_email %}
+        {% if not state.author_name or not state.author_email %}<p class="text-warning text-sm mt-3">Configure repository-local user.name and user.email before completing the merge.</p>{% endif %}
+        {% if state.merge_unstaged_count or state.merge_untracked_count %}<p class="text-warning text-sm mt-3">Unstaged or untracked changes are present. Review or stage them deliberately before completing.</p>{% endif %}
+        <form class="mt-4" method="POST" action="{{ url_for('gitsync.complete_merge', repository_id=repository.id) }}" data-confirm="Create a local merge commit from the staged result? This will not push.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% if state.merge_diff_truncated %}<label class="label cursor-pointer justify-start gap-3 max-w-3xl mb-3"><input class="checkbox checkbox-error" type="checkbox" name="acknowledge_truncated" value="yes" required><span class="text-sm">I understand the diff is truncated and have reviewed the remaining changes in my local Git client.</span></label>{% endif %}
+            <button class="btn btn-primary btn-sm" type="submit" {% if not can_complete_merge %}disabled{% endif %}><i class="fas fa-check"></i>Complete merge locally</button>
+        </form>
     </section>
-    <section class="border-t border-base-content/10 py-5">
+    {% endif %}
+    {% if state.conflict_count and not state.merge_in_progress %}
+    <div class="alert alert-error my-4" role="alert"><i class="fas fa-code-compare"></i><span>{{ state.conflict_count }} unresolved conflict(s) exist outside a Git Sync merge. Resolve or abort them in your Git client.</span></div>
+    {% endif %}
+    <section class="glass-panel rounded-2xl p-4 sm:p-6">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h2 class="font-semibold text-lg">Working tree changes</h2>
+            <span class="badge {{ 'badge-warning' if state.change_count else 'badge-success badge-outline' }}">{{ state.change_count }} file{{ 's' if state.change_count != 1 }}</span>
+        </div>
+        {% set commit_unavailable = not state.change_count or state.conflict_count or state.staged_count or not state.author_name or not state.author_email %}
+        {% if state.conflict_count %}
+        <p class="text-error text-sm mb-3">Local commit unavailable until all merge conflicts are resolved.</p>
+        {% elif state.staged_count %}
+        <p class="text-warning text-sm mb-3">Local commit unavailable while files are already staged. Unstage them first to avoid including unrelated work.</p>
+        {% elif not state.change_count %}
+        <p class="text-sm opacity-60 mb-3">No changed files are available to commit.</p>
+        {% elif not state.author_name or not state.author_email %}
+        <p class="text-warning text-sm mb-3">Local commit unavailable. Configure user.name and user.email in this repository's local Git settings.</p>
+        {% endif %}
+        <form id="gitsync-commit-form" method="POST" action="{{ url_for('gitsync.commit', repository_id=repository.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="flex flex-wrap gap-3 items-end mb-3">
+            <label class="form-control flex-1 min-w-52"><span class="label-text text-xs">Search changed files</span><input id="gitsync-change-search" class="input input-bordered input-sm" type="search" placeholder="Filter by path"></label>
+            <label class="form-control w-44"><span class="label-text text-xs">Status</span><select id="gitsync-change-status" class="select select-bordered select-sm"><option value="">All statuses</option><option value="modified">Modified</option><option value="staged">Staged</option><option value="untracked">Untracked</option><option value="deleted">Deleted</option><option value="added">Added</option><option value="renamed">Renamed or copied</option><option value="conflict">Conflicts</option></select></label>
+            <button id="gitsync-select-page" class="btn btn-sm btn-outline" type="button" {% if commit_unavailable %}disabled{% endif %}>Select page</button>
+            <span class="text-sm" aria-live="polite"><span id="gitsync-selected-count">0</span> selected</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="table table-sm w-full"><thead><tr><th>Select</th><th>Status</th><th>File</th></tr></thead><tbody id="gitsync-change-rows">
+            {% for change in state.changes %}<tr class="gitsync-change-row" data-search="{{ change.path }} {{ change.original or '' }}" data-status="{{ change.status }}"><td><input class="checkbox checkbox-sm gitsync-commit-path" type="checkbox" name="paths" value="{{ change.path }}" aria-label="Select {{ change.path }}" {% if commit_unavailable %}disabled{% endif %}></td><td class="font-mono whitespace-pre">{{ change.status }}{% if change.conflict %} <span class="badge badge-error">Conflict</span>{% endif %}</td><td class="break-all">{% if change.original %}{{ change.original }} &rarr; {% endif %}{{ change.path }}</td></tr>
+            {% else %}<tr><td colspan="3">Working tree clean.</td></tr>{% endfor %}
+            </tbody></table>
+        </div>
+        <div class="flex flex-wrap gap-3 items-center justify-between mt-3">
+            <p id="gitsync-change-page-status" class="text-sm opacity-70" aria-live="polite"></p>
+            <div class="join"><button id="gitsync-change-prev" class="btn btn-sm join-item" type="button" aria-label="Previous change page">Previous</button><button id="gitsync-change-next" class="btn btn-sm join-item" type="button" aria-label="Next change page">Next</button></div>
+        </div>
+            <div class="mt-4 max-w-2xl">
+                <label class="form-control">
+                    <span class="label-text mb-1">Commit message</span>
+                    <textarea class="textarea textarea-bordered w-full" name="message" rows="3" maxlength="5000" required {% if commit_unavailable %}disabled{% endif %}></textarea>
+                </label>
+                <button id="gitsync-commit-button" class="btn btn-primary btn-sm mt-3" type="submit" disabled><i class="fas fa-check"></i>Create local commit</button>
+            </div>
+        </form>
+    </section>
+    <section class="glass-panel rounded-2xl p-4 sm:p-6">
         <div class="flex flex-wrap items-center gap-3 mb-3">
             <h2 class="font-semibold text-lg flex-1">Tracked file differences</h2>
             <div class="tabs tabs-boxed" role="tablist">
@@ -46,9 +255,109 @@
                 {% if repository.baseline %}<a role="tab" class="tab {{ 'tab-active' if basis == 'initial' }}" href="{{ url_for('gitsync.detail', repository_id=repository.id, basis='initial') }}">When connected</a>{% endif %}
             </div>
         </div>
-        {% if state.diff %}<pre class="overflow-auto max-h-[36rem] bg-base-200 p-4 rounded text-xs font-mono"><code>{{ state.diff }}</code></pre>
+        {% if state.diff_files %}{{ render_diff_files(state.diff_files, 'working') }}
         {% else %}<p class="text-sm opacity-60">No tracked differences against this reference. Untracked files appear in the list above.</p>{% endif %}
         {% if state.diff_truncated %}<p class="text-warning text-sm">Diff truncated at 200,000 characters.</p>{% endif %}
     </section>
 </div>
+<script>
+(function () {
+    document.querySelectorAll("[data-diff-browser]").forEach(function (browser) {
+        var search = browser.querySelector(".gitsync-diff-search");
+        var navigator = browser.querySelector(".gitsync-diff-navigator");
+        var container = browser.nextElementSibling;
+        var files = Array.from(container.querySelectorAll(".gitsync-diff-file"));
+        function filterFiles() {
+            var query = search.value.trim().toLowerCase();
+            files.forEach(function (file, index) {
+                var visible = file.dataset.diffPath.includes(query);
+                file.hidden = !visible;
+                navigator.options[index].disabled = !visible;
+            });
+        }
+        search.addEventListener("input", filterFiles);
+        navigator.addEventListener("change", function () {
+            var file = files[Number(navigator.value)];
+            if (!file || file.hidden) return;
+            file.open = true;
+            file.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    });
+
+    var form = document.getElementById("gitsync-commit-form");
+    if (!form) return;
+    var button = document.getElementById("gitsync-commit-button");
+    var paths = form.querySelectorAll(".gitsync-commit-path");
+    var rows = Array.from(form.querySelectorAll(".gitsync-change-row"));
+    var search = document.getElementById("gitsync-change-search");
+    var status = document.getElementById("gitsync-change-status");
+    var selectPage = document.getElementById("gitsync-select-page");
+    var selectedCount = document.getElementById("gitsync-selected-count");
+    var pageStatus = document.getElementById("gitsync-change-page-status");
+    var previous = document.getElementById("gitsync-change-prev");
+    var next = document.getElementById("gitsync-change-next");
+    var currentPage = 0;
+    var pageSize = 100;
+    var commitUnavailable = {{ 'true' if commit_unavailable else 'false' }};
+
+    function filteredRows() {
+        var query = search.value.trim().toLowerCase();
+        var filter = status.value;
+        return rows.filter(function (row) {
+            var code = row.dataset.status;
+            var matchesStatus = filter === "" ||
+                (filter === "modified" && code.includes("M")) ||
+                (filter === "staged" && code.charAt(0) !== " " && code.charAt(0) !== "?") ||
+                (filter === "untracked" && code === "??") ||
+                (filter === "deleted" && code.includes("D")) ||
+                (filter === "added" && code.includes("A")) ||
+                (filter === "renamed" && (code.includes("R") || code.includes("C"))) ||
+                (filter === "conflict" && row.querySelector(".badge-error"));
+            return matchesStatus && row.dataset.search.toLowerCase().includes(query);
+        });
+    }
+
+    function updateChanges() {
+        var visibleRows = filteredRows();
+        var pageCount = Math.ceil(visibleRows.length / pageSize);
+        currentPage = Math.min(currentPage, Math.max(pageCount - 1, 0));
+        var first = currentPage * pageSize;
+        var last = first + pageSize;
+        rows.forEach(function (row) { row.hidden = true; });
+        visibleRows.slice(first, last).forEach(function (row) { row.hidden = false; });
+        pageStatus.textContent = visibleRows.length
+            ? "Showing " + (first + 1) + "-" + Math.min(last, visibleRows.length) + " of " + visibleRows.length + " matching files"
+            : "No changed files match these filters.";
+        previous.disabled = currentPage === 0;
+        next.disabled = currentPage + 1 >= pageCount;
+        var selected = form.querySelectorAll(".gitsync-commit-path:checked").length;
+        selectedCount.textContent = selected;
+        button.disabled = commitUnavailable || selected === 0;
+        var pageRows = visibleRows.slice(first, last);
+        var allSelected = pageRows.length > 0 && pageRows.every(function (row) {
+            return row.querySelector(".gitsync-commit-path").checked;
+        });
+        selectPage.textContent = allSelected ? "Clear page" : "Select page";
+    }
+
+    paths.forEach(function (path) {
+        path.addEventListener("change", updateChanges);
+    });
+    search.addEventListener("input", function () { currentPage = 0; updateChanges(); });
+    status.addEventListener("change", function () { currentPage = 0; updateChanges(); });
+    previous.addEventListener("click", function () { currentPage--; updateChanges(); });
+    next.addEventListener("click", function () { currentPage++; updateChanges(); });
+    selectPage.addEventListener("click", function () {
+        var visibleRows = filteredRows().slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+        var allSelected = visibleRows.length > 0 && visibleRows.every(function (row) {
+            return row.querySelector(".gitsync-commit-path").checked;
+        });
+        visibleRows.forEach(function (row) {
+            row.querySelector(".gitsync-commit-path").checked = !allSelected;
+        });
+        updateChanges();
+    });
+    updateChanges();
+})();
+</script>
 {% endblock %}

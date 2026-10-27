@@ -17,6 +17,11 @@
             written to; removing the drive only clears local rows and the
             clone cache.
         </p>
+        {% if gitsync_enabled %}
+        <a href="{{ url_for('gitsync.index') }}" class="btn btn-outline btn-sm gap-2 mt-4">
+            <i class="fas fa-link"></i> Connect or manage a local repository
+        </a>
+        {% endif %}
     </div>
 
     <div class="glass-panel rounded-2xl p-6">

@@ -2,10 +2,15 @@
 {% block title %}Git Sync - DocIndex{% endblock %}
 {% block content %}
 <div class="max-w-5xl mx-auto w-full pb-32">
-    <h1 class="text-2xl font-bold"><i class="fas fa-code-branch mr-2"></i>Git Sync</h1>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <h1 class="text-2xl font-bold"><i class="fas fa-code-branch mr-2"></i>Git Sync</h1>
+        {% if gitdrives_enabled %}
+        <a class="link text-sm" href="{{ url_for('gitdrives.index') }}"><i class="fas fa-arrow-left mr-1"></i>Git Repo</a>
+        {% endif %}
+    </div>
     <div class="alert alert-warning mt-4" role="status">
         <i class="fas fa-flask"></i>
-        <span>Preview: local repositories, change review and read-only indexing. Remote clone, commit, push and merge are not available yet.</span>
+        <span>Local repository changes can be reviewed and committed here. Remote cloning and pull/sync are managed under Git Repo. Authentication checks, fetch, push and merge are separate actions and never run automatically.</span>
     </div>
     <section class="py-6 border-b border-base-content/10">
         <h2 class="text-lg font-semibold mb-3">Connect local repository</h2>
@@ -26,19 +31,27 @@
                     {% for account in accounts %}<option value="{{ account }}">{% endfor %}
                 </datalist>
             </label>
-            <div class="text-sm opacity-70 sm:col-span-2">Account preference only; no sign-in or credential validation is performed. Listed accounts come from Git Credential Manager (GitHub). Azure DevOps account names can be entered manually.</div>
+            <div class="text-sm opacity-70 sm:col-span-2">This is a preferred username hint, not a verified identity. Git reuses credentials configured for the server account; listed GitHub usernames come from Git Credential Manager. Azure DevOps usernames can be entered manually. A read-access check cannot prove which account the server authenticated as.</div>
             <div class="sm:col-span-2"><button class="btn btn-primary" type="submit"><i class="fas fa-link"></i>Connect repository</button></div>
         </form>
     </section>
     <section class="py-6">
         <h2 class="text-lg font-semibold mb-3">Repositories</h2>
+        <p class="text-sm opacity-70 mb-2">Disconnecting removes only the Git Sync entry. It does not delete the local folder, Git data, or linked drive and its files.</p>
         {% for repository in repositories %}
         <div class="flex flex-wrap gap-3 items-center py-4 border-b border-base-content/10">
             <div class="min-w-0 flex-1">
                 <a class="link font-semibold" href="{{ url_for('gitsync.detail', repository_id=repository.id) }}">{{ repository.name }}</a>
                 <div class="text-sm opacity-60 break-all">{{ repository.path }}</div>
             </div>
+            {% if not repository.drive or repository.drive.deleted_at is not none or repository.drive.user_id != current_user.id %}
+            <span class="badge badge-warning">{% if repository.drive and repository.drive.deleted_at is not none %}Drive trashed{% else %}Drive link missing{% endif %}</span>
+            {% endif %}
             <span class="badge badge-outline">{{ repository.account or 'System default' }}</span>
+            <form method="POST" action="{{ url_for('gitsync.disconnect', repository_id=repository.id) }}" data-confirm="Disconnect {{ repository.name }} from Git Sync? This removes only the Git Sync entry. The local folder, Git data, and linked drive and files will not be deleted." data-confirm-danger>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-ghost btn-sm text-error" type="submit"><i class="fas fa-link-slash"></i>Disconnect</button>
+            </form>
         </div>
         {% else %}<p class="text-sm opacity-60">No repositories connected.</p>{% endfor %}
     </section>

@@ -213,6 +213,16 @@ def test_no_clone_entry_when_disabled(auth_client):
     assert "Clone a Git repo" not in html
 
 
+def test_git_sync_link_only_when_enabled(auth_client, app, enabled):
+    html = auth_client.get("/m/gitdrives/").data.decode()
+    assert 'href="/m/gitsync/"' not in html
+    with app.app_context():
+        db.session.add(ModuleState(name="gitsync", enabled=True))
+        db.session.commit()
+    html = auth_client.get("/m/gitdrives/").data.decode()
+    assert html.count('href="/m/gitsync/"') == 1
+
+
 POINTER = (b"version https://git-lfs.github.com/spec/v1\n"
            b"oid sha256:" + b"4" * 64 + b"\nsize 12345\n")
 

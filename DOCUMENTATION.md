@@ -1270,6 +1270,31 @@ tool + table).
   never block the HTTP request; the floating sync widget shows live progress.
   LFS is not fetched — LFS-tracked files stay as pointer text (flagged
   wherever detected).
+- `gitsync` — connects an existing server-local Git checkout to a mirror
+  drive for indexing and selected-file local commits. Remote access reuses
+  credentials configured for the server account; a saved account is only a
+  command-scoped `credential.username` hint, and a read-only `ls-remote`
+  check cannot prove the identity accepted by the remote. Fetch, push and
+  merge are explicit POST actions. Disconnecting removes only the Git Sync
+  association; it does not delete the local folder, Git data, or linked drive
+  and files. A stale association can explicitly reconnect to a compatible
+  mirror drive or create one; a linked trashed mirror is restored only by that
+  action, and indexing does not fetch or modify Git state.
+  Push requires a clean working tree and
+  commits ahead of the configured upstream. Merge requires a clean tree and
+  a fetched remote-tracking ref, starts with `--no-ff --no-commit`, and offers
+  explicit per-conflict ours/theirs choices, abort, and local completion after
+  explicit per-conflict ours/theirs choices with escaped current/incoming blob
+  previews, abort, and local completion after review. Oversized merge diffs are
+  flagged and require explicit acknowledgement (plus local-client review) before
+  completion; unified diffs are grouped and navigable by file, and the complete
+  working-tree change list supports filtering and paging. Remote command output
+  is never shown; safe actionable error categories are used and merge completion
+  does not push.
+  App-created commits skip repository hooks and GPG signing to avoid running
+  arbitrary hook code from a web request and to keep operations noninteractive.
+  Disconnecting removes only the Git Sync association, preserving the local
+  folder and linked drive; orphaned associations can be replaced on reconnect.
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
   (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`
