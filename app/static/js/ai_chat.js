@@ -10,6 +10,115 @@
     let spawnCount = 0;
 
     // ------------------------------------------------------------------
+    // Side-snap dual view (new layer — floating behavior below untouched)
+    // One docked window at a time; the main view shrinks to a true split
+    // with a draggable divider. Floating resize is preserved via prev.
+    // ------------------------------------------------------------------
+    const SNAP_ZONE = 48; // px from the screen edge that triggers snap
+    let dockW = Math.floor(window.innerWidth / 2);
+    let dockedWin = null; // api object of the currently docked window
+    let acwGhost = null, acwEdgeL = null, acwEdgeR = null, acwDivider = null;
+
+    function acwAppContainer() { return document.getElementById('app-container'); }
+
+    function ensureDockChrome() {
+        if (acwGhost) return;
+        acwGhost = document.createElement('div');
+        acwGhost.id = 'acw-ghost';
+        document.body.appendChild(acwGhost);
+        acwEdgeL = document.createElement('div');
+        acwEdgeL.id = 'acw-edge-left';
+        acwEdgeL.className = 'acw-edge-zone';
+        document.body.appendChild(acwEdgeL);
+        acwEdgeR = document.createElement('div');
+        acwEdgeR.id = 'acw-edge-right';
+        acwEdgeR.className = 'acw-edge-zone';
+        document.body.appendChild(acwEdgeR);
+        acwDivider = document.createElement('div');
+        acwDivider.id = 'acw-divider';
+        acwDivider.title = 'Drag to resize columns';
+        document.body.appendChild(acwDivider);
+        let divDragging = false;
+        acwDivider.addEventListener('mousedown', (e) => {
+            if (!dockedWin) return;
+            divDragging = true;
+            acwDivider.classList.add('drag');
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!divDragging || !dockedWin) return;
+            dockW = dockedWin.mode === 'left' ? e.clientX : window.innerWidth - e.clientX;
+            clampDockW();
+            const d = dockDims(dockedWin.mode);
+            dockedWin.el.classList.remove('snapped');
+            dockedWin.el.style.left = d.left; dockedWin.el.style.top = d.top;
+            dockedWin.el.style.width = d.width; dockedWin.el.style.height = d.height;
+            renderDockSplit();
+        });
+        document.addEventListener('mouseup', () => {
+            divDragging = false;
+            if (acwDivider) acwDivider.classList.remove('drag');
+        });
+        window.addEventListener('resize', () => {
+            if (dockedWin && (dockedWin.mode === 'left' || dockedWin.mode === 'right')) {
+                const d = dockDims(dockedWin.mode);
+                dockedWin.el.style.left = d.left; dockedWin.el.style.top = d.top;
+                dockedWin.el.style.width = d.width; dockedWin.el.style.height = d.height;
+                renderDockSplit();
+            }
+        });
+    }
+
+    function clampDockW() {
+        dockW = Math.min(Math.max(320, dockW), window.innerWidth - 320);
+        return dockW;
+    }
+
+    function dockDims(side) {
+        const w = clampDockW();
+        return side === 'left'
+            ? { left: '0px', top: '56px', width: w + 'px', height: (window.innerHeight - 56) + 'px' }
+            : { left: (window.innerWidth - w) + 'px', top: '56px', width: w + 'px', height: (window.innerHeight - 56) + 'px' };
+    }
+
+    function clearSplit() {
+        const app = acwAppContainer();
+        if (!app) return;
+        app.style.margin = '';
+        app.style.marginLeft = '';
+        app.style.marginRight = '';
+        app.style.width = '';
+    }
+
+    function placeDivider() {
+        if (!acwDivider) return;
+        if (!dockedWin || (dockedWin.mode !== 'left' && dockedWin.mode !== 'right')) {
+            acwDivider.style.display = 'none';
+            return;
+        }
+        const w = clampDockW();
+        acwDivider.style.display = 'block';
+        acwDivider.style.left = (dockedWin.mode === 'left' ? (w - 6) : (window.innerWidth - w - 6)) + 'px';
+    }
+
+    // Synchronous split from dockW (no getBoundingClientRect lag mid-transition).
+    function renderDockSplit() {
+        ensureDockChrome();
+        const app = acwAppContainer();
+        document.body.classList.toggle('chat-docked-left', !!(dockedWin && dockedWin.mode === 'left'));
+        document.body.classList.toggle('chat-docked-right', !!(dockedWin && dockedWin.mode === 'right'));
+        if (dockedWin && (dockedWin.mode === 'left' || dockedWin.mode === 'right') && app) {
+            const w = clampDockW();
+            clearSplit();
+            app.style.width = 'calc(100% - ' + w + 'px)';
+            if (dockedWin.mode === 'left') app.style.marginLeft = w + 'px';
+        } else if (!dockedWin) {
+            clearSplit();
+        }
+        placeDivider();
+    }
+
+    // ------------------------------------------------------------------
     // Shared stateless helpers
     // ------------------------------------------------------------------
     function renderMarkdown(text) {
@@ -334,27 +443,93 @@
         }
         el.addEventListener('mousedown', focusWindow);
 
-        // --- Drag by header ---
+        // --- Drag by header (snap extension keeps the clamp numbers) ---
+        let dockMode = 'float'; // float | left | right | max (snap layer only)
+        let dockPrev = null; // floating rect saved at dock time (preserves resize)
+        function saveDockPrev() {
+            if (dockMode !== 'float') return;
+            const r = el.getBoundingClientRect();
+            dockPrev = { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' };
+        }
+        function applyDockRect(r) {
+            el.classList.add('snapped');
+            el.style.left = r.left; el.style.top = r.top;
+            el.style.width = r.width; el.style.height = r.height;
+            setTimeout(() => el.classList.remove('snapped'), 250);
+        }
+        function renderDockButtons() {
+            const docked = dockMode === 'left' || dockMode === 'right';
+            const undockBtn = el.querySelector('.acw-undock');
+            if (undockBtn) undockBtn.style.display = (docked || dockMode === 'max') ? '' : 'none';
+            const lBtn = el.querySelector('.acw-dock-left');
+            if (lBtn) lBtn.classList.toggle('ai-toggle-on', dockMode === 'left');
+            const rBtn = el.querySelector('.acw-dock-right');
+            if (rBtn) rBtn.classList.toggle('ai-toggle-on', dockMode === 'right');
+        }
         header.addEventListener('mousedown', (e) => {
             if (e.target.closest('button, a, select, input')) return;
+            ensureDockChrome();
             const rect = el.getBoundingClientRect();
-            const dx = e.clientX - rect.left;
-            const dy = e.clientY - rect.top;
+            let dx = e.clientX - rect.left;
+            let dy = e.clientY - rect.top;
+            let snapSide = null;
+            document.body.classList.add('dragging-chat');
             function move(ev) {
+                if (dockMode !== 'float') {
+                    // Grab-while-docked: instant unsnap restoring the saved
+                    // floating size, then keep dragging under the cursor.
+                    dockMode = 'float';
+                    if (dockedWin === api) dockedWin = null;
+                    el.classList.remove('snapped', 'docked');
+                    clearSplit();
+                    document.body.classList.remove('chat-docked-left', 'chat-docked-right');
+                    if (dockPrev) {
+                        el.style.left = dockPrev.left; el.style.top = dockPrev.top;
+                        el.style.width = dockPrev.width; el.style.height = dockPrev.height;
+                    }
+                    renderDockButtons();
+                    renderDockSplit();
+                    const r = el.getBoundingClientRect();
+                    dx = ev.clientX - r.left; dy = ev.clientY - r.top;
+                }
                 el.style.left = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - 80) + 'px';
                 el.style.top = Math.min(Math.max(56, ev.clientY - dy), window.innerHeight - 60) + 'px';
+                snapSide = null;
+                if (window.innerWidth > 900) {
+                    if (ev.clientX <= SNAP_ZONE) snapSide = 'left';
+                    else if (ev.clientX >= window.innerWidth - SNAP_ZONE) snapSide = 'right';
+                }
+                if (snapSide) {
+                    acwGhost.className = snapSide + ' show';
+                    acwGhost.style.width = clampDockW() + 'px';
+                } else {
+                    acwGhost.className = '';
+                }
+                acwEdgeL.classList.toggle('active', snapSide === 'left');
+                acwEdgeR.classList.toggle('active', snapSide === 'right');
             }
             function up() {
                 document.removeEventListener('mousemove', move);
                 document.removeEventListener('mouseup', up);
+                document.body.classList.remove('dragging-chat');
+                if (acwGhost) acwGhost.className = '';
+                if (acwEdgeL) acwEdgeL.classList.remove('active');
+                if (acwEdgeR) acwEdgeR.classList.remove('active');
+                if (snapSide) dockWindow(snapSide);
+                snapSide = null;
             }
             document.addEventListener('mousemove', move);
             document.addEventListener('mouseup', up);
             e.preventDefault();
         });
+        // Double-click header toggles maximize (new; single buttons untouched).
+        header.addEventListener('dblclick', (e) => {
+            if (!e.target.closest('button')) toggleDockMax();
+        });
 
-        // --- Resize by corner grip ---
+        // --- Resize by corner grip (floating only; docked uses the divider) ---
         resizeGrip.addEventListener('mousedown', (e) => {
+            if (dockMode !== 'float') return;
             const rect = el.getBoundingClientRect();
             const startW = rect.width, startH = rect.height;
             const startX = e.clientX, startY = e.clientY;
@@ -2391,6 +2566,12 @@
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
             window.removeEventListener('ai-task-dismissed', onTaskDismissed);
+            // Snap layer: closing the docked window restores the full view.
+            if (dockedWin === api) {
+                dockedWin = null;
+                clearSplit();
+                renderDockSplit();
+            }
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();
@@ -2437,6 +2618,76 @@
         el.querySelector('.acw-convs').addEventListener('click', () => toggleList());
         el.querySelector('.acw-new-window').addEventListener('click', () => createChatWindow());
 
+        // --- Side-snap controls (new buttons; existing ones above untouched) ---
+        function grabUndockOther() {
+            if (dockedWin && dockedWin !== api && dockedWin.undock) dockedWin.undock(true);
+        }
+        function dockWindow(side) {
+            ensureDockChrome();
+            grabUndockOther(); // single-docked rule: the other window keeps its floating size
+            saveDockPrev();
+            dockMode = side;
+            dockedWin = api;
+            el.classList.add('docked');
+            applyDockRect(dockDims(side));
+            renderDockButtons();
+            renderDockSplit();
+        }
+        function undockWindow(silent) {
+            if (dockMode === 'float') return;
+            dockMode = 'float';
+            if (dockedWin === api) dockedWin = null;
+            el.classList.remove('docked');
+            clearSplit();
+            document.body.classList.remove('chat-docked-left', 'chat-docked-right');
+            if (dockPrev) {
+                if (silent) {
+                    el.classList.remove('snapped');
+                    el.style.left = dockPrev.left; el.style.top = dockPrev.top;
+                    el.style.width = dockPrev.width; el.style.height = dockPrev.height;
+                } else {
+                    applyDockRect(dockPrev);
+                }
+            }
+            renderDockButtons();
+            renderDockSplit();
+        }
+        function toggleDockMax() {
+            if (dockMode === 'max') { undockWindow(); return; }
+            ensureDockChrome();
+            grabUndockOther();
+            saveDockPrev();
+            dockMode = 'max';
+            dockedWin = null;
+            el.classList.add('docked');
+            applyDockRect({ left: '8px', top: '64px',
+                width: (window.innerWidth - 16) + 'px', height: (window.innerHeight - 72) + 'px' });
+            renderDockButtons();
+            renderDockSplit();
+        }
+        const dockLeftBtn = el.querySelector('.acw-dock-left');
+        if (dockLeftBtn) dockLeftBtn.addEventListener('click', () =>
+            dockMode === 'left' ? undockWindow() : dockWindow('left'));
+        const dockRightBtn = el.querySelector('.acw-dock-right');
+        if (dockRightBtn) dockRightBtn.addEventListener('click', () =>
+            dockMode === 'right' ? undockWindow() : dockWindow('right'));
+        const undockBtn = el.querySelector('.acw-undock');
+        if (undockBtn) undockBtn.addEventListener('click', () => undockWindow());
+        // Scoped to the window (bubbles from children incl. textarea): Alt+arrows
+        // never hijack the page, and Esc only acts when docked/maxed — the
+        // mention-popup Esc handler on the input stops propagation first.
+        el.addEventListener('keydown', (e) => {
+            if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp')) {
+                e.preventDefault();
+                if (e.key === 'ArrowLeft') dockMode === 'left' ? undockWindow() : dockWindow('left');
+                else if (e.key === 'ArrowRight') dockMode === 'right' ? undockWindow() : dockWindow('right');
+                else toggleDockMax();
+            } else if (e.key === 'Escape' && dockMode !== 'float' && !e.defaultPrevented) {
+                undockWindow();
+            }
+        });
+        renderDockButtons();
+
         const api = {
             el,
             attachFile,
@@ -2451,6 +2702,10 @@
             // A window with nothing loaded yet — Ask AI focuses it instead
             // of piling up empty windows.
             get isFresh() { return !conversationId && !pendingConvId && !taskMode; },
+            // Snap layer (read-only mode + programmatic dock/undock).
+            get mode() { return dockMode; },
+            dock(side) { dockWindow(side === 'left' ? 'left' : 'right'); },
+            undock(silent) { undockWindow(silent); },
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
