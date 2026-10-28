@@ -209,7 +209,8 @@ def test_recover_interrupted_marks_stale_tasks(app, user):
         assert task.finished_at
 
 
-def test_task_uses_extended_step_budget(auth_client, app, user):
+def test_task_uses_connection_step_budget(auth_client, app, user):
+    """Single budget: every run uses the connection's max_steps."""
     _enable_ai(app)
     seen = {}
 
@@ -228,7 +229,7 @@ def test_task_uses_extended_step_budget(auth_client, app, user):
          patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
         auth_client.post("/ai/tasks", json={"message": "big job"})
 
-    assert seen["max_steps"] == app.config["AI_TASK_MAX_STEPS"]
+    assert seen["max_steps"] == app.config.get("AI_MAX_STEPS", 16)
     assert seen["block"] is True
     assert "long-horizon" in seen["note"]
 
@@ -462,7 +463,7 @@ def test_conversation_endpoint_exposes_task_context(auth_client, app, user):
 
 
 def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
-    """/ai/chat takes scope_drive_ids and the agent runs scoped to that list."""
+    """/ai/chat takes scope_drive_ids and the run is scoped to that list."""
     _enable_ai(app)
     d1, _ = _make_drive_with_file(app, user, "Alpha", "a.txt", "aaa")
     d2, _ = _make_drive_with_file(app, user, "Beta", "b.txt", "bbb")
@@ -475,13 +476,19 @@ def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
 
     with patch("app.services.ai_service.chat_completion",
                side_effect=_answers("hi")), \
-         patch("app.routes.ai.agent_service.run_agent_events", spy):
+         patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "scope_drive_ids": [d1, d2]})
-        _ = resp.data  # consume the stream inside the patch
+        data = resp.get_json()
 
     assert resp.status_code == 200
     assert seen["drive_ids"] == sorted([d1, d2])
+    assert data["task"]["status"] == "done"
+    with app.app_context():
+        conv = db.session.get(ChatConversation, data["conversation_id"])
+        assert conv.messages[0].role == "user"
+        assert conv.messages[-1].role == "assistant"
+        assert conv.messages[-1].content == "hi"
 
 
 def test_search_files_accepts_multiple_drives(app, user):

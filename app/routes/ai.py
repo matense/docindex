@@ -1,12 +1,11 @@
 import json
-import traceback
 
 from flask import Blueprint, Response, abort, current_app, jsonify, request, stream_with_context
 from flask_login import current_user, login_required
 
 from ..extensions import db
-from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile, User
-from ..services import agent_service, ai_service, ai_task_service, drive_service, log_service
+from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile
+from ..services import ai_service, ai_task_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -566,7 +565,6 @@ def chat():
         return jsonify({"error": "Too many attachments (max 20)."}), 400
 
     ctx = _resolve_context(current_user, data)
-    attached = ctx["attachments"]
 
     conv = _get_conversation(data.get("conversation_id"))
     if not conv:
@@ -575,12 +573,6 @@ def chat():
         db.session.add(conv)
         db.session.flush()
 
-    display_question = question or "What can you tell me about these files?"
-    if attached:
-        names = ", ".join(f.name for f in attached)
-        display_question += f"\n\n📎 {names}"
-    db.session.add(ChatMessage(conversation_id=conv.id, role="user",
-                               content=display_question))
     # Remember the context of this message — reopening the conversation
     # restores the drives/files the user had referenced.
     conv.context = json.dumps(ctx["context"])
@@ -588,167 +580,29 @@ def chat():
 
     conv_id = conv.id
 
-    # History size is configurable per connection (NULL -> global default).
-    hist_n = ai_service.config_for(current_user).get("history_messages") or 20
-    if hist_n <= 0:
-        hist_n = 20
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in conv.messages
-        if m.role in ("user", "assistant") and not m.archived
-    ][-hist_n:]
+    # One run at a time per conversation: follow-ups wait for (or stop)
+    # the running one instead of interleaving two transcripts.
+    busy = (AITask.query.filter_by(conversation_id=conv.id)
+            .filter(AITask.status.in_(("queued", "running"))).first())
+    if busy is not None:
+        return jsonify({"error": "This conversation already has a run in "
+                                 "progress — stop it before sending."}), 409
 
-    # A summarized conversation starts with the assistant's summary message,
-    # but some providers' chat templates (e.g. Gemma in LM Studio) reject a
-    # history that does not begin with a user turn ("No user query found in
-    # messages"). Leading assistant messages are moved into the system
-    # context instead (run_agent_events merges leading system messages into
-    # the main system prompt).
-    preamble = []
-    while history and history[0]["role"] == "assistant":
-        preamble.append(history.pop(0)["content"])
-    if preamble:
-        history.insert(0, {"role": "system", "content":
-            "Summary of the earlier conversation:\n\n" + "\n\n".join(preamble)})
-
-    # Context notes (drive scope, dragged cell, open file, attachments) go
-    # first, before the conversation summary preamble.
-    history = [{"role": "system", "content": note} for note in ctx["notes"]] \
-        + history
-
-    user_id = current_user.id
-    drive_ids = ctx["context"]["drive_ids"]  # None -> all drives in scope
-
-    def generate():
-        """Stream NDJSON events: thinking(+_token) / tool_start / step /
-        tool_result / answer(+_token) / error.
-
-        Token deltas are forwarded live. `block_tokens` tracks which kind of
-        token was streamed for the current model message, so the full
-        `thinking` event that follows isn't duplicated on the client:
-          - after thinking tokens: skip (already rendered in the reasoning box)
-          - after answer tokens:   forward with migrate=true (the client moves
-            its tentative answer bubble into the reasoning box — the text was
-            narration before a tool call, not the final answer)
-        """
-        thinkings = []
-        steps = []
-        notices = []
-        answer = None
-        block_tokens = None  # None | "thinking" | "answer"
-        # ORM objects are detached after the earlier commit; re-fetch by id.
-        user = db.session.get(User, user_id)
-        drive = (Drive.query
-                 .filter(Drive.id.in_(drive_ids), Drive.user_id == user_id)
-                 .all()) if drive_ids else None
-        model_name = ai_service.config_for(user).get("model", "")
-        try:
-            for kind, payload in agent_service.run_agent_events(user, history, drive=drive):
-                if kind == "thinking_token":
-                    block_tokens = "thinking"
-                    yield json.dumps({"type": "thinking_token", "content": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "answer_token":
-                    block_tokens = "answer"
-                    yield json.dumps({"type": "answer_token", "content": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "thinking":
-                    thinkings.append(payload)
-                    if block_tokens != "thinking":
-                        event = {"type": "thinking", "content": payload}
-                        if block_tokens == "answer":
-                            event["migrate"] = True
-                        yield json.dumps(event, ensure_ascii=False) + "\n"
-                    block_tokens = None
-                elif kind == "tool_start":
-                    # Announced BEFORE the tool runs so clients animate a
-                    # live "working" chip. Not persisted in the transcript.
-                    block_tokens = None
-                    yield json.dumps({"type": "tool_start", "step": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "step":
-                    block_tokens = None
-                    steps.append(payload)
-                    yield json.dumps({"type": "step", "step": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "tool_result":
-                    if steps:
-                        steps[-1]["summary"] = payload["summary"]
-                    yield json.dumps({"type": "tool_result", "result": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "ui_action":
-                    # Browser-side signal from a tool (e.g. the automation
-                    # editor reloads a changed workflow canvas).
-                    yield json.dumps({"type": "ui_action", "action": payload},
-                                     ensure_ascii=False) + "\n"
-                elif kind == "notice":
-                    block_tokens = None
-                    notices.append(payload)
-                    yield json.dumps({"type": "notice", "content": payload},
-                                     ensure_ascii=False) + "\n"
-                else:
-                    block_tokens = None
-                    answer = payload
-                    yield json.dumps({"type": "answer",
-                                      "conversation_id": conv_id,
-                                      "model": model_name,
-                                      "answer": payload},
-                                     ensure_ascii=False) + "\n"
-        except ai_service.AIError as exc:
-            msg = str(exc)
-            log_service.log_event("error", "ai_chat", msg,
-                                  user_id=user_id, path="/ai/chat")
-            low = msg.lower()
-            if "context length" in low or "maximum context" in low \
-                    or "context window" in low or "context size" in low \
-                    or "exceed_context_size" in low:
-                # The prompt (history + tool results) exceeded the model's
-                # context — the raw provider error is cryptic for users.
-                msg = ("This conversation is too large for the model's "
-                       "context window. Use the Summarize & reset button to "
-                       "compact it, start a new conversation, or raise the "
-                       "prompt budget in AI Settings.")
-            elif getattr(exc, "status_code", None) == 404:
-                # The model/endpoint does not exist on the provider. The
-                # connection itself is fine — the configured model is not.
-                msg = ("Your AI connection is configured, but the server "
-                       "could not find the configured model (HTTP 404). "
-                       "The model may not be available on the server, or the "
-                       "base URL may be incorrect. Go to Settings → AI, "
-                       "check the base URL and model (use the Test button to "
-                       "see the available models), and try again.")
-            yield json.dumps({"type": "error", "error": msg},
-                             ensure_ascii=False) + "\n"
-        except Exception as exc:
-            # Never let the stream die silently — the UI would otherwise show
-            # the agent "stopping mid-task" with no explanation.
-            log_service.log_event("error", "ai_chat",
-                                  f"Unexpected error: {exc}",
-                                  detail=traceback.format_exc(),
-                                  user_id=user_id, path="/ai/chat")
-            yield json.dumps({"type": "error", "error": f"Unexpected error: {exc}"},
-                             ensure_ascii=False) + "\n"
-
-        for thought in thinkings:
-            db.session.add(ChatMessage(conversation_id=conv_id,
-                                       role="thinking", content=thought))
-        for step in steps:
-            text = f"{step['label']}: {step['detail']}"
-            if step.get("summary"):
-                text += f" → {step['summary']}"
-            db.session.add(ChatMessage(conversation_id=conv_id,
-                                       role="step", content=text))
-        for notice in notices:
-            db.session.add(ChatMessage(conversation_id=conv_id,
-                                       role="notice", content=notice))
-        if answer is not None:
-            db.session.add(ChatMessage(conversation_id=conv_id,
-                                       role="assistant", content=answer,
-                                       model=model_name))
-        db.session.commit()
-
-    return Response(stream_with_context(generate()),
-                    mimetype="application/x-ndjson")
+    try:
+        # Raw question only: start_task appends the 📎 attachment suffix
+        # itself when persisting the user message.
+        task = ai_task_service.start_task(
+            current_user,
+            question or "What can you tell me about these files?",
+            ctx=ctx, conversation_id=conv_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    # Inline runs (tests) finish inside start_task in a different session —
+    # refresh so the response carries the final status, not the queued one.
+    db.session.refresh(task)
+    return jsonify({"ok": True, "task": _task_json(task),
+                    "conversation_id": conv_id,
+                    "stream_url": f"/ai/tasks/{task.id}/stream"})
 
 
 # --- Long-horizon background tasks -----------------------------------------
@@ -760,6 +614,7 @@ def _task_json(task):
         "title": task.title,
         "status": task.status,
         "error": task.error,
+        "max_steps": task.max_steps,
         "conversation_id": task.conversation_id,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "started_at": task.started_at.isoformat() if task.started_at else None,

@@ -221,8 +221,7 @@ AI can be configured in two places:
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 | `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 | `AI_STREAMING`    | Token-by-token chat streaming (`false` if the provider breaks with streamed tool calls) | `true` |
-| `AI_TASK_MAX_STEPS` | Step budget for long-horizon background tasks | `64` |
-| `AI_TASK_WIDGET_POLL_MS` | Poll interval of the background-task dock widget | `3000` |
+| `AI_TASK_WIDGET_POLL_MS` | Poll interval of the AI run dock widget | `3000` |
 | `SEARCH_FTS`      | FTS5 full-text search with BM25 ranking (automatic ILIKE fallback) | `true` |
 | `INDEX_WORKERS`   | Background threads draining the persistent index queue | `2` |
 

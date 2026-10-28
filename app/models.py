@@ -401,6 +401,8 @@ class AITask(db.Model):
     prompt = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False, default="queued", index=True)
     error = db.Column(db.Text, nullable=True)
+    # Resolved step budget snapshot (per-connection max_steps at launch).
+    max_steps = db.Column(db.Integer, nullable=True)
     # True once the user dismissed the finished task from the bottom dock.
     notified = db.Column(db.Boolean, nullable=False, default=False)
     # JSON snapshot of the context the task was launched with (drives, files,

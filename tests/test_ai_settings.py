@@ -173,13 +173,12 @@ def test_chat_uses_user_connection(auth_client, app, user):
               model="my-model")
     captured = {}
 
-    def fake_completion(messages, model=None, tools=None, tool_choice=None, config=None):
+    def fake_completion(messages, model=None, tools=None, tool_choice=None, config=None, block=None):
         captured["config"] = config
         return {"role": "assistant", "content": "answer"}
 
     with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={"message": "hi"})
-        _ = resp.data  # consume the stream inside the patch
 
     assert resp.status_code == 200
     assert captured["config"]["base_url"] == "http://my-llm.local/v1"

@@ -65,10 +65,11 @@ def test_ai_chat_error_is_logged(auth_client, app):
     with patch("app.services.agent_service.run_agent_events",
                side_effect=ai_service.AIError("provider exploded")):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-    assert resp.status_code == 200  # error goes out as an NDJSON event
-    assert b"provider exploded" in resp.data
+        data = resp.get_json()
+    assert resp.status_code == 200  # runs report errors on the task
+    assert data["task"]["status"] == "error"
     with app.app_context():
-        row = ErrorLog.query.filter_by(source="ai_chat").one()
+        row = ErrorLog.query.filter_by(source="ai_task").one()
         assert "provider exploded" in row.message
         assert row.level == "error"
 

@@ -61,17 +61,12 @@
     let cellRef = null; // notebook cell dropped into the chat
     let driveRefs = []; // drives picked with $ mentions [{id, name}]
     let driveListCache = null; // /api/drives, fetched on first $ use
-    let backgroundMode = false; // send as a long-horizon background task
     let convFilter = 'all'; // history filter: all | tasks
     let personaRef = null; // {key, name, emoji} — sticky per conversation
     let behaviorRef = null; // {id, name} — user behavior, same slot
     let taskAbort = null;  // AbortController of the live task stream
+    let watchingTaskId = null; // task id of the run streaming into this page
 
-    // Long-horizon mode: the next message starts a server-side background
-    // task tracked in the bottom dock instead of a live streamed answer.
-    // While armed, an amber banner + recolored send button make it obvious.
-    const bgToggle = document.getElementById('aip-bg-toggle');
-    const bgBanner = document.getElementById('aip-bg-banner');
     const composerForm = document.getElementById('aip-form');
     const originalPagePlaceholder = input.placeholder;
     let inputPlaceholder = originalPagePlaceholder;
@@ -82,29 +77,9 @@
         inputPlaceholder = sendKeySwapped()
             ? originalPagePlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
             : originalPagePlaceholder;
-        if (bgBanner.classList.contains('hidden')) input.placeholder = inputPlaceholder;
+        input.placeholder = inputPlaceholder;
     }
     refreshSendKeyHint();
-    function setBackgroundMode(on) {
-        backgroundMode = on;
-        bgToggle.classList.toggle('ai-toggle-on', on);
-        bgBanner.classList.toggle('hidden', !on);
-        composerForm.classList.toggle('ai-bg-armed', on);
-        input.placeholder = on
-            ? 'Describe the long-running task… (runs in background)'
-            : inputPlaceholder;
-        bgToggle.title = on
-            ? 'Background mode ON — the next message starts a long-horizon task on the server'
-            : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
-    }
-    bgToggle.addEventListener('click', () => {
-        setBackgroundMode(!backgroundMode);
-        input.focus();
-    });
-    document.getElementById('aip-bg-off').addEventListener('click', () => {
-        setBackgroundMode(false);
-        input.focus();
-    });
 
     // --- "+" attach/options menu ------------------------------------------
     const plusBtn = document.getElementById('aip-plus');
@@ -123,11 +98,8 @@
             plusBtn.classList.add('open');
         }
     });
-    // Choosing a menu item closes the menu — except the background toggle,
-    // which stays open so the switch state is visible.
-    plusMenu.addEventListener('click', ev => {
-        if (!ev.target.closest('#aip-bg-toggle')) closePlusMenu();
-    });
+    // Choosing a menu item closes the menu.
+    plusMenu.addEventListener('click', closePlusMenu);
 
     // --- Persona picker: Agency personality/skill for the chat ----------
     const personaPopup = document.getElementById('aip-persona-popup');
@@ -982,7 +954,7 @@
 
     // Re-send the most recent user message as a new turn.
     function regenerateLast() {
-        if (abortCtrl || !lastUserQuestion) return;  // only while idle
+        if (taskAbort || watchingTaskId || !lastUserQuestion) return;  // only while idle
         input.value = lastUserQuestion;
         growInput();
         form.requestSubmit();
@@ -1048,7 +1020,6 @@
     let liveBubble = null;         // tentative answer bubble while streaming
     let toolChipEl = null;         // animated "tool working" chip
     let toolElapsedTimer = null;   // 1s ticker for the running chip
-    let abortCtrl = null;          // non-null while a request is in flight
     let thinkBuf = '';             // RAF-batched token buffers
     let answerBuf = '';
     let rafScheduled = false;
@@ -1270,7 +1241,7 @@
         stopHeartbeat();
         lastEventAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            if (!abortCtrl) { stopHeartbeat(); return; }
+            if (!taskAbort && !watchingTaskId) { stopHeartbeat(); return; }
             if (toolChipEl) return;  // a tool is visibly running
             const wait = Date.now() - lastEventAt;
             if (wait < 2000) return;
@@ -1361,10 +1332,8 @@
                     }
                 });
                 restoreContext(conv.context);
-                // A conversation owned by a background task stays in
-                // background mode until the user dismisses the task, and a
-                // still-running task streams its events live (below).
-                setBackgroundMode(!!conv.task);
+                // A still-running task streams its events live (below);
+                // navigating away only drops the subscription.
                 if (conv.task && (conv.task.status === 'queued'
                         || conv.task.status === 'running')) {
                     watchTask(conv.task);
@@ -1449,6 +1418,7 @@
     // just ends is not an error — the final loadConversation reconciles.
     async function watchTask(task) {
         taskAbort = new AbortController();
+        watchingTaskId = task.id;
         liveBubble = null;
         lastThinkingSpan = null;
         const state = { gotResult: true };
@@ -1462,6 +1432,8 @@
             });
         } catch { /* aborted or offline — the transcript persists */ }
         taskAbort = null;
+        watchingTaskId = null;
+        setBusy(false);
         flushTokens();
         collapseReasoningBox();
         if (conversationId) loadConversation(conversationId);
@@ -1874,9 +1846,19 @@
     // --- Submit -----------------------------------------------------------------
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        // While a request is in flight the send button is the Stop button.
-        if (abortCtrl) {
-            abortCtrl.abort();
+        // While a run streams into this page the send button is the Stop
+        // button: detach the subscription and stop the run itself.
+        if (taskAbort) {
+            const stopId = watchingTaskId;
+            taskAbort.abort();
+            taskAbort = null;
+            watchingTaskId = null;
+            setBusy(false);
+            if (stopId) {
+                try {
+                    await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
+                } catch (err) { /* the dock widget can stop it instead */ }
+            }
             return;
         }
         const question = input.value.trim();
@@ -1886,93 +1868,26 @@
         // until indexing cards are ready (or the timeout passes).
         await waitForSummaries();
 
-        // Background mode: launch a long-horizon task on the server and leave
-        // this conversation untouched — the dock widget tracks it. The task
-        // captures the CURRENT context (drives, open file, cell, attachments)
-        // and keeps it for its whole lifetime.
-        if (backgroundMode) {
-            const sentAttachments = attachments;
-            const sentCell = cellRef;
-            const sentDrives = driveRefs;
-            attachments = [];
-            cellRef = null;
-            driveRefs = [];
-            input.value = '';
-            growInput();
-            hideMentions();
-            setBackgroundMode(false);
-            renderChips();
-            try {
-                const resp = await fetch('/ai/tasks', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: question,
-                        // Stay in this conversation when there is one —
-                        // the task continues the same transcript.
-                        conversation_id: conversationId,
-                        attachments: sentAttachments.map(a => a.id),
-                        context_file_id: (window.currentFile
-                            && window.currentFile.id !== contextDismissedId
-                            && !sentAttachments.some(a => a.id === window.currentFile.id))
-                            ? window.currentFile.id : null,
-                        scope_all_drives: scopeAllDrives,
-                        scope_drive_ids: sentDrives.length
-                            ? sentDrives.map(r => r.id) : null,
-                        context_cell: sentCell
-                            ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
-                            : null,
-                        persona: personaRef ? personaRef.key : null,
-                        behavior_id: behaviorRef ? behaviorRef.id : null,
-                        // Automation editor open on this page (if any).
-                        context_workflow_id: (window.currentWorkflow
-                            && window.currentWorkflow.id !== workflowDismissedId)
-                            ? window.currentWorkflow.id : null,
-                        context_workflow_node: (window.currentWorkflow
-                            && window.currentWorkflow.id !== workflowDismissedId)
-                            ? (window.currentWorkflowNode || null) : null,
-                    }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (!resp.ok) {
-                    window.uiAlert(data.error || 'Could not start the background task.',
-                                   { title: 'Run in background' });
-                    return;
-                }
-                window.uiToast('Background task started — follow it live here or in the dock below.', 'info');
-                // Follow the task live on THIS page: loading its fresh
-                // conversation keeps background mode on and subscribes to
-                // the event stream, so the AI's work renders as it happens.
-                if (data.task && data.task.conversation_id) {
-                    loadConversation(data.task.conversation_id);
-                }
-            } catch (err) {
-                window.uiAlert('Could not reach the server.', { title: 'Run in background' });
-            }
-            return;
-        }
-
+        // Every message runs as a server-side run: the dock widget
+        // tracks it, and leaving this page only drops the live
+        // subscription — the run continues until it finishes or is stopped.
+        // Context is captured at send time.
         input.value = '';
         growInput();
         hideMentions();
         const sentAttachments = attachments.slice();
         attachments = [];
         renderChips();
-        addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
+        // Optimistic echo (replaced by the persisted transcript on
+        // reconcile when the run's conversation loads below).
+        const echo = addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
                    { created_at: new Date().toISOString() });
-        setBusy(true);
         lastUserQuestion = question;  // for the Regenerate action
-        startHeartbeat();
-        liveBubble = null;
-        lastThinkingSpan = null;
-        const thinking = addMessage('assistant', '_Thinking…_');
-
+        setBusy(true);
         try {
-            abortCtrl = new AbortController();
             const resp = await fetch('/ai/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                signal: abortCtrl.signal,
                 body: JSON.stringify({
                     message: question,
                     conversation_id: conversationId,
@@ -2004,47 +1919,28 @@
                         ? (window.currentWorkflowNode || null) : null,
                 }),
             });
-
-            if (!resp.ok || !resp.body) {
-                const body = await resp.json().catch(() => ({}));
-                thinking.remove();
-                addMessage('assistant', '**Error:** ' + (body.error || 'Something went wrong.'),
-                           { created_at: new Date().toISOString() });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                setBusy(false);
+                echo.remove();
+                if (resp.status === 409) {
+                    window.uiToast(data.error || 'A run is already in progress — stop it before sending.', 'error');
+                } else {
+                    addMessage('assistant', '**Error:** ' + (data.error || 'Something went wrong.'),
+                               { created_at: new Date().toISOString() });
+                }
                 return;
             }
-
-            // Stream NDJSON events: steps appear live as the agent works.
-            const state = { gotResult: false };
-            let firstEvent = true;
-            await readNdjson(resp.body.getReader(), (event) => {
-                if (firstEvent) { thinking.remove(); firstEvent = false; }
-                handleStreamEvent(event, state);
-            });
-            thinking.remove();
-            collapseReasoningBox();
-            if (!state.gotResult) {
-                discardLiveBubble(); // keep any partial text that arrived
-                addMessage('assistant',
-                           '**Error:** the connection was lost before the answer arrived. Please try again.',
-                           { created_at: new Date().toISOString() });
-            }
+            conversationId = data.conversation_id;
+            // Follow the run live on THIS page: loading its fresh
+            // conversation restores the captured context and subscribes to
+            // the event stream — no reload needed.
+            loadConversation(data.conversation_id);
         } catch (err) {
-            thinking.remove();
-            collapseReasoningBox();
-            if (err && err.name === 'AbortError') {
-                discardLiveBubble(); // keep whatever partial text arrived
-                addMessage('assistant', '_Stopped by you — the answer was cancelled._',
-                           { created_at: new Date().toISOString() });
-            } else {
-                discardLiveBubble();
-                addMessage('assistant', '**Error:** could not reach the server.',
-                           { created_at: new Date().toISOString() });
-            }
-        } finally {
-            abortCtrl = null;
-            flushTokens();  // no buffered token may be lost at the end
-            stopHeartbeat();
             setBusy(false);
+            echo.remove();
+            addMessage('assistant', '**Error:** could not reach the server.',
+                       { created_at: new Date().toISOString() });
         }
     });
 

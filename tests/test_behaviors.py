@@ -213,7 +213,7 @@ def test_chat_applies_behavior_instructions(auth_client, app, user):
                return_value={"role": "assistant", "content": "Arr!"}) as mock:
         resp = auth_client.post("/ai/chat", json={"message": "hi",
                                                   "behavior_id": bid})
-        _ = resp.data  # consume the stream inside the patch
+    assert resp.status_code == 200
     assert mock.called
     assert "Talk like a pirate." in str(mock.call_args)
 
@@ -229,7 +229,7 @@ def test_chat_ignores_disabled_behavior(auth_client, app, user):
                return_value={"role": "assistant", "content": "Hi."}) as mock:
         resp = auth_client.post("/ai/chat", json={"message": "hi",
                                                   "behavior_id": bid})
-        _ = resp.data
+    assert resp.status_code == 200
     assert mock.called
     assert "Talk like a pirate." not in str(mock.call_args)
 

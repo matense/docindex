@@ -317,13 +317,8 @@
         jumpPill.addEventListener('click', () => scrollDown(true));
         renderAutoScroll();
 
-        // Long-horizon mode: send the message as a background task instead of
-        // a live chat answer — the agent runs on the server and reports to the
-        // bottom dock when done. While armed, the composer shows an amber
-        // banner + recolored send button so the state is unmistakable.
-        const bgToggle = el.querySelector('.acw-bg-toggle');
-        const bgBanner = el.querySelector('.acw-bg-banner');
-        const composerForm = el.querySelector('.acw-form');
+        // Composer hint follows the send-key preference (see
+        // refreshSendKeyHint) — every run streams live either way.
         const originalPlaceholder = input.placeholder;
         let inputPlaceholder = originalPlaceholder;
         // Send-key preference (Profile → Display & settings) is a body
@@ -333,30 +328,9 @@
             inputPlaceholder = sendKeySwapped()
                 ? originalPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
                 : originalPlaceholder;
-            if (bgBanner.classList.contains('hidden')) input.placeholder = inputPlaceholder;
+            input.placeholder = inputPlaceholder;
         }
         refreshSendKeyHint();
-        function setBackgroundMode(on) {
-            backgroundMode = on;
-            bgToggle.classList.toggle('ai-toggle-on', on);
-            bgBanner.classList.toggle('hidden', !on);
-            composerForm.classList.toggle('ai-bg-armed', on);
-            input.placeholder = on
-                ? 'Describe the long-running task… (runs in background)'
-                : inputPlaceholder;
-            bgToggle.title = on
-                ? 'Background mode ON — the next message starts a long-horizon task on the server'
-                : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
-        }
-        bgToggle.addEventListener('click', () => {
-            setBackgroundMode(!backgroundMode);
-            input.focus();
-        });
-        el.querySelector('.acw-bg-off').addEventListener('click', () => {
-            setBackgroundMode(false);
-            input.focus();
-        });
-
         // --- "+" attach/options menu + header "⋯" menu ---------------------
         const plusBtn = el.querySelector('.acw-plus');
         const plusMenu = el.querySelector('.acw-plus-menu');
@@ -390,14 +364,11 @@
                 moreMenu.classList.add('flex');
             }
         });
-        // Choosing a menu item closes the menu — except the background
-        // toggle, which stays open so the switch state is visible.
-        plusMenu.addEventListener('click', ev => {
-            if (!ev.target.closest('.acw-bg-toggle')) closePlusMenu();
-        });
+        // Choosing a menu item closes the menu.
+        plusMenu.addEventListener('click', closePlusMenu);
         moreMenu.addEventListener('click', closeMoreMenu);
 
-        // Browser notifications when a background task finishes (opt-in,
+        // Browser notifications when a run finishes (opt-in,
         // stored locally; the dock widget fires them from any page).
         const notifyBtn = el.querySelector('.acw-notify');
         function renderNotifyBtn() {
@@ -443,14 +414,12 @@
         let cellRef = null; // notebook cell dropped into the chat
         let driveRefs = []; // drives picked with $ mentions [{id, name}]
         let driveListCache = null; // /api/drives, fetched on first $ use
-        let backgroundMode = false; // send as a long-horizon background task
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
         let liveBubble = null;         // tentative answer bubble while streaming
         let toolChipEl = null;         // animated "tool working" chip
         let toolElapsedTimer = null;   // 1s ticker for the running chip
-        let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
         let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
         let mentionToken = null; // the full "#query" match, to replace on pick
@@ -1083,7 +1052,7 @@
 
         // Re-send the most recent user message as a new turn.
         function regenerateLast() {
-            if (abortCtrl || !lastUserQuestion) return;  // only while idle
+            if (taskAbort || !lastUserQuestion) return;  // only while idle
             input.value = lastUserQuestion;
             growInput();
             form.requestSubmit();
@@ -1358,7 +1327,7 @@
             stopHeartbeat();
             lastEventAt = Date.now();
             heartbeatTimer = setInterval(() => {
-                if (!abortCtrl) { stopHeartbeat(); return; }
+                if (!taskAbort) { stopHeartbeat(); return; }
                 if (toolChipEl) return;  // a tool is visibly running
                 const wait = Date.now() - lastEventAt;
                 if (wait < 2000) return;
@@ -2184,10 +2153,10 @@
             const banner = document.createElement('div');
             banner.className = 'ai-task-banner' + (active ? '' : ' ai-task-banner-done');
             banner.title = active
-                ? 'Replies sent here start a new background task — this one keeps running.'
-                : 'This conversation belongs to a finished background task.';
+                ? 'Run in progress — it keeps going if you minimize or close this window.'
+                : 'This conversation belongs to a finished run.';
             banner.innerHTML = active
-                ? '<i class="fas fa-rocket"></i>' +
+                ? '<i class="fas fa-circle-notch fa-spin"></i>' +
                   '<span class="ai-task-banner-title"></span>' +
                   '<span class="opacity-60">· live on the server</span>' +
                   '<button type="button" class="ai-task-banner-rename" title="Rename task"><i class="fas fa-pencil"></i></button>'
@@ -2201,7 +2170,7 @@
             messagesEl.prepend(banner);
             taskBanner = banner;
             banner.querySelector('.ai-task-banner-title').textContent =
-                taskMode.title || 'Background task';
+                taskMode.title || 'AI run';
             const renameBtn = banner.querySelector('.ai-task-banner-rename');
             if (renameBtn) renameBtn.addEventListener('click', renameTaskTitle);
             if (!active) {
@@ -2273,7 +2242,7 @@
                                    'error');
                     return;
                 }
-                window.uiToast('New background task started.', 'info');
+                window.uiToast('New run started.', 'info');
                 if (data.task && data.task.conversation_id) {
                     loadConversation(data.task.conversation_id);
                 }
@@ -2285,7 +2254,7 @@
         function exitTaskMode() {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             taskMode = null;
-            setBackgroundMode(false);  // dismissed -> back to a normal chat
+            setBusy(false);
             renderTaskBanner();
             renderChips();  // back to live screen context
         }
@@ -2296,10 +2265,8 @@
                 && taskMode.status === task.status) return;
             exitTaskMode();
             taskMode = task;
-            // A conversation that started as a background task STAYS in
-            // background mode until the user dismisses the task — follow-up
-            // messages launch new background tasks, not live answers.
-            setBackgroundMode(true);
+            // A run stays attached to this window until it finishes — new
+            // messages wait for (or stop) the running one.
             renderTaskBanner();
             renderChips();  // show the context captured when the task started
             if (task.status === 'queued' || task.status === 'running')
@@ -2335,6 +2302,7 @@
                 });
             } catch (err) { /* aborted or offline — the transcript persists */ }
             taskAbort = null;
+            setBusy(false);
             // Reconcile with the persisted transcript (covers anything
             // missed between the history load and the subscription).
             if (conversationId) loadConversation(conversationId);
@@ -2343,9 +2311,18 @@
         // --- Submit (streams NDJSON agent events) ---
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            // While a request is in flight the send button is the Stop button.
-            if (abortCtrl) {
-                abortCtrl.abort();
+            // While a run streams into this window the send button is the
+            // Stop button: detach the subscription and stop the run itself.
+            if (taskAbort) {
+                const stopId = taskMode && taskMode.id;
+                taskAbort.abort();
+                taskAbort = null;
+                setBusy(false);
+                if (stopId) {
+                    try {
+                        await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
+                    } catch (err) { /* the dock widget can stop it instead */ }
+                }
                 return;
             }
             const question = input.value.trim();
@@ -2355,172 +2332,46 @@
             // until indexing cards are ready (or the timeout passes).
             await waitForSummaries();
 
-            // Background mode: run this turn as a long-horizon task on the
-            // server, but keep it in THIS conversation — history is shared,
-            // only the execution mode changes. The dock widget tracks it.
-            // The task captures the CURRENT context (drives, open file,
-            // cell, attachments) and keeps it for its whole lifetime.
-            if (backgroundMode) {
-                const sentAttachments = attachments;
-                const sentCell = cellRef;
-                const sentDrives = driveRefs;
-                attachments = [];
-                cellRef = null;
-                driveRefs = [];
-                input.value = '';
-                growInput();
-                hideMentions();
-                // One-shot by default, but a task conversation stays in
-                // background mode until the user dismisses the task.
-                if (!taskMode) setBackgroundMode(false);
-                renderChips();
-                // Summarize the captured context in the launch toast, so the
-                // user sees what the task will work with.
-                const ctxBits = [];
-                if (sentAttachments.length) {
-                    ctxBits.push(sentAttachments.length === 1
-                        ? sentAttachments[0].name
-                        : sentAttachments.length + ' files');
-                }
-                if (sentDrives.length) {
-                    ctxBits.push('drive ' + sentDrives.map(d => d.name).join(', '));
-                }
-                const openFile = (window.currentFile
-                    && window.currentFile.id !== contextDismissedId
-                    && !sentAttachments.some(a => a.id === window.currentFile.id))
-                    ? window.currentFile : null;
-                if (openFile) ctxBits.push('open file ' + (openFile.name || ''));
-                if (sentCell) ctxBits.push('notebook cell');
-                if (personaRef) ctxBits.push(personaRef.name);
-                const launchMsg = 'Background task started'
-                    + (ctxBits.length ? ' · ' + ctxBits.join(' · ') : '')
-                    + ' — follow it live here or in the dock below.';
-                try {
-                    const resp = await fetch('/ai/tasks', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            message: question,
-                            // Stay in this conversation when there is one —
-                            // the task continues the same transcript.
-                            conversation_id: conversationId,
-                            attachments: sentAttachments.map(a => a.id),
-                            context_file_id: (window.currentFile
-                                && window.currentFile.id !== contextDismissedId
-                                && !sentAttachments.some(a => a.id === window.currentFile.id))
-                                ? window.currentFile.id : null,
-                            scope_all_drives: scopeAllDrives,
-                            scope_drive_ids: sentDrives.length
-                                ? sentDrives.map(r => r.id) : null,
-                            context_cell: sentCell
-                                ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
-                                : null,
-                            persona: personaRef ? personaRef.key : null,
-                            behavior_id: behaviorRef ? behaviorRef.id : null,
-                            // Automation editor open on this page (if any).
-                            context_workflow_id: (window.currentWorkflow
-                                && window.currentWorkflow.id !== workflowDismissedId)
-                                ? window.currentWorkflow.id : null,
-                            context_workflow_node: (window.currentWorkflow
-                                && window.currentWorkflow.id !== workflowDismissedId)
-                                ? (window.currentWorkflowNode || null) : null,
-                        }),
-                    });
-                    const data = await resp.json().catch(() => ({}));
-                    if (!resp.ok) {
-                        window.uiAlert(data.error || 'Could not start the background task.',
-                                       { title: 'Run in background' });
-                        return;
-                    }
-                    window.uiToast(launchMsg, 'info');
-                    // Follow the task live in THIS window: loading its fresh
-                    // conversation enters task mode (banner + captured context)
-                    // and subscribes to the event stream, so the AI's work
-                    // renders here as it happens — no close/reopen needed.
-                    if (data.task && data.task.conversation_id) {
-                        loadConversation(data.task.conversation_id);
-                    }
-                } catch (err) {
-                    window.uiAlert('Could not reach the server.', { title: 'Run in background' });
-                }
-                return;
-            }
-
+            // Every message runs as a server-side run in THIS conversation:
+            // the dock widget tracks it, and minimizing or closing only
+            // drops the live subscription — the run continues until it
+            // finishes or is stopped. Context is captured at send time.
+            const sentAttachments = attachments;
+            const sentCell = cellRef;
+            const sentDrives = driveRefs;
+            attachments = [];
+            cellRef = null;
+            driveRefs = [];
             input.value = '';
             growInput();
             hideMentions();
-            const sentAttachments = attachments;
-            attachments = [];
             renderChips();
-            addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
+            // Optimistic echo (replaced by the persisted transcript on
+            // reconcile when the run's conversation loads below).
+            const echo = addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
                        { created_at: new Date().toISOString() });
-            setBusy(true);
             lastUserQuestion = question;  // for the Regenerate action
-            startHeartbeat();
-            liveBubble = null;
-            lastThinkingSpan = null;
-            const thinking = addMessage('assistant', '_Thinking…_');
-
+            setBusy(true);
             try {
-                abortCtrl = new AbortController();
-                // In task mode the captured context is the base: the current
-                // screen does NOT override it — only references the user
-                // explicitly added (chips above) are merged in.
-                const captured = (taskMode && taskMode.context) ? taskMode.context : null;
-                let bodyAttachments, bodyContextFile, bodyAllDrives, bodyDriveIds, bodyCell;
-                // A persona/behavior the user picks now overrides the captured one.
-                const bodyPersona = personaRef ? personaRef.key
-                    : (captured ? captured.persona || null : null);
-                const bodyBehavior = behaviorRef ? behaviorRef.id
-                    : (captured ? captured.behavior || null : null);
-                if (captured) {
-                    bodyAttachments = [...new Set([
-                        ...(captured.file_ids || []),
-                        ...sentAttachments.map(a => a.id)])];
-                    bodyContextFile = captured.context_file_id || null;
-                    bodyAllDrives = !!captured.all_drives;
-                    // "All drives" cannot be narrowed by adding a drive.
-                    bodyDriveIds = captured.all_drives ? null : [...new Set([
-                        ...(captured.drive_ids || []),
-                        ...driveRefs.map(r => r.id)])];
-                    if (!bodyDriveIds.length) bodyDriveIds = null;
-                    bodyCell = cellRef
-                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                        : (captured.context_cell
-                            ? { file_id: captured.context_cell.file_id,
-                                cell_id: captured.context_cell.cell_id }
-                            : null);
-                } else {
-                    bodyAttachments = sentAttachments.map(a => a.id);
-                    // Implicit context: the file/notebook open on screen.
-                    bodyContextFile = (window.currentFile
-                        && window.currentFile.id !== contextDismissedId
-                        && !sentAttachments.some(a => a.id === window.currentFile.id))
-                        ? window.currentFile.id : null;
-                    // Drive scope removed via the chip -> search all drives.
-                    bodyAllDrives = scopeAllDrives;
-                    // Drives picked with $ mentions (win over the above).
-                    bodyDriveIds = driveRefs.length
-                        ? driveRefs.map(r => r.id) : null;
-                    // Notebook cell dropped into the chat.
-                    bodyCell = cellRef
-                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                        : null;
-                }
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    signal: abortCtrl.signal,
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
-                        attachments: bodyAttachments,
-                        context_file_id: bodyContextFile,
-                        scope_all_drives: bodyAllDrives,
-                        scope_drive_ids: bodyDriveIds,
-                        context_cell: bodyCell,
-                        persona: bodyPersona,
-                        behavior_id: bodyBehavior,
+                        attachments: sentAttachments.map(a => a.id),
+                        context_file_id: (window.currentFile
+                            && window.currentFile.id !== contextDismissedId
+                            && !sentAttachments.some(a => a.id === window.currentFile.id))
+                            ? window.currentFile.id : null,
+                        scope_all_drives: scopeAllDrives,
+                        scope_drive_ids: sentDrives.length
+                            ? sentDrives.map(r => r.id) : null,
+                        context_cell: sentCell
+                            ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
+                            : null,
+                        persona: personaRef ? personaRef.key : null,
+                        behavior_id: behaviorRef ? behaviorRef.id : null,
                         // Automation editor open on this page (if any).
                         context_workflow_id: (window.currentWorkflow
                             && window.currentWorkflow.id !== workflowDismissedId)
@@ -2530,47 +2381,28 @@
                             ? (window.currentWorkflowNode || null) : null,
                     }),
                 });
-
-                if (!resp.ok || !resp.body) {
-                    const body = await resp.json().catch(() => ({}));
-                    thinking.remove();
-                    addMessage('assistant', '**Error:** ' + (body.error || 'Something went wrong.'),
-                               { created_at: new Date().toISOString() });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    setBusy(false);
+                    echo.remove();
+                    if (resp.status === 409) {
+                        window.uiToast(data.error || 'A run is already in progress — stop it before sending.', 'error');
+                    } else {
+                        addMessage('assistant', '**Error:** ' + (data.error || 'Something went wrong.'),
+                                   { created_at: new Date().toISOString() });
+                    }
                     return;
                 }
-
-                // Stream NDJSON events: steps appear live as the agent works.
-                const state = { gotResult: false };
-                let firstEvent = true;
-                await readNdjson(resp.body.getReader(), (event) => {
-                    if (firstEvent) { thinking.remove(); firstEvent = false; }
-                    handleStreamEvent(event, state);
-                });
-                thinking.remove();
-                collapseReasoningBox();
-                if (!state.gotResult) {
-                    discardLiveBubble(); // keep any partial text that arrived
-                    addMessage('assistant',
-                               '**Error:** the connection was lost before the answer arrived. Please try again.',
-                               { created_at: new Date().toISOString() });
-                }
+                conversationId = data.conversation_id;
+                // Follow the run live in THIS window: loading the fresh
+                // conversation enters task mode (banner + captured context)
+                // and subscribes to the event stream — no close/reopen needed.
+                loadConversation(data.conversation_id);
             } catch (err) {
-                thinking.remove();
-                collapseReasoningBox();
-                if (err && err.name === 'AbortError') {
-                    discardLiveBubble(); // keep whatever partial text arrived
-                    addMessage('assistant', '_Stopped by you — the answer was cancelled._',
-                               { created_at: new Date().toISOString() });
-                } else {
-                    discardLiveBubble();
-                    addMessage('assistant', '**Error:** could not reach the server.',
-                               { created_at: new Date().toISOString() });
-                }
-            } finally {
-                abortCtrl = null;
-                flushTokens();  // no buffered token may be lost at the end
-                stopHeartbeat();
                 setBusy(false);
+                echo.remove();
+                addMessage('assistant', '**Error:** could not reach the server.',
+                           { created_at: new Date().toISOString() });
             }
         });
 
@@ -2592,9 +2424,9 @@
             input.focus();
         }
 
-        function destroy() {
-            if (abortCtrl) abortCtrl.abort();  // stop any in-flight answer
-            if (taskAbort) taskAbort.abort();  // stop watching a background task
+        function detachWindow() {
+            // Drop the live subscription; the server-side run continues.
+            if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
             window.removeEventListener('ai-task-dismissed', onTaskDismissed);
@@ -2607,6 +2439,33 @@
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();
+        }
+
+        function runIsActive() {
+            return !!taskMode
+                && (taskMode.status === 'queued' || taskMode.status === 'running');
+        }
+
+        async function destroy() {
+            // Closing while a run is in progress stops it — minimize (—)
+            // keeps it going in the dock instead.
+            if (runIsActive()) {
+                const ok = await window.uiConfirm(
+                    'A run is still in progress. Close this chat and stop it?\n\n' +
+                    'The transcript so far is kept. Minimize (—) instead to let it finish.',
+                    { title: 'Close chat', confirmText: 'Stop & close' });
+                if (!ok) return;
+                try {
+                    await fetch('/ai/tasks/' + taskMode.id + '/stop',
+                                { method: 'POST' });
+                } catch (err) { /* already finishing; detach anyway */ }
+            }
+            detachWindow();
+        }
+
+        function minimize() {
+            detachWindow();
+            window.uiToast('Minimized — the run keeps going in the dock.', 'info');
         }
 
         // --- Summarize & reset: AI compacts the whole history into a single
@@ -2645,6 +2504,7 @@
         }
 
         el.querySelector('.acw-close').addEventListener('click', destroy);
+        el.querySelector('.acw-min').addEventListener('click', minimize);
         el.querySelector('.acw-new-conv').addEventListener('click', newConversation);
         el.querySelector('.acw-summarize').addEventListener('click', summarizeConversation);
         el.querySelector('.acw-convs').addEventListener('click', () => toggleList());

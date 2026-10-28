@@ -59,14 +59,6 @@
         <button type="button" id="aip-jump" class="ai-jump-pill hidden">
             <i class="fas fa-arrow-down"></i> New messages
         </button>
-        <!-- Background-mode banner -->
-        <div id="aip-bg-banner" class="ai-bg-banner hidden">
-            <i class="fas fa-rocket"></i>
-            <span><strong>Background mode</strong> — the next message runs as a long-horizon task</span>
-            <button type="button" id="aip-bg-off" class="ai-bg-off" title="Turn off background mode">
-                <i class="fas fa-xmark"></i>
-            </button>
-        </div>
         <div id="aip-attachments" class="hidden flex-wrap gap-1 px-2 pb-2"></div>
         <!-- Persona picker popup -->
         <div id="aip-persona-popup" class="hidden absolute bottom-full left-2 right-2 mb-1 glass-menu z-10 flex flex-col max-h-72">
@@ -103,12 +95,6 @@
                 <i class="fas fa-masks-theater w-5 text-center text-secondary"></i> Choose a persona
             </button>
             <div class="ai-menu-sep"></div>
-            <button type="button" id="aip-bg-toggle" class="ai-menu-item"
-                    title="Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock">
-                <i class="fas fa-rocket w-5 text-center text-warning"></i> Run in background
-                <span class="ai-menu-tog"></span>
-            </button>
-            <div class="ai-menu-sep"></div>
             <div class="px-2.5 py-1 text-[10px] opacity-40">tip: drop files onto the chat to attach them</div>
         </div>
         <form id="aip-form" data-no-spa class="ai-composer !m-0 shadow-lg">
@@ -132,5 +118,5 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=2" defer></script>
-<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=9" defer></script>
+<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=11" defer></script>
 {% endblock %}

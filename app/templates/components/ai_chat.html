@@ -62,6 +62,9 @@
                     </a>
                 </div>
             </div>
+            <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-min" title="Minimize — the run keeps going in the dock">
+                <i class="fas fa-minus"></i>
+            </button>
             <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-close" title="Close">
                 <i class="fas fa-xmark"></i>
             </button>
@@ -87,14 +90,6 @@
         <button type="button" class="acw-jump ai-jump-pill hidden">
             <i class="fas fa-arrow-down"></i> New messages
         </button>
-        <!-- Background-mode banner -->
-        <div class="acw-bg-banner ai-bg-banner hidden">
-            <i class="fas fa-rocket"></i>
-            <span><strong>Background mode</strong> — the next message runs as a long-horizon task</span>
-            <button type="button" class="ai-bg-off acw-bg-off" title="Turn off background mode">
-                <i class="fas fa-xmark"></i>
-            </button>
-        </div>
         <!-- Attachment chips -->
         <div class="acw-attachments hidden flex-wrap gap-1 px-3 pt-2"></div>
         <!-- Persona picker popup -->
@@ -130,12 +125,6 @@
             <button type="button" class="ai-menu-item acw-attach-persona"
                     title="Give the AI a personality/skill (Agency persona library)">
                 <i class="fas fa-masks-theater w-5 text-center text-secondary"></i> Choose a persona
-            </button>
-            <div class="ai-menu-sep"></div>
-            <button type="button" class="ai-menu-item acw-bg-toggle"
-                    title="Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock">
-                <i class="fas fa-rocket w-5 text-center text-warning"></i> Run in background
-                <span class="ai-menu-tog"></span>
             </button>
         </div>
 
