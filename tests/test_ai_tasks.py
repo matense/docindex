@@ -251,6 +251,47 @@ def test_chat_deep_flag_raises_extended_budget(auth_client, app, user):
         assert db.session.get(AITask, data["task"]["id"]).max_steps == 64
 
 
+def _make_conn(app, user, **fields):
+    from app.models import AIConnection
+    with app.app_context():
+        conn = AIConnection(user_id=user, name="T",
+                            base_url="http://x.local/v1", model="m",
+                            is_active=True, **fields)
+        db.session.add(conn)
+        db.session.commit()
+        return conn.id
+
+
+def test_chat_deep_flag_uses_configured_long_horizon_budget(auth_client, app, user):
+    """The per-connection long horizon setting overrides the 64 default."""
+    _enable_ai(app)
+    _make_conn(app, user, long_horizon_steps=100)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 100
+
+
+def test_chat_deep_flag_never_below_normal_budget(auth_client, app, user):
+    """A deep run keeps at least the normal connection budget."""
+    _enable_ai(app)
+    _make_conn(app, user, max_steps=120)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 120
+
+
 # --- Live stream (/ai/tasks/<id>/stream) ------------------------------------
 
 

@@ -12,7 +12,7 @@
             "Chat windows can snap to the screen edges for a dual view with the drive, with a draggable divider to resize both columns — dock from the ⋯ menu, by dragging, or with Alt+←/→.",
             "Profile → Display & settings now offers a chat send-key choice: Enter sends (Shift+Enter for a new line), or Shift+Enter sends (Enter for a new line).",
             "Every chat message now runs as a server-side run: minimizing or closing a window only drops the live view — the run keeps going in the dock, and the full reasoning stays available when you reopen. Closing a window mid-run asks for confirmation and stops it.",
-            "The per-connection max_steps is now the single step budget for all runs, with a per-message Long horizon toggle for the extended budget."
+            "The per-connection max_steps is now the single step budget for all runs, with a per-message Long horizon toggle for the extended budget (configurable per connection in AI Settings, default 64)."
           ]
         }
       ]

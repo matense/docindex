@@ -593,11 +593,10 @@ def chat():
         # itself when persisting the user message.
         budget = None
         if data.get("deep"):
-            # Long-horizon run: extended step budget, never below the
-            # normal connection budget.
-            budget = max(ai_task_service.resolve_max_steps(
-                current_user, current_app._get_current_object()),
-                ai_task_service.DEEP_RUN_MAX_STEPS)
+            # Long-horizon run: extended per-connection budget, never below
+            # the normal budget.
+            budget = ai_task_service.resolve_deep_max_steps(
+                current_user, current_app._get_current_object())
         task = ai_task_service.start_task(
             current_user,
             question or "What can you tell me about these files?",

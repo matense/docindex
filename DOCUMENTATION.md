@@ -1009,7 +1009,9 @@ clamped to 1..128, snapshotted onto `AITask.max_steps` at creation):
 
 1. The `max_steps` argument to `start_task` (explicit per-run override).
 2. The per-message long-horizon toggle (`deep: true` on `POST /ai/chat`):
-   `max(connection budget, 64)`.
+   `max(connection budget, connection long_horizon_steps or 64)`.
+   The long-horizon budget is configurable per connection in
+   Settings → AI → Advanced settings ("Long horizon steps", default 64).
 3. `AIConnection.max_steps` of the user's active connection (if set), via
    `ai_service.config_for(user)`.
 4. Global `AI_MAX_STEPS` env var (default 16).

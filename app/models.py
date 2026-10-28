@@ -291,6 +291,9 @@ class AIConnection(db.Model):
     embedding_model = db.Column(db.String(120), nullable=False, default="")
     # Per-connection agent step limit; NULL falls back to the global AI_MAX_STEPS.
     max_steps = db.Column(db.Integer, nullable=True)
+    # Per-connection long-horizon step budget (per-message "Long horizon
+    # run" toggle); NULL falls back to 64.
+    long_horizon_steps = db.Column(db.Integer, nullable=True)
     # Per-connection request limit (requests/minute); NULL falls back to the
     # global AI_RATE_LIMIT_RPM (default 30). 0 = unlimited.
     rate_limit_rpm = db.Column(db.Integer, nullable=True)

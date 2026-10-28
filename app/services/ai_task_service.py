@@ -22,7 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
-from ..models import AITask, ChatConversation, ChatMessage, Drive, User, utcnow
+from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, User, utcnow
 from . import agent_service, ai_service, log_service
 
 _TASK_NOTE = (
@@ -93,6 +93,23 @@ def resolve_max_steps(user, app):
     except (TypeError, ValueError):
         steps = 16
     return max(1, min(steps, 128))
+
+
+def resolve_deep_max_steps(user, app):
+    """Extended budget for per-message long-horizon runs: the connection's
+    long_horizon_steps (default 64), never below the normal budget."""
+    try:
+        conn = AIConnection.query.filter_by(
+            user_id=user.id, is_active=True).first()
+        deep = (conn.long_horizon_steps if conn else None) or DEEP_RUN_MAX_STEPS
+    except Exception:  # noqa: BLE001 - misconfigured connection still runs
+        deep = DEEP_RUN_MAX_STEPS
+    try:
+        deep = int(deep)
+    except (TypeError, ValueError):
+        deep = DEEP_RUN_MAX_STEPS
+    normal = resolve_max_steps(user, app)
+    return max(1, min(max(normal, deep), 256))
 
 
 def start_task(user, message, ctx=None, app=None, conversation_id=None,

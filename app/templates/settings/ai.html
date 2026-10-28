@@ -135,6 +135,13 @@
                     <p class="text-xs opacity-40 mt-1">How many tool/reasoning steps the agent may take per question. Empty = global default.</p>
                 </div>
                 <div>
+                    <label class="text-sm font-medium opacity-70">Long horizon steps</label>
+                    <input type="number" name="long_horizon_steps" min="1" max="256" class="input input-bordered w-full mt-1"
+                           value="{{ editing.long_horizon_steps if editing and editing.long_horizon_steps else '' }}"
+                           placeholder="default (64)">
+                    <p class="text-xs opacity-40 mt-1">Step budget for a per-message Long horizon run (attach menu). Empty = 64.</p>
+                </div>
+                <div>
                     <label class="text-sm font-medium opacity-70">Requests per minute</label>
                     <input type="number" name="rate_limit_rpm" min="0" max="10000" class="input input-bordered w-full mt-1"
                            value="{{ editing.rate_limit_rpm if editing and editing.rate_limit_rpm is not none else '' }}"

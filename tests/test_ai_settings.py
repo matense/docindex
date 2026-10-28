@@ -197,6 +197,7 @@ def test_edit_connection(auth_client, app):
     auth_client.post(f"/settings/ai/{cid}/edit", data={
         "name": "New", "base_url": "http://new.local/v1", "api_key": "",
         "model": "new-model", "vision_model": "new-vision",
+        "long_horizon_steps": "96",
     }, follow_redirects=True)
     with app.app_context():
         conn = db.session.get(AIConnection, cid)
@@ -204,6 +205,7 @@ def test_edit_connection(auth_client, app):
         assert conn.base_url == "http://new.local/v1"
         assert conn.model == "new-model"
         assert conn.vision_model == "new-vision"
+        assert conn.long_horizon_steps == 96
         from app.services import ai_service as _ai
         # Keys are encrypted at rest; empty edit keeps the old (decrypted) one.
         assert _ai.decrypt_api_key(conn.api_key) == "sk-test"

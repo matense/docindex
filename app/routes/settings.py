@@ -510,6 +510,8 @@ def ai_edit(conn_id):
     conn.vision_model = request.form.get("vision_model", "").strip()[:120]
     conn.embedding_model = request.form.get("embedding_model", "").strip()[:120]
     conn.max_steps = _clamp_int(request.form.get("max_steps", type=int), 1, 128)
+    conn.long_horizon_steps = _clamp_int(
+        request.form.get("long_horizon_steps", type=int), 1, 256)
     # 0 = unlimited; negatives would brick the connection (never a free slot).
     raw_rpm = request.form.get("rate_limit_rpm", type=int)
     conn.rate_limit_rpm = None if raw_rpm is None else max(0, min(raw_rpm, 600))
@@ -558,6 +560,8 @@ def ai_add():
         vision_model=vision_model[:120],
         embedding_model=request.form.get("embedding_model", "").strip()[:120],
         max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
+        long_horizon_steps=_clamp_int(
+            request.form.get("long_horizon_steps", type=int), 1, 256),
         rate_limit_rpm=None if raw_rpm is None else max(0, min(raw_rpm, 600)),
         history_messages=_clamp_int(
             request.form.get("history_messages", type=int), 1, 200),
@@ -590,6 +594,7 @@ def ai_clone(conn_id):
         vision_model=conn.vision_model,
         embedding_model=conn.embedding_model,
         max_steps=conn.max_steps,
+        long_horizon_steps=conn.long_horizon_steps,
         rate_limit_rpm=conn.rate_limit_rpm,
         history_messages=conn.history_messages,
         max_prompt_tokens=conn.max_prompt_tokens,
