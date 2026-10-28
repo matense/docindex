@@ -591,10 +591,17 @@ def chat():
     try:
         # Raw question only: start_task appends the 📎 attachment suffix
         # itself when persisting the user message.
+        budget = None
+        if data.get("deep"):
+            # Long-horizon run: extended step budget, never below the
+            # normal connection budget.
+            budget = max(ai_task_service.resolve_max_steps(
+                current_user, current_app._get_current_object()),
+                ai_task_service.DEEP_RUN_MAX_STEPS)
         task = ai_task_service.start_task(
             current_user,
             question or "What can you tell me about these files?",
-            ctx=ctx, conversation_id=conv_id)
+            ctx=ctx, conversation_id=conv_id, max_steps=budget)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     # Inline runs (tests) finish inside start_task in a different session —
@@ -853,7 +860,9 @@ def rerun_task(task_id):
         message = _re.sub(r"\n\n📎 [^\n]*$", "", message).strip()
     ctx = {"context": json.loads(task.context)} if task.context else None
     try:
-        new_task = ai_task_service.start_task(current_user, message, ctx=ctx)
+        # Keep the original budget (e.g. a long-horizon run stays one).
+        new_task = ai_task_service.start_task(current_user, message, ctx=ctx,
+                                              max_steps=task.max_steps)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True, "task": _task_json(new_task)})

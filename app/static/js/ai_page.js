@@ -69,17 +69,26 @@
 
     const composerForm = document.getElementById('aip-form');
     const originalPagePlaceholder = input.placeholder;
+    const deepPagePlaceholder = 'Describe the complex task… (Shift+Enter for a new line)';
     let inputPlaceholder = originalPagePlaceholder;
+    let deepMode = false; // long-horizon run: extended step budget
     // Send-key preference (Profile → Display & settings) is a body class.
     // Behavior reads it live on every keypress; this keeps the hint in
     // sync — at load and whenever the class flips at runtime.
     function refreshSendKeyHint() {
+        const base = deepMode ? deepPagePlaceholder : originalPagePlaceholder;
         inputPlaceholder = sendKeySwapped()
-            ? originalPagePlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
-            : originalPagePlaceholder;
+            ? base.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
+            : base;
         input.placeholder = inputPlaceholder;
     }
     refreshSendKeyHint();
+    function setDeepMode(on) {
+        deepMode = on;
+        const tog = document.getElementById('aip-deep-toggle');
+        if (tog) tog.classList.toggle('ai-toggle-on', on);
+        refreshSendKeyHint();
+    }
 
     // --- "+" attach/options menu ------------------------------------------
     const plusBtn = document.getElementById('aip-plus');
@@ -98,8 +107,11 @@
             plusBtn.classList.add('open');
         }
     });
-    // Choosing a menu item closes the menu.
-    plusMenu.addEventListener('click', closePlusMenu);
+    // Choosing a menu item closes the menu — except the long-horizon
+    // toggle, which stays open so the switch state is visible.
+    plusMenu.addEventListener('click', ev => {
+        if (!ev.target.closest('#aip-deep-toggle')) closePlusMenu();
+    });
 
     // --- Persona picker: Agency personality/skill for the chat ----------
     const personaPopup = document.getElementById('aip-persona-popup');
@@ -265,6 +277,12 @@
             cache.personas.filter(p => matchPersona(p, q)),
             cache.behaviors.filter(b => matchBehavior(b, q)));
     }
+
+    // Long-horizon run: this message gets the extended step budget.
+    document.getElementById('aip-deep-toggle').addEventListener('click', () => {
+        setDeepMode(!deepMode);
+        input.focus();
+    });
 
     document.getElementById('aip-attach-persona').addEventListener('click', () => {
         if (!personaPopup.classList.contains('hidden')) {
@@ -1891,6 +1909,8 @@
                 body: JSON.stringify({
                     message: question,
                     conversation_id: conversationId,
+                    // Long-horizon run: extended step budget.
+                    deep: deepMode,
                     attachments: sentAttachments.map(a => a.id),
                     // Implicit context: the file/notebook open on screen.
                     context_file_id: (window.currentFile

@@ -75,6 +75,11 @@ def _broadcast(task_id, event):
         q.put(event)
 
 
+# Extended budget for per-message "long horizon" runs: the run gets at
+# least this many steps (or the connection budget when that is higher).
+DEEP_RUN_MAX_STEPS = 64
+
+
 def resolve_max_steps(user, app):
     """Single step budget for every run: the connection's max_steps,
     clamped to 1..128 (same rule as the agent loop fallback)."""

@@ -1008,9 +1008,11 @@ The step budget per run is resolved in this order (`resolve_max_steps`,
 clamped to 1..128, snapshotted onto `AITask.max_steps` at creation):
 
 1. The `max_steps` argument to `start_task` (explicit per-run override).
-2. `AIConnection.max_steps` of the user's active connection (if set), via
+2. The per-message long-horizon toggle (`deep: true` on `POST /ai/chat`):
+   `max(connection budget, 64)`.
+3. `AIConnection.max_steps` of the user's active connection (if set), via
    `ai_service.config_for(user)`.
-3. Global `AI_MAX_STEPS` env var (default 16).
+4. Global `AI_MAX_STEPS` env var (default 16).
 
 The same fallback applies inside `config_for` itself (`conn.max_steps or
 AI_MAX_STEPS`).

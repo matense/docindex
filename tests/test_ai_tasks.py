@@ -234,6 +234,23 @@ def test_task_uses_connection_step_budget(auth_client, app, user):
     assert "long-horizon" in seen["note"]
 
 
+def test_chat_deep_flag_raises_extended_budget(auth_client, app, user):
+    """Per-message long horizon: deep:true stores the extended budget."""
+    _enable_ai(app)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 64
+    with app.app_context():
+        from app.models import AITask
+        assert db.session.get(AITask, data["task"]["id"]).max_steps == 64
+
+
 # --- Live stream (/ai/tasks/<id>/stream) ------------------------------------
 
 

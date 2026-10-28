@@ -95,6 +95,12 @@
                 <i class="fas fa-masks-theater w-5 text-center text-secondary"></i> Choose a persona
             </button>
             <div class="ai-menu-sep"></div>
+            <button type="button" id="aip-deep-toggle" class="ai-menu-item"
+                    title="Long horizon run — this message gets an extended step budget for complex tasks">
+                <i class="fas fa-rocket w-5 text-center text-warning"></i> Long horizon run
+                <span class="ai-menu-tog"></span>
+            </button>
+            <div class="ai-menu-sep"></div>
             <div class="px-2.5 py-1 text-[10px] opacity-40">tip: drop files onto the chat to attach them</div>
         </div>
         <form id="aip-form" data-no-spa class="ai-composer !m-0 shadow-lg">
@@ -118,5 +124,5 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=2" defer></script>
-<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=11" defer></script>
+<script src="{{ url_for('static', filename='js/ai_page.js') }}?v=12" defer></script>
 {% endblock %}

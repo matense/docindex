@@ -320,17 +320,26 @@
         // Composer hint follows the send-key preference (see
         // refreshSendKeyHint) — every run streams live either way.
         const originalPlaceholder = input.placeholder;
+        const deepPlaceholder = 'Describe the complex task… (Shift+Enter for a new line)';
         let inputPlaceholder = originalPlaceholder;
+        let deepMode = false; // long-horizon run: extended step budget
         // Send-key preference (Profile → Display & settings) is a body
         // class. Behavior reads it live on every keypress; this refreshes
         // the hint — at creation and whenever the class flips at runtime.
         function refreshSendKeyHint() {
+            const base = deepMode ? deepPlaceholder : originalPlaceholder;
             inputPlaceholder = sendKeySwapped()
-                ? originalPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
-                : originalPlaceholder;
+                ? base.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
+                : base;
             input.placeholder = inputPlaceholder;
         }
         refreshSendKeyHint();
+        function setDeepMode(on) {
+            deepMode = on;
+            const tog = el.querySelector('.acw-deep-toggle');
+            if (tog) tog.classList.toggle('ai-toggle-on', on);
+            refreshSendKeyHint();
+        }
         // --- "+" attach/options menu + header "⋯" menu ---------------------
         const plusBtn = el.querySelector('.acw-plus');
         const plusMenu = el.querySelector('.acw-plus-menu');
@@ -364,8 +373,11 @@
                 moreMenu.classList.add('flex');
             }
         });
-        // Choosing a menu item closes the menu.
-        plusMenu.addEventListener('click', closePlusMenu);
+        // Choosing a menu item closes the menu — except the long-horizon
+        // toggle, which stays open so the switch state is visible.
+        plusMenu.addEventListener('click', ev => {
+            if (!ev.target.closest('.acw-deep-toggle')) closePlusMenu();
+        });
         moreMenu.addEventListener('click', closeMoreMenu);
 
         // Browser notifications when a run finishes (opt-in,
@@ -1887,8 +1899,15 @@
                 cache.behaviors.filter(b => matchBehavior(b, q)));
         }
 
-        el.querySelector('.acw-attach-persona').addEventListener('click', () => {
-            if (!personaPopup.classList.contains('hidden')) {
+        // Long-horizon run: this message gets the extended step budget.
+        // The switch stays visible (menu doesn't close) so the armed state
+        // is obvious; the composer hint changes too.
+        el.querySelector('.acw-deep-toggle').addEventListener('click', () => {
+            setDeepMode(!deepMode);
+            input.focus();
+        });
+
+        el.querySelector('.acw-attach-persona').addEventListener('click', () => {            if (!personaPopup.classList.contains('hidden')) {
                 hidePersonaPopup();
                 return;
             }
@@ -2359,6 +2378,8 @@
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
+                        // Long-horizon run: extended step budget.
+                        deep: deepMode,
                         attachments: sentAttachments.map(a => a.id),
                         context_file_id: (window.currentFile
                             && window.currentFile.id !== contextDismissedId

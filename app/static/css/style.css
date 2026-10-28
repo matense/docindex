@@ -2752,6 +2752,33 @@ body.show-shortcuts #shortcut-help-panel {
     background: none !important;
 }
 
+/* On/off switch inside a menu item (e.g. the long-horizon run toggle). */
+.ai-menu-tog {
+    margin-left: auto;
+    width: 28px;
+    height: 16px;
+    border-radius: 9999px;
+    background: rgba(128, 128, 128, 0.35);
+    position: relative;
+    transition: background 0.15s ease;
+    flex-shrink: 0;
+}
+
+.ai-menu-tog::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 9999px;
+    background: white;
+    transition: left 0.15s ease;
+}
+
+.ai-menu-item.ai-toggle-on .ai-menu-tog { background: #6366f1; }
+.ai-menu-item.ai-toggle-on .ai-menu-tog::after { left: 14px; }
+
 [data-theme="dark"] .ai-plus-btn { color: oklch(var(--bc) / 0.6); }
 
 .ai-send-btn:hover {
