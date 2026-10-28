@@ -136,7 +136,7 @@
             <div class="ai-mode-switch">
                 <form method="POST" action="{{ url_for('settings.profile_send_key') }}" onsubmit="try{localStorage.setItem('docindex.sendKey','0')}catch(e){}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit"
+                    <button type="submit" onclick="document.getElementById('app-body').classList.remove('shift-enter-send')"
                             class="ai-mode-btn {{ 'active' if not current_user.shift_enter_to_send }}"
                             title="Enter sends the message, Shift+Enter inserts a new line">
                         <i class="fas fa-paper-plane"></i><span>Enter ↵</span>
@@ -145,7 +145,7 @@
                 <form method="POST" action="{{ url_for('settings.profile_send_key') }}" onsubmit="try{localStorage.setItem('docindex.sendKey','1')}catch(e){}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="shift_enter" value="on">
-                    <button type="submit"
+                    <button type="submit" onclick="document.getElementById('app-body').classList.add('shift-enter-send')"
                             class="ai-mode-btn {{ 'active' if current_user.shift_enter_to_send }}"
                             title="Shift+Enter sends the message, Enter inserts a new line">
                         <i class="fas fa-keyboard"></i><span>Shift + Enter</span>
