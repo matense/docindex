@@ -2705,19 +2705,6 @@
             dockMode === 'right' ? undockWindow() : dockWindow('right'));
         const undockBtn = el.querySelector('.acw-undock');
         if (undockBtn) undockBtn.addEventListener('click', () => undockWindow());
-        // Scoped to the window (bubbles from children incl. textarea): Alt+arrows
-        // never hijack the page, and Esc only acts when docked/maxed — the
-        // mention-popup Esc handler on the input stops propagation first.
-        el.addEventListener('keydown', (e) => {
-            if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp')) {
-                e.preventDefault();
-                if (e.key === 'ArrowLeft') dockMode === 'left' ? undockWindow() : dockWindow('left');
-                else if (e.key === 'ArrowRight') dockMode === 'right' ? undockWindow() : dockWindow('right');
-                else toggleDockMax();
-            } else if (e.key === 'Escape' && dockMode !== 'float' && !e.defaultPrevented) {
-                undockWindow();
-            }
-        });
         renderDockButtons();
 
         const api = {
@@ -2738,6 +2725,7 @@
             get mode() { return dockMode; },
             dock(side) { dockWindow(side === 'left' ? 'left' : 'right'); },
             undock(silent) { undockWindow(silent); },
+            toggleMax() { toggleDockMax(); },
             refreshSendKeyHint,
         };
         windows.push(api);
@@ -2807,6 +2795,43 @@
         if (on !== sendKeySwapped()) {
             document.body.classList.toggle('shift-enter-send', on);
             // The observer above picks this up and refreshes the hints.
+        }
+    });
+
+    // Global dock shortcuts: Alt+←/→ dock, Alt+↑ maximize, Esc undock.
+    // Routed to the window under focus, else the topmost window. Skipped
+    // inside editable fields outside chat so typing and browser-Back stay
+    // native there; the mention-popup Esc handler stops propagation first.
+    function topmostChatWindow() {
+        let top = null, topZ = -1;
+        windows.forEach(w => {
+            const z = parseInt(w.el.style.zIndex || '0', 10) || 0;
+            if (z >= topZ) { topZ = z; top = w; }
+        });
+        return top;
+    }
+    function chatWindowForEvent(e) {
+        const t = e.target;
+        const chatEl = (t && t.closest) ? t.closest('.ai-chat-window') : null;
+        if (chatEl) return windows.find(w => w.el === chatEl) || null;
+        if (t && t.closest && t.closest('input, textarea, select, [contenteditable="true"]')) return null;
+        // Prefer the engaged (docked/maxed) window — Esc must reach it even
+        // when a floating window happens to sit on top.
+        const engaged = windows.find(w => w.mode && w.mode !== 'float');
+        return engaged || topmostChatWindow();
+    }
+    document.addEventListener('keydown', (e) => {
+        if (!windows.length) return;
+        if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp')) {
+            const api = chatWindowForEvent(e);
+            if (!api) return;
+            e.preventDefault();
+            if (e.key === 'ArrowLeft') api.mode === 'left' ? api.undock() : api.dock('left');
+            else if (e.key === 'ArrowRight') api.mode === 'right' ? api.undock() : api.dock('right');
+            else api.mode === 'max' ? api.undock() : api.toggleMax();
+        } else if (e.key === 'Escape' && !e.defaultPrevented) {
+            const api = chatWindowForEvent(e);
+            if (api && api.mode !== 'float') api.undock();
         }
     });
 })();
