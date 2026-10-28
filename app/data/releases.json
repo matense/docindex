@@ -4,7 +4,16 @@
       "version": "0.1.7",
       "date": "2026-10-25",
       "title": "In development",
-      "sections": []
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Chat windows can snap to the screen edges for a dual view with the drive, with a draggable divider to resize both columns — dock from the ⋯ menu, by dragging, or with Alt+←/→.",
+            "Profile → Display & settings now offers a chat send-key choice: Enter sends (Shift+Enter for a new line), or Shift+Enter sends (Enter for a new line)."
+          ]
+        }
+      ]
     },
     {
       "version": "0.1.6",

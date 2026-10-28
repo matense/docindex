@@ -444,6 +444,19 @@ def profile_background():
     return redirect(url_for("settings.profile"))
 
 
+@bp.route("/profile/send-key", methods=["POST"])
+@login_required
+def profile_send_key():
+    """Chat send key: Enter sends (default) or Shift+Enter sends."""
+    current_user.shift_enter_to_send = request.form.get("shift_enter") == "on"
+    db.session.commit()
+    flash(("Shift+Enter now sends your message — Enter inserts a new line."
+           if current_user.shift_enter_to_send else
+           "Enter now sends your message — Shift+Enter inserts a new line."),
+          "success")
+    return redirect(url_for("settings.profile"))
+
+
 @bp.route("/profile/registration", methods=["POST"])
 @login_required
 def profile_registration():

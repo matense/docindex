@@ -24,6 +24,8 @@ class User(UserMixin, db.Model):
                                  server_default="false")  # purge trash older than 30 days
     static_background = db.Column(db.Boolean, nullable=False, default=False,
                                   server_default="false")  # no animated background
+    shift_enter_to_send = db.Column(db.Boolean, nullable=False, default=False,
+                                   server_default="false")  # Shift+Enter sends, Enter newline
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",

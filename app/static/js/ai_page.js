@@ -67,7 +67,11 @@
     const bgToggle = document.getElementById('aip-bg-toggle');
     const bgBanner = document.getElementById('aip-bg-banner');
     const composerForm = document.getElementById('aip-form');
-    const inputPlaceholder = input.placeholder;
+    let inputPlaceholder = input.placeholder;
+    if (document.body.classList.contains('shift-enter-send')) {
+        inputPlaceholder = inputPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)');
+        input.placeholder = inputPlaceholder;
+    }
     function setBackgroundMode(on) {
         backgroundMode = on;
         bgToggle.classList.toggle('ai-toggle-on', on);
@@ -1837,8 +1841,9 @@
                 e.preventDefault();
                 first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
             }
-        } else if (e.key === 'Enter' && !e.shiftKey) {
-            // Enter sends; Shift+Enter inserts a newline.
+        } else if (e.key === 'Enter' && e.shiftKey === document.body.classList.contains('shift-enter-send')) {
+            // Default: Enter sends, Shift+Enter newline. The profile
+            // "Shift + Enter" send-key preference swaps the two roles.
             e.preventDefault();
             form.requestSubmit();
         }

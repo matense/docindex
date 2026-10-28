@@ -67,7 +67,7 @@
     <div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-3">
         <div class="flex items-center gap-2">
             <i class="fas fa-desktop text-primary"></i>
-            <h2 class="font-bold">Display</h2>
+            <h2 class="font-bold">Display &amp; settings</h2>
         </div>
         <div class="flex items-center gap-4 flex-wrap">
             <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
@@ -119,6 +119,36 @@
                             class="ai-mode-btn {{ 'active' if current_user.static_background }}"
                             title="Static background">
                         <i class="fas fa-image"></i><span>Static</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+        <div class="flex items-center gap-4 flex-wrap border-t border-base-content/10 pt-3">
+            <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
+                <span class="w-9 h-9 rounded-lg bg-accent/10 text-accent flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-keyboard"></i>
+                </span>
+                <div>
+                    <h2 class="font-bold leading-tight text-sm">Send key</h2>
+                    <p class="text-xs opacity-50">Enter sends, or Shift+Enter sends and Enter adds a new line</p>
+                </div>
+            </div>
+            <div class="ai-mode-switch">
+                <form method="POST" action="{{ url_for('settings.profile_send_key') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit"
+                            class="ai-mode-btn {{ 'active' if not current_user.shift_enter_to_send }}"
+                            title="Enter sends the message, Shift+Enter inserts a new line">
+                        <i class="fas fa-paper-plane"></i><span>Enter ↵</span>
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('settings.profile_send_key') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="shift_enter" value="on">
+                    <button type="submit"
+                            class="ai-mode-btn {{ 'active' if current_user.shift_enter_to_send }}"
+                            title="Shift+Enter sends the message, Enter inserts a new line">
+                        <i class="fas fa-keyboard"></i><span>Shift + Enter</span>
                     </button>
                 </form>
             </div>
