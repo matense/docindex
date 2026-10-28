@@ -18,6 +18,12 @@
     const dropOverlay = document.getElementById('aip-drop-overlay');
     const modelSelect = document.getElementById('aip-model-select');
 
+    // Send-key preference (Profile → Display & settings) is the
+    // shift-enter-send body class; read live so behavior follows at once.
+    function sendKeySwapped() {
+        return document.body.classList.contains('shift-enter-send');
+    }
+
     // --- Model switcher: shows the active connection's model and switches ---
     // between the connections already configured in AI Settings.
     function loadConnections() {
@@ -67,11 +73,18 @@
     const bgToggle = document.getElementById('aip-bg-toggle');
     const bgBanner = document.getElementById('aip-bg-banner');
     const composerForm = document.getElementById('aip-form');
-    let inputPlaceholder = input.placeholder;
-    if (document.body.classList.contains('shift-enter-send')) {
-        inputPlaceholder = inputPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)');
-        input.placeholder = inputPlaceholder;
+    const originalPagePlaceholder = input.placeholder;
+    let inputPlaceholder = originalPagePlaceholder;
+    // Send-key preference (Profile → Display & settings) is a body class.
+    // Behavior reads it live on every keypress; this keeps the hint in
+    // sync — at load and whenever the class flips at runtime.
+    function refreshSendKeyHint() {
+        inputPlaceholder = sendKeySwapped()
+            ? originalPagePlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
+            : originalPagePlaceholder;
+        if (bgBanner.classList.contains('hidden')) input.placeholder = inputPlaceholder;
     }
+    refreshSendKeyHint();
     function setBackgroundMode(on) {
         backgroundMode = on;
         bgToggle.classList.toggle('ai-toggle-on', on);
@@ -2052,6 +2065,19 @@
         },
         toggleList,
     };
+
+    // Live send-key sync (see ai_chat.js): class flips at runtime refresh
+    // the hint at once; the keydown handler reads it live per press.
+    new MutationObserver((muts) => {
+        if (muts.some(m => m.attributeName === 'class')) refreshSendKeyHint();
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('storage', (e) => {
+        if (e.key !== 'docindex.sendKey') return;
+        const on = e.newValue === '1';
+        if (on !== sendKeySwapped()) {
+            document.body.classList.toggle('shift-enter-send', on);
+        }
+    });
 
     input.focus();
 })();

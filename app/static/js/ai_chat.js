@@ -86,6 +86,13 @@
             : { left: (window.innerWidth - w) + 'px', top: '56px', width: w + 'px', height: (window.innerHeight - 56) + 'px' };
     }
 
+    // Send-key preference (Profile → Display & settings) is exposed as the
+    // shift-enter-send body class. Key handlers read it live on every
+    // keypress; the composer hints refresh through refreshSendKeyHint.
+    function sendKeySwapped() {
+        return document.body.classList.contains('shift-enter-send');
+    }
+
     function clearSplit() {
         const app = acwAppContainer();
         if (app) {
@@ -317,11 +324,18 @@
         const bgToggle = el.querySelector('.acw-bg-toggle');
         const bgBanner = el.querySelector('.acw-bg-banner');
         const composerForm = el.querySelector('.acw-form');
-        let inputPlaceholder = input.placeholder;
-        if (document.body.classList.contains('shift-enter-send')) {
-            inputPlaceholder = inputPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)');
-            input.placeholder = inputPlaceholder;
+        const originalPlaceholder = input.placeholder;
+        let inputPlaceholder = originalPlaceholder;
+        // Send-key preference (Profile → Display & settings) is a body
+        // class. Behavior reads it live on every keypress; this refreshes
+        // the hint — at creation and whenever the class flips at runtime.
+        function refreshSendKeyHint() {
+            inputPlaceholder = sendKeySwapped()
+                ? originalPlaceholder.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
+                : originalPlaceholder;
+            if (bgBanner.classList.contains('hidden')) input.placeholder = inputPlaceholder;
         }
+        refreshSendKeyHint();
         function setBackgroundMode(on) {
             backgroundMode = on;
             bgToggle.classList.toggle('ai-toggle-on', on);
@@ -2724,6 +2738,7 @@
             get mode() { return dockMode; },
             dock(side) { dockWindow(side === 'left' ? 'left' : 'right'); },
             undock(silent) { undockWindow(silent); },
+            refreshSendKeyHint,
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
@@ -2770,4 +2785,28 @@
             w.loadConversation(convId);
         },
     };
+
+    // Live send-key sync: if the shift-enter-send body class flips at
+    // runtime (preference saved in another tab, devtools, future AJAX
+    // save), refresh every open window's composer hint at once. The
+    // keydown handlers already read the class on every press, so behavior
+    // follows with no reload.
+    function refreshAllSendKeyHints() {
+        windows.forEach(w => {
+            if (w && typeof w.refreshSendKeyHint === 'function') {
+                try { w.refreshSendKeyHint(); } catch { /* window closing */ }
+            }
+        });
+    }
+    new MutationObserver((muts) => {
+        if (muts.some(m => m.attributeName === 'class')) refreshAllSendKeyHints();
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('storage', (e) => {
+        if (e.key !== 'docindex.sendKey') return;
+        const on = e.newValue === '1';
+        if (on !== sendKeySwapped()) {
+            document.body.classList.toggle('shift-enter-send', on);
+            // The observer above picks this up and refreshes the hints.
+        }
+    });
 })();

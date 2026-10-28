@@ -134,7 +134,7 @@
                 </div>
             </div>
             <div class="ai-mode-switch">
-                <form method="POST" action="{{ url_for('settings.profile_send_key') }}">
+                <form method="POST" action="{{ url_for('settings.profile_send_key') }}" onsubmit="try{localStorage.setItem('docindex.sendKey','0')}catch(e){}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit"
                             class="ai-mode-btn {{ 'active' if not current_user.shift_enter_to_send }}"
@@ -142,7 +142,7 @@
                         <i class="fas fa-paper-plane"></i><span>Enter ↵</span>
                     </button>
                 </form>
-                <form method="POST" action="{{ url_for('settings.profile_send_key') }}">
+                <form method="POST" action="{{ url_for('settings.profile_send_key') }}" onsubmit="try{localStorage.setItem('docindex.sendKey','1')}catch(e){}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="shift_enter" value="on">
                     <button type="submit"
