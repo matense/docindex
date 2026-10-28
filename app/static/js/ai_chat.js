@@ -21,9 +21,10 @@
 
     function acwAppContainer() { return document.getElementById('app-container'); }
 
-    // The top bar is position:fixed, so it ignores the container shrink and
-    // would slide under the docked chat — pin it to the same split instead.
-    function acwHeader() { return document.getElementById('main-header'); }
+    // The search sub-dock is position:fixed below the header, so it ignores
+    // the container shrink and would slide under the docked chat — pin only
+    // it to the split. The header itself stays full-width, untouched.
+    function acwSearchDock() { return document.getElementById('search-dock-container'); }
 
     function ensureDockChrome() {
         if (acwGhost) return;
@@ -93,10 +94,10 @@
             app.style.marginRight = '';
             app.style.width = '';
         }
-        const hdr = acwHeader();
-        if (hdr) {
-            hdr.style.left = '';
-            hdr.style.right = '';
+        const dock = acwSearchDock();
+        if (dock) {
+            dock.style.left = '';
+            dock.style.right = '';
         }
     }
 
@@ -121,12 +122,12 @@
             const w = clampDockW();
             clearSplit();
             app.style.width = 'calc(100% - ' + w + 'px)';
-            const hdr = acwHeader();
+            const dock = acwSearchDock();
             if (dockedWin.mode === 'left') {
                 app.style.marginLeft = w + 'px';
-                if (hdr) { hdr.style.left = w + 'px'; hdr.style.right = '0px'; }
+                if (dock) { dock.style.left = w + 'px'; dock.style.right = '0px'; }
             } else {
-                if (hdr) { hdr.style.left = '0px'; hdr.style.right = w + 'px'; }
+                if (dock) { dock.style.left = '0px'; dock.style.right = w + 'px'; }
             }
         } else if (!dockedWin) {
             clearSplit();

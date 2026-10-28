@@ -4110,8 +4110,9 @@ html[data-theme="dark"] .ai-notice {
    New layer only — existing .ai-chat-window/.acw-* rules above untouched.
    ============================================================================ */
 #app-container { transition: margin .25s ease, width .25s ease; }
-/* Fixed top bar follows the split so the search field never slides under chat. */
-#main-header { transition: left .25s ease, right .25s ease; }
+/* Fixed search sub-dock follows the split so it never slides under chat.
+   The header itself stays full-width, untouched. */
+#search-dock-container { transition: left .25s ease, right .25s ease; }
 .ai-chat-window.snapped { transition: left .22s ease, top .22s ease, width .22s ease, height .22s ease; }
 .ai-chat-window.docked { border-radius: 0; }
 .ai-chat-window.docked .acw-resize { display: none; }
