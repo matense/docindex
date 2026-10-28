@@ -458,13 +458,9 @@
             setTimeout(() => el.classList.remove('snapped'), 250);
         }
         function renderDockButtons() {
-            const docked = dockMode === 'left' || dockMode === 'right';
+            // Dock controls live in the "⋯" menu: only Undock is conditional.
             const undockBtn = el.querySelector('.acw-undock');
-            if (undockBtn) undockBtn.style.display = (docked || dockMode === 'max') ? '' : 'none';
-            const lBtn = el.querySelector('.acw-dock-left');
-            if (lBtn) lBtn.classList.toggle('ai-toggle-on', dockMode === 'left');
-            const rBtn = el.querySelector('.acw-dock-right');
-            if (rBtn) rBtn.classList.toggle('ai-toggle-on', dockMode === 'right');
+            if (undockBtn) undockBtn.style.display = (dockMode === 'float') ? 'none' : '';
         }
         header.addEventListener('mousedown', (e) => {
             if (e.target.closest('button, a, select, input')) return;
