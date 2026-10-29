@@ -48,7 +48,7 @@ def test_all_tools_registered_with_valid_schemas(app):
         defs, handlers, _labels = agent_service._active_tools()
     ours = [d for d in defs
             if d["function"]["name"].startswith("aiutils.")]
-    assert len(ours) == 20
+    assert len(ours) == 23
     for d in ours:
         fn = d["function"]
         assert fn["parameters"]["type"] == "object"
@@ -174,6 +174,27 @@ def test_text_tools(app):
     assert _call(app, "aiutils.text_slug", {"text": "Hello, World!"})["result"] == "hello-world"
     assert "error" in _call(app, "aiutils.text_slug", {"text": "!!!"})
     assert "error" in _call(app, "aiutils.text_stats", {"text": "x" * 100001})
+
+
+def test_time_tools(app):
+    now = _call(app, "aiutils.datetime_now", {})
+    assert set(now) >= {"iso", "date", "time", "weekday", "iso_week", "epoch"}
+    assert "error" in _call(app, "aiutils.datetime_now", {"timezone": "Nope/Nowhere"})
+    assert _call(app, "aiutils.date_add", {"value": "2026-01-15", "amount": 10, "unit": "days"})["date"] == "2026-01-25"
+    assert _call(app, "aiutils.date_add", {"value": "2026-01-31", "amount": 1, "unit": "months"})["date"] == "2026-02-28"
+    assert _call(app, "aiutils.date_add", {"value": "2024-02-29", "amount": 1, "unit": "years"})["date"] == "2025-02-28"
+    assert _call(app, "aiutils.date_add", {"value": "2026-03-15", "amount": -2, "unit": "weeks"})["date"] == "2026-03-01"
+    assert _call(app, "aiutils.date_add", {"value": "today", "amount": 1, "unit": "days"})["date"]
+    assert "error" in _call(app, "aiutils.date_add", {"value": "2026-06-15", "amount": 1.5, "unit": "months"})
+    assert "error" in _call(app, "aiutils.date_add", {"value": "tomorrow", "amount": 1, "unit": "days"})
+    assert _call(app, "aiutils.date_diff", {"start": "2026-01-01", "end": "2026-01-15"}) == {"result": 14, "unit": "days"}
+    assert _call(app, "aiutils.date_diff", {"start": "2026-01-15", "end": "2026-01-01"})["result"] == 14
+    assert _call(app, "aiutils.date_diff", {"start": "2026-01-15", "end": "2026-01-01", "absolute": False})["result"] == -14
+    assert _call(app, "aiutils.date_diff", {"start": "2026-01-15", "end": "2026-03-14", "unit": "months"})["result"] == 1
+    assert _call(app, "aiutils.date_diff", {"start": "2024-02-29", "end": "2026-02-28", "unit": "years"})["result"] == 1
+    assert _call(app, "aiutils.date_diff", {"start": "2024-02-29", "end": "2026-02-28", "unit": "months"})["result"] == 23
+    assert "error" in _call(app, "aiutils.date_diff", {"start": "x", "end": "2026-01-01"})
+    assert "error" in _call(app, "aiutils.date_diff", {"start": "2026-01-01", "end": "2026-01-02", "unit": "eons"})
 
 
 def test_agent_uses_aiutils_tool(app, user):

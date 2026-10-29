@@ -1,10 +1,10 @@
 {
   "name": "aiutils",
   "version": "1.0.0",
-  "description": "AI utilities: calculator, unit/finance converters and text tools the assistant can call while answering.",
+  "description": "AI utilities: calculator, unit/finance converters, date and time tools and text manipulators the assistant can call while answering.",
   "capabilities": ["routes", "tools"],
   "help": [
-    "AI Utils gives the assistant a toolbox for exact work: a calculator, statistics, base conversions, fractions, unit and datetime conversion, physical constants, a periodic table slice, loan and compound-interest math, percentages, currency conversion with a rate you provide, text case/stats/line/regex/hash/slug tools and base64/URL/hex codecs.",
+    "AI Utils gives the assistant a toolbox for exact work: a calculator, statistics, base conversions, fractions, unit and datetime conversion, the current date and time, date arithmetic and differences, physical constants, a periodic table slice, loan and compound-interest math, percentages, currency conversion with a rate you provide, text case/stats/line/regex/hash/slug tools and base64/URL/hex codecs.",
     "Enable it on the Modules page and the assistant picks these tools on its own whenever numbers, units or text transforms come up — ask things like '25% of 840?', 'convert 5 miles to km', 'monthly payment on a 250k loan at 4% over 30 years' or 'slugify this title'.",
     "Everything runs locally with no network access: currency conversion needs an explicit rate (ask the assistant to use today's rate), and all inputs are validated and size-capped so a runaway call cannot burn your step budget."
   ]

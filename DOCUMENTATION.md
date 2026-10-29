@@ -1277,8 +1277,9 @@ tool + table).
   base/fraction conversion, unit conversion (incl. temperature, data sizes,
   parsec/light-year), physical constants, elements H–Zr, loan/compound/
   percent/currency math (explicit FX rate, no network), datetime/timezone,
-  Roman numerals, base64/URL/hex codecs and text tools (case, stats, lines,
-  regex, hash, slug). Twenty `aiutils.*` tools, pure stdlib, plus a reference
+  date arithmetic and differences, current date/time, Roman numerals,
+  base64/URL/hex codecs and text tools (case, stats, lines,
+  regex, hash, slug). Twenty-three `aiutils.*` tools, pure stdlib, plus a reference
   page under `/m/aiutils/` listing every tool with an example.
 - `gitdrives` — read-only Git mirror drives (GitHub, Azure DevOps Git):
   clone a repo into a local checkout and pull-then-scan on every sync

@@ -10,13 +10,14 @@ whole step budget or context window.
 import ast
 import base64
 import binascii
+import calendar
 import difflib
 import hashlib
 import math
 import re
 import statistics
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from urllib.parse import quote, unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -678,42 +679,172 @@ def _tool_currency_convert(user, args, drive=None):
 # --------------------------------------------------------------------------
 # Converters: datetime/timezone, roman numerals, encodings
 # --------------------------------------------------------------------------
+def _parse_moment(value, from_tz="UTC", epoch_unit=None):
+    """Parse ISO text or an epoch number into an aware datetime.
+
+    Epochs >= 1e12 are read as milliseconds unless epoch_unit says
+    otherwise. Naive datetimes are assumed to be in from_tz.
+    Raises ValueError with a user-facing message.
+    """
+    text = str(value).strip()
+    try:
+        epoch = float(text)
+    except (TypeError, ValueError):
+        epoch = None
+    try:
+        from_zone = ZoneInfo(str(from_tz or "UTC"))
+    except ZoneInfoNotFoundError:
+        raise ValueError(f"Unknown timezone '{from_tz}'. Use IANA names, e.g. 'Europe/Lisbon'.") from None
+    if epoch is not None:
+        unit = (epoch_unit or "").lower() if isinstance(epoch_unit, str) else ""
+        if unit not in ("s", "ms"):
+            unit = "ms" if abs(epoch) >= 1e12 else "s"
+        try:
+            return datetime.fromtimestamp(epoch / 1000 if unit == "ms" else epoch, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            raise ValueError("That epoch value is out of range.") from None
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        moment = datetime.fromisoformat(iso)
+    except ValueError:
+        raise ValueError("Could not parse that date. Use ISO format like '2026-03-15 14:30', an epoch number, or 'now'/'today'.") from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=from_zone)
+    return moment
+
+
+def _resolve_base(value, from_tz):
+    """Like _parse_moment, but also accepts 'now' and 'today' (midnight)."""
+    low = str(value).strip().lower()
+    try:
+        zone = ZoneInfo(str(from_tz or "UTC"))
+    except ZoneInfoNotFoundError:
+        raise ValueError(f"Unknown timezone '{from_tz}'. Use IANA names, e.g. 'Europe/Lisbon'.") from None
+    if low == "now":
+        return datetime.now(zone)
+    if low == "today":
+        return datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    return _parse_moment(value, from_tz)
+
+
+def _add_months(moment, n):
+    total = moment.year * 12 + (moment.month - 1) + n
+    year, month = divmod(total, 12)
+    month += 1
+    last_day = calendar.monthrange(year, month)[1]
+    return moment.replace(year=year, month=month, day=min(moment.day, last_day))
+
+
 def _tool_datetime_convert(user, args, drive=None):
     ok, value = _str(args.get("value"), "value", max_len=128)
     if not ok:
         return _err(value)
-    text = value.strip()
-    epoch = None
     try:
-        epoch = float(text)
-    except ValueError:
-        epoch = None
-    unit = str(args.get("epoch_unit", "") or "").lower()
-    if epoch is not None and unit not in ("s", "ms"):
-        unit = "ms" if abs(epoch) >= 1e12 else "s"
-    try:
-        from_tz = ZoneInfo(str(args.get("from_tz") or "UTC"))
         to_tz = ZoneInfo(str(args.get("to_tz") or "UTC"))
-    except ZoneInfoNotFoundError as exc:
-        return _err(f"Unknown timezone: {exc}. Use IANA names, e.g. 'Europe/Lisbon', 'America/New_York'.")
-    if epoch is not None:
-        try:
-            moment = datetime.fromtimestamp(
-                epoch / 1000 if unit == "ms" else epoch, tz=UTC)
-        except (OverflowError, OSError, ValueError):
-            return _err("That epoch value is out of range.")
-    else:
-        iso = text.replace("Z", "+00:00") if text.endswith(("Z", "z")) else text
-        try:
-            moment = datetime.fromisoformat(iso)
-        except ValueError:
-            return _err("Could not parse that date. Use ISO format like '2026-03-15 14:30' or an epoch number.")
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=from_tz)
+    except ZoneInfoNotFoundError:
+        return _err(f"Unknown timezone '{args.get('to_tz')}'. Use IANA names, e.g. 'Europe/Lisbon'.")
+    try:
+        moment = _parse_moment(value, args.get("from_tz") or "UTC", args.get("epoch_unit"))
+    except ValueError as exc:
+        return _err(str(exc))
     moment = moment.astimezone(to_tz)
     return {"iso": moment.isoformat(),
             "formatted": moment.strftime("%Y-%m-%d %H:%M %Z"),
             "epoch": int(moment.timestamp())}
+
+
+def _tool_datetime_now(user, args, drive=None):
+    from_tz = args.get("timezone", args.get("tz", "UTC"))
+    try:
+        zone = ZoneInfo(str(from_tz or "UTC"))
+    except ZoneInfoNotFoundError:
+        return _err(f"Unknown timezone '{from_tz}'. Use IANA names, e.g. 'Europe/Lisbon'.")
+    now = datetime.now(zone)
+    return {"iso": now.isoformat(),
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%H:%M"),
+            "weekday": now.strftime("%A"),
+            "iso_week": now.isocalendar()[1],
+            "tz": str(from_tz or "UTC"),
+            "epoch": int(now.timestamp())}
+
+
+def _tool_date_add(user, args, drive=None):
+    ok, value = _str(args.get("value"), "value", max_len=128)
+    if not ok:
+        return _err(value)
+    unit = str(args.get("unit", "days")).lower()
+    if unit not in ("minutes", "hours", "days", "weeks", "months", "years"):
+        return _err("'unit' must be one of: minutes, hours, days, weeks, months, years.")
+    ok, amount = _num(args.get("amount"), "amount")
+    if not ok:
+        return _err(amount)
+    if unit in ("months", "years") and float(amount) != int(amount):
+        return _err("months and years need a whole number (use days for fractions).")
+    from_tz = args.get("from_tz", args.get("timezone", "UTC"))
+    try:
+        moment = _resolve_base(value, from_tz)
+    except ValueError as exc:
+        return _err(str(exc))
+    if unit == "minutes":
+        moment = moment + timedelta(minutes=amount)
+    elif unit == "hours":
+        moment = moment + timedelta(hours=amount)
+    elif unit == "days":
+        moment = moment + timedelta(days=amount)
+    elif unit == "weeks":
+        moment = moment + timedelta(weeks=amount)
+    elif unit == "months":
+        moment = _add_months(moment, int(amount))
+    else:
+        moment = _add_months(moment, int(amount) * 12)
+    return {"iso": moment.isoformat(),
+            "date": moment.strftime("%Y-%m-%d"),
+            "formatted": moment.strftime("%Y-%m-%d %H:%M %Z"),
+            "epoch": int(moment.timestamp())}
+
+
+def _tool_date_diff(user, args, drive=None):
+    ok, start_raw = _str(args.get("start"), "start", max_len=128)
+    if not ok:
+        return _err(start_raw)
+    ok, end_raw = _str(args.get("end"), "end", max_len=128)
+    if not ok:
+        return _err(end_raw)
+    unit = str(args.get("unit", "days")).lower()
+    if unit not in ("seconds", "minutes", "hours", "days", "weeks", "months", "years"):
+        return _err("'unit' must be one of: seconds, minutes, hours, days, weeks, months, years.")
+    absolute = args.get("absolute", True)
+    if absolute is False or (isinstance(absolute, str) and absolute.lower() in ("0", "false", "no")):
+        absolute = False
+    else:
+        absolute = True
+    from_tz = args.get("from_tz", args.get("timezone", "UTC"))
+    try:
+        start = _resolve_base(start_raw, from_tz)
+        end = _resolve_base(end_raw, from_tz)
+    except ValueError as exc:
+        return _err(str(exc))
+    sign = 1
+    if end < start:
+        if not absolute:
+            sign = -1
+        start, end = end, start
+    if unit in ("months", "years"):
+        months = (end.year - start.year) * 12 + (end.month - start.month)
+        if (end.day, end.hour, end.minute) < (start.day, start.hour, start.minute):
+            months -= 1
+        result = months // 12 if unit == "years" else months
+    else:
+        seconds = (end - start).total_seconds()
+        divisor = {"seconds": 1, "minutes": 60, "hours": 3600,
+                   "days": 86400, "weeks": 604800}[unit]
+        result = round(seconds / divisor, 2)
+        if isinstance(result, float) and result.is_integer():
+            result = int(result)
+    return {"result": sign * result, "unit": unit}
+
+
 
 
 _ROMAN_RE = re.compile(r"^M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
@@ -1098,6 +1229,48 @@ TOOL_SPECS = [
              "epoch_unit": {"type": "string", "enum": ["s", "ms"]}},
             ["value"]),
         "handler": _tool_datetime_convert,
+    },
+    {
+        "name": "datetime_now",
+        "label": "Checked the date and time",
+        "category": "Time",
+        "example": "what day is it",
+        "definition": _schema(
+            "aiutils.datetime_now",
+            "Today's date and the current time: ISO timestamp, date, time, weekday, ISO week number and epoch. Optional IANA timezone (default UTC).",
+            {"timezone": {"type": "string", "description": "IANA zone, e.g. 'Europe/Lisbon' (default UTC)"}}),
+        "handler": _tool_datetime_now,
+    },
+    {
+        "name": "date_add",
+        "label": "Shifted a date",
+        "category": "Time",
+        "example": "what date is 45 days from today",
+        "definition": _schema(
+            "aiutils.date_add",
+            "Add or subtract time from a date: minutes, hours, days, weeks (fractions allowed) or whole months/years (day clamped to month end, e.g. Jan 31 + 1 month = Feb 28). Use 'now' or 'today' (midnight) as the value. Negative amounts go backwards.",
+            {"value": {"type": "string", "description": "ISO date, epoch, 'now' or 'today'"},
+             "amount": {"type": "number", "description": "How much to add (negative subtracts)"},
+             "unit": {"type": "string", "enum": ["minutes", "hours", "days", "weeks", "months", "years"]},
+             "from_tz": {"type": "string", "description": "IANA zone the value is in (default UTC)"}},
+            ["value", "amount"]),
+        "handler": _tool_date_add,
+    },
+    {
+        "name": "date_diff",
+        "label": "Compared dates",
+        "category": "Time",
+        "example": "how many days between March 1 and today",
+        "definition": _schema(
+            "aiutils.date_diff",
+            "Difference between two dates in seconds/minutes/hours/days/weeks (exact) or full calendar months/years. Accepts 'now'/'today'. Absolute by default; set absolute to false for a signed result.",
+            {"start": {"type": "string", "description": "First date (ISO, epoch, 'now', 'today')"},
+             "end": {"type": "string", "description": "Second date"},
+             "unit": {"type": "string", "enum": ["seconds", "minutes", "hours", "days", "weeks", "months", "years"]},
+             "absolute": {"type": "boolean", "description": "Default true: always positive"},
+             "from_tz": {"type": "string", "description": "IANA zone naive dates are read in (default UTC)"}},
+            ["start", "end"]),
+        "handler": _tool_date_diff,
     },
     {
         "name": "roman",
