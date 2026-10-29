@@ -30,7 +30,7 @@ ELEMENT_SCHEMA = {
         "x": {"type": "number", "description": "Left edge (optional - omitted with y = auto-placed in a flow)."},
       "y": {"type": "number", "description": "Top edge (optional - omitted with x = auto-placed in a flow)."},
         "width": {"type": "number"}, "height": {"type": "number"},
-        "text": {"type": "string", "description": "Text content (text elements)."},
+        "text": {"type": "string", "description": "Text content. On shapes (rectangle/ellipse/diamond/arrow/line) a centered label is auto-created and bound to the shape."},
         "fontSize": {"type": "number"},
         "strokeColor": {"type": "string", "description": "CSS color, e.g. #1e1e1e."},
         "backgroundColor": {"type": "string"},
@@ -212,16 +212,29 @@ def _tool_add(user, args, drive):
         # piling everything at 0,0 (weak models omit geometry).
         op.placed = board_service.auto_place(
             clean, auto_idx, scene.get("elements", []))
-        scene["elements"] = scene.get("elements", []) + clean
+        # Text on a shape becomes a bound centered label (shapes cannot
+        # carry text themselves - it would otherwise be silently lost).
+        labels = board_service.attach_labels(clean, raw)
+        op.labels = len(labels)
+        scene["elements"] = scene.get("elements", []) + clean + labels
         return scene
 
     op.placed = 0
+    op.labels = 0
     result = _mutate(user, args, drive, op, "AI added elements")
-    if result.get("ok") and op.placed:
-        result["auto_placed"] = op.placed
-        result["note"] = (f"{op.placed} element(s) had no coordinates and "
-                          "were flowed into free space - pass x/y to place "
-                          "them exactly.")
+    if result.get("ok"):
+        bits = []
+        if op.placed:
+            result["auto_placed"] = op.placed
+            bits.append(f"{op.placed} element(s) had no coordinates and "
+                        "were flowed into free space - pass x/y to place "
+                        "them exactly")
+        if op.labels:
+            result["labels"] = op.labels
+            bits.append(f"{op.labels} text label(s) auto-bound to their "
+                        "shapes")
+        if bits:
+            result["note"] = ". ".join(bits) + "."
     return result
 
 
@@ -236,9 +249,14 @@ def _tool_update(user, args, drive):
                "roughness", "opacity", "isDeleted", "locked", "groupIds",
                "startArrowhead", "endArrowhead", "points"}
 
+    label_text = patch.get("text") if isinstance(patch, dict) else None
+    if isinstance(label_text, str) and not label_text.strip():
+        label_text = None
+
     def op(scene):
         found = False
         out = []
+        label_target = None
         for el in scene.get("elements", []):
             if el.get("id") == eid:
                 found = True
@@ -246,15 +264,39 @@ def _tool_update(user, args, drive):
                 for k, v in patch.items():
                     if k in allowed:
                         merged[k] = v
+                if label_text and merged.get("type") != "text":
+                    # Text on a shape becomes its bound label (shapes
+                    # cannot carry text themselves - it would be dropped).
+                    label_target = merged
                 out.append(board_service.validate_element(merged))
             else:
                 out.append(el)
         if not found:
             raise ValueError(f"No element {eid!r} on this board.")
+        labels = 0
+        if label_target is not None:
+            existing = next(
+                (x for x in out
+                 if x.get("type") == "text"
+                 and x.get("containerId") == eid), None)
+            if existing is None:
+                out.append(board_service.make_label(
+                    label_target, label_text,
+                    patch.get("fontSize", 20)))
+            else:
+                existing["text"] = str(label_text)[:20000]
+            labels = 1
+            op.labels = labels
         scene["elements"] = out
         return scene
 
-    return _mutate(user, args, drive, op, "AI updated an element")
+    op.labels = 0
+    result = _mutate(user, args, drive, op, "AI updated an element")
+    if result.get("ok") and op.labels:
+        result["labels"] = op.labels
+        result["note"] = ("Text applied as a label bound to the shape "
+                          "(shapes cannot carry text themselves).")
+    return result
 
 
 def _tool_delete(user, args, drive):

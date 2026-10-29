@@ -225,6 +225,63 @@ def test_tool_add_auto_places_and_reports(app, user, enabled):
     assert (texts[1]["x"], texts[1]["y"]) == (5, 5)
 
 
+def test_text_on_shape_becomes_bound_label(app, user, enabled):
+    _drive(app, user)
+    user_obj = _user(app, user)
+    with app.app_context():
+        created = wb_tools._tool_create(
+            user_obj, {"name": "Labeled", "elements": [
+                {"type": "rectangle", "x": 0, "y": 0, "text": "Step 1"}]},
+            None)
+        fid = created["created"]["id"]
+        res = wb_tools._tool_add(
+            user_obj, {"file_id": fid, "elements": [
+                {"type": "rectangle", "x": 300, "y": 0,
+                 "text": "Step 2"}]}, None)
+    assert res["ok"] is True
+    assert res.get("labels") == 1
+    with app.app_context():
+        from app.models import StoredFile
+        scene = wb.load(db.session.get(StoredFile, fid))
+    shapes = [e for e in scene["elements"] if e["type"] == "rectangle"]
+    labels = [e for e in scene["elements"] if e["type"] == "text"]
+    assert all("text" not in sh for sh in shapes)  # no fake text on shapes
+    assert len(labels) == 2
+    by_shape = {sh["id"] for sh in shapes}
+    assert {lb["containerId"] for lb in labels} <= by_shape
+    assert {lb["text"] for lb in labels} == {"Step 1", "Step 2"}
+    label = next(lb for lb in labels if lb["text"] == "Step 1")
+    shape = next(sh for sh in shapes if sh["id"] == label["containerId"])
+    assert shape["x"] <= label["x"] <= shape["x"] + shape["width"]
+
+
+def test_update_shape_text_reuses_label(app, user, enabled):
+    _drive(app, user)
+    user_obj = _user(app, user)
+    with app.app_context():
+        created = wb_tools._tool_create(
+            user_obj, {"name": "Relabel", "elements": [
+                {"type": "rectangle", "x": 10, "y": 10}]}, None)
+        fid = created["created"]["id"]
+        eid = wb_tools._tool_context(
+            user_obj, {"file_id": fid}, None)["digest"][0].split()[0]
+        r1 = wb_tools._tool_update(
+            user_obj, {"file_id": fid, "element_id": eid,
+                       "patch": {"text": "v1"}}, None)
+        assert r1["ok"] is True and r1.get("labels") == 1
+        r2 = wb_tools._tool_update(
+            user_obj, {"file_id": fid, "element_id": eid,
+                       "patch": {"text": "v2"}}, None)
+        assert r2["ok"] is True
+    with app.app_context():
+        from app.models import StoredFile
+        scene = wb.load(db.session.get(StoredFile, fid))
+    labels = [e for e in scene["elements"]
+              if e.get("containerId") == eid]
+    assert len(labels) == 1  # updated in place, not duplicated
+    assert labels[0]["text"] == "v2"
+
+
 def test_ai_lock_and_hide(app, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)

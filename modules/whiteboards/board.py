@@ -140,7 +140,69 @@ def validate_element(raw):
     groups = raw.get("groupIds")
     if isinstance(groups, list) and groups:
         el["groupIds"] = [_str(g, "", 64) for g in groups[:20] if g]
+    cid = raw.get("containerId")
+    el["containerId"] = cid.strip()[:64] if isinstance(cid, str) and cid.strip() else None
     return el
+
+
+def make_label(shape, text, font_size=20.0):
+    """Build a centered text element bound to a shape.
+
+    Excalidraw renders text with a matching containerId inside the shape.
+    Used when the AI puts \"text\" on a non-text element (shapes cannot
+    carry text themselves - without this the label would be silently
+    dropped and the AI told \"ok\").
+    """
+    try:
+        fs = min(160.0, max(8.0, float(font_size)))
+    except (TypeError, ValueError):
+        fs = 20.0
+    w = max(float(shape.get("width", 0) or 0), 10.0)
+    h = max(float(shape.get("height", 0) or 0), 10.0)
+    label_w = max(w - 20.0, 10.0)
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "type": "text",
+        "x": float(shape.get("x", 0) or 0) + 10.0,
+        "y": float(shape.get("y", 0) or 0) + max((h - 30.0) / 2.0, 0.0),
+        "width": label_w,
+        "height": 30.0,
+        "angle": 0.0,
+        "strokeColor": "#1e1e1e",
+        "backgroundColor": "transparent",
+        "fillStyle": "solid",
+        "strokeWidth": 2.0,
+        "strokeStyle": "solid",
+        "roughness": 1.0,
+        "opacity": 100.0,
+        "isDeleted": False,
+        "locked": False,
+        "text": str(text or "")[:20000],
+        "fontSize": fs,
+        "fontFamily": 1,
+        "textAlign": "center",
+        "verticalAlign": "middle",
+        "containerId": shape.get("id"),
+    }
+
+
+def attach_labels(clean, raw):
+    """Auto-create bound text labels for shapes carrying text.
+
+    ``clean`` and ``raw`` are parallel lists (validated / original).
+    Shapes cannot carry text themselves - without this the label would be
+    silently lost while the tool reports success. Returns the new label
+    elements (already validated dicts, ready to append).
+    """
+    labels = []
+    for raw_el, el in zip(raw, clean, strict=True):
+        if not isinstance(raw_el, dict):
+            continue
+        txt = raw_el.get("text")
+        if txt and el.get("type") != "text":
+            labels.append(make_label(
+                el, txt, raw_el.get("fontSize", 20)))
+    return labels
 
 
 def empty_scene(title="Untitled board"):
@@ -277,11 +339,13 @@ def create_board(user, drive, name, elements=None):
     _guard_writable_drive(drive)
     scene = empty_scene(name)
     raw = list(elements or [])
-    scene["elements"] = [validate_element(e) for e in raw]
+    clean = [validate_element(e) for e in raw]
     # Elements without any coordinates flow into free space instead of
     # piling up at 0,0 (small models often omit geometry entirely).
-    auto_place(scene["elements"],
+    # Text on shapes becomes bound labels (shapes cannot carry text).
+    auto_place(clean,
                {i for i, e in enumerate(raw) if _wants_auto(e)})
+    scene["elements"] = clean + attach_labels(clean, raw)
     data = serialize(scene).encode("utf-8")
     storage = FileStorage(stream=BytesIO(data),
                           filename=f"{scene['title']}.{EXTENSION}",
