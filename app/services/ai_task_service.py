@@ -196,12 +196,19 @@ def stop_task(user, task_id):
 
 
 def ack_task(user, task_id):
-    """Dismiss a finished task from the dock (the 'end' of the long horizon)."""
+    """Dismiss a finished run from the dock. The dock shows one icon per
+    conversation, so acking cascades to every finished run of the same
+    conversation — one click dismisses the whole chat, not just the
+    latest message's run. Active runs are never acked (stop them first)."""
     task = _owned_task(user, task_id)
     if task is None or task.is_active:
         return None
-    task.notified = True
+    (AITask.query
+     .filter_by(user_id=user.id, conversation_id=task.conversation_id)
+     .filter(AITask.status.in_(AITask.FINAL_STATUSES))
+     .update({"notified": True}, synchronize_session=False))
     db.session.commit()
+    task.notified = True  # bulk update bypasses the session instance
     return task
 
 

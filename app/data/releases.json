@@ -11,7 +11,7 @@
           "entries": [
             "Chat windows can snap to the screen edges for a dual view with the drive, with a draggable divider to resize both columns — dock from the ⋯ menu, by dragging, or with Alt+←/→.",
             "Profile → Display & settings now offers a chat send-key choice: Enter sends (Shift+Enter for a new line), or Shift+Enter sends (Enter for a new line).",
-            "Every chat message now runs as a server-side run: minimizing or closing a window only drops the live view — the run keeps going in the dock (one icon per chat, always the latest run), and the full reasoning stays available when you reopen. Closing a window mid-run asks for confirmation and stops it.",
+            "Every chat message now runs as a server-side run: minimizing or closing a window only drops the live view — the run keeps going in the dock (one icon per chat — always the latest run; dismissing it clears that chat's runs), and the full reasoning stays available when you reopen. Closing a window mid-run asks for confirmation and stops it.",
             "The per-connection max_steps is now the single step budget for all runs, with a per-message Long horizon toggle for the extended budget (configurable per connection in AI Settings, default 64).",
             "New AI Utils module (admin toggle): 20 assistant tools — calculator, statistics, base/fraction conversion, unit conversion, constants, periodic table (H–Zr), loan/compound/percent/currency math, datetime/timezone, Roman numerals, base64/URL/hex codecs and text tools — plus a reference page linked from the profile menu."
           ]

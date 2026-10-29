@@ -2143,6 +2143,7 @@
         let taskAbort = null;
         let taskMode = null;   // {id, status, title} while in task mode
         let taskBanner = null;
+        let sending = false;   // create-POST in flight: queue (don't fork) follow-ups
 
         function fmtTaskDur(ms) {
             if (!(ms >= 0)) return '';
@@ -2347,6 +2348,14 @@
             }
             const question = input.value.trim();
             if (!question && !attachments.length) return;
+            // A create-POST is still in flight: its conversation id is not
+            // known yet, so sending now would fork a second conversation.
+            // Keep the text (nothing is cleared yet) and let the user retry.
+            if (sending) {
+                window.uiToast('Still sending your previous message — hit Enter again in a moment.', 'info');
+                return;
+            }
+            sending = true;
 
             // The user chose to wait for attachment summaries: hold the send
             // until indexing cards are ready (or the timeout passes).
@@ -2406,8 +2415,18 @@
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok) {
                     setBusy(false);
+                    sending = false;
                     echo.remove();
                     if (resp.status === 409) {
+                        // Run still active: put the message back in the
+                        // composer so nothing is lost — one more Enter sends
+                        // it once the run finishes (or is stopped).
+                        input.value = question;
+                        growInput();
+                        attachments = sentAttachments;
+                        cellRef = sentCell;
+                        driveRefs = sentDrives;
+                        renderChips();
                         window.uiToast(data.error || 'A run is already in progress — stop it before sending.', 'error');
                     } else {
                         addMessage('assistant', '**Error:** ' + (data.error || 'Something went wrong.'),
@@ -2420,8 +2439,10 @@
                 // conversation enters task mode (banner + captured context)
                 // and subscribes to the event stream — no close/reopen needed.
                 loadConversation(data.conversation_id);
+                sending = false;
             } catch (err) {
                 setBusy(false);
+                sending = false;
                 echo.remove();
                 addMessage('assistant', '**Error:** could not reach the server.',
                            { created_at: new Date().toISOString() });

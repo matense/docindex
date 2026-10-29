@@ -153,6 +153,24 @@ def test_active_lists_running_and_unnotified_finished(auth_client, app, user):
     assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
 
 
+def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
+    """One dock icon per chat: acking it dismisses every finished run of
+    that conversation, so no older sibling pops back up."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("one", "two")):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first"}).get_json()["task"]
+        auth_client.post("/ai/tasks", json={
+            "message": "second",
+            "conversation_id": first["conversation_id"]})
+
+    tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
+    assert len(tasks) == 1  # latest run only, not one icon per message
+    assert auth_client.post(f"/ai/tasks/{tasks[0]['id']}/ack").status_code == 200
+    assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
+
+
 def test_ack_running_task_rejected(auth_client, app, user):
     with app.app_context():
         user_obj = db.session.get(User, user)
