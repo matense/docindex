@@ -30,7 +30,7 @@
     <!-- Tailwind CSS + DaisyUI -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="{{ url_for('static', filename='js/ui.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/ui.js') }}?v=1" defer></script>
     <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
     <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
@@ -51,7 +51,7 @@
     </script>
     {% endif %}
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=15">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=16">
     {% block head %}{% endblock %}
 </head>
 <body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'static-background' if current_user.is_authenticated and current_user.static_background }} {{ 'perf-mode' if current_user.is_authenticated and current_user.perf_mode }} {{ 'shift-enter-send' if current_user.is_authenticated and current_user.shift_enter_to_send }} {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
@@ -368,7 +368,7 @@
             {% if automation_enabled %}
             <script src="{{ url_for('static', filename='js/automation_runs_widget.js') }}?v=2" defer></script>
             {% endif %}
-            <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>
+            <script src="{{ url_for('static', filename='js/spa.js') }}?v=1" defer></script>
         </div>
     {% else %}
         <!-- Auth layout (login/register) -->
@@ -408,5 +408,19 @@
             </div>
         </div>
     {% endif %}
+    <!-- Connection monitor overlay: shown when the server becomes
+         unreachable (sleep/wake, network drop, server restart). The page
+         stays dimmed behind it; Reconnect re-verifies, Reload refreshes. -->
+    <div id="conn-overlay" class="hidden">
+        <div class="conn-card">
+            <i class="fas fa-plug-circle-xmark conn-icon"></i>
+            <h2 class="conn-title">Connection lost</h2>
+            <p class="conn-status">Trying to reach the server…</p>
+            <div class="conn-actions">
+                <button type="button" id="conn-retry" class="btn btn-primary btn-sm">Reconnect</button>
+                <button type="button" id="conn-reload" class="btn btn-ghost btn-sm">Reload page</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

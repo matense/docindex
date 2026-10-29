@@ -4283,3 +4283,57 @@ body.perf-mode .drive-card {
 body.perf-mode #search-dock-container {
     transform: none !important;
 }
+
+/* ============================================================================
+   CONNECTION OVERLAY (always active, both visual modes)
+   Shown by the ui.js connection monitor when the server is unreachable.
+   Plain CSS (no Tailwind dependency): solid dim + solid card, no blur, no
+   animation — it must render even when everything else has failed.
+   ============================================================================ */
+#conn-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(15, 23, 42, 0.55);
+}
+#conn-overlay.hidden {
+    display: none;
+}
+#conn-overlay .conn-card {
+    max-width: 22rem;
+    width: 100%;
+    text-align: center;
+    padding: 1.75rem 1.5rem 1.5rem;
+    border-radius: 1rem;
+    background: #ffffff;
+    color: #1e293b;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.35);
+}
+[data-theme="dark"] #conn-overlay .conn-card {
+    background: #1e293b;
+    color: #f1f5f9;
+}
+#conn-overlay .conn-icon {
+    font-size: 2rem;
+    color: #ef4444;
+    margin-bottom: 0.5rem;
+}
+#conn-overlay .conn-title {
+    font-size: 1.15rem;
+    font-weight: 800;
+    margin: 0 0 0.25rem;
+}
+#conn-overlay .conn-status {
+    font-size: 0.85rem;
+    opacity: 0.65;
+    margin: 0 0 1.25rem;
+}
+#conn-overlay .conn-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+}

@@ -164,7 +164,8 @@
             currentUrl = url;
             await swapContent(html, url);
         } catch {
-            window.location.href = url; // network trouble: fall back to reload
+            if (window.DocIndexNet) window.DocIndexNet.reportNavFailure(url);
+            else window.location.href = url; // network trouble: fall back to reload
         } finally {
             if (token === navToken) hideProgress();
         }

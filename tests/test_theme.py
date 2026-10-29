@@ -89,3 +89,11 @@ def test_perf_mode_toggle_persists(auth_client, app, user):
                      follow_redirects=True)
     with app.app_context():
         assert db.session.get(User, user).perf_mode is False
+
+
+def test_conn_overlay_present(auth_client):
+    # The connection-loss overlay ships in the base shell on every page.
+    html = auth_client.get("/").data
+    assert b'id="conn-overlay"' in html
+    assert b'id="conn-retry"' in html
+    assert b'id="conn-reload"' in html
