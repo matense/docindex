@@ -27,7 +27,8 @@ ELEMENT_SCHEMA = {
     "properties": {
         "id": {"type": "string", "description": "Stable id (omit for new elements — one is assigned)."},
         "type": {"type": "string", "description": "rectangle | ellipse | diamond | arrow | line | text."},
-        "x": {"type": "number"}, "y": {"type": "number"},
+        "x": {"type": "number", "description": "Left edge (optional - omitted with y = auto-placed in a flow)."},
+      "y": {"type": "number", "description": "Top edge (optional - omitted with x = auto-placed in a flow)."},
         "width": {"type": "number"}, "height": {"type": "number"},
         "text": {"type": "string", "description": "Text content (text elements)."},
         "fontSize": {"type": "number"},
@@ -201,13 +202,27 @@ def _tool_add(user, args, drive):
     elements = args.get("elements")
     if not isinstance(elements, list) or not elements:
         return {"error": "'elements' must be a non-empty list."}
+    raw = list(elements)
+    auto_idx = {i for i, e in enumerate(raw)
+                if board_service._wants_auto(e)}
 
     def op(scene):
-        clean = [board_service.validate_element(e) for e in elements]
+        clean = [board_service.validate_element(e) for e in raw]
+        # No coordinates at all: flow into free space instead of
+        # piling everything at 0,0 (weak models omit geometry).
+        op.placed = board_service.auto_place(
+            clean, auto_idx, scene.get("elements", []))
         scene["elements"] = scene.get("elements", []) + clean
         return scene
 
-    return _mutate(user, args, drive, op, "AI added elements")
+    op.placed = 0
+    result = _mutate(user, args, drive, op, "AI added elements")
+    if result.get("ok") and op.placed:
+        result["auto_placed"] = op.placed
+        result["note"] = (f"{op.placed} element(s) had no coordinates and "
+                          "were flowed into free space - pass x/y to place "
+                          "them exactly.")
+    return result
 
 
 def _tool_update(user, args, drive):
@@ -294,7 +309,10 @@ _TOOLS = [
      {"file_id": {"type": "integer"}}, ("file_id",)),
     ("board_context", "Compact digest of a board (one line per element) to orient before editing.",
      {"file_id": {"type": "integer"}}, ("file_id",)),
-    ("add_elements", "Append validated elements (shapes/text/arrows) to a board.",
+    ("add_elements", "Append validated elements (shapes/text/arrows) to a board. "
+     "Coordinates are optional: elements without x AND y are flowed into free space. "
+     "Example: {\"type\": \"rectangle\", \"x\": 100, \"y\": 80, \"width\": 220, \"height\": 90, \"text\": \"Step 1\"} "
+     "(text goes in \"text\" for text elements).",
      {"file_id": {"type": "integer"},
       "elements": {"type": "array", "items": ELEMENT_SCHEMA}},
      ("file_id", "elements")),

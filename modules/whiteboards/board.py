@@ -169,6 +169,46 @@ def validate_scene(scene):
     }
 
 
+def _wants_auto(raw):
+    """True when a raw element carries no explicit position at all."""
+    return isinstance(raw, dict) and "x" not in raw and "y" not in raw
+
+
+def auto_place(elements, auto_idx, existing=()):
+    """Flow unpositioned elements into free space.
+
+    ``auto_idx`` holds the indexes (into ``elements``) that had no
+    explicit x/y in the raw input; only those move - everything else,
+    including an explicit 0,0, is left untouched. New items arrange
+    left-to-right below the ``existing`` content, wrapping every few
+    items. Returns the count placed.
+    """
+    auto_idx = set(auto_idx)
+    if not auto_idx:
+        return 0
+    bottom = 0.0
+    for e in list(existing):
+        try:
+            bottom = max(bottom, float(e.get("y", 0))
+                         + float(e.get("height", 0)))
+        except (TypeError, ValueError):
+            continue
+    x, y, row_h, per_row = 40.0, bottom + 60.0, 0.0, 0
+    placed = 0
+    for i, e in enumerate(elements):
+        if i not in auto_idx:
+            continue
+        w, h = e.get("width", 200.0), e.get("height", 100.0)
+        if per_row >= 3 or x + w > 1100:
+            x, y, row_h, per_row = 40.0, y + row_h + 60.0, 0.0, 0
+        e["x"], e["y"] = x, y
+        x += w + 40.0
+        row_h = max(row_h, h)
+        per_row += 1
+        placed += 1
+    return placed
+
+
 def serialize(scene):
     return json.dumps(scene, ensure_ascii=False)
 
@@ -235,8 +275,12 @@ def create_board(user, drive, name, elements=None):
                              "pick a writable drive.")
     _guard_writable_drive(drive)
     scene = empty_scene(name)
-    if elements:
-        scene["elements"] = [validate_element(e) for e in elements]
+    raw = list(elements or [])
+    scene["elements"] = [validate_element(e) for e in raw]
+    # Elements without any coordinates flow into free space instead of
+    # piling up at 0,0 (small models often omit geometry entirely).
+    auto_place(scene["elements"],
+               {i for i, e in enumerate(raw) if _wants_auto(e)})
     data = serialize(scene).encode("utf-8")
     storage = FileStorage(stream=BytesIO(data),
                           filename=f"{scene['title']}.{EXTENSION}",

@@ -175,6 +175,56 @@ def test_board_attachment_brief(app, user, enabled):
     assert "hello board" in (desc.get("head") or "")
 
 
+def test_auto_place_flows_coordinateless_elements():
+    raw = [{"type": "rectangle"}, {"type": "ellipse"},
+           {"type": "text", "text": "hi"}]
+    clean = [wb.validate_element(e) for e in raw]
+    idx = {i for i, e in enumerate(raw) if wb._wants_auto(e)}
+    assert idx == {0, 1, 2}
+    placed = wb.auto_place(clean, idx)
+    assert placed == 3
+    pos = {(e["x"], e["y"]) for e in clean}
+    assert len(pos) == 3  # spread out, not piled at 0,0
+    assert all(x >= 40 and y >= 60 for x, y in pos)
+
+
+def test_auto_place_respects_explicit_coords_and_content():
+    raw = [{"type": "rectangle", "x": 0, "y": 0},
+           {"type": "rectangle"}]
+    clean = [wb.validate_element(e) for e in raw]
+    idx = {i for i, e in enumerate(raw) if wb._wants_auto(e)}
+    assert idx == {1}
+    existing = [{"x": 0, "y": 0, "width": 50, "height": 400}]
+    placed = wb.auto_place(clean, idx, existing)
+    assert placed == 1
+    assert (clean[0]["x"], clean[0]["y"]) == (0, 0)  # explicit kept
+    assert clean[1]["y"] >= 460  # flows below the existing content
+
+
+def test_tool_add_auto_places_and_reports(app, user, enabled):
+    _drive(app, user)
+    user_obj = _user(app, user)
+    with app.app_context():
+        created = wb_tools._tool_create(
+            user_obj, {"name": "Flow",
+                       "elements": [{"type": "rectangle"}]}, None)
+        fid = created["created"]["id"]
+        res = wb_tools._tool_add(
+            user_obj, {"file_id": fid, "elements": [
+                {"type": "text", "text": "a"},
+                {"type": "text", "text": "b", "x": 5, "y": 5}]}, None)
+    assert res["ok"] is True
+    assert res.get("auto_placed") == 1  # only the coord-less one
+    assert "x/y" in res.get("note", "")
+    with app.app_context():
+        from app.models import StoredFile
+        scene = wb.load(db.session.get(StoredFile, fid))
+    texts = [e for e in scene["elements"] if e.get("type") == "text"]
+    assert len(texts) == 2
+    assert (texts[0]["x"], texts[0]["y"]) != (0, 0)
+    assert (texts[1]["x"], texts[1]["y"]) == (5, 5)
+
+
 def test_ai_lock_and_hide(app, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)
