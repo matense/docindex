@@ -12,6 +12,7 @@ connection's requests/minute limit is reached it sleeps for a slot instead
 of failing — long runs throttle themselves.
 """
 
+import collections
 import json
 import queue
 import threading
@@ -43,6 +44,13 @@ _live = {}
 # the task's stream endpoint). Events are NDJSON-shaped dicts; None is the
 # end-of-stream sentinel.
 _subscribers = {}
+# task_id -> deque of recent broadcast events. A window (re)opened mid-run
+# subscribes late and would otherwise miss everything emitted while it was
+# away; the stream endpoint replays this buffer first so the reopened chat
+# rebuilds live state (partial thinking, running tool chip) and continues
+# live from there. Bounded per task, dropped when the task finishes.
+_replay = {}
+_REPLAY_MAX = 400
 _lock = threading.Lock()
 
 # Global bound: raw threads per task would let 100 users x tasks exhaust
@@ -52,10 +60,19 @@ _task_pool = _Pool(max_workers=8, thread_name_prefix="ai-task")
 
 
 def subscribe(task_id):
-    """Register a live-event subscriber; returns its queue."""
+    """Register a live-event subscriber; returns its queue.
+
+    The queue is primed with the task's recent events first, so a window
+    (re)opened mid-run rebuilds live state instead of showing a gap.
+    Snapshot-before-register avoids duplicates (a small gap can remain,
+    covered by the transcript reconcile).
+    """
     q = queue.Queue()
     with _lock:
+        pending = list(_replay.get(task_id, ()))
         _subscribers.setdefault(task_id, []).append(q)
+    for ev in pending:
+        q.put(ev)
     return q
 
 
@@ -69,7 +86,13 @@ def unsubscribe(task_id, q):
 
 
 def _broadcast(task_id, event):
+    # The None end-of-stream sentinel is live-only, never replayed.
     with _lock:
+        if event is not None:
+            buf = _replay.get(task_id)
+            if buf is None:
+                buf = _replay[task_id] = collections.deque(maxlen=_REPLAY_MAX)
+            buf.append(event)
         subs = list(_subscribers.get(task_id, ()))
     for q in subs:
         q.put(event)
@@ -337,6 +360,7 @@ def _task_worker(task_id, app):
                 _stop_events.pop(task_id, None)
                 _subscribers.pop(task_id, None)
                 _live.pop(task_id, None)
+                _replay.pop(task_id, None)
 
 
 def _friendly_error(exc):

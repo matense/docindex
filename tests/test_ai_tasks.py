@@ -383,6 +383,41 @@ def test_worker_broadcasts_live_events(app, user):
     assert events[-1]["status"] == "done"
 
 
+def test_late_subscriber_replays_missed_events(app, user):
+    """A window (re)opened mid-run subscribes late: its queue is primed
+    with recent events so live progress rebuilds instead of showing a gap.
+    The end-of-stream sentinel is live-only and never replayed."""
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    task_id = _make_task(app, user, "running")
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "part one "})
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "part two"})
+    ai_task_service._broadcast(task_id, None)  # sentinel: not replayed
+    q = ai_task_service.subscribe(task_id)
+    assert q.get(timeout=2) == {"type": "thinking_token",
+                                "content": "part one "}
+    assert q.get(timeout=2) == {"type": "thinking_token",
+                                "content": "part two"}
+    assert q.empty()
+    ai_task_service.unsubscribe(task_id, q)
+
+
+def test_late_subscriber_still_gets_live_events(app, user):
+    """Replayed history then live events, in order, no duplicates."""
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    task_id = _make_task(app, user, "running")
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "old "})
+    q = ai_task_service.subscribe(task_id)
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "new "})
+    assert q.get(timeout=2)["content"] == "old "
+    assert q.get(timeout=2)["content"] == "new "
+    assert q.empty()
+    ai_task_service.unsubscribe(task_id, q)
+
+
 def test_stream_requires_ownership(auth_client, app, user):
     task_id = _make_task(app, user, "running")
     with app.app_context():

@@ -19,6 +19,13 @@
             "Background widgets (AI tasks, sync, hashtags, automation runs) now pause when the tab is hidden, back off when there is nothing going on, and re-check instantly when you return — far fewer idle requests and DOM writes.",
             "Chat transcripts skip redundant full re-renders, the drive lasso hit-tests once per frame with cached geometry, and bounded wait loops back off instead of polling at full rate."
           ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Reopening a chat while its run is still going now shows the live progress immediately — including the thinking produced while the window was minimized — instead of an empty transcript that only fills in at the end."
+          ]
         }
       ]
     },
