@@ -733,6 +733,26 @@ def test_active_tasks_include_progress(auth_client, app, user):
         ai_task_service._live.pop(task_id, None)
 
 
+def test_active_tasks_shows_latest_run_per_conversation(auth_client, app, user):
+    """One dock icon per conversation even after several runs in one chat:
+    only the latest run is listed, and it carries the full transcript."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("first answer", "second answer")):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first question"}).get_json()["task"]
+        second = auth_client.post("/ai/tasks", json={
+            "message": "second question",
+            "conversation_id": first["conversation_id"]}).get_json()["task"]
+
+    tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
+    same_conv = [t for t in tasks
+                 if t["conversation_id"] == first["conversation_id"]]
+    assert len(same_conv) == 1
+    assert same_conv[0]["id"] == second["id"]
+    assert same_conv[0]["status"] == "done"
+
+
 def test_rename_task(auth_client, app, user):
     _enable_ai(app)
     with patch("app.services.ai_service.chat_completion",

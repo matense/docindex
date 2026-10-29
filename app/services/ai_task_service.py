@@ -210,14 +210,26 @@ def get_task(user, task_id):
 
 
 def active_tasks(user):
-    """Tasks shown in the dock: running/queued, plus finished ones the user
-    has not dismissed yet (the notification badge state). Capped to avoid
+    """Runs shown in the dock: running/queued, plus finished ones the user
+    has not dismissed yet (the notification badge state). One icon per
+    conversation — the latest run — so a long chat never piles up icons;
+    opening it always shows the full shared transcript. Capped to avoid
     unbounded dock payloads."""
     tasks = (AITask.query
              .filter(AITask.user_id == user.id)
              .filter(db.or_(AITask.status.in_(("queued", "running")),
                             AITask.notified.is_(False)))
-             .order_by(AITask.created_at.desc()).limit(20).all())
+             .order_by(AITask.created_at.desc(), AITask.id.desc()).limit(60).all())
+    # One icon per conversation: keep only each conversation's latest run.
+    # (Ordered newest-first above, so the first row per conversation wins;
+    # notified-finished runs never reach here — the filter drops them.)
+    seen_convs = set()
+    docked = []
+    for t in tasks:
+        if t.conversation_id not in seen_convs:
+            seen_convs.add(t.conversation_id)
+            docked.append(t)
+    tasks = docked[:20]
     # One aggregate query (not per task) for the persisted step counts the
     # dock progress line is derived from when no worker is live.
     conv_ids = [t.conversation_id for t in tasks]
