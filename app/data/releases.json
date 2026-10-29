@@ -24,7 +24,8 @@
           "title": "Fixed",
           "icon": "fa-bug-slash",
           "entries": [
-            "Reopening a chat while its run is still going now shows the live progress immediately — including the thinking produced while the window was minimized — instead of an empty transcript that only fills in at the end."
+            "Reopening a chat while its run is still going now shows the live progress immediately — including the thinking produced while the window was minimized — instead of an empty transcript that only fills in at the end.",
+            "Git drive clone failures are now unmissable: outright failures pop a modal with the reason, and a background clone that fails later keeps a persistent error card with the reason and a dismiss button instead of vanishing after a few seconds."
           ]
         }
       ]

@@ -19,6 +19,7 @@
         let doneTimer = null;
         let timer = null;
         let idle = true;
+        let finishedState = null; // 'done' | 'error' after showFinished
 
         function build() {
             widget = document.createElement('div');
@@ -61,6 +62,11 @@
             });
 
             stopBtn.addEventListener('click', async () => {
+                if (finishedState) {  // finished card: this button dismisses
+                    widget.classList.add('hidden');
+                    finishedState = null;
+                    return;
+                }
                 if (!lastDriveId) return;
                 const ok = await window.uiConfirm(cfg.stopConfirm,
                     { title: 'Stop', confirmText: 'Stop' });
@@ -91,7 +97,13 @@
             lastSig = sig;
             lastDriveId = job.drive_id;
             clearTimeout(doneTimer);
+            finishedState = null;
             widget.classList.remove('hidden');
+            // A previous finished card may have repurposed the buttons.
+            pauseBtn.style.display = '';
+            stopBtn.style.display = '';
+            stopBtn.title = 'Stop';
+            stopBtn.innerHTML = '<i class="fas fa-stop"></i>';
 
             const paused = job.state === 'paused';
             titleEl.textContent = (paused ? 'Paused — ' : cfg.verb + ' ') + `“${job.drive_name}”`;
@@ -117,18 +129,35 @@
                 pauseBtn.style.display = 'none';
                 stopBtn.style.display = 'none';
                 const failed = s.state === 'error' || s.state === 'cancelled';
+                finishedState = s.state === 'done' ? 'done'
+                    : failed ? 'error' : null;
                 iconEl.innerHTML = failed
                     ? '<i class="fas fa-triangle-exclamation"></i>' : '<i class="fas fa-check"></i>';
                 titleEl.textContent = s.state === 'error' ? cfg.verb + ' failed'
                     : s.state === 'cancelled' ? cfg.verb + ' stopped' : cfg.verb + ' complete';
                 currentEl.textContent = s.state === 'error'
                     ? (s.error || '') : cfg.summary(s.stats);
+                currentEl.title = s.state === 'error' ? (s.error || '') : '';
                 barEl.value = s.state === 'done' ? 100 : s.percent || 0;
                 percentEl.textContent = s.state === 'done' ? '100%' : '!';
+                if (s.state === 'error') {
+                    // A failed clone/sync stays visible with the reason until
+                    // dismissed — an 8s toast is how clone errors went
+                    // unnoticed. The ■ button becomes an explicit dismiss.
+                    stopBtn.title = 'Dismiss';
+                    stopBtn.innerHTML = '<i class="fas fa-xmark"></i>';
+                    if (window.uiToast) {
+                        window.uiToast(cfg.verb + ' failed: ' + (s.error || 'unknown error'), 'error');
+                    }
+                    return;
+                }
                 doneTimer = setTimeout(() => {
                     widget.classList.add('hidden');
                     pauseBtn.style.display = '';
                     stopBtn.style.display = '';
+                    stopBtn.title = 'Stop';
+                    stopBtn.innerHTML = '<i class="fas fa-stop"></i>';
+                    finishedState = null;
                 }, 8000);
             } catch { /* ignore */ }
         }
