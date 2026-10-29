@@ -326,7 +326,9 @@ def graph_json(workflow_id):
     """Current saved graph — used by the editor to reload after the AI
     copilot edits the workflow from the chat."""
     workflow = _owned_workflow(workflow_id)
-    return jsonify({"graph": engine.parse_graph(workflow.graph)})
+    return jsonify({"graph": engine.parse_graph(workflow.graph),
+                    "version": (workflow.updated_at.isoformat()
+                                if workflow.updated_at else None)})
 
 
 @bp.post("/<int:workflow_id>/save")

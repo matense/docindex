@@ -265,7 +265,7 @@ window.currentWorkflow = { id: {{ workflow.id }},
             return;
         }
         const s = document.createElement('script');
-        s.src = "{{ url_for('automation.static', filename='automation.js') }}";
+        s.src = "{{ url_for('automation.static', filename='automation.js') }}?v=1";
         s.onload = () => window.AutomationEditor.mount(
             document.getElementById('automation-editor-root'));
         document.body.appendChild(s);
