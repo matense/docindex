@@ -142,6 +142,13 @@ def validate_element(raw):
         el["groupIds"] = [_str(g, "", 64) for g in groups[:20] if g]
     cid = raw.get("containerId")
     el["containerId"] = cid.strip()[:64] if isinstance(cid, str) and cid.strip() else None
+    link = raw.get("link")
+    el["link"] = link.strip()[:2000] if isinstance(link, str) and link.strip() else None
+    rnd = raw.get("roundness")
+    if isinstance(rnd, dict) and isinstance(rnd.get("type"), int) and 1 <= rnd["type"] <= 5:
+        el["roundness"] = {"type": rnd["type"]}
+    else:
+        el["roundness"] = None
     return el
 
 
@@ -417,21 +424,29 @@ def ai_file_guard(_user, stored):
 
 
 def arrange(elements, mode, ids=None):
-    """Align/distribute elements by bounding box. Returns a new list."""
+    """Align/distribute elements by bounding box. Returns (new_list, skipped).
+
+    Locked elements are never moved - they count as skipped. Bound text
+    labels follow their container by the same delta, so arranging a shape
+    never detaches its label.
+    """
     modes = {"align-left", "align-center-x", "align-right",
              "align-top", "align-center-y", "align-bottom",
              "distribute-x", "distribute-y"}
     if mode not in modes:
-        raise ValueError(f"Unknown arrange mode {mode!r} — use one of: "
+        raise ValueError(f"Unknown arrange mode {mode!r} - use one of: "
                          + ", ".join(sorted(modes)) + ".")
+    wanted = set(ids or [])
     target = [e for e in elements
-              if ids is None or e.get("id") in set(ids or [])]
-    if len(target) < (3 if mode.startswith("distribute") else 2):
-        raise ValueError("Select at least "
-                         + ("3" if mode.startswith("distribute") else "2")
-                         + " elements.")
+              if ids is None or e.get("id") in wanted]
+    locked = [e for e in target if e.get("locked")]
+    movable = [e for e in target if not e.get("locked")]
+    need = 3 if mode.startswith("distribute") else 2
+    if len(movable) < need:
+        raise ValueError(f"Select at least {need} unlocked elements "
+                         f"({len(locked)} selected are locked).")
     boxes = {e["id"]: (e["x"], e["y"], e["x"] + e["width"],
-                        e["y"] + e["height"]) for e in target}
+                        e["y"] + e["height"]) for e in movable}
     out = [dict(e) for e in elements]
     by_id = {e["id"]: e for e in out}
     if mode == "align-left":
@@ -478,4 +493,11 @@ def arrange(elements, mode, ids=None):
         for eid in ordered:
             by_id[eid]["y"] = y
             y += (boxes[eid][3] - boxes[eid][1]) + gap
-    return out
+    # Bound labels follow their container by the same delta.
+    for lbl in out:
+        cid = lbl.get("containerId")
+        if lbl.get("type") == "text" and cid in boxes:
+            ox, oy = boxes[cid][0], boxes[cid][1]
+            lbl["x"] += by_id[cid]["x"] - ox
+            lbl["y"] += by_id[cid]["y"] - oy
+    return out, len(locked)

@@ -56,9 +56,10 @@ def test_arrange_align_and_distribute():
     els = [wb.validate_element({"type": "rectangle", "x": x, "y": 0,
                                 "width": 10, "height": 10})
            for x in (0, 50, 100)]
-    left = wb.arrange(els, "align-left")
+    left, skipped = wb.arrange(els, "align-left")
+    assert skipped == 0
     assert [e["x"] for e in left] == [0, 0, 0]
-    dist = wb.arrange(els, "distribute-x")
+    dist, _ = wb.arrange(els, "distribute-x")
     xs = [e["x"] for e in dist]
     assert xs[0] == 0 and xs[-1] == 100
     assert xs[1] == pytest.approx(50)
@@ -280,6 +281,80 @@ def test_update_shape_text_reuses_label(app, user, enabled):
               if e.get("containerId") == eid]
     assert len(labels) == 1  # updated in place, not duplicated
     assert labels[0]["text"] == "v2"
+
+
+def test_link_and_roundness_survive_round_trip(app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Links", elements=[
+        {"type": "rectangle", "x": 0, "y": 0, "link": "https://x.test/a",
+         "roundness": {"type": 1}}])
+    with app.app_context():
+        scene = wb.load(db.session.get(StoredFile, fid))
+    el = scene["elements"][0]
+    assert el["link"] == "https://x.test/a"
+    assert el["roundness"] == {"type": 1}
+
+
+def test_locked_elements_rejected(app, user, enabled):
+    _drive(app, user)
+    user_obj = _user(app, user)
+    with app.app_context():
+        created = wb_tools._tool_create(
+            user_obj, {"name": "Locked", "elements": [
+                {"type": "rectangle", "x": 0, "y": 0, "locked": True},
+                {"type": "rectangle", "x": 50, "y": 50}]}, None)
+        fid = created["created"]["id"]
+        ctx = wb_tools._tool_context(user_obj, {"file_id": fid}, None)
+        locked_id = next(
+            lid for lid in [line.split()[0] for line in ctx["digest"]]
+            if any(e["id"] == lid and e.get("locked")
+                   for e in wb.load(db.session.get(StoredFile, fid))["elements"]))
+        err = wb_tools._tool_update(
+            user_obj, {"file_id": fid, "element_id": locked_id,
+                       "patch": {"x": 999}}, None)
+        assert "locked" in err["error"]
+        err2 = wb_tools._tool_delete(
+            user_obj, {"file_id": fid, "element_ids": [locked_id]},
+            None)
+        assert "locked" in err2["error"]
+        with app.app_context():
+            assert len(wb.load(db.session.get(StoredFile, fid))["elements"]) == 2
+
+
+def test_arrange_skips_locked_and_moves_labels(app, user, enabled):
+    els = [wb.validate_element({"type": "rectangle", "x": x, "y": 0,
+                                "width": 10, "height": 10,
+                                "locked": (x == 0)})
+           for x in (0, 50, 100)]
+    mid = els[1]
+    label = wb.make_label(mid, "L")
+    els.append(label)
+    out, skipped = wb.arrange(els, "align-top")
+    assert skipped == 1
+    by_id = {e["id"]: e for e in out}
+    assert by_id[els[0]["id"]]["y"] == 0  # locked stays
+    assert by_id[mid["id"]]["y"] == 0
+    assert by_id[label["id"]]["containerId"] == mid["id"]
+
+
+def test_delete_reports_count(app, user, enabled):
+    _drive(app, user)
+    user_obj = _user(app, user)
+    with app.app_context():
+        created = wb_tools._tool_create(
+            user_obj, {"name": "Del", "elements": [
+                {"type": "rectangle", "x": 0, "y": 0},
+                {"type": "text", "x": 0, "y": 0, "text": "t"}]}, None)
+        fid = created["created"]["id"]
+        res = wb_tools._tool_delete(
+            user_obj, {"file_id": fid, "element_ids": ["zzz"]}, None)
+        assert "error" in res
+        ids = [line.split()[0] for line in
+               wb_tools._tool_context(user_obj, {"file_id": fid},
+                                      None)["digest"]]
+        res2 = wb_tools._tool_delete(
+            user_obj, {"file_id": fid, "element_ids": ids}, None)
+        assert res2.get("deleted") == 2
 
 
 def test_ai_lock_and_hide(app, user, enabled):

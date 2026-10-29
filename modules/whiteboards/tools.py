@@ -38,6 +38,7 @@ ELEMENT_SCHEMA = {
         "angle": {"type": "number"},
         "locked": {"type": "boolean"},
       "isDeleted": {"type": "boolean"},
+      "link": {"type": "string", "description": "Optional hyperlink kept on the shape."},
         "groupIds": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["type"],
@@ -174,6 +175,20 @@ def _tool_context(user, args, drive):
             "version": board_service.scene_version(stored)}
 
 
+def _scene_locked_check(stored, ids):
+    """Raise if any targeted element is user-locked on the board."""
+    try:
+        scene = board_service.load(stored)
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"Board file is unreadable: {exc}") from exc
+    locked = [e.get("id") for e in scene.get("elements", [])
+              if e.get("id") in set(ids) and e.get("locked")]
+    if locked:
+        raise ValueError(f"Refusing to edit locked element(s): "
+                         f"{', '.join(locked)}. Unlock them on the board "
+                         f"first.")
+
+
 def _mutate(user, args, drive, op, note):
     stored, error = _owned_board(user, args.get("file_id"))
     if error:
@@ -243,11 +258,18 @@ def _tool_update(user, args, drive):
     patch = args.get("patch")
     if not eid or not isinstance(patch, dict):
         return {"error": "Give element_id and a patch object."}
+    locked_chk, locked_err = _owned_board(user, args.get("file_id"))
+    if locked_err:
+        return locked_err
+    try:
+        _scene_locked_check(locked_chk, [eid])
+    except ValueError as exc:
+        return {"error": str(exc)}
     allowed = {"x", "y", "width", "height", "angle", "text", "fontSize",
                "fontFamily", "textAlign", "verticalAlign", "strokeColor",
                "backgroundColor", "fillStyle", "strokeWidth", "strokeStyle",
                "roughness", "opacity", "isDeleted", "locked", "groupIds",
-               "startArrowhead", "endArrowhead", "points"}
+               "startArrowhead", "endArrowhead", "points", "link"}
 
     label_text = patch.get("text") if isinstance(patch, dict) else None
     if isinstance(label_text, str) and not label_text.strip():
@@ -306,15 +328,35 @@ def _tool_delete(user, args, drive):
         return {"error": "Give element_id or element_ids."}
     ids = set(ids)
 
+    locked_chk, locked_err = _owned_board(user, args.get("file_id"))
+    if locked_err:
+        return locked_err
+    try:
+        scene_chk = board_service.load(locked_chk)
+    except (ValueError, OSError) as exc:
+        return {"error": f"Board file is unreadable: {exc}"}
+    locked_ids = sorted(e.get("id") for e in scene_chk.get("elements", [])
+                        if e.get("id") in ids and e.get("locked"))
+    if locked_ids:
+        return {"error": f"Refusing to delete locked element(s): "
+                         f"{', '.join(locked_ids)}. Unlock them on the "
+                         f"board first."}
+
     def op(scene):
         before = len(scene.get("elements", []))
         scene["elements"] = [e for e in scene.get("elements", [])
                              if e.get("id") not in ids]
-        if len(scene["elements"]) == before:
+        removed = before - len(scene["elements"])
+        if removed == 0:
             raise ValueError("None of those element ids are on this board.")
+        op.removed = removed
         return scene
 
-    return _mutate(user, args, drive, op, "AI deleted elements")
+    op.removed = 0
+    result = _mutate(user, args, drive, op, "AI deleted elements")
+    if result.get("ok"):
+        result["deleted"] = op.removed
+    return result
 
 
 def _tool_arrange(user, args, drive):
@@ -322,11 +364,18 @@ def _tool_arrange(user, args, drive):
     ids = args.get("element_ids")
 
     def op(scene):
-        scene["elements"] = board_service.arrange(
+        arranged, skipped = board_service.arrange(
             scene.get("elements", []), mode, ids)
+        scene["elements"] = arranged
+        op.skipped = skipped
         return scene
 
-    return _mutate(user, args, drive, op, f"AI arranged ({mode})")
+    op.skipped = 0
+    result = _mutate(user, args, drive, op, f"AI arranged ({mode})")
+    if result.get("ok") and op.skipped:
+        result["skipped_locked"] = op.skipped
+        result["note"] = (f"{op.skipped} locked element(s) left in place.")
+    return result
 
 
 def _tool_clear(user, args, drive):
