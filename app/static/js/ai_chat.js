@@ -242,6 +242,7 @@
         if (TOOL_ICONS[name]) return TOOL_ICONS[name];
         if (name.startsWith('notebooks.')) return 'fa-table-cells';
         if (name.startsWith('automation.')) return 'fa-diagram-project';
+        if (name.startsWith('aiutils.')) return 'fa-calculator';
         return 'fa-wrench';
     }
 
