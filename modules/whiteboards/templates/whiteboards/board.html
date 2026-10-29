@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{{ board.name }} - Whiteboard{% endblock %}
+{% block title %}{{ board.name[:-7] if board.name.endswith('.wboard') else board.name }} - Whiteboard{% endblock %}
 {% block content %}
 <div class="w-full mx-auto max-w-[95%] p-6 pb-10 flex flex-col gap-4 min-h-full">
     <div class="flex items-center gap-3 flex-wrap">
         <a href="{{ url_for('whiteboards.index') }}" class="btn btn-ghost btn-sm gap-1" title="All boards">
             <i class="fas fa-arrow-left"></i> Boards
         </a>
-        <h1 class="text-xl font-bold truncate flex-1 min-w-0">{{ board.name }}</h1>
+        <h1 class="text-xl font-bold truncate flex-1 min-w-0">{{ board.name[:-7] if board.name.endswith('.wboard') else board.name }}</h1>
         <span id="wb-save-state" class="text-xs opacity-50">Saved</span>
         <button type="button" id="wb-export" class="btn btn-ghost btn-sm gap-1" title="Export as PNG">
             <i class="fas fa-image"></i><span class="hidden sm:inline">PNG</span>
@@ -32,10 +32,11 @@
     </div>
 </div>
 
-<script>
-    // Bridge contract for the React editor bundle (modules/whiteboards/frontend):
-    // it mounts on #wb-root, PUTs scenes to saveUrl (debounced), and polls
-    // sceneUrl for scene_version to pick up live AI edits.
+<script type="module">
+    // The editor bundle only auto-executes on full page loads; SPA
+    // navigations reuse the cached module, so mount explicitly every
+    // time (mount() unmounts any previous root first). Dynamic import()
+    // works here even when the SPA router re-runs this inline script.
     window.WB_CONFIG = {
         sceneUrl: {{ url_for('whiteboards.api_scene', file_id=board.id) | tojson }},
         saveUrl: {{ url_for('whiteboards.api_save', file_id=board.id) | tojson }},
@@ -46,7 +47,16 @@
     };
     // Lets the AI chat treat this board as the open file (chip + context,
     // mirrors notebooks edit page and drive/view.html).
-    window.currentFile = { id: {{ board.id }}, name: {{ board.name|tojson }} };
+    window.currentFile = { id: {{ board.id }}, name: {{ (board.name[:-7] if board.name.endswith('.wboard') else board.name)|tojson }} };
+    (async () => {
+        try {
+            if (!window.WhiteboardEditor) {
+                await import('{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}?v=1');
+            }
+            window.WhiteboardEditor?.mount?.();
+        } catch (err) {
+            console.error('Whiteboard editor failed to load:', err);
+        }
+    })();
 </script>
-<script type="module" src="{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}"></script>
 {% endblock %}

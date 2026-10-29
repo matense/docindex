@@ -11,6 +11,13 @@
           "entries": [
             "New Whiteboards module (admin toggle): hand-drawn-style boards backed by Excalidraw, stored as files on your drives — searchable, versioned, and fully drawable/edited by the AI (shapes, text, arrows, alignment) while you watch. Coordinates are optional for the AI: elements without x/y flow into free space instead of piling at the corner."
           ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Whiteboards: boards can be moved to the trash from the board list; the editor now loads on in-app navigation (no more forced refresh); board titles no longer show the .wboard extension."
+          ]
         }
       ]
     },

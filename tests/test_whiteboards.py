@@ -262,6 +262,18 @@ def test_ai_lock_and_hide(app, user, enabled):
 # --- Routes -----------------------------------------------------------------
 
 
+def test_delete_moves_board_to_trash(auth_client, app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Delete me")
+    resp = auth_client.post(f"/m/whiteboards/{fid}/delete",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+        ids = [b.id for b in wb.list_boards(user)]
+    assert fid not in ids
+
+
 def test_board_pages_and_scene_api(auth_client, app, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id, "API board")

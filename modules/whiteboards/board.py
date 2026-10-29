@@ -247,6 +247,7 @@ def get_board(file_id, user_id):
 def list_boards(user_id):
     return (StoredFile.query
             .filter_by(user_id=user_id, extension=EXTENSION)
+            .filter(StoredFile.deleted_at.is_(None))
             .order_by(StoredFile.updated_at.desc()).all())
 
 

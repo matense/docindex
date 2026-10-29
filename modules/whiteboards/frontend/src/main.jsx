@@ -14,11 +14,26 @@ style.textContent = excalidrawCss;
 document.head.appendChild(style);
 
 // Mount on #wb-root reading window.WB_CONFIG; render nothing if absent.
-const rootEl = document.getElementById("wb-root");
-if (rootEl) {
-  createRoot(rootEl).render(
+// Exported (not auto-run): the Flask template calls mount() explicitly,
+// which also covers SPA navigations where the bundle is already cached
+// and module side effects would not re-run.
+export function mount() {
+  const rootEl = document.getElementById("wb-root");
+  if (!rootEl) {
+    return;
+  }
+  if (rootEl._wbRoot) {
+    rootEl._wbRoot.unmount();
+  }
+  const root = createRoot(rootEl);
+  rootEl._wbRoot = root;
+  root.render(
     <React.StrictMode>
       <App />
     </React.StrictMode>
   );
+}
+
+if (typeof window !== "undefined") {
+  window.WhiteboardEditor = { mount };
 }

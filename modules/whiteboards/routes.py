@@ -5,6 +5,7 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models import Drive
+from app.services import file_service
 
 from . import board as board_service
 
@@ -116,6 +117,18 @@ def api_save(file_id):
     return jsonify({"ok": True,
                     "version": board_service.scene_version(stored),
                     "elements": len(saved["elements"])})
+
+
+@bp.post("/<int:file_id>/delete")
+@login_required
+def delete(file_id):
+    """Move a board to the trash (restorable from the Trash page)."""
+    stored = _get_board(file_id)
+    name = stored.name
+    file_service.delete_file(stored)
+    flash(f'"{name}" moved to the trash — restore it from the Trash page.',
+          "success")
+    return redirect(url_for("whiteboards.index"))
 
 
 @bp.post("/<int:file_id>/lock")
