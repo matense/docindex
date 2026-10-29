@@ -457,6 +457,21 @@ def profile_send_key():
     return redirect(url_for("settings.profile"))
 
 
+@bp.route("/profile/perf-mode", methods=["POST"])
+@login_required
+def profile_perf_mode():
+    """Performance mode: lite visuals (no animated/blurred paint) and
+    calm background timers. Same features, less CPU/GPU."""
+    current_user.perf_mode = request.form.get("enabled") == "on"
+    db.session.commit()
+    flash(("Performance mode on — animations, backdrop blur and background "
+           "polling are dialed down."
+           if current_user.perf_mode else
+           "Performance mode off — full visuals are back."),
+          "success")
+    return redirect(url_for("settings.profile"))
+
+
 @bp.route("/profile/registration", methods=["POST"])
 @login_required
 def profile_registration():

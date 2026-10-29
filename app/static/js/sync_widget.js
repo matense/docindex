@@ -15,7 +15,10 @@
     function createJobWidget(cfg) {
         let widget, barEl, percentEl, titleEl, currentEl, pauseBtn, stopBtn, iconEl;
         let lastDriveId = null;
+        let lastSig = null;
         let doneTimer = null;
+        let timer = null;
+        let idle = true;
 
         function build() {
             widget = document.createElement('div');
@@ -76,8 +79,16 @@
                     showFinished(lastDriveId);
                 }
                 lastDriveId = null;
+                lastSig = null;
                 return;
             }
+            // Memoize: identical polls must not touch the DOM (rewriting
+            // innerHTML every 2s restarts the fa-spin animation and forces
+            // style/layout churn for zero visual change).
+            const sig = [job.drive_id, job.state, job.current || "",
+                         job.processed, job.total, job.percent].join("|");
+            if (sig === lastSig) return;
+            lastSig = sig;
             lastDriveId = job.drive_id;
             clearTimeout(doneTimer);
             widget.classList.remove('hidden');
@@ -125,20 +136,33 @@
         async function poll() {
             try {
                 const resp = await fetch(cfg.activeUrl, { headers: { 'Accept': 'application/json' } });
-                if (!resp.ok) return;
                 const contentType = resp.headers.get('Content-Type') || '';
-                if (!contentType.includes('application/json')) return; // login page etc.
-                const data = await resp.json();
-                render(data.job);
+                if (resp.ok && contentType.includes('application/json')) {
+                    const data = await resp.json();
+                    idle = !data.job;
+                    render(data.job);
+                }
             } catch { /* offline etc. — try again on the next tick */ }
+            schedule();
+        }
+
+        function schedule() {
+            // Calm polling: hidden tabs and empty states check rarely;
+            // user actions poke an immediate poll (below).
+            clearTimeout(timer);
+            const calm = window.DocIndex && window.DocIndex.pollDelay;
+            timer = setTimeout(poll, calm ? calm(2000, idle) : 2000);
         }
 
         build();
         poll();
-        setInterval(poll, 2000);
         // A form was just submitted via the SPA router (e.g. "Sync now") —
         // check immediately instead of waiting for the next interval tick.
         document.addEventListener('spa:mutated', () => setTimeout(poll, 300));
+        // Hidden tabs don't need 2s updates — re-check on return.
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) poll();
+        });
     }
 
     function start() {

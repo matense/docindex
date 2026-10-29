@@ -1,6 +1,28 @@
 {
   "releases": [
     {
+      "version": "0.1.9",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Profile → Display & settings now offers Performance mode: same features with lite visuals (no animated background or backdrop blur, calmer animations) and calmer background polling — for slower machines."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Background widgets (AI tasks, sync, hashtags, automation runs) now pause when the tab is hidden, back off when there is nothing going on, and re-check instantly when you return — far fewer idle requests and DOM writes.",
+            "Chat transcripts skip redundant full re-renders, the drive lasso hit-tests once per frame with cached geometry, and bounded wait loops back off instead of polling at full rate."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.8",
       "date": "2026-10-29",
       "title": "In development",

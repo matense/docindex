@@ -53,6 +53,7 @@
     loadConnections();
 
     let conversationId = null;
+    let lastConvSig = null; // signature of the rendered transcript (skip no-op re-renders)
     let attachments = []; // [{id, name}]
     let contextDismissedId = null; // currentFile.id the user hid
     let workflowDismissedId = null; // currentWorkflow.id the user hid
@@ -632,8 +633,19 @@
         pendingSummaries[fileId] = { name };
         renderChips();
         let tries = 0;
+        let hiddenWaits = 0;
         const tick = async () => {
             if (!pendingSummaries[fileId]) return;
+            // Hidden tabs just wait — indexing is server-side — but not
+            // forever: after ~3 min hidden, report and stop polling.
+            if (document.hidden) {
+                hiddenWaits++;
+                if (hiddenWaits < 36) { setTimeout(tick, 5000); return; }
+                delete pendingSummaries[fileId];
+                renderChips();
+                addMessage('step', '⚠️ "' + name + '" is still indexing — ask anyway, the AI reads it live by id.');
+                return;
+            }
             tries++;
             try {
                 const resp = await fetch('/file/' + fileId + '/summary',
@@ -661,7 +673,8 @@
                 addMessage('step', '⚠️ "' + name + '" is still indexing — ask anyway, the AI reads it live by id.');
                 return;
             }
-            setTimeout(tick, 2000);
+            // Back off: fresh files index in seconds, slow ones take a minute.
+            setTimeout(tick, tries < 6 ? 2000 : 5000);
         };
         setTimeout(tick, 2500);
     }
@@ -1115,6 +1128,7 @@
         reasoningBody.appendChild(chip);
         toolChipEl = chip;
         toolElapsedTimer = setInterval(() => {
+            if (document.hidden) return;  // cosmetic — recomputes on return
             const s = Math.floor((Date.now() - chip._startedAt) / 1000);
             const elSpan = chip.querySelector('.ai-tool-elapsed');
             if (elSpan && s > 0) elSpan.textContent = '· ' + s + 's';
@@ -1263,6 +1277,7 @@
         heartbeatTimer = setInterval(() => {
             if (!taskAbort && !watchingTaskId && !sending) { stopHeartbeat(); return; }
             if (toolChipEl) return;  // a tool is visibly running
+            if (document.hidden) return;  // cosmetic — resumes on return
             const wait = Date.now() - lastEventAt;
             if (wait < 2000) return;
             if (!heartbeatEl) {
@@ -1273,7 +1288,6 @@
             }
             heartbeatEl.querySelector('span').textContent =
                 'Waiting for the model… ' + Math.floor(wait / 1000) + 's';
-            scrollDown();
         }, 1000);
     }
 
@@ -1333,24 +1347,33 @@
             .then(r => r.json())
             .then(conv => {
                 conversationId = conv.id;
-                clearMessages();
-                let seenArchived = false;
-                conv.messages.forEach(m => {
-                    if (!m.archived && seenArchived) {
-                        addArchiveDivider();
-                        seenArchived = false;
-                    }
-                    const el = addMessage(m.role, m.content, m);
-                    if (m.role === 'user') {
-                        // Strip the rendered 📎 attachment suffix: a
-                        // regenerated turn must re-send the question only.
-                        lastUserQuestion = m.content.replace(/\n\n📎 [^\n]*$/, '');
-                    }
-                    if (m.archived) {
-                        seenArchived = true;
-                        if (el) el.classList.add('ai-archived');
-                    }
-                });
+                // Skip no-op re-renders: a full parse+highlight of a long
+                // history is the most expensive DOM op on this page.
+                const lastMsg = conv.messages[conv.messages.length - 1];
+                const sig = conv.messages.length + '|'
+                    + (lastMsg ? lastMsg.created_at : '') + '|'
+                    + (conv.task ? conv.task.status : '');
+                if (sig !== lastConvSig) {
+                    lastConvSig = sig;
+                    clearMessages();
+                    let seenArchived = false;
+                    conv.messages.forEach(m => {
+                        if (!m.archived && seenArchived) {
+                            addArchiveDivider();
+                            seenArchived = false;
+                        }
+                        const el = addMessage(m.role, m.content, m);
+                        if (m.role === 'user') {
+                            // Strip the rendered 📎 attachment suffix: a
+                            // regenerated turn must re-send the question only.
+                            lastUserQuestion = m.content.replace(/\n\n📎 [^\n]*$/, '');
+                        }
+                        if (m.archived) {
+                            seenArchived = true;
+                            if (el) el.classList.add('ai-archived');
+                        }
+                    });
+                }
                 restoreContext(conv.context);
                 // A still-running task streams its events live (below);
                 // navigating away only drops the subscription.
@@ -1467,7 +1490,10 @@
     async function pollTaskEnd(stopId) {
         const convId = conversationId;
         for (let i = 0; i < 30; i++) {
-            await new Promise(r => setTimeout(r, 2000));
+            // Back off: early finish is common, late finish is rare.
+            // Hidden tabs just wait — the transcript persists.
+            await new Promise(r => setTimeout(r, i < 5 ? 2000 : 5000));
+            if (document.hidden) continue;
             if (taskAbort) return;  // a new run streams here now
             let status = null;
             try {
@@ -1600,7 +1626,7 @@
                         e.stopPropagation();
                         fetch('/ai/conversations/' + c.id + '/delete', { method: 'POST' })
                             .then(() => {
-                                if (conversationId === c.id) { conversationId = null; clearMessages(); }
+                                if (conversationId === c.id) { conversationId = null; lastConvSig = null; clearMessages(); }
                                 toggleList(); toggleList();
                             });
                     };
@@ -2015,6 +2041,7 @@
     window.aiPage = {
         newConversation() {
             conversationId = null;
+            lastConvSig = null;
             attachments = [];
             cellRef = null;
             driveRefs = [];

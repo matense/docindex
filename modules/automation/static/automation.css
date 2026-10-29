@@ -1358,3 +1358,32 @@
         min-width: 160px;
     }
 }
+
+/* ============================================================================
+   PERFORMANCE MODE (body.perf-mode) — paint/composite cost only.
+   Scoped entirely under `body.perf-mode` (set server-side on <body>), so
+   default visuals are untouched. Only decorative workflow-run animations are
+   stilled; live status colors/borders/badges stay as-is. Appended as one
+   section at the end of the file; nothing above was modified.
+   ============================================================================ */
+
+/* Flowing live wires: keep the static dash pattern, stop the flow. */
+body.perf-mode #drawflow.wf-live .connection .main-path {
+    animation: none !important;
+}
+/* Pulsing running node: keep the highlight border, stop the pulse. */
+body.perf-mode .wf-node-card.wf-live-running {
+    animation: none !important;
+}
+/* Striped run progress: keep the static stripes/fill, stop the slide. */
+body.perf-mode .wf-run-progress-fill.is-active {
+    animation: none !important;
+}
+/* Pulsing current step row: row keeps its layout, stops flashing. */
+body.perf-mode .wf-row-running {
+    animation: none !important;
+}
+/* One-shot entrance for preview log rows (wf-rise): rows render statically. */
+body.perf-mode .wf-preview-log-row {
+    animation: none !important;
+}
