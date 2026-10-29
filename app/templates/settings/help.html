@@ -47,6 +47,7 @@
             <a href="#help-ai-search" class="link link-hover"><i class="fas fa-wand-magic-sparkles w-5 text-primary/70"></i> AI search page</a>
             <a href="#help-behaviors" class="link link-hover"><i class="fas fa-masks-theater w-5 text-primary/70"></i> Behaviors &amp; personas</a>
             <a href="#help-notebooks" class="link link-hover"><i class="fas fa-book-open w-5 text-primary/70"></i> Notebooks</a>
+            <a href="#help-whiteboards" class="link link-hover"><i class="fas fa-pen-ruler w-5 text-primary/70"></i> Whiteboards</a>
             <a href="#help-profile" class="link link-hover"><i class="fas fa-user w-5 text-primary/70"></i> Profile page</a>
             <a href="#help-ai-settings" class="link link-hover"><i class="fas fa-gear w-5 text-primary/70"></i> AI settings</a>
             {% if enabled_modules %}
@@ -266,6 +267,15 @@
         size warning, cannot be turned off) keeps every change — on shared
         drives the history travels inside the file so collaborators see it
         too.</p>
+    {% endcall %}
+
+    {% call section('help-whiteboards', 'fa-pen-ruler', 'Whiteboards') %}
+        <p>Whiteboards are hand-drawn-style Excalidraw scenes saved as files
+        on your drives — indexed, searchable and fully available to the AI.
+        Open a board to draw by hand; while it is open, AI edits appear
+        live. The lock icon blocks AI edits and the eye icon hides the board
+        from the AI entirely. Every AI answer leaves a single restorable
+        history entry, and the board exports to PNG from the toolbar.</p>
     {% endcall %}
 
     {% call section('help-profile', 'fa-user', 'Profile page') %}

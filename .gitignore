@@ -21,3 +21,6 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Frontend deps (whiteboards editor bundle is built into modules/whiteboards/static/dist/)
+modules/whiteboards/frontend/node_modules/

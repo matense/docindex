@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}{{ board.name }} - Whiteboard{% endblock %}
+{% block content %}
+<div class="w-full mx-auto max-w-[95%] p-6 pb-10 flex flex-col gap-4 min-h-full">
+    <div class="flex items-center gap-3 flex-wrap">
+        <a href="{{ url_for('whiteboards.index') }}" class="btn btn-ghost btn-sm gap-1" title="All boards">
+            <i class="fas fa-arrow-left"></i> Boards
+        </a>
+        <h1 class="text-xl font-bold truncate flex-1 min-w-0">{{ board.name }}</h1>
+        <span id="wb-save-state" class="text-xs opacity-50">Saved</span>
+        <button type="button" id="wb-export" class="btn btn-ghost btn-sm gap-1" title="Export as PNG">
+            <i class="fas fa-image"></i><span class="hidden sm:inline">PNG</span>
+        </button>
+        <form method="POST" action="{{ url_for('whiteboards.lock' if not scene.ai_lock else 'whiteboards.unlock', file_id=board.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost btn-sm gap-1" title="{{ 'AI edits locked — click to unlock' if scene.ai_lock else 'Lock against AI edits' }}">
+                <i class="fas {{ 'fa-lock text-warning' if scene.ai_lock else 'fa-lock-open' }}"></i>
+            </button>
+        </form>
+        <form method="POST" action="{{ url_for('whiteboards.hide' if not scene.ai_hidden else 'whiteboards.unhide', file_id=board.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost btn-sm gap-1" title="{{ 'Hidden from the AI — click to unhide' if scene.ai_hidden else 'Hide from the AI' }}">
+                <i class="fas {{ 'fa-eye-slash' if scene.ai_hidden else 'fa-eye' }}"></i>
+            </button>
+        </form>
+    </div>
+
+    <div id="wb-root" class="rounded-2xl border border-base-content/10 overflow-hidden" style="height: calc(100vh - 220px); min-height: 420px;">
+        <div class="flex items-center justify-center h-full opacity-50 text-sm gap-2">
+            <i class="fas fa-circle-notch fa-spin"></i> Loading the board editor…
+        </div>
+    </div>
+</div>
+
+<script>
+    // Bridge contract for the React editor bundle (modules/whiteboards/frontend):
+    // it mounts on #wb-root, PUTs scenes to saveUrl (debounced), and polls
+    // sceneUrl for scene_version to pick up live AI edits.
+    window.WB_CONFIG = {
+        sceneUrl: {{ url_for('whiteboards.api_scene', file_id=board.id) | tojson }},
+        saveUrl: {{ url_for('whiteboards.api_save', file_id=board.id) | tojson }},
+        csrfToken: {{ csrf_token() | tojson }},
+        initialScene: {{ scene | tojson }},
+        initialVersion: {{ version | tojson }},
+        readOnly: {{ 'true' if board.drive and board.drive.is_readonly else 'false' }}
+    };
+    // Lets the AI chat treat this board as the open file (chip + context,
+    // mirrors notebooks edit page and drive/view.html).
+    window.currentFile = { id: {{ board.id }}, name: {{ board.name|tojson }} };
+</script>
+<script type="module" src="{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}"></script>
+{% endblock %}

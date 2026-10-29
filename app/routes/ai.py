@@ -98,6 +98,36 @@ def _notebook_access_note(stored):
     return ""
 
 
+def _whiteboard_access_note(stored):
+    """Extra instruction appended to the open-file context note when the
+    open board is locked or hidden for the AI (wboard only)."""
+    if stored.extension != "wboard":
+        return ""
+    from ..services import file_service, module_service
+    if not module_service.is_enabled("whiteboards"):
+        return ""
+    try:
+        scene = json.loads(file_service.read_text_content(stored,
+                                                          max_chars=500_000))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(scene, dict):
+        return ""
+    if scene.get("ai_hidden"):
+        return (" This whiteboard is HIDDEN from the AI by the user: do not "
+                "read or mention its content — if they ask about it, tell "
+                "them it is hidden and can be unhidden with the eye button "
+                "in the board header.")
+    if scene.get("ai_lock"):
+        return (" This whiteboard is LOCKED against AI edits by the user: do "
+                "not generate or propose edits to it. If they ask for "
+                "changes, tell them the board is locked and ask them to "
+                "unlock it with the lock button in the board header, "
+                "then repeat the request. Reading it and answering "
+                "questions about it is fine.")
+    return ""
+
+
 def _attachment_brief(file_service, stored, cap=1000):
     """One-line pre-extracted content for an attached file, so the model
     answers from the gist without a tool call: image caption, table columns
@@ -119,6 +149,9 @@ def _attachment_brief(file_service, stored, cap=1000):
         if rows:
             text += f" First rows: {'; '.join(rows)}."
         return text[:cap]
+    if kind == "whiteboard":
+        head = (desc.get("head") or "").strip().replace("\n", " ")
+        return f"Whiteboard: {head[:cap]}" if head else None
     if kind == "text":
         head = (desc.get("head") or "").strip().replace("\n", " ")
         return f"Starts with: {head[:cap]}" if head else None
@@ -237,14 +270,22 @@ def _resolve_context(user, data):
                         .filter(StoredFile.deleted_at.is_(None))
                         .first())
     if context_file:
-        kind = "notebook" if context_file.extension == "pdocnb" else "file"
+        if context_file.extension == "wboard":
+            kind = "whiteboard"
+        elif context_file.extension == "pdocnb":
+            kind = "notebook"
+        else:
+            kind = "file"
         notes.append(
             f"The user currently has the {kind} "
             f"[id {context_file.id}] {context_file.name} open on screen. "
-            "When they say things like \"this notebook\", \"this file\" or "
-            "\"here\" without naming a target, they mean that one — you "
+            "When they say things like \"this board\", \"this notebook\", "
+            "\"this file\" or \"here\" without naming a target, they mean "
+            "that one — you "
             "can read or edit it directly by id, no need to search first."
-            + _notebook_access_note(context_file))
+            + (_whiteboard_access_note(context_file)
+               if kind == "whiteboard"
+               else _notebook_access_note(context_file)))
         snapshot["context_file_id"] = context_file.id
         snapshot["context_file_name"] = context_file.name
 

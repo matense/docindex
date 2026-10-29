@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "0.2.0",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "New Whiteboards module (admin toggle): hand-drawn-style boards backed by Excalidraw, stored as files on your drives — searchable, versioned, and fully drawable/edited by the AI (shapes, text, arrows, alignment) while you watch."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.9",
       "date": "2026-10-29",
       "title": "In development",
