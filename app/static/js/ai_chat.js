@@ -10,6 +10,139 @@
     let spawnCount = 0;
 
     // ------------------------------------------------------------------
+    // Side-snap dual view (new layer — floating behavior below untouched)
+    // One docked window at a time; the main view shrinks to a true split
+    // with a draggable divider. Floating resize is preserved via prev.
+    // ------------------------------------------------------------------
+    const SNAP_ZONE = 48; // px from the screen edge that triggers snap
+    let dockW = Math.floor(window.innerWidth / 2);
+    let dockedWin = null; // api object of the currently docked window
+    let acwGhost = null, acwEdgeL = null, acwEdgeR = null, acwDivider = null;
+
+    function acwAppContainer() { return document.getElementById('app-container'); }
+
+    // The search sub-dock is position:fixed below the header, so it ignores
+    // the container shrink and would slide under the docked chat — pin only
+    // it to the split. The header itself stays full-width, untouched.
+    function acwSearchDock() { return document.getElementById('search-dock-container'); }
+
+    function ensureDockChrome() {
+        if (acwGhost) return;
+        acwGhost = document.createElement('div');
+        acwGhost.id = 'acw-ghost';
+        document.body.appendChild(acwGhost);
+        acwEdgeL = document.createElement('div');
+        acwEdgeL.id = 'acw-edge-left';
+        acwEdgeL.className = 'acw-edge-zone';
+        document.body.appendChild(acwEdgeL);
+        acwEdgeR = document.createElement('div');
+        acwEdgeR.id = 'acw-edge-right';
+        acwEdgeR.className = 'acw-edge-zone';
+        document.body.appendChild(acwEdgeR);
+        acwDivider = document.createElement('div');
+        acwDivider.id = 'acw-divider';
+        acwDivider.title = 'Drag to resize columns';
+        document.body.appendChild(acwDivider);
+        let divDragging = false;
+        acwDivider.addEventListener('mousedown', (e) => {
+            if (!dockedWin) return;
+            divDragging = true;
+            acwDivider.classList.add('drag');
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!divDragging || !dockedWin) return;
+            dockW = dockedWin.mode === 'left' ? e.clientX : window.innerWidth - e.clientX;
+            clampDockW();
+            const d = dockDims(dockedWin.mode);
+            dockedWin.el.classList.remove('snapped');
+            dockedWin.el.style.left = d.left; dockedWin.el.style.top = d.top;
+            dockedWin.el.style.width = d.width; dockedWin.el.style.height = d.height;
+            renderDockSplit();
+        });
+        document.addEventListener('mouseup', () => {
+            divDragging = false;
+            if (acwDivider) acwDivider.classList.remove('drag');
+        });
+        window.addEventListener('resize', () => {
+            if (dockedWin && (dockedWin.mode === 'left' || dockedWin.mode === 'right')) {
+                const d = dockDims(dockedWin.mode);
+                dockedWin.el.style.left = d.left; dockedWin.el.style.top = d.top;
+                dockedWin.el.style.width = d.width; dockedWin.el.style.height = d.height;
+                renderDockSplit();
+            }
+        });
+    }
+
+    function clampDockW() {
+        dockW = Math.min(Math.max(320, dockW), window.innerWidth - 320);
+        return dockW;
+    }
+
+    function dockDims(side) {
+        const w = clampDockW();
+        return side === 'left'
+            ? { left: '0px', top: '56px', width: w + 'px', height: (window.innerHeight - 56) + 'px' }
+            : { left: (window.innerWidth - w) + 'px', top: '56px', width: w + 'px', height: (window.innerHeight - 56) + 'px' };
+    }
+
+    // Send-key preference (Profile → Display & settings) is exposed as the
+    // shift-enter-send body class. Key handlers read it live on every
+    // keypress; the composer hints refresh through refreshSendKeyHint.
+    function sendKeySwapped() {
+        return document.body.classList.contains('shift-enter-send');
+    }
+
+    function clearSplit() {
+        const app = acwAppContainer();
+        if (app) {
+            app.style.margin = '';
+            app.style.marginLeft = '';
+            app.style.marginRight = '';
+            app.style.width = '';
+        }
+        const dock = acwSearchDock();
+        if (dock) {
+            dock.style.left = '';
+            dock.style.right = '';
+        }
+    }
+
+    function placeDivider() {
+        if (!acwDivider) return;
+        if (!dockedWin || (dockedWin.mode !== 'left' && dockedWin.mode !== 'right')) {
+            acwDivider.style.display = 'none';
+            return;
+        }
+        const w = clampDockW();
+        acwDivider.style.display = 'block';
+        acwDivider.style.left = (dockedWin.mode === 'left' ? (w - 6) : (window.innerWidth - w - 6)) + 'px';
+    }
+
+    // Synchronous split from dockW (no getBoundingClientRect lag mid-transition).
+    function renderDockSplit() {
+        ensureDockChrome();
+        const app = acwAppContainer();
+        document.body.classList.toggle('chat-docked-left', !!(dockedWin && dockedWin.mode === 'left'));
+        document.body.classList.toggle('chat-docked-right', !!(dockedWin && dockedWin.mode === 'right'));
+        if (dockedWin && (dockedWin.mode === 'left' || dockedWin.mode === 'right') && app) {
+            const w = clampDockW();
+            clearSplit();
+            app.style.width = 'calc(100% - ' + w + 'px)';
+            const dock = acwSearchDock();
+            if (dockedWin.mode === 'left') {
+                app.style.marginLeft = w + 'px';
+                if (dock) { dock.style.left = w + 'px'; dock.style.right = '0px'; }
+            } else {
+                if (dock) { dock.style.left = '0px'; dock.style.right = w + 'px'; }
+            }
+        } else if (!dockedWin) {
+            clearSplit();
+        }
+        placeDivider();
+    }
+
+    // ------------------------------------------------------------------
     // Shared stateless helpers
     // ------------------------------------------------------------------
     function renderMarkdown(text) {
@@ -109,6 +242,7 @@
         if (TOOL_ICONS[name]) return TOOL_ICONS[name];
         if (name.startsWith('notebooks.')) return 'fa-table-cells';
         if (name.startsWith('automation.')) return 'fa-diagram-project';
+        if (name.startsWith('aiutils.')) return 'fa-calculator';
         return 'fa-wrench';
     }
 
@@ -184,35 +318,29 @@
         jumpPill.addEventListener('click', () => scrollDown(true));
         renderAutoScroll();
 
-        // Long-horizon mode: send the message as a background task instead of
-        // a live chat answer — the agent runs on the server and reports to the
-        // bottom dock when done. While armed, the composer shows an amber
-        // banner + recolored send button so the state is unmistakable.
-        const bgToggle = el.querySelector('.acw-bg-toggle');
-        const bgBanner = el.querySelector('.acw-bg-banner');
-        const composerForm = el.querySelector('.acw-form');
-        const inputPlaceholder = input.placeholder;
-        function setBackgroundMode(on) {
-            backgroundMode = on;
-            bgToggle.classList.toggle('ai-toggle-on', on);
-            bgBanner.classList.toggle('hidden', !on);
-            composerForm.classList.toggle('ai-bg-armed', on);
-            input.placeholder = on
-                ? 'Describe the long-running task… (runs in background)'
-                : inputPlaceholder;
-            bgToggle.title = on
-                ? 'Background mode ON — the next message starts a long-horizon task on the server'
-                : 'Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock';
+        // Composer hint follows the send-key preference (see
+        // refreshSendKeyHint) — every run streams live either way.
+        const originalPlaceholder = input.placeholder;
+        const deepPlaceholder = 'Describe the complex task… (Shift+Enter for a new line)';
+        let inputPlaceholder = originalPlaceholder;
+        let deepMode = false; // long-horizon run: extended step budget
+        // Send-key preference (Profile → Display & settings) is a body
+        // class. Behavior reads it live on every keypress; this refreshes
+        // the hint — at creation and whenever the class flips at runtime.
+        function refreshSendKeyHint() {
+            const base = deepMode ? deepPlaceholder : originalPlaceholder;
+            inputPlaceholder = sendKeySwapped()
+                ? base.replace('(Shift+Enter for a new line)', '(Enter for a new line)')
+                : base;
+            input.placeholder = inputPlaceholder;
         }
-        bgToggle.addEventListener('click', () => {
-            setBackgroundMode(!backgroundMode);
-            input.focus();
-        });
-        el.querySelector('.acw-bg-off').addEventListener('click', () => {
-            setBackgroundMode(false);
-            input.focus();
-        });
-
+        refreshSendKeyHint();
+        function setDeepMode(on) {
+            deepMode = on;
+            const tog = el.querySelector('.acw-deep-toggle');
+            if (tog) tog.classList.toggle('ai-toggle-on', on);
+            refreshSendKeyHint();
+        }
         // --- "+" attach/options menu + header "⋯" menu ---------------------
         const plusBtn = el.querySelector('.acw-plus');
         const plusMenu = el.querySelector('.acw-plus-menu');
@@ -246,14 +374,14 @@
                 moreMenu.classList.add('flex');
             }
         });
-        // Choosing a menu item closes the menu — except the background
+        // Choosing a menu item closes the menu — except the long-horizon
         // toggle, which stays open so the switch state is visible.
         plusMenu.addEventListener('click', ev => {
-            if (!ev.target.closest('.acw-bg-toggle')) closePlusMenu();
+            if (!ev.target.closest('.acw-deep-toggle')) closePlusMenu();
         });
         moreMenu.addEventListener('click', closeMoreMenu);
 
-        // Browser notifications when a background task finishes (opt-in,
+        // Browser notifications when a run finishes (opt-in,
         // stored locally; the dock widget fires them from any page).
         const notifyBtn = el.querySelector('.acw-notify');
         function renderNotifyBtn() {
@@ -299,14 +427,12 @@
         let cellRef = null; // notebook cell dropped into the chat
         let driveRefs = []; // drives picked with $ mentions [{id, name}]
         let driveListCache = null; // /api/drives, fetched on first $ use
-        let backgroundMode = false; // send as a long-horizon background task
         let reasoningBox = null;
         let reasoningBody = null;
         let lastThinkingSpan = null;   // thinking line tokens are appended to
         let liveBubble = null;         // tentative answer bubble while streaming
         let toolChipEl = null;         // animated "tool working" chip
         let toolElapsedTimer = null;   // 1s ticker for the running chip
-        let abortCtrl = null;          // non-null while a request is in flight
         let mentionTimer = null;
         let mentionHideTimer = null; // delayed blur-hide, cancelled on focus
         let mentionToken = null; // the full "#query" match, to replace on pick
@@ -334,27 +460,89 @@
         }
         el.addEventListener('mousedown', focusWindow);
 
-        // --- Drag by header ---
+        // --- Drag by header (snap extension keeps the clamp numbers) ---
+        let dockMode = 'float'; // float | left | right | max (snap layer only)
+        let dockPrev = null; // floating rect saved at dock time (preserves resize)
+        function saveDockPrev() {
+            if (dockMode !== 'float') return;
+            const r = el.getBoundingClientRect();
+            dockPrev = { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' };
+        }
+        function applyDockRect(r) {
+            el.classList.add('snapped');
+            el.style.left = r.left; el.style.top = r.top;
+            el.style.width = r.width; el.style.height = r.height;
+            setTimeout(() => el.classList.remove('snapped'), 250);
+        }
+        function renderDockButtons() {
+            // Dock controls live in the "⋯" menu: only Undock is conditional.
+            const undockBtn = el.querySelector('.acw-undock');
+            if (undockBtn) undockBtn.style.display = (dockMode === 'float') ? 'none' : '';
+        }
         header.addEventListener('mousedown', (e) => {
             if (e.target.closest('button, a, select, input')) return;
+            ensureDockChrome();
             const rect = el.getBoundingClientRect();
-            const dx = e.clientX - rect.left;
-            const dy = e.clientY - rect.top;
+            let dx = e.clientX - rect.left;
+            let dy = e.clientY - rect.top;
+            let snapSide = null;
+            document.body.classList.add('dragging-chat');
             function move(ev) {
+                if (dockMode !== 'float') {
+                    // Grab-while-docked: instant unsnap restoring the saved
+                    // floating size, then keep dragging under the cursor.
+                    dockMode = 'float';
+                    if (dockedWin === api) dockedWin = null;
+                    el.classList.remove('snapped', 'docked');
+                    clearSplit();
+                    document.body.classList.remove('chat-docked-left', 'chat-docked-right');
+                    if (dockPrev) {
+                        el.style.left = dockPrev.left; el.style.top = dockPrev.top;
+                        el.style.width = dockPrev.width; el.style.height = dockPrev.height;
+                    }
+                    renderDockButtons();
+                    renderDockSplit();
+                    const r = el.getBoundingClientRect();
+                    dx = ev.clientX - r.left; dy = ev.clientY - r.top;
+                }
                 el.style.left = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - 80) + 'px';
                 el.style.top = Math.min(Math.max(56, ev.clientY - dy), window.innerHeight - 60) + 'px';
+                snapSide = null;
+                if (window.innerWidth > 900) {
+                    if (ev.clientX <= SNAP_ZONE) snapSide = 'left';
+                    else if (ev.clientX >= window.innerWidth - SNAP_ZONE) snapSide = 'right';
+                }
+                if (snapSide) {
+                    acwGhost.className = snapSide + ' show';
+                    acwGhost.style.width = clampDockW() + 'px';
+                } else {
+                    acwGhost.className = '';
+                }
+                acwEdgeL.classList.toggle('active', snapSide === 'left');
+                acwEdgeR.classList.toggle('active', snapSide === 'right');
             }
             function up() {
                 document.removeEventListener('mousemove', move);
                 document.removeEventListener('mouseup', up);
+                document.body.classList.remove('dragging-chat');
+                if (acwGhost) acwGhost.className = '';
+                if (acwEdgeL) acwEdgeL.classList.remove('active');
+                if (acwEdgeR) acwEdgeR.classList.remove('active');
+                if (snapSide) dockWindow(snapSide);
+                snapSide = null;
             }
             document.addEventListener('mousemove', move);
             document.addEventListener('mouseup', up);
             e.preventDefault();
         });
+        // Double-click header toggles maximize (new; single buttons untouched).
+        header.addEventListener('dblclick', (e) => {
+            if (!e.target.closest('button')) toggleDockMax();
+        });
 
-        // --- Resize by corner grip ---
+        // --- Resize by corner grip (floating only; docked uses the divider) ---
         resizeGrip.addEventListener('mousedown', (e) => {
+            if (dockMode !== 'float') return;
             const rect = el.getBoundingClientRect();
             const startW = rect.width, startH = rect.height;
             const startX = e.clientX, startY = e.clientY;
@@ -877,7 +1065,7 @@
 
         // Re-send the most recent user message as a new turn.
         function regenerateLast() {
-            if (abortCtrl || !lastUserQuestion) return;  // only while idle
+            if (taskAbort || !lastUserQuestion) return;  // only while idle
             input.value = lastUserQuestion;
             growInput();
             form.requestSubmit();
@@ -1152,7 +1340,7 @@
             stopHeartbeat();
             lastEventAt = Date.now();
             heartbeatTimer = setInterval(() => {
-                if (!abortCtrl) { stopHeartbeat(); return; }
+                if (!taskAbort) { stopHeartbeat(); return; }
                 if (toolChipEl) return;  // a tool is visibly running
                 const wait = Date.now() - lastEventAt;
                 if (wait < 2000) return;
@@ -1712,8 +1900,15 @@
                 cache.behaviors.filter(b => matchBehavior(b, q)));
         }
 
-        el.querySelector('.acw-attach-persona').addEventListener('click', () => {
-            if (!personaPopup.classList.contains('hidden')) {
+        // Long-horizon run: this message gets the extended step budget.
+        // The switch stays visible (menu doesn't close) so the armed state
+        // is obvious; the composer hint changes too.
+        el.querySelector('.acw-deep-toggle').addEventListener('click', () => {
+            setDeepMode(!deepMode);
+            input.focus();
+        });
+
+        el.querySelector('.acw-attach-persona').addEventListener('click', () => {            if (!personaPopup.classList.contains('hidden')) {
                 hidePersonaPopup();
                 return;
             }
@@ -1855,8 +2050,9 @@
                     e.preventDefault();
                     first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
                 }
-            } else if (e.key === 'Enter' && !e.shiftKey) {
-                // Enter sends; Shift+Enter inserts a newline.
+            } else if (e.key === 'Enter' && e.shiftKey === document.body.classList.contains('shift-enter-send')) {
+                // Default: Enter sends, Shift+Enter newline. The profile
+                // "Shift + Enter" send-key preference swaps the two roles.
                 e.preventDefault();
                 form.requestSubmit();
             }
@@ -1947,6 +2143,7 @@
         let taskAbort = null;
         let taskMode = null;   // {id, status, title} while in task mode
         let taskBanner = null;
+        let sending = false;   // create-POST in flight: queue (don't fork) follow-ups
 
         function fmtTaskDur(ms) {
             if (!(ms >= 0)) return '';
@@ -1977,10 +2174,10 @@
             const banner = document.createElement('div');
             banner.className = 'ai-task-banner' + (active ? '' : ' ai-task-banner-done');
             banner.title = active
-                ? 'Replies sent here start a new background task — this one keeps running.'
-                : 'This conversation belongs to a finished background task.';
+                ? 'Run in progress — it keeps going if you minimize or close this window.'
+                : 'This conversation belongs to a finished run.';
             banner.innerHTML = active
-                ? '<i class="fas fa-rocket"></i>' +
+                ? '<i class="fas fa-circle-notch fa-spin"></i>' +
                   '<span class="ai-task-banner-title"></span>' +
                   '<span class="opacity-60">· live on the server</span>' +
                   '<button type="button" class="ai-task-banner-rename" title="Rename task"><i class="fas fa-pencil"></i></button>'
@@ -1994,7 +2191,7 @@
             messagesEl.prepend(banner);
             taskBanner = banner;
             banner.querySelector('.ai-task-banner-title').textContent =
-                taskMode.title || 'Background task';
+                taskMode.title || 'AI run';
             const renameBtn = banner.querySelector('.ai-task-banner-rename');
             if (renameBtn) renameBtn.addEventListener('click', renameTaskTitle);
             if (!active) {
@@ -2066,7 +2263,7 @@
                                    'error');
                     return;
                 }
-                window.uiToast('New background task started.', 'info');
+                window.uiToast('New run started.', 'info');
                 if (data.task && data.task.conversation_id) {
                     loadConversation(data.task.conversation_id);
                 }
@@ -2078,7 +2275,7 @@
         function exitTaskMode() {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             taskMode = null;
-            setBackgroundMode(false);  // dismissed -> back to a normal chat
+            setBusy(false);
             renderTaskBanner();
             renderChips();  // back to live screen context
         }
@@ -2089,10 +2286,8 @@
                 && taskMode.status === task.status) return;
             exitTaskMode();
             taskMode = task;
-            // A conversation that started as a background task STAYS in
-            // background mode until the user dismisses the task — follow-up
-            // messages launch new background tasks, not live answers.
-            setBackgroundMode(true);
+            // A run stays attached to this window until it finishes — new
+            // messages wait for (or stop) the running one.
             renderTaskBanner();
             renderChips();  // show the context captured when the task started
             if (task.status === 'queued' || task.status === 'running')
@@ -2128,6 +2323,7 @@
                 });
             } catch (err) { /* aborted or offline — the transcript persists */ }
             taskAbort = null;
+            setBusy(false);
             // Reconcile with the persisted transcript (covers anything
             // missed between the history load and the subscription).
             if (conversationId) loadConversation(conversationId);
@@ -2136,184 +2332,77 @@
         // --- Submit (streams NDJSON agent events) ---
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            // While a request is in flight the send button is the Stop button.
-            if (abortCtrl) {
-                abortCtrl.abort();
+            // While a run streams into this window the send button is the
+            // Stop button: detach the subscription and stop the run itself.
+            if (taskAbort) {
+                const stopId = taskMode && taskMode.id;
+                taskAbort.abort();
+                taskAbort = null;
+                setBusy(false);
+                if (stopId) {
+                    try {
+                        await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
+                    } catch (err) { /* the dock widget can stop it instead */ }
+                }
                 return;
             }
             const question = input.value.trim();
             if (!question && !attachments.length) return;
+            // A create-POST is still in flight: its conversation id is not
+            // known yet, so sending now would fork a second conversation.
+            // Keep the text (nothing is cleared yet) and let the user retry.
+            if (sending) {
+                window.uiToast('Still sending your previous message — hit Enter again in a moment.', 'info');
+                return;
+            }
+            sending = true;
 
             // The user chose to wait for attachment summaries: hold the send
             // until indexing cards are ready (or the timeout passes).
             await waitForSummaries();
 
-            // Background mode: run this turn as a long-horizon task on the
-            // server, but keep it in THIS conversation — history is shared,
-            // only the execution mode changes. The dock widget tracks it.
-            // The task captures the CURRENT context (drives, open file,
-            // cell, attachments) and keeps it for its whole lifetime.
-            if (backgroundMode) {
-                const sentAttachments = attachments;
-                const sentCell = cellRef;
-                const sentDrives = driveRefs;
-                attachments = [];
-                cellRef = null;
-                driveRefs = [];
-                input.value = '';
-                growInput();
-                hideMentions();
-                // One-shot by default, but a task conversation stays in
-                // background mode until the user dismisses the task.
-                if (!taskMode) setBackgroundMode(false);
-                renderChips();
-                // Summarize the captured context in the launch toast, so the
-                // user sees what the task will work with.
-                const ctxBits = [];
-                if (sentAttachments.length) {
-                    ctxBits.push(sentAttachments.length === 1
-                        ? sentAttachments[0].name
-                        : sentAttachments.length + ' files');
-                }
-                if (sentDrives.length) {
-                    ctxBits.push('drive ' + sentDrives.map(d => d.name).join(', '));
-                }
-                const openFile = (window.currentFile
-                    && window.currentFile.id !== contextDismissedId
-                    && !sentAttachments.some(a => a.id === window.currentFile.id))
-                    ? window.currentFile : null;
-                if (openFile) ctxBits.push('open file ' + (openFile.name || ''));
-                if (sentCell) ctxBits.push('notebook cell');
-                if (personaRef) ctxBits.push(personaRef.name);
-                const launchMsg = 'Background task started'
-                    + (ctxBits.length ? ' · ' + ctxBits.join(' · ') : '')
-                    + ' — follow it live here or in the dock below.';
-                try {
-                    const resp = await fetch('/ai/tasks', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            message: question,
-                            // Stay in this conversation when there is one —
-                            // the task continues the same transcript.
-                            conversation_id: conversationId,
-                            attachments: sentAttachments.map(a => a.id),
-                            context_file_id: (window.currentFile
-                                && window.currentFile.id !== contextDismissedId
-                                && !sentAttachments.some(a => a.id === window.currentFile.id))
-                                ? window.currentFile.id : null,
-                            scope_all_drives: scopeAllDrives,
-                            scope_drive_ids: sentDrives.length
-                                ? sentDrives.map(r => r.id) : null,
-                            context_cell: sentCell
-                                ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
-                                : null,
-                            persona: personaRef ? personaRef.key : null,
-                            behavior_id: behaviorRef ? behaviorRef.id : null,
-                            // Automation editor open on this page (if any).
-                            context_workflow_id: (window.currentWorkflow
-                                && window.currentWorkflow.id !== workflowDismissedId)
-                                ? window.currentWorkflow.id : null,
-                            context_workflow_node: (window.currentWorkflow
-                                && window.currentWorkflow.id !== workflowDismissedId)
-                                ? (window.currentWorkflowNode || null) : null,
-                        }),
-                    });
-                    const data = await resp.json().catch(() => ({}));
-                    if (!resp.ok) {
-                        window.uiAlert(data.error || 'Could not start the background task.',
-                                       { title: 'Run in background' });
-                        return;
-                    }
-                    window.uiToast(launchMsg, 'info');
-                    // Follow the task live in THIS window: loading its fresh
-                    // conversation enters task mode (banner + captured context)
-                    // and subscribes to the event stream, so the AI's work
-                    // renders here as it happens — no close/reopen needed.
-                    if (data.task && data.task.conversation_id) {
-                        loadConversation(data.task.conversation_id);
-                    }
-                } catch (err) {
-                    window.uiAlert('Could not reach the server.', { title: 'Run in background' });
-                }
-                return;
-            }
-
+            // Every message runs as a server-side run in THIS conversation:
+            // the dock widget tracks it, and minimizing or closing only
+            // drops the live subscription — the run continues until it
+            // finishes or is stopped. Context is captured at send time.
+            const sentAttachments = attachments;
+            const sentCell = cellRef;
+            const sentDrives = driveRefs;
+            attachments = [];
+            cellRef = null;
+            driveRefs = [];
             input.value = '';
             growInput();
             hideMentions();
-            const sentAttachments = attachments;
-            attachments = [];
             renderChips();
-            addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
+            // Optimistic echo (replaced by the persisted transcript on
+            // reconcile when the run's conversation loads below).
+            const echo = addMessage('user', question + (sentAttachments.length ? '\n\n📎 ' + sentAttachments.map(a => a.name).join(', ') : ''),
                        { created_at: new Date().toISOString() });
-            setBusy(true);
             lastUserQuestion = question;  // for the Regenerate action
-            startHeartbeat();
-            liveBubble = null;
-            lastThinkingSpan = null;
-            const thinking = addMessage('assistant', '_Thinking…_');
-
+            setBusy(true);
             try {
-                abortCtrl = new AbortController();
-                // In task mode the captured context is the base: the current
-                // screen does NOT override it — only references the user
-                // explicitly added (chips above) are merged in.
-                const captured = (taskMode && taskMode.context) ? taskMode.context : null;
-                let bodyAttachments, bodyContextFile, bodyAllDrives, bodyDriveIds, bodyCell;
-                // A persona/behavior the user picks now overrides the captured one.
-                const bodyPersona = personaRef ? personaRef.key
-                    : (captured ? captured.persona || null : null);
-                const bodyBehavior = behaviorRef ? behaviorRef.id
-                    : (captured ? captured.behavior || null : null);
-                if (captured) {
-                    bodyAttachments = [...new Set([
-                        ...(captured.file_ids || []),
-                        ...sentAttachments.map(a => a.id)])];
-                    bodyContextFile = captured.context_file_id || null;
-                    bodyAllDrives = !!captured.all_drives;
-                    // "All drives" cannot be narrowed by adding a drive.
-                    bodyDriveIds = captured.all_drives ? null : [...new Set([
-                        ...(captured.drive_ids || []),
-                        ...driveRefs.map(r => r.id)])];
-                    if (!bodyDriveIds.length) bodyDriveIds = null;
-                    bodyCell = cellRef
-                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                        : (captured.context_cell
-                            ? { file_id: captured.context_cell.file_id,
-                                cell_id: captured.context_cell.cell_id }
-                            : null);
-                } else {
-                    bodyAttachments = sentAttachments.map(a => a.id);
-                    // Implicit context: the file/notebook open on screen.
-                    bodyContextFile = (window.currentFile
-                        && window.currentFile.id !== contextDismissedId
-                        && !sentAttachments.some(a => a.id === window.currentFile.id))
-                        ? window.currentFile.id : null;
-                    // Drive scope removed via the chip -> search all drives.
-                    bodyAllDrives = scopeAllDrives;
-                    // Drives picked with $ mentions (win over the above).
-                    bodyDriveIds = driveRefs.length
-                        ? driveRefs.map(r => r.id) : null;
-                    // Notebook cell dropped into the chat.
-                    bodyCell = cellRef
-                        ? { file_id: cellRef.file_id, cell_id: cellRef.cell_id }
-                        : null;
-                }
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    signal: abortCtrl.signal,
                     body: JSON.stringify({
                         message: question,
                         conversation_id: conversationId,
-                        attachments: bodyAttachments,
-                        context_file_id: bodyContextFile,
-                        scope_all_drives: bodyAllDrives,
-                        scope_drive_ids: bodyDriveIds,
-                        context_cell: bodyCell,
-                        persona: bodyPersona,
-                        behavior_id: bodyBehavior,
+                        // Long-horizon run: extended step budget.
+                        deep: deepMode,
+                        attachments: sentAttachments.map(a => a.id),
+                        context_file_id: (window.currentFile
+                            && window.currentFile.id !== contextDismissedId
+                            && !sentAttachments.some(a => a.id === window.currentFile.id))
+                            ? window.currentFile.id : null,
+                        scope_all_drives: scopeAllDrives,
+                        scope_drive_ids: sentDrives.length
+                            ? sentDrives.map(r => r.id) : null,
+                        context_cell: sentCell
+                            ? { file_id: sentCell.file_id, cell_id: sentCell.cell_id }
+                            : null,
+                        persona: personaRef ? personaRef.key : null,
+                        behavior_id: behaviorRef ? behaviorRef.id : null,
                         // Automation editor open on this page (if any).
                         context_workflow_id: (window.currentWorkflow
                             && window.currentWorkflow.id !== workflowDismissedId)
@@ -2323,47 +2412,40 @@
                             ? (window.currentWorkflowNode || null) : null,
                     }),
                 });
-
-                if (!resp.ok || !resp.body) {
-                    const body = await resp.json().catch(() => ({}));
-                    thinking.remove();
-                    addMessage('assistant', '**Error:** ' + (body.error || 'Something went wrong.'),
-                               { created_at: new Date().toISOString() });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    setBusy(false);
+                    sending = false;
+                    echo.remove();
+                    if (resp.status === 409) {
+                        // Run still active: put the message back in the
+                        // composer so nothing is lost — one more Enter sends
+                        // it once the run finishes (or is stopped).
+                        input.value = question;
+                        growInput();
+                        attachments = sentAttachments;
+                        cellRef = sentCell;
+                        driveRefs = sentDrives;
+                        renderChips();
+                        window.uiToast(data.error || 'A run is already in progress — stop it before sending.', 'error');
+                    } else {
+                        addMessage('assistant', '**Error:** ' + (data.error || 'Something went wrong.'),
+                                   { created_at: new Date().toISOString() });
+                    }
                     return;
                 }
-
-                // Stream NDJSON events: steps appear live as the agent works.
-                const state = { gotResult: false };
-                let firstEvent = true;
-                await readNdjson(resp.body.getReader(), (event) => {
-                    if (firstEvent) { thinking.remove(); firstEvent = false; }
-                    handleStreamEvent(event, state);
-                });
-                thinking.remove();
-                collapseReasoningBox();
-                if (!state.gotResult) {
-                    discardLiveBubble(); // keep any partial text that arrived
-                    addMessage('assistant',
-                               '**Error:** the connection was lost before the answer arrived. Please try again.',
-                               { created_at: new Date().toISOString() });
-                }
+                conversationId = data.conversation_id;
+                // Follow the run live in THIS window: loading the fresh
+                // conversation enters task mode (banner + captured context)
+                // and subscribes to the event stream — no close/reopen needed.
+                loadConversation(data.conversation_id);
+                sending = false;
             } catch (err) {
-                thinking.remove();
-                collapseReasoningBox();
-                if (err && err.name === 'AbortError') {
-                    discardLiveBubble(); // keep whatever partial text arrived
-                    addMessage('assistant', '_Stopped by you — the answer was cancelled._',
-                               { created_at: new Date().toISOString() });
-                } else {
-                    discardLiveBubble();
-                    addMessage('assistant', '**Error:** could not reach the server.',
-                               { created_at: new Date().toISOString() });
-                }
-            } finally {
-                abortCtrl = null;
-                flushTokens();  // no buffered token may be lost at the end
-                stopHeartbeat();
                 setBusy(false);
+                sending = false;
+                echo.remove();
+                addMessage('assistant', '**Error:** could not reach the server.',
+                           { created_at: new Date().toISOString() });
             }
         });
 
@@ -2385,15 +2467,48 @@
             input.focus();
         }
 
-        function destroy() {
-            if (abortCtrl) abortCtrl.abort();  // stop any in-flight answer
-            if (taskAbort) taskAbort.abort();  // stop watching a background task
+        function detachWindow() {
+            // Drop the live subscription; the server-side run continues.
+            if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
             window.removeEventListener('ai-task-dismissed', onTaskDismissed);
+            // Snap layer: closing the docked window restores the full view.
+            if (dockedWin === api) {
+                dockedWin = null;
+                clearSplit();
+                renderDockSplit();
+            }
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
             el.remove();
+        }
+
+        function runIsActive() {
+            return !!taskMode
+                && (taskMode.status === 'queued' || taskMode.status === 'running');
+        }
+
+        async function destroy() {
+            // Closing while a run is in progress stops it — minimize (—)
+            // keeps it going in the dock instead.
+            if (runIsActive()) {
+                const ok = await window.uiConfirm(
+                    'A run is still in progress. Close this chat and stop it?\n\n' +
+                    'The transcript so far is kept. Minimize (—) instead to let it finish.',
+                    { title: 'Close chat', confirmText: 'Stop & close' });
+                if (!ok) return;
+                try {
+                    await fetch('/ai/tasks/' + taskMode.id + '/stop',
+                                { method: 'POST' });
+                } catch (err) { /* already finishing; detach anyway */ }
+            }
+            detachWindow();
+        }
+
+        function minimize() {
+            detachWindow();
+            window.uiToast('Minimized — the run keeps going in the dock.', 'info');
         }
 
         // --- Summarize & reset: AI compacts the whole history into a single
@@ -2432,10 +2547,68 @@
         }
 
         el.querySelector('.acw-close').addEventListener('click', destroy);
+        el.querySelector('.acw-min').addEventListener('click', minimize);
         el.querySelector('.acw-new-conv').addEventListener('click', newConversation);
         el.querySelector('.acw-summarize').addEventListener('click', summarizeConversation);
         el.querySelector('.acw-convs').addEventListener('click', () => toggleList());
         el.querySelector('.acw-new-window').addEventListener('click', () => createChatWindow());
+
+        // --- Side-snap controls (new buttons; existing ones above untouched) ---
+        function grabUndockOther() {
+            if (dockedWin && dockedWin !== api && dockedWin.undock) dockedWin.undock(true);
+        }
+        function dockWindow(side) {
+            ensureDockChrome();
+            grabUndockOther(); // single-docked rule: the other window keeps its floating size
+            saveDockPrev();
+            dockMode = side;
+            dockedWin = api;
+            el.classList.add('docked');
+            applyDockRect(dockDims(side));
+            renderDockButtons();
+            renderDockSplit();
+        }
+        function undockWindow(silent) {
+            if (dockMode === 'float') return;
+            dockMode = 'float';
+            if (dockedWin === api) dockedWin = null;
+            el.classList.remove('docked');
+            clearSplit();
+            document.body.classList.remove('chat-docked-left', 'chat-docked-right');
+            if (dockPrev) {
+                if (silent) {
+                    el.classList.remove('snapped');
+                    el.style.left = dockPrev.left; el.style.top = dockPrev.top;
+                    el.style.width = dockPrev.width; el.style.height = dockPrev.height;
+                } else {
+                    applyDockRect(dockPrev);
+                }
+            }
+            renderDockButtons();
+            renderDockSplit();
+        }
+        function toggleDockMax() {
+            if (dockMode === 'max') { undockWindow(); return; }
+            ensureDockChrome();
+            grabUndockOther();
+            saveDockPrev();
+            dockMode = 'max';
+            dockedWin = null;
+            el.classList.add('docked');
+            applyDockRect({ left: '8px', top: '64px',
+                width: (window.innerWidth - 16) + 'px', height: (window.innerHeight - 72) + 'px' });
+            renderDockButtons();
+            renderDockSplit();
+        }
+        const dockLeftBtn = el.querySelector('.acw-dock-left');
+        if (dockLeftBtn) dockLeftBtn.addEventListener('click', () =>
+            dockMode === 'left' ? undockWindow() : dockWindow('left'));
+        const dockRightBtn = el.querySelector('.acw-dock-right');
+        if (dockRightBtn) dockRightBtn.addEventListener('click', () =>
+            dockMode === 'right' ? undockWindow() : dockWindow('right'));
+        const undockBtn = el.querySelector('.acw-undock');
+        if (undockBtn) undockBtn.addEventListener('click', () => undockWindow());
+        renderDockButtons();
 
         const api = {
             el,
@@ -2451,6 +2624,12 @@
             // A window with nothing loaded yet — Ask AI focuses it instead
             // of piling up empty windows.
             get isFresh() { return !conversationId && !pendingConvId && !taskMode; },
+            // Snap layer (read-only mode + programmatic dock/undock).
+            get mode() { return dockMode; },
+            dock(side) { dockWindow(side === 'left' ? 'left' : 'right'); },
+            undock(silent) { undockWindow(silent); },
+            toggleMax() { toggleDockMax(); },
+            refreshSendKeyHint,
         };
         windows.push(api);
         renderChips();  // show the current-context chip if a file is open
@@ -2497,4 +2676,65 @@
             w.loadConversation(convId);
         },
     };
+
+    // Live send-key sync: if the shift-enter-send body class flips at
+    // runtime (preference saved in another tab, devtools, future AJAX
+    // save), refresh every open window's composer hint at once. The
+    // keydown handlers already read the class on every press, so behavior
+    // follows with no reload.
+    function refreshAllSendKeyHints() {
+        windows.forEach(w => {
+            if (w && typeof w.refreshSendKeyHint === 'function') {
+                try { w.refreshSendKeyHint(); } catch { /* window closing */ }
+            }
+        });
+    }
+    new MutationObserver((muts) => {
+        if (muts.some(m => m.attributeName === 'class')) refreshAllSendKeyHints();
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('storage', (e) => {
+        if (e.key !== 'docindex.sendKey') return;
+        const on = e.newValue === '1';
+        if (on !== sendKeySwapped()) {
+            document.body.classList.toggle('shift-enter-send', on);
+            // The observer above picks this up and refreshes the hints.
+        }
+    });
+
+    // Global dock shortcuts: Alt+←/→ dock, Alt+↑ maximize, Esc undock.
+    // Routed to the window under focus, else the topmost window. Skipped
+    // inside editable fields outside chat so typing and browser-Back stay
+    // native there; the mention-popup Esc handler stops propagation first.
+    function topmostChatWindow() {
+        let top = null, topZ = -1;
+        windows.forEach(w => {
+            const z = parseInt(w.el.style.zIndex || '0', 10) || 0;
+            if (z >= topZ) { topZ = z; top = w; }
+        });
+        return top;
+    }
+    function chatWindowForEvent(e) {
+        const t = e.target;
+        const chatEl = (t && t.closest) ? t.closest('.ai-chat-window') : null;
+        if (chatEl) return windows.find(w => w.el === chatEl) || null;
+        if (t && t.closest && t.closest('input, textarea, select, [contenteditable="true"]')) return null;
+        // Prefer the engaged (docked/maxed) window — Esc must reach it even
+        // when a floating window happens to sit on top.
+        const engaged = windows.find(w => w.mode && w.mode !== 'float');
+        return engaged || topmostChatWindow();
+    }
+    document.addEventListener('keydown', (e) => {
+        if (!windows.length) return;
+        if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp')) {
+            const api = chatWindowForEvent(e);
+            if (!api) return;
+            e.preventDefault();
+            if (e.key === 'ArrowLeft') api.mode === 'left' ? api.undock() : api.dock('left');
+            else if (e.key === 'ArrowRight') api.mode === 'right' ? api.undock() : api.dock('right');
+            else api.mode === 'max' ? api.undock() : api.toggleMax();
+        } else if (e.key === 'Escape' && !e.defaultPrevented) {
+            const api = chatWindowForEvent(e);
+            if (api && api.mode !== 'float') api.undock();
+        }
+    });
 })();

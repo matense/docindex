@@ -51,7 +51,7 @@ docindex/
 │   │   ├── auth.py         # /login /register /logout
 │   │   ├── drive.py        # drive browser, upload, file & folder ops
 │   │   ├── search.py       # /search page + /api/search instant search
-│   │   ├── ai.py           # /ai/chat NDJSON stream + conversations API
+│   │   ├── ai.py           # /ai/chat runs + conversations API
 │   │   ├── behaviors.py    # /behaviors library + personas
 │   │   └── settings.py     # /settings/ai connections + /settings/profile
 │   ├── services/
@@ -111,8 +111,7 @@ app refuses to start without it.
 | `AI_REQUEST_TIMEOUT`  | `300`                                          | HTTP timeout (s) for AI calls |
 | `AI_HASHTAG_MAX_WORDS` | `6`                                           | Max words per AI-generated hashtag (user tags are not limited) |
 | `AI_STREAMING`        | `true`                                         | Token-by-token chat streaming (non-streaming fallback is automatic) |
-| `AI_TASK_MAX_STEPS`   | `64`                                           | Agent step budget for long-horizon background tasks |
-| `AI_TASK_WIDGET_POLL_MS` | `3000`                                      | Poll interval (ms) of the background-task dock widget |
+| `AI_TASK_WIDGET_POLL_MS` | `3000`                                      | Poll interval (ms) of the AI run dock widget |
 | `SEARCH_FTS`          | `true`                                         | FTS5 full-text search with BM25 ranking (falls back to ILIKE) |
 | `INDEX_WORKERS`       | `2`                                            | Background drainers for the persistent index queue |
 | `ERROR_LOG_KEEP`      | `2000`                                         | Newest rows kept in the error log (`/settings/logs`) |
@@ -632,18 +631,26 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
 (`update_file_content` bumps size/checksum) and re-triggers indexing.
 `/file/<id>/reindex` re-indexes on demand.
 
-### AI chat streaming
+### AI chat runs (every message is a background run)
 
-`POST /ai/chat` (`routes/ai.py`):
+`POST /ai/chat` (`routes/ai.py`) creates a server-side run and returns
+immediately — it no longer streams NDJSON inline:
 
 1. Guards: AI must be enabled for the user (`ai_service.is_enabled`), and the
    message or attachments must be non-empty.
 2. The conversation is fetched or created (title = first 80 chars of the
-   question). A `user` `ChatMessage` is committed immediately (attached file
-   names are appended as a `📎` line for display).
-3. History = the last N `user`/`assistant` messages, where N comes from the
-   active connection's `history_messages` (NULL → global
-   `AI_HISTORY_MESSAGES`, default 20). If files are attached, a
+   question) and the launch context is snapshotted onto it (drive scope,
+   attachments, open file, notebook cell). One run at a time per
+   conversation: a second send while one is queued/running gets HTTP 409.
+3. `ai_task_service.start_task` persists the `user` message (with the `📎`
+   attachment line), stores the resolved per-connection step budget on the
+   `AITask` row, and submits the worker to the shared pool. The response is
+   `{ok, task, conversation_id, stream_url}` — the chat window then
+   subscribes to `GET /ai/tasks/<id>/stream` and renders events exactly like
+   a streamed answer, reconciling with the persisted transcript at the end.
+3. The worker builds history from the last N `user`/`assistant` messages,
+   where N comes from the active connection's `history_messages` (NULL →
+   global `AI_HISTORY_MESSAGES`, default 20). If files are attached, a
    synthetic system message is prepended listing `[id] name` so the agent can
    `read_file` them directly without searching.
    Independently of N, the agent enforces a hard **prompt budget**
@@ -666,44 +673,43 @@ the existing tag vocabulary and search with exact tag terms (see "Tools").
    system context — some providers' chat templates (e.g. Gemma in
    LM Studio) reject histories that do not start with a user turn ("No
    user query found in messages").
-4. The response is `application/x-ndjson` streamed with
-   `stream_with_context`. Each agent event becomes one JSON line:
-   `{"type": "thinking"|"thinking_token"|"answer_token"|"step"|"tool_result"|"notice"|"answer"|"error", ...}`.
-   Errors (including `AIError` and unexpected exceptions) are emitted as an
-   `error` event rather than killing the stream silently. A `notice` event
-   means the agent compacted the context automatically (prompt budget) and
-   renders as a visible card in the chat, not just a reasoning line.
+4. The worker runs `agent_service.run_agent_events` with
+   `should_stop` wired to a per-run `threading.Event` and `block=True`
+   (when the connection's rate limit is hit the worker sleeps for a slot
+   instead of failing). Every event is emitted twice: persisted as a
+   `ChatMessage` in the run's conversation *as it happens* (live progress —
+   thinking chunks as `role="thinking"`, steps as `role="step"`
+   (`"Label: detail → summary"`), answers as `role="assistant"`; token
+   deltas are never persisted, only the assembled blocks) and broadcast to
+   live subscribers of `GET /ai/tasks/<id>/stream`, which emits the same
+   NDJSON shape the old inline stream used (`thinking(+_token)` /
+   `answer_token` / `tool_start` / `step` / `tool_result` / `notice` /
+   `answer` / `task_status`), plus provider-error mapping to friendly text
+   (context-window overflow, 404 model) persisted as the assistant message.
+   A `notice` event means the agent compacted the context automatically
+   (prompt budget) and renders as a visible card in the chat.
 
    **Token streaming.** With `AI_STREAMING=true` (default), the agent calls
    `ai_service.chat_completion_stream()` — an SSE client (`stream=True` on
    the provider request) that yields `("token"|"reasoning", text)` deltas and
    a final `("done", message)` with the assembled message (tool_calls merged
-   from deltas by index). A stream that dies mid-way keeps its partial
-   content; one that fails before any delta triggers an automatic one-time
-   fallback to the non-streaming `chat_completion()` (providers that reject
-   streamed tool calls), so behaviour degrades gracefully — set
-   `AI_STREAMING=false` to skip streaming entirely.
-   The route forwards deltas as `thinking_token` / `answer_token` events.
-   Because a model can stream content and *then* emit a tool call, the full
-   `thinking` event that follows `answer_token` deltas carries
-   `migrate: true`: the client moves its tentative answer bubble into the
-   reasoning box. A `thinking` event whose text already arrived as
+   from deltas by index). The worker forwards deltas as `thinking_token` /
+   `answer_token` events. Because a model can stream content and *then* emit
+   a tool call, the full `thinking` event that follows `answer_token` deltas
+   carries `migrate: true`: the client moves its tentative answer bubble into
+   the reasoning box. A `thinking` event whose text already arrived as
    `thinking_token` deltas is persisted but not re-sent (it would
    duplicate). The final `answer` event always carries the complete text and
    the client replaces the tentative bubble with the full markdown render.
-5. After the stream ends, the route persists the run: each thinking chunk as
-   a `role="thinking"` message, each step as `role="step"`
-   (`"Label: detail → summary"`), and the final answer as `role="assistant"`.
-   Token deltas are not persisted — only the assembled blocks, so the DB
-   layout is identical with or without streaming.
 
-   **Stop button.** While a request is in flight, the send button (both the
-   chat widget and the AI page) becomes a red Stop button backed by an
-   `AbortController`: clicking it aborts the fetch, the client keeps any
-   partial text already rendered and adds a "Stopped by you" note. Closing
-   the connection makes the next NDJSON write fail, which closes the
-   server-side generator and ends the agent loop; nothing of the aborted
-   run is persisted.
+   **Stop button.** While a run streams into a window, the send button (both
+   the chat widget and the AI page) becomes a red Stop button: clicking it
+   drops the live subscription *and* calls `POST /ai/tasks/<id>/stop`, which
+   sets the cooperative stop event — the worker finishes the current step,
+   persists a "⏹ stopped" assistant message, and marks the run `stopped`.
+   Minimizing (—) or closing a window only drops the subscription; the run
+   keeps going. Closing a window while its run is active asks for
+   confirmation and stops the run on confirm.
 
 `GET /ai/conversations` lists conversations (each with `updated_at` and the
 `model` that wrote the latest assistant reply, for the history list);
@@ -727,35 +733,33 @@ a reset with memory, where the summary is the memory. Re-summarizing only
 considers the active (non-archived) tail and needs ≥ 4 user/assistant
 messages.
 
-### Background AI tasks (long horizon)
+### AI runs (every message is a background run)
 
-`ai_task_service` runs an agent run decoupled from the HTTP request: the
-user flips the Background toggle in a chat client, `POST /ai/tasks` creates
-an `AITask` row in the current conversation (or a fresh one when the chat
-is new), and a daemon worker thread (`AI_TASKS_ASYNC=False` runs it inline,
-used by tests) executes `agent_service.run_agent_events` with
-`max_steps=AI_TASK_MAX_STEPS`
-(default 64) and `block=True` — when the connection's rate limit is hit the
-worker sleeps for a slot instead of failing, so long runs throttle
-themselves. Every event is persisted as a `ChatMessage` in the task's
-conversation as it happens (live progress), and broadcast to subscribers of
-`GET /ai/tasks/<id>/stream`, which emits the same NDJSON shape as `/ai/chat`
-plus a final `task_status` event — a chat window watching a task renders it
-exactly like a normal streamed answer.
+`ai_task_service` runs every agent turn decoupled from the HTTP request:
+`POST /ai/chat` (and the legacy `POST /ai/tasks`) creates an `AITask` row
+in the current conversation (or a fresh one when the chat is new), and a
+daemon worker thread (`AI_TASKS_ASYNC=False` runs it inline, used by tests)
+executes `agent_service.run_agent_events` with the run's resolved
+per-connection step budget (`AITask.max_steps`) and `block=True` — when the
+connection's rate limit is hit the worker sleeps for a slot instead of
+failing, so long runs throttle themselves. Every event is persisted as a
+`ChatMessage` in the run's conversation as it happens (live progress), and
+broadcast to subscribers of `GET /ai/tasks/<id>/stream`, which emits the
+NDJSON event shape plus a final `task_status` event — a chat window watching
+a run renders it exactly like a streamed answer.
 
-The task captures the launch context (drive scope, attachments, open file,
+The run captures the launch context (drive scope, attachments, open file,
 notebook cell) in its `context` column: the worker runs with it (a system
 note plus the drive scope) and the chat window keeps showing it instead of
-the live screen context until the task is dismissed. `should_stop` is wired
-to a per-task `threading.Event` set by `POST /ai/tasks/<id>/stop`
-(cooperative cancel between steps). `POST /ai/tasks/<id>/ack` sets
-`notified=True` — the "end" of the long horizon: the dock icon disappears
-and the conversation becomes a normal chat again. `GET /ai/tasks/active`
-returns running/queued tasks plus finished ones not yet dismissed, so the
-dock widget (`ai_tasks_widget.js`, one icon per task right of the Ask AI
-button, polling every `AI_TASK_WIDGET_POLL_MS`) survives page refreshes.
-`recover_interrupted(app)` marks tasks left queued/running by a dead process
-as `interrupted` at startup.
+the live screen context until the run's conversation is left.
+`should_stop` is wired to a per-run `threading.Event` set by
+`POST /ai/tasks/<id>/stop` (cooperative cancel between steps).
+`POST /ai/tasks/<id>/ack` sets `notified=True`: the dock icon disappears.
+`GET /ai/tasks/active` returns running/queued runs plus finished ones not
+yet dismissed, so the dock widget (`ai_tasks_widget.js`, one icon per run
+right of the Ask AI button, polling every `AI_TASK_WIDGET_POLL_MS`)
+survives page refreshes. `recover_interrupted(app)` marks runs left
+queued/running by a dead process as `interrupted` at startup.
 
 ## Services
 
@@ -846,10 +850,11 @@ as `interrupted` at startup.
 should_stop=None, block=False)` is a generator that runs the multi-step
 tool-calling loop and yields events as they happen. `drive` may be a single
 `Drive` or a list of them (multi-drive scope from `$` mentions);
-`max_steps` overrides the connection/global budget (background tasks pass
-`AI_TASK_MAX_STEPS`); `should_stop` is checked before every step (cooperative
+`max_steps` overrides the resolved per-connection budget (see "Max steps
+resolution" — every run stores its snapshot on the task row); `should_stop`
+is checked before every step (cooperative
 cancel); `block=True` makes rate-limit waits sleep for a slot instead of
-raising (background tasks throttle themselves).
+raising (runs throttle themselves).
 
 - `("thinking_token", text)` / `("answer_token", text)` — live token deltas
   (only when `AI_STREAMING` is on; see "AI chat streaming"). Model calls go
@@ -999,13 +1004,17 @@ Anything else is yielded as the final `answer`.
 
 ### Max steps resolution
 
-The step budget per run is resolved in this order:
+The step budget per run is resolved in this order (`resolve_max_steps`,
+clamped to 1..128, snapshotted onto `AITask.max_steps` at creation):
 
-1. An explicit `max_steps` argument to `run_agent_events` — long-horizon
-   background tasks pass `AI_TASK_MAX_STEPS` (default 64).
-2. `AIConnection.max_steps` of the user's active connection (if set), via
+1. The `max_steps` argument to `start_task` (explicit per-run override).
+2. The per-message long-horizon toggle (`deep: true` on `POST /ai/chat`):
+   `max(connection budget, connection long_horizon_steps or 64)`.
+   The long-horizon budget is configurable per connection in
+   Settings → AI → Advanced settings ("Long horizon steps", default 64).
+3. `AIConnection.max_steps` of the user's active connection (if set), via
    `ai_service.config_for(user)`.
-3. Global `AI_MAX_STEPS` env var (default 16).
+4. Global `AI_MAX_STEPS` env var (default 16).
 
 The same fallback applies inside `config_for` itself (`conn.max_steps or
 AI_MAX_STEPS`).
@@ -1083,9 +1092,12 @@ Two near-identical clients: `ai_chat.js` is the floating dock panel
 (toggle/center modes, used everywhere), `ai_page.js` is the full-page
 assistant at `/search?mode=ai` (adds suggestion chips). Both:
 
-- POST `{message, conversation_id, attachments}` to `/ai/chat` and consume
-  the NDJSON stream with `ReadableStream` + `TextDecoder`, buffering partial
-  lines.
+- POST `{message, conversation_id, attachments, ...context}` to `/ai/chat`,
+  which creates a run and returns `{task, conversation_id, stream_url}`;
+  the window then subscribes to the run's NDJSON stream with
+  `ReadableStream` + `TextDecoder`, buffering partial lines, and reconciles
+  with the persisted transcript when the stream ends. Closing or minimizing
+  only drops the subscription — the run continues server-side.
 - During a run, `thinking`/`step`/`tool_result` events accumulate inside one
   collapsible `<details class="ai-reasoning">` block that is open while the
   agent works and auto-collapses when the answer arrives. In the history
@@ -1120,18 +1132,19 @@ assistant at `/search?mode=ai` (adds suggestion chips). Both:
   explicit "All drives" chip, and removing that narrows back. The context
   used in the latest message is persisted on the conversation and restored
   into the chips when it is reopened.
-- Background mode: a rocket toggle sends the next message to `POST /ai/tasks`
-  instead of `/ai/chat`. The task continues the same conversation (a new one
+- Runs: every send creates a run in the current conversation (a new one
   is created only when the chat is empty) and the chat follows it live
-  (banner + event stream) — no close/reopen needed. A conversation owned by
-  a task reopens in "task mode" (banner + captured context + background
-  toggle forced on) until the task is dismissed; while the task runs, the
-  window subscribes to `/ai/tasks/<id>/stream` and renders it live like a
-  normal answer. Device uploads go to `POST /ai/attachments` (drive picker
-  when the open drive is read-only); `GET /file/<id>/summary` reports
-  index/caption/table/text state for the summary cards, and attachment
-  chips offer "Run workflow" via `GET /m/automation/api/attachable`.
-  `ai_tasks_widget.js` adds one dock icon per task (running spinner /
+  (banner + captured context + event stream) — no close/reopen needed. A
+  conversation with a live run reopens in task mode (banner + captured
+  context) until the run finishes; the minimize (—) button hides the window
+  while the run continues in the dock, and closing a window with a running
+  run asks for confirmation and stops it on confirm. While a run streams,
+  the send button doubles as Stop (detach + `POST /ai/tasks/<id>/stop`).
+  Device uploads go to `POST /ai/attachments` (drive picker when the open
+  drive is read-only); `GET /file/<id>/summary` reports index/caption/table
+  /text state for the summary cards, and attachment chips offer
+  "Run workflow" via `GET /m/automation/api/attachable`.
+  `ai_tasks_widget.js` adds one dock icon per run (running spinner /
   finished badge / stop / dismiss), polling `/ai/tasks/active`.
 - Conversation history: list, load and delete via the `/ai/conversations`
   endpoints, grouped by period (today, yesterday, this week, older).
@@ -1260,6 +1273,14 @@ tool + table).
 ### Bundled modules
 
 - `hello` — minimal example (page + echo tool + table).
+- `aiutils` — AI utilities: calculator (safe expression evaluator), statistics,
+  base/fraction conversion, unit conversion (incl. temperature, data sizes,
+  parsec/light-year), physical constants, elements H–Zr, loan/compound/
+  percent/currency math (explicit FX rate, no network), datetime/timezone,
+  date arithmetic and differences, current date/time, Roman numerals,
+  base64/URL/hex codecs and text tools (case, stats, lines,
+  regex, hash, slug). Twenty-three `aiutils.*` tools, pure stdlib, plus a reference
+  page under `/m/aiutils/` listing every tool with an example.
 - `gitdrives` — read-only Git mirror drives (GitHub, Azure DevOps Git):
   clone a repo into a local checkout and pull-then-scan on every sync
   (pure-Python dulwich, no git binary). Registers the `git` source via

@@ -1,14 +1,11 @@
-"""Long-horizon background AI tasks.
+"""Background AI task runs.
 
-A task is an agent run decoupled from the HTTP request: the user fires it
-from the chat ("run in background") and keeps working — the bottom dock
-shows one icon per task and a notification badge when it finishes.
-
-Unlike sync/hashtag jobs (in-memory only), tasks are rows in the ai_tasks
-table, so they survive a page refresh and are recoverable on restart
-(running/queued tasks left behind are marked "interrupted"). Every agent
-event is persisted as a ChatMessage in the task's own conversation as it
-happens, so opening the conversation shows live progress.
+Every chat message runs as a task: the user sends, the agent runs in a
+server worker thread, and the chat window subscribes to the live event
+stream. Minimizing or closing the window only drops the subscription —
+the run continues until it finishes or the user stops it. Every event is
+persisted as a ChatMessage in the run's conversation as it happens, so
+opening the conversation shows live progress at any time.
 
 Rate limiting: the worker runs the agent loop with block=True, so when the
 connection's requests/minute limit is reached it sleeps for a slot instead
@@ -25,7 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
-from ..models import AITask, ChatConversation, ChatMessage, Drive, User, utcnow
+from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, User, utcnow
 from . import agent_service, ai_service, log_service
 
 _TASK_NOTE = (
@@ -78,16 +75,51 @@ def _broadcast(task_id, event):
         q.put(event)
 
 
-def start_task(user, message, ctx=None, app=None, conversation_id=None):
+# Extended budget for per-message "long horizon" runs: the run gets at
+# least this many steps (or the connection budget when that is higher).
+DEEP_RUN_MAX_STEPS = 64
+
+
+def resolve_max_steps(user, app):
+    """Single step budget for every run: the connection's max_steps,
+    clamped to 1..128 (same rule as the agent loop fallback)."""
+    try:
+        cfg = ai_service.config_for(user) or {}
+    except Exception:  # noqa: BLE001 - misconfigured connection still runs
+        cfg = {}
+    steps = cfg.get("max_steps") or app.config.get("AI_MAX_STEPS", 16)
+    try:
+        steps = int(steps)
+    except (TypeError, ValueError):
+        steps = 16
+    return max(1, min(steps, 128))
+
+
+def resolve_deep_max_steps(user, app):
+    """Extended budget for per-message long-horizon runs: the connection's
+    long_horizon_steps (default 64), never below the normal budget."""
+    try:
+        conn = AIConnection.query.filter_by(
+            user_id=user.id, is_active=True).first()
+        deep = (conn.long_horizon_steps if conn else None) or DEEP_RUN_MAX_STEPS
+    except Exception:  # noqa: BLE001 - misconfigured connection still runs
+        deep = DEEP_RUN_MAX_STEPS
+    try:
+        deep = int(deep)
+    except (TypeError, ValueError):
+        deep = DEEP_RUN_MAX_STEPS
+    normal = resolve_max_steps(user, app)
+    return max(1, min(max(normal, deep), 256))
+
+
+def start_task(user, message, ctx=None, app=None, conversation_id=None,
+               max_steps=None):
     """Create the task row and launch the agent worker.
 
-    ``conversation_id`` continues an existing conversation (background mode
-    changes only the execution, not the chat); without it a fresh
-    conversation is created. ``ctx`` is the dict returned by
-    ``routes.ai._resolve_context`` — its notes seed the worker's history and
-    its ``context`` snapshot is stored on the task, so the run keeps working
-    with the drives/files/cell it was launched with even after the user
-    navigates elsewhere.
+    ``conversation_id`` continues an existing conversation — the run keeps
+    working with the drives/files/cell it was launched with even after the
+    user navigates elsewhere. ``max_steps`` overrides the resolved
+    per-connection budget (stored on the row for transparency).
 
     Runs in a daemon thread unless AI_TASKS_ASYNC is off (tests), in which
     case the worker runs inline and the returned task is already finished.
@@ -101,7 +133,7 @@ def start_task(user, message, ctx=None, app=None, conversation_id=None):
     active = (AITask.query.filter_by(user_id=user.id)
               .filter(AITask.status.in_(("queued", "running"))).count())
     if active >= 3:
-        raise ValueError("You already have 3 background tasks running — "
+        raise ValueError("You already have 3 AI runs going — "
                          "stop or wait for one to finish first.")
 
     conv = None
@@ -121,8 +153,12 @@ def start_task(user, message, ctx=None, app=None, conversation_id=None):
 
     db.session.add(ChatMessage(conversation_id=conv.id, role="user",
                                content=display))
+    app = app or current_app._get_current_object()
+    if max_steps is None:
+        max_steps = resolve_max_steps(user, app)
     task = AITask(user_id=user.id, conversation_id=conv.id,
                   title=message[:80], prompt=message, status="queued",
+                  max_steps=max_steps,
                   context=(json.dumps(ctx["context"]) if ctx else None))
     db.session.add(task)
     db.session.commit()
@@ -131,7 +167,6 @@ def start_task(user, message, ctx=None, app=None, conversation_id=None):
     with _lock:
         _stop_events[task.id] = event
 
-    app = app or current_app._get_current_object()
     if app.config.get("AI_TASKS_ASYNC", True):
         try:
             _task_pool.submit(_task_worker, task.id, app)
@@ -161,12 +196,19 @@ def stop_task(user, task_id):
 
 
 def ack_task(user, task_id):
-    """Dismiss a finished task from the dock (the 'end' of the long horizon)."""
+    """Dismiss a finished run from the dock. The dock shows one icon per
+    conversation, so acking cascades to every finished run of the same
+    conversation — one click dismisses the whole chat, not just the
+    latest message's run. Active runs are never acked (stop them first)."""
     task = _owned_task(user, task_id)
     if task is None or task.is_active:
         return None
-    task.notified = True
+    (AITask.query
+     .filter_by(user_id=user.id, conversation_id=task.conversation_id)
+     .filter(AITask.status.in_(AITask.FINAL_STATUSES))
+     .update({"notified": True}, synchronize_session=False))
     db.session.commit()
+    task.notified = True  # bulk update bypasses the session instance
     return task
 
 
@@ -175,14 +217,26 @@ def get_task(user, task_id):
 
 
 def active_tasks(user):
-    """Tasks shown in the dock: running/queued, plus finished ones the user
-    has not dismissed yet (the notification badge state). Capped to avoid
+    """Runs shown in the dock: running/queued, plus finished ones the user
+    has not dismissed yet (the notification badge state). One icon per
+    conversation — the latest run — so a long chat never piles up icons;
+    opening it always shows the full shared transcript. Capped to avoid
     unbounded dock payloads."""
     tasks = (AITask.query
              .filter(AITask.user_id == user.id)
              .filter(db.or_(AITask.status.in_(("queued", "running")),
                             AITask.notified.is_(False)))
-             .order_by(AITask.created_at.desc()).limit(20).all())
+             .order_by(AITask.created_at.desc(), AITask.id.desc()).limit(60).all())
+    # One icon per conversation: keep only each conversation's latest run.
+    # (Ordered newest-first above, so the first row per conversation wins;
+    # notified-finished runs never reach here — the filter drops them.)
+    seen_convs = set()
+    docked = []
+    for t in tasks:
+        if t.conversation_id not in seen_convs:
+            seen_convs.add(t.conversation_id)
+            docked.append(t)
+    tasks = docked[:20]
     # One aggregate query (not per task) for the persisted step counts the
     # dock progress line is derived from when no worker is live.
     conv_ids = [t.conversation_id for t in tasks]
@@ -281,6 +335,31 @@ def _task_worker(task_id, app):
                 _live.pop(task_id, None)
 
 
+def _friendly_error(exc):
+    """Translate cryptic provider failures into actionable user text."""
+    msg = str(exc)
+    low = msg.lower()
+    if ("context length" in low or "maximum context" in low
+            or "context window" in low or "context size" in low
+            or "exceed_context_size" in low):
+        # The prompt (history + tool results) exceeded the model's
+        # context — the raw provider error is cryptic for users.
+        return ("This conversation is too large for the model's "
+                "context window. Use the Summarize & reset button to "
+                "compact it, start a new conversation, or raise the "
+                "prompt budget in AI Settings.")
+    if getattr(exc, "status_code", None) == 404:
+        # The model/endpoint does not exist on the provider. The
+        # connection itself is fine — the configured model is not.
+        return ("Your AI connection is configured, but the server "
+                "could not find the configured model (HTTP 404). "
+                "The model may not be available on the server, or the "
+                "base URL may be incorrect. Go to Settings → AI, "
+                "check the base URL and model (use the Test button to "
+                "see the available models), and try again.")
+    return msg
+
+
 def _run_task(task_id, app):
     task = db.session.get(AITask, task_id)
     if task is None or task.status != "queued":
@@ -310,7 +389,9 @@ def _run_task(task_id, app):
     should_stop = event.is_set if event is not None else None
 
     model_name = ai_service.config_for(user).get("model", "")
-    max_steps = app.config.get("AI_TASK_MAX_STEPS", 64)
+    # Single budget: the task row carries the resolved per-connection
+    # max_steps (legacy NULL rows fall back to resolving it now).
+    max_steps = task.max_steps or resolve_max_steps(user, app)
     # The question that launched THIS task — never the conversation's first
     # message (one conversation can now own several sequential tasks).
     if task.prompt:
@@ -326,18 +407,30 @@ def _run_task(task_id, app):
             user_text = user_text.split(marker)[0].rstrip()
     notes = snapshot.get("notes") or []
     # Recent transcript so follow-ups ("it", "that run", ...) resolve — the
-    # launching turn is re-appended below as the final message.
+    # launching turn is re-appended below as the final message. Same window
+    # rule as interactive chats (per-connection history_messages).
+    hist_n = ai_service.config_for(user).get("history_messages") or 20
+    if hist_n <= 0:
+        hist_n = 20
     transcript = [{"role": m.role, "content": m.content}
                   for m in task.conversation.messages
-                  if m.role in ("user", "assistant") and not m.archived]
+                  if m.role in ("user", "assistant") and not m.archived][-hist_n:]
     if (transcript and transcript[-1]["role"] == "user"
             and (transcript[-1]["content"] == user_text
                  or transcript[-1]["content"].startswith(user_text + "\n\n📎"))):
         transcript.pop()
+    # Some providers reject a history that does not begin with a user turn —
+    # move leading assistant messages into the system context instead.
+    preamble = []
+    while transcript and transcript[0]["role"] == "assistant":
+        preamble.append(transcript.pop(0)["content"])
+    if preamble:
+        notes = (["Summary of the earlier conversation:\n\n"
+                  + "\n\n".join(preamble)] + notes)
     history = (
         [{"role": "system", "content": _TASK_NOTE}]
         + [{"role": "system", "content": n} for n in notes]
-        + transcript[-20:]
+        + transcript
         + [{"role": "user", "content": user_text}]
     )
 
@@ -427,7 +520,7 @@ def _run_task(task_id, app):
                 _broadcast(task_id, ev)
         flush_step()
     except ai_service.AIError as exc:
-        msg = str(exc)
+        msg = _friendly_error(exc)
         log_service.log_event("error", "ai_task", msg,
                               user_id=user.id, path=f"/ai/tasks/{task_id}")
         persist("assistant", f"⚠ {msg}", model=model_name)

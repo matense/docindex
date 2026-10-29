@@ -2747,7 +2747,12 @@ body.show-shortcuts #shortcut-help-panel {
     margin: 4px 8px;
 }
 
-/* On/off switch for the "Run in background" menu item */
+.ai-menu-item.ai-toggle-on {
+    color: inherit !important;
+    background: none !important;
+}
+
+/* On/off switch inside a menu item (e.g. the long-horizon run toggle). */
 .ai-menu-tog {
     margin-left: auto;
     width: 28px;
@@ -2771,49 +2776,9 @@ body.show-shortcuts #shortcut-help-panel {
     transition: left 0.15s ease;
 }
 
-.ai-menu-item.ai-toggle-on {
-    color: inherit !important;
-    background: none !important;
-}
-
 .ai-menu-item.ai-toggle-on .ai-menu-tog { background: #6366f1; }
 .ai-menu-item.ai-toggle-on .ai-menu-tog::after { left: 14px; }
 
-/* Background-mode banner above the composer */
-.ai-bg-banner {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 11.5px;
-    color: #b45309;
-    background: rgba(245, 158, 11, 0.10);
-    border: 1px solid rgba(245, 158, 11, 0.35);
-    border-radius: 0.7rem;
-    padding: 0.35rem 0.7rem;
-    margin: 0.5rem 0.75rem 0;
-}
-
-.ai-bg-banner .ai-bg-off {
-    margin-left: auto;
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    opacity: 0.7;
-    padding: 0 2px;
-}
-
-.ai-bg-banner .ai-bg-off:hover { opacity: 1; }
-
-/* Background mode armed: the composer itself signals it */
-.ai-composer.ai-bg-armed { border-color: rgba(245, 158, 11, 0.55); }
-
-.ai-composer.ai-bg-armed .ai-send-btn {
-    background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
-    box-shadow: 0 4px 14px rgba(245, 158, 11, 0.45);
-}
-
-[data-theme="dark"] .ai-bg-banner { color: #fbbf24; }
 [data-theme="dark"] .ai-plus-btn { color: oklch(var(--bc) / 0.6); }
 
 .ai-send-btn:hover {
@@ -4103,4 +4068,54 @@ html[data-theme="dark"] .ai-notice {
     height: 1px;
     margin: 0.3rem 0.5rem;
     background: oklch(var(--bc) / 0.1);
+}
+
+/* ============================================================================
+   AI chat: side-snap dual view (docked chat + resizable split)
+   New layer only — existing .ai-chat-window/.acw-* rules above untouched.
+   ============================================================================ */
+#app-container { transition: margin .25s ease, width .25s ease; }
+/* Fixed search sub-dock follows the split so it never slides under chat.
+   The header itself stays full-width, untouched. */
+#search-dock-container { transition: left .25s ease, right .25s ease; }
+.ai-chat-window.snapped { transition: left .22s ease, top .22s ease, width .22s ease, height .22s ease; }
+.ai-chat-window.docked { border-radius: 0; }
+.ai-chat-window.docked .acw-resize { display: none; }
+#acw-ghost {
+    position: fixed; top: 56px; bottom: 0; z-index: 40;
+    background: rgba(99, 102, 241, 0.14);
+    border: 2px dashed rgba(129, 140, 248, 0.7);
+    border-radius: 0; margin: 0; padding: 0;
+    pointer-events: none; box-sizing: border-box;
+    opacity: 0; visibility: hidden;
+    transition: opacity .18s ease, visibility .18s;
+}
+#acw-ghost.left { left: 0; }
+#acw-ghost.right { right: 0; }
+#acw-ghost.show { opacity: 1; visibility: visible; animation: acw-ghost-pulse 1s ease-in-out infinite; }
+@keyframes acw-ghost-pulse { 0%, 100% { background: rgba(99, 102, 241, 0.10); } 50% { background: rgba(99, 102, 241, 0.22); } }
+.acw-edge-zone {
+    position: fixed; top: 56px; bottom: 0; width: 48px; z-index: 39;
+    pointer-events: none; opacity: 0; visibility: hidden;
+    transition: opacity .18s ease, visibility .18s;
+    background: linear-gradient(to right, rgba(129, 140, 248, 0.18), transparent);
+}
+#acw-edge-right { right: 0; left: auto; background: linear-gradient(to left, rgba(129, 140, 248, 0.18), transparent); }
+#acw-edge-left { left: 0; }
+body.dragging-chat .acw-edge-zone { opacity: 0.7; visibility: visible; animation: acw-edge-pulse 1.2s ease-in-out infinite; }
+body.dragging-chat .acw-edge-zone.active { opacity: 1; animation: none;
+    background: linear-gradient(to right, rgba(129, 140, 248, 0.4), rgba(129, 140, 248, 0.08)); }
+body.dragging-chat #acw-edge-right.active {
+    background: linear-gradient(to left, rgba(129, 140, 248, 0.4), rgba(129, 140, 248, 0.08)); }
+@keyframes acw-edge-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.7; } }
+#acw-divider {
+    position: fixed; top: 56px; bottom: 0; width: 12px; z-index: 45;
+    display: none; cursor: col-resize; background: transparent;
+}
+#acw-divider:hover::after, #acw-divider.drag::after {
+    content: ''; position: absolute; left: 5px; top: 0; bottom: 0;
+    width: 2px; background: rgba(129, 140, 248, 0.8); border-radius: 2px;
+}
+@media (max-width: 900px) {
+    #acw-ghost, .acw-edge-zone { display: none !important; }
 }

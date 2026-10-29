@@ -153,6 +153,24 @@ def test_active_lists_running_and_unnotified_finished(auth_client, app, user):
     assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
 
 
+def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
+    """One dock icon per chat: acking it dismisses every finished run of
+    that conversation, so no older sibling pops back up."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("one", "two")):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first"}).get_json()["task"]
+        auth_client.post("/ai/tasks", json={
+            "message": "second",
+            "conversation_id": first["conversation_id"]})
+
+    tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
+    assert len(tasks) == 1  # latest run only, not one icon per message
+    assert auth_client.post(f"/ai/tasks/{tasks[0]['id']}/ack").status_code == 200
+    assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
+
+
 def test_ack_running_task_rejected(auth_client, app, user):
     with app.app_context():
         user_obj = db.session.get(User, user)
@@ -209,7 +227,8 @@ def test_recover_interrupted_marks_stale_tasks(app, user):
         assert task.finished_at
 
 
-def test_task_uses_extended_step_budget(auth_client, app, user):
+def test_task_uses_connection_step_budget(auth_client, app, user):
+    """Single budget: every run uses the connection's max_steps."""
     _enable_ai(app)
     seen = {}
 
@@ -228,9 +247,67 @@ def test_task_uses_extended_step_budget(auth_client, app, user):
          patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
         auth_client.post("/ai/tasks", json={"message": "big job"})
 
-    assert seen["max_steps"] == app.config["AI_TASK_MAX_STEPS"]
+    assert seen["max_steps"] == app.config.get("AI_MAX_STEPS", 16)
     assert seen["block"] is True
     assert "long-horizon" in seen["note"]
+
+
+def test_chat_deep_flag_raises_extended_budget(auth_client, app, user):
+    """Per-message long horizon: deep:true stores the extended budget."""
+    _enable_ai(app)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 64
+    with app.app_context():
+        from app.models import AITask
+        assert db.session.get(AITask, data["task"]["id"]).max_steps == 64
+
+
+def _make_conn(app, user, **fields):
+    from app.models import AIConnection
+    with app.app_context():
+        conn = AIConnection(user_id=user, name="T",
+                            base_url="http://x.local/v1", model="m",
+                            is_active=True, **fields)
+        db.session.add(conn)
+        db.session.commit()
+        return conn.id
+
+
+def test_chat_deep_flag_uses_configured_long_horizon_budget(auth_client, app, user):
+    """The per-connection long horizon setting overrides the 64 default."""
+    _enable_ai(app)
+    _make_conn(app, user, long_horizon_steps=100)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 100
+
+
+def test_chat_deep_flag_never_below_normal_budget(auth_client, app, user):
+    """A deep run keeps at least the normal connection budget."""
+    _enable_ai(app)
+    _make_conn(app, user, max_steps=120)
+
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "ok"}):
+        resp = auth_client.post("/ai/chat", json={"message": "big job",
+                                                  "deep": True})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["max_steps"] == 120
 
 
 # --- Live stream (/ai/tasks/<id>/stream) ------------------------------------
@@ -462,7 +539,7 @@ def test_conversation_endpoint_exposes_task_context(auth_client, app, user):
 
 
 def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
-    """/ai/chat takes scope_drive_ids and the agent runs scoped to that list."""
+    """/ai/chat takes scope_drive_ids and the run is scoped to that list."""
     _enable_ai(app)
     d1, _ = _make_drive_with_file(app, user, "Alpha", "a.txt", "aaa")
     d2, _ = _make_drive_with_file(app, user, "Beta", "b.txt", "bbb")
@@ -475,13 +552,19 @@ def test_chat_accepts_multiple_drive_scope(auth_client, app, user):
 
     with patch("app.services.ai_service.chat_completion",
                side_effect=_answers("hi")), \
-         patch("app.routes.ai.agent_service.run_agent_events", spy):
+         patch("app.services.ai_task_service.agent_service.run_agent_events", spy):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "scope_drive_ids": [d1, d2]})
-        _ = resp.data  # consume the stream inside the patch
+        data = resp.get_json()
 
     assert resp.status_code == 200
     assert seen["drive_ids"] == sorted([d1, d2])
+    assert data["task"]["status"] == "done"
+    with app.app_context():
+        conv = db.session.get(ChatConversation, data["conversation_id"])
+        assert conv.messages[0].role == "user"
+        assert conv.messages[-1].role == "assistant"
+        assert conv.messages[-1].content == "hi"
 
 
 def test_search_files_accepts_multiple_drives(app, user):
@@ -666,6 +749,26 @@ def test_active_tasks_include_progress(auth_client, app, user):
         assert prog == {"steps": 2, "current": "Searching files"}
     finally:
         ai_task_service._live.pop(task_id, None)
+
+
+def test_active_tasks_shows_latest_run_per_conversation(auth_client, app, user):
+    """One dock icon per conversation even after several runs in one chat:
+    only the latest run is listed, and it carries the full transcript."""
+    _enable_ai(app)
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=_answers("first answer", "second answer")):
+        first = auth_client.post(
+            "/ai/tasks", json={"message": "first question"}).get_json()["task"]
+        second = auth_client.post("/ai/tasks", json={
+            "message": "second question",
+            "conversation_id": first["conversation_id"]}).get_json()["task"]
+
+    tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
+    same_conv = [t for t in tasks
+                 if t["conversation_id"] == first["conversation_id"]]
+    assert len(same_conv) == 1
+    assert same_conv[0]["id"] == second["id"]
+    assert same_conv[0]["status"] == "done"
 
 
 def test_rename_task(auth_client, app, user):

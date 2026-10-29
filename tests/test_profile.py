@@ -149,6 +149,31 @@ def test_change_password_mismatch(auth_client, app):
         assert _db.session.get(User, 1).check_password("password123")
 
 
+# --- Send key preference ---
+
+def test_send_key_defaults_to_enter(auth_client, app):
+    with app.app_context():
+        assert _db.session.get(User, 1).shift_enter_to_send is False
+
+
+def test_send_key_can_switch_to_shift_enter(auth_client, app):
+    auth_client.post("/settings/profile/send-key", data={"shift_enter": "on"})
+    with app.app_context():
+        assert _db.session.get(User, 1).shift_enter_to_send is True
+
+
+def test_send_key_can_switch_back_to_enter(auth_client, app):
+    auth_client.post("/settings/profile/send-key", data={"shift_enter": "on"})
+    auth_client.post("/settings/profile/send-key", data={})
+    with app.app_context():
+        assert _db.session.get(User, 1).shift_enter_to_send is False
+
+
+def test_profile_marks_shift_enter_body_class(auth_client):
+    auth_client.post("/settings/profile/send-key", data={"shift_enter": "on"})
+    assert b"shift-enter-send" in auth_client.get("/settings/profile").data
+
+
 # --- Registration toggle ---
 
 def test_registration_enabled_by_default(client):

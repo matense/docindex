@@ -24,6 +24,8 @@ class User(UserMixin, db.Model):
                                  server_default="false")  # purge trash older than 30 days
     static_background = db.Column(db.Boolean, nullable=False, default=False,
                                   server_default="false")  # no animated background
+    shift_enter_to_send = db.Column(db.Boolean, nullable=False, default=False,
+                                   server_default="false")  # Shift+Enter sends, Enter newline
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",
@@ -289,6 +291,9 @@ class AIConnection(db.Model):
     embedding_model = db.Column(db.String(120), nullable=False, default="")
     # Per-connection agent step limit; NULL falls back to the global AI_MAX_STEPS.
     max_steps = db.Column(db.Integer, nullable=True)
+    # Per-connection long-horizon step budget (per-message "Long horizon
+    # run" toggle); NULL falls back to 64.
+    long_horizon_steps = db.Column(db.Integer, nullable=True)
     # Per-connection request limit (requests/minute); NULL falls back to the
     # global AI_RATE_LIMIT_RPM (default 30). 0 = unlimited.
     rate_limit_rpm = db.Column(db.Integer, nullable=True)
@@ -399,6 +404,8 @@ class AITask(db.Model):
     prompt = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False, default="queued", index=True)
     error = db.Column(db.Text, nullable=True)
+    # Resolved step budget snapshot (per-connection max_steps at launch).
+    max_steps = db.Column(db.Integer, nullable=True)
     # True once the user dismissed the finished task from the bottom dock.
     notified = db.Column(db.Boolean, nullable=False, default=False)
     # JSON snapshot of the context the task was launched with (drives, files,

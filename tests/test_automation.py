@@ -2909,7 +2909,6 @@ def _chat_capture(auth_client, payload):
     with patch("app.services.ai_service.chat_completion",
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json=payload)
-        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 

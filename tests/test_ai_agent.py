@@ -74,23 +74,19 @@ def test_chat_endpoint_persists_conversation(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                side_effect=lambda *a, **k: next(responses)):
         resp = auth_client.post("/ai/chat", json={"message": "What's for lunch?"})
-        # Streaming responses are consumed lazily — force it inside the patch.
-        raw = resp.data.decode()
+        data = resp.get_json()
 
     assert resp.status_code == 200
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    assert events[1]["type"] == "step"
-    assert events[1]["step"]["label"] == "Searched files"
-    # tool_start is announced before the tool runs (live working chip).
-    assert events[0]["type"] == "tool_start"
-    assert events[0]["step"]["label"] == "Searching files"
-    assert events[-1]["type"] == "answer"
-    assert "tomato soup" in events[-1]["answer"]
+    assert data["task"]["status"] == "done"
+    assert data["conversation_id"]
 
     with app.app_context():
         conv = ChatConversation.query.one()
+        assert conv.id == data["conversation_id"]
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "step", "assistant"]
+        assert conv.messages[1].content.startswith("Searched files")
+        assert "tomato soup" in conv.messages[-1].content
 
 
 def test_chat_endpoint_disabled_ai(auth_client):
@@ -236,7 +232,8 @@ def test_conversations_isolated_between_users(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                return_value={"role": "assistant", "content": "hi"}):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        _ = resp.data  # consume the stream inside the patch
+        assert resp.status_code == 200
+        assert resp.get_json()["task"]["status"] == "done"
 
     other = app.test_client()
     other.post("/register", data={
@@ -332,18 +329,17 @@ def test_thinking_and_tool_result_events(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                side_effect=lambda *a, **k: next(responses)):
         resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    types = [e["type"] for e in events]
-    assert types == ["thinking", "tool_start", "step", "tool_result", "answer"]
-    assert events[0]["content"] == "Let me search for lunch info."
-    assert "Found 1 file(s): menu.txt" in events[3]["result"]["summary"]
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "done"
 
     with app.app_context():
         conv = ChatConversation.query.one()
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "thinking", "step", "assistant"]
+        assert conv.messages[1].content == "Let me search for lunch info."
+        assert "Found 1 file(s): menu.txt" in conv.messages[2].content
 
 
 def test_tool_start_emitted_before_handler_runs(app, user):
@@ -397,7 +393,6 @@ def test_chat_attachments_inject_system_message(auth_client, app, user):
             "message": "summarize this",
             "attachments": [file_id],
         })
-        _ = resp.data  # consume the stream inside the patch
 
     assert resp.status_code == 200
     attach_msgs = [m for m in captured["messages"]
@@ -433,7 +428,6 @@ def test_chat_attachments_from_other_users_ignored(auth_client, app, user):
             "message": "read it",
             "attachments": [file_id],
         })
-        _ = resp.data
 
     assert resp.status_code == 200
     system_msgs = [m for m in captured["messages"] if m["role"] == "system"]
@@ -458,11 +452,15 @@ def test_reasoning_content_field_shown_as_thinking(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                side_effect=lambda *a, **k: next(responses)):
         resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    assert events[0]["type"] == "thinking"
-    assert events[0]["content"] == "I should look for files about lunch menus."
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "done"
+    with app.app_context():
+        thinking = [m for m in ChatConversation.query.one().messages
+                    if m.role == "thinking"]
+        assert thinking
+        assert thinking[0].content == "I should look for files about lunch menus."
 
 
 def test_agent_continues_when_model_narrates_without_tool_call(app, user):
@@ -594,19 +592,19 @@ def test_chat_saves_model_and_history_exposes_meta(auth_client, app):
     with patch("app.services.ai_service.chat_completion",
                return_value={"role": "assistant", "content": "hi there"}):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    answer = next(e for e in events if e["type"] == "answer")
-    assert answer["model"] == "test-model-9000"
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "done"
 
     with app.app_context():
         conv = ChatConversation.query.one()
+        assert conv.id == data["conversation_id"]
         assistant_msg = [m for m in conv.messages if m.role == "assistant"][0]
         assert assistant_msg.model == "test-model-9000"
         assert assistant_msg.created_at is not None
 
-    resp = auth_client.get(f"/ai/conversations/{answer['conversation_id']}")
+    resp = auth_client.get(f"/ai/conversations/{data['conversation_id']}")
     msgs = resp.get_json()["messages"]
     assert all("created_at" in m and "model" in m for m in msgs)
     assert msgs[-1]["model"] == "test-model-9000"
@@ -620,7 +618,7 @@ def test_conversations_list_includes_model(auth_client, app):
     with patch("app.services.ai_service.chat_completion",
                return_value={"role": "assistant", "content": "hi there"}):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        _ = resp.data
+        assert resp.status_code == 200
 
     convs = auth_client.get("/ai/conversations").get_json()
     assert len(convs) == 1
@@ -746,21 +744,16 @@ def test_chat_endpoint_streaming_no_duplicate_thinking(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion_stream",
                side_effect=_stream_script(script)):
         resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    types = [e["type"] for e in events]
-    # Reasoning came as live tokens — the full thinking event is NOT
-    # re-sent (it would duplicate), but it is still persisted to the DB.
-    assert types == ["thinking_token", "tool_start", "step", "tool_result",
-                     "answer_token", "answer"]
-    assert events[0]["content"] == "thinking aloud"
-    assert events[-1]["answer"] == "Lunch is tomato soup."
-
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "done"
     with app.app_context():
         conv = ChatConversation.query.one()
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "thinking", "step", "assistant"]
+        assert conv.messages[1].content == "thinking aloud"
+        assert conv.messages[-1].content == "Lunch is tomato soup."
 
 
 def test_chat_endpoint_migrates_answer_tokens_to_thinking(auth_client, app, user):
@@ -782,20 +775,16 @@ def test_chat_endpoint_migrates_answer_tokens_to_thinking(auth_client, app, user
     with patch("app.services.ai_service.chat_completion_stream",
                side_effect=_stream_script(script)):
         resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    types = [e["type"] for e in events]
-    assert types == ["answer_token", "thinking", "tool_start", "step",
-                     "tool_result", "answer_token", "answer"]
-    thinking = next(e for e in events if e["type"] == "thinking")
-    assert thinking["content"] == "Let me search."
-    assert thinking["migrate"] is True
-
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "done"
     with app.app_context():
         conv = ChatConversation.query.one()
         roles = [m.role for m in conv.messages]
         assert roles == ["user", "thinking", "step", "assistant"]
+        assert conv.messages[1].content == "Let me search."
+        assert conv.messages[-1].content == "Soup."
 
 
 # ------------------------------------------------------------- new tools
@@ -996,13 +985,16 @@ def test_chat_context_overflow_gets_friendly_error(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                side_effect=agent_service.ai_service.AIError(provider_msg)):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    errors = [e for e in events if e["type"] == "error"]
-    assert errors
-    assert "too large for the model's context window" in errors[0]["error"]
-    assert "262145" not in errors[0]["error"]
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "error"
+    assert "too large for the model's context window" in data["task"]["error"]
+    assert "262145" not in data["task"]["error"]
+    with app.app_context():
+        last = ChatConversation.query.one().messages[-1]
+        assert last.role == "assistant"
+        assert "too large for the model's context window" in last.content
 
 
 def test_chat_context_size_error_gets_friendly_message(auth_client, app, user):
@@ -1014,13 +1006,12 @@ def test_chat_context_size_error_gets_friendly_message(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion",
                side_effect=agent_service.ai_service.AIError(provider_msg)):
         resp = auth_client.post("/ai/chat", json={"message": "hello"})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    errors = [e for e in events if e["type"] == "error"]
-    assert errors
-    assert "too large for the model" in errors[0]["error"]
-    assert "508691" not in errors[0]["error"]
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "error"
+    assert "too large for the model" in data["task"]["error"]
+    assert "508691" not in data["task"]["error"]
 
 
 # ------------------------------------------------------- context-window caps
@@ -1350,9 +1341,9 @@ def test_result_files_caps_and_dedupes(app, user):
     assert _result_files({"total": 0}) is None
 
 
-def test_chat_endpoint_streams_step_progress_and_files(auth_client, app, user):
-    """The NDJSON stream forwards index/max_steps on tool_start+step and
-    files on tool_result."""
+def test_chat_run_broadcasts_step_progress_and_files(auth_client, app, user):
+    """Live broadcast events carry index/max_steps on tool_start+step and
+    files on tool_result (dock widget + watching windows animate from these)."""
     file_id = _make_indexed_file(app, "menu.txt", "Today's lunch is tomato soup.")
 
     responses = iter([
@@ -1365,14 +1356,15 @@ def test_chat_endpoint_streams_step_progress_and_files(auth_client, app, user):
 
     app.config["AI_ENABLED"] = True
     with patch("app.services.ai_service.chat_completion",
-               side_effect=lambda *a, **k: next(responses)):
+               side_effect=lambda *a, **k: next(responses)), \
+         patch("app.services.ai_task_service._broadcast") as bc:
         resp = auth_client.post("/ai/chat", json={"message": "lunch?"})
-        raw = resp.data.decode()
+        assert resp.status_code == 200
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    start = next(e for e in events if e["type"] == "tool_start")
-    step = next(e for e in events if e["type"] == "step")
-    result = next(e for e in events if e["type"] == "tool_result")
+    live = [c.args[1] for c in bc.call_args_list]
+    start = next(e for e in live if e["type"] == "tool_start")
+    step = next(e for e in live if e["type"] == "step")
+    result = next(e for e in live if e["type"] == "tool_result")
     assert start["step"]["index"] == 1 and start["step"]["max_steps"] >= 1
     assert step["step"]["index"] == 1 and step["step"]["max_steps"] >= 1
     assert result["result"]["files"] == [{"id": file_id, "name": "menu.txt"}]
@@ -1551,7 +1543,7 @@ def test_chat_context_includes_attachment_brief(auth_client, app, user):
     with patch("app.services.ai_service.chat_completion", side_effect=fake):
         resp = auth_client.post("/ai/chat", json={
             "message": "summarize", "attachments": [file_id]})
-        _ = resp.data  # consume the stream inside the patch
+        assert resp.status_code == 200
 
     system_notes = [m["content"] for m in captured["messages"]
                     if m["role"] == "system"]

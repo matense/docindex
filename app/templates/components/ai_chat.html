@@ -20,8 +20,8 @@
             <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-convs" title="Conversations">
                 <i class="fas fa-clock-rotate-left"></i>
             </button>
-            <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-new-conv" title="New conversation">
-                <i class="fas fa-plus"></i>
+            <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-new-conv" title="Clear & start new chat">
+                <i class="fas fa-broom"></i>
             </button>
             <div class="relative">
                 <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-more" title="More options">
@@ -31,6 +31,23 @@
                     <button type="button" class="ai-menu-item acw-new-window">
                         <i class="fas fa-clone w-5 text-center text-primary"></i> New parallel window
                     </button>
+                    <div class="ai-menu-sep"></div>
+                    <button type="button" class="ai-menu-item acw-dock-left"
+                            title="Snap the chat to the left half (dual view)">
+                        <i class="fas fa-arrow-left w-5 text-center text-primary"></i> Dock left
+                        <span class="ai-menu-hint">Alt+←</span>
+                    </button>
+                    <button type="button" class="ai-menu-item acw-dock-right"
+                            title="Snap the chat to the right half (dual view)">
+                        <i class="fas fa-arrow-right w-5 text-center text-primary"></i> Dock right
+                        <span class="ai-menu-hint">Alt+→</span>
+                    </button>
+                    <button type="button" class="ai-menu-item acw-undock" style="display:none"
+                            title="Back to a floating window">
+                        <i class="fas fa-window-restore w-5 text-center text-primary"></i> Undock
+                        <span class="ai-menu-hint">Esc</span>
+                    </button>
+                    <div class="ai-menu-sep"></div>
                     <button type="button" class="ai-menu-item acw-summarize"
                             title="Summarize & reset history (AI compacts the conversation into a memory)">
                         <i class="fas fa-compress w-5 text-center text-primary"></i> Summarize &amp; reset
@@ -45,6 +62,9 @@
                     </a>
                 </div>
             </div>
+            <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-min" title="Minimize — the run keeps going in the dock">
+                <i class="fas fa-minus"></i>
+            </button>
             <button type="button" class="btn btn-ghost btn-xs btn-circle ai-hdr-btn acw-close" title="Close">
                 <i class="fas fa-xmark"></i>
             </button>
@@ -70,14 +90,6 @@
         <button type="button" class="acw-jump ai-jump-pill hidden">
             <i class="fas fa-arrow-down"></i> New messages
         </button>
-        <!-- Background-mode banner -->
-        <div class="acw-bg-banner ai-bg-banner hidden">
-            <i class="fas fa-rocket"></i>
-            <span><strong>Background mode</strong> — the next message runs as a long-horizon task</span>
-            <button type="button" class="ai-bg-off acw-bg-off" title="Turn off background mode">
-                <i class="fas fa-xmark"></i>
-            </button>
-        </div>
         <!-- Attachment chips -->
         <div class="acw-attachments hidden flex-wrap gap-1 px-3 pt-2"></div>
         <!-- Persona picker popup -->
@@ -115,9 +127,9 @@
                 <i class="fas fa-masks-theater w-5 text-center text-secondary"></i> Choose a persona
             </button>
             <div class="ai-menu-sep"></div>
-            <button type="button" class="ai-menu-item acw-bg-toggle"
-                    title="Run in background — long-horizon task: the agent keeps working on the server while you do other things; watch it from the bottom dock">
-                <i class="fas fa-rocket w-5 text-center text-warning"></i> Run in background
+            <button type="button" class="ai-menu-item acw-deep-toggle"
+                    title="Long horizon run — this message gets an extended step budget for complex tasks">
+                <i class="fas fa-rocket w-5 text-center text-warning"></i> Long horizon run
                 <span class="ai-menu-tog"></span>
             </button>
         </div>
