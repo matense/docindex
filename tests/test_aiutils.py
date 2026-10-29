@@ -201,3 +201,12 @@ def test_reference_page_served_when_enabled(app, auth_client):
     resp = auth_client.get("/m/aiutils/")
     assert resp.status_code == 200
     assert b"aiutils.calculate" in resp.data
+
+
+def test_profile_menu_links_aiutils_only_when_enabled(auth_client, app):
+    assert b"/m/aiutils/" not in auth_client.get("/settings/profile").data
+    _enable(app)
+    assert b"/m/aiutils/" in auth_client.get("/settings/profile").data
+    with app.app_context():
+        from app.services import module_service
+        assert "aiutils" not in [i["name"] for i in module_service.nav_items()]
