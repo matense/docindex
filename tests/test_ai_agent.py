@@ -688,6 +688,32 @@ def test_agent_falls_back_when_streaming_fails_before_deltas(app, user):
     assert plain.call_count == 1
 
 
+def test_crashing_tool_yields_error_result_and_run_continues(app, user):
+    """A tool handler that raises must not kill the run: the agent gets an
+    error tool_result (and can adapt) instead of a silent dead stream."""
+    responses = iter([
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "count_files", "arguments": '{"query": "x"}'},
+        }]},
+        {"role": "assistant", "content": "Recovered."},
+    ])
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion",
+                   side_effect=lambda *a, **k: next(responses)), \
+             patch("app.services.agent_service._tool_count_files",
+                   side_effect=RuntimeError("boom")):
+            seen = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "count x"}]))
+    kinds = [k for k, _ in seen]
+    assert "answer" in kinds
+    results = [p for k, p in seen if k == "tool_result"]
+    assert len(results) == 1
+    assert "Error" in results[0]["summary"]
+    assert "boom" in results[0]["summary"]
+
+
 def test_agent_no_fallback_when_streaming_404(app, user):
     # A 404 means the model/endpoint does not exist on the provider — the
     # non-streaming retry would fail identically, so it must not be attempted.

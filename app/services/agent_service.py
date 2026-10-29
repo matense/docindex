@@ -1,12 +1,13 @@
 import json
 import re
+import traceback
 
 from flask import current_app
 from sqlalchemy import func
 
 from ..extensions import db
 from ..models import Drive, FileVersion, StoredFile
-from . import ai_service, file_service, hashtag_service, search_service
+from . import ai_service, file_service, hashtag_service, log_service, search_service
 
 _SEARCH_FILTERS_SCHEMA = {
     "extensions": {
@@ -1657,7 +1658,16 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
                                   "max_steps": max_steps})
 
             handler = active_handlers.get(name)
-            result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
+            try:
+                result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
+            except Exception as exc:  # noqa: BLE001 - a tool bug must not kill the run
+                log_service.log_event("error", "ai_task",
+                                      f"Tool '{name}' raised {exc!r}",
+                                      detail=traceback.format_exc(),
+                                      user_id=user.id)
+                result = {"error": f"Tool '{name}' failed: {exc}. Try a different approach."}
+            if not isinstance(result, dict):
+                result = {"error": f"Tool '{name}' returned an unusable result."}
 
             detail = args.get("query") or args.get("pattern") \
                 or (result.get("name") if isinstance(result, dict) else "") \

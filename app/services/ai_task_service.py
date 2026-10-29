@@ -319,10 +319,14 @@ def _task_worker(task_id, app):
             app.logger.exception("AI task %s failed", task_id)
             task = db.session.get(AITask, task_id)
             if task is not None and task.is_active:
+                msg = f"Unexpected error: {exc}"
                 task.status = "error"
-                task.error = str(exc)[:500]
+                task.error = msg[:500]
                 task.finished_at = utcnow()
+                db.session.add(ChatMessage(conversation_id=task.conversation_id,
+                                           role="assistant", content="⚠ " + msg))
                 db.session.commit()
+                _broadcast(task_id, {"type": "error", "error": msg})
         finally:
             # Close any live stream watchers (None = end-of-stream sentinel).
             task = db.session.get(AITask, task_id)

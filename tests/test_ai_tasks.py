@@ -154,11 +154,11 @@ def test_active_lists_running_and_unnotified_finished(auth_client, app, user):
 
 
 def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
-    """One dock icon per chat: acking it dismisses every finished run of
-    that conversation, so no older sibling pops back up."""
+    """One X dismisses the whole chat: acking the latest run also dismisses
+    older finished runs of the same conversation (no resurfacing icons)."""
     _enable_ai(app)
     with patch("app.services.ai_service.chat_completion",
-               side_effect=_answers("one", "two")):
+               side_effect=_answers("first", "second", "third")):
         first = auth_client.post(
             "/ai/tasks", json={"message": "first"}).get_json()["task"]
         auth_client.post("/ai/tasks", json={
@@ -166,7 +166,8 @@ def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
             "conversation_id": first["conversation_id"]})
 
     tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
-    assert len(tasks) == 1  # latest run only, not one icon per message
+    assert len(tasks) == 1
+    assert tasks[0]["id"] != first["id"]
     assert auth_client.post(f"/ai/tasks/{tasks[0]['id']}/ack").status_code == 200
     assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
 

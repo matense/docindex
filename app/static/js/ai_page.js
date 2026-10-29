@@ -1261,7 +1261,7 @@
         stopHeartbeat();
         lastEventAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            if (!taskAbort && !watchingTaskId) { stopHeartbeat(); return; }
+            if (!taskAbort && !watchingTaskId && !sending) { stopHeartbeat(); return; }
             if (toolChipEl) return;  // a tool is visibly running
             const wait = Date.now() - lastEventAt;
             if (wait < 2000) return;
@@ -1439,17 +1439,20 @@
     async function watchTask(task) {
         taskAbort = new AbortController();
         watchingTaskId = task.id;
+        setBusy(true); // the run owns this page until it finishes
+        startHeartbeat(); // ticks "Waiting…" until the first event lands
         liveBubble = null;
         lastThinkingSpan = null;
         const state = { gotResult: true };
         try {
             const resp = await fetch('/ai/tasks/' + task.id + '/stream',
                                      { signal: taskAbort.signal });
-            if (!resp.ok || !resp.body) return;
-            await readNdjson(resp.body.getReader(), (event) => {
-                if (event.type === 'task_status') return;
-                handleStreamEvent(event, state);
-            });
+            if (resp.ok && resp.body) {
+                await readNdjson(resp.body.getReader(), (event) => {
+                    if (event.type === 'task_status') return;
+                    handleStreamEvent(event, state);
+                });
+            }
         } catch { /* aborted or offline — the transcript persists */ }
         taskAbort = null;
         watchingTaskId = null;
@@ -1457,6 +1460,25 @@
         flushTokens();
         collapseReasoningBox();
         if (conversationId) loadConversation(conversationId);
+    }
+
+    // After Stop the subscription is gone, so the run's finish (or error)
+    // would never render — poll until it lands, then reconcile.
+    async function pollTaskEnd(stopId) {
+        const convId = conversationId;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            if (taskAbort) return;  // a new run streams here now
+            let status = null;
+            try {
+                const resp = await fetch('/ai/tasks/' + stopId);
+                if (resp.ok) status = (await resp.json()).status;
+            } catch { return; }
+            if (status !== 'queued' && status !== 'running') {
+                if (conversationId === convId) loadConversation(convId);
+                return;
+            }
+        }
     }
 
     // Rebuild the chips from a conversation's saved context snapshot
@@ -1878,6 +1900,9 @@
                 try {
                     await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
                 } catch (err) { /* the dock widget can stop it instead */ }
+                // The live subscription is dropped, so the run's finish
+                // won't arrive here — poll until it lands, then show it.
+                pollTaskEnd(stopId);
             }
             return;
         }
@@ -1912,6 +1937,7 @@
                    { created_at: new Date().toISOString() });
         lastUserQuestion = question;  // for the Regenerate action
         setBusy(true);
+        startHeartbeat();  // "Waiting for the model…" until events arrive
         try {
             const resp = await fetch('/ai/chat', {
                 method: 'POST',
@@ -1953,6 +1979,7 @@
             if (!resp.ok) {
                 setBusy(false);
                 sending = false;
+                stopHeartbeat();
                 echo.remove();
                 if (resp.status === 409) {
                     // Run still active: put the message back in the
@@ -1978,6 +2005,7 @@
         } catch (err) {
             setBusy(false);
             sending = false;
+            stopHeartbeat();
             echo.remove();
             addMessage('assistant', '**Error:** could not reach the server.',
                        { created_at: new Date().toISOString() });

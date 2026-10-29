@@ -349,6 +349,27 @@ def test_viewer_redirect_from_generic_view(app, auth_client, user, enabled):
     assert f"/m/notebooks/{fid}" in resp.headers["Location"]
 
 
+def test_ai_tool_create_coerces_string_cells(app, user, enabled):
+    """The model often sends plain strings instead of cell objects — coerce
+    them to markdown cells instead of crashing (regression: AttributeError
+    on str.get killed the whole run with no visible error)."""
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(
+            user_obj,
+            {"name": "AI notes",
+             "cells": ["hello", {"type": "markdown", "content": "world"}]},
+            None)
+        assert "created" in result
+        fid = result["created"]["id"]
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert [c["content"] for c in read["cells"]] == ["hello", "world"]
+        assert all(c["type"] == "markdown" for c in read["cells"])
+        bad = nb_tools._tool_create(user_obj, {"name": "Bad", "cells": [123]}, None)
+        assert "error" in bad
+
+
 def test_ai_tools_create_and_edit(app, user, enabled):
     _ = _drive(app, user)
     with app.app_context():
