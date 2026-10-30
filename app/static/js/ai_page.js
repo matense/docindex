@@ -961,8 +961,15 @@
         footer.textContent = bits.join(' · ') + (bits.length && hasTok ? ' · ' : '');
         if (hasTok) {
             const tok = document.createElement('span');
-            tok.textContent = (u.estimated ? '~' : '') + '↑' + fmtTokens(u.prompt_tokens) +
-                ' ↓' + fmtTokens(u.completion_tokens);
+            if (u.estimated) tok.textContent = '~';
+            const up = document.createElement('b');
+            up.textContent = '↑';
+            tok.appendChild(up);
+            tok.appendChild(document.createTextNode(' ' + fmtTokens(u.prompt_tokens) + ' '));
+            const down = document.createElement('b');
+            down.textContent = '↓';
+            tok.appendChild(down);
+            tok.appendChild(document.createTextNode(' ' + fmtTokens(u.completion_tokens)));
             tok.title = 'Tokens this answer cost: ' + (Number(u.prompt_tokens) || 0).toLocaleString() +
                 ' in / ' + (Number(u.completion_tokens) || 0).toLocaleString() + ' out' +
                 (u.estimated ? ' (estimated — provider did not report usage)' : ' (measured)');

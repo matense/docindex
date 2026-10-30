@@ -7,7 +7,7 @@ import pytest
 
 from app.extensions import db
 from app.models import ModuleState, User
-from app.services import agent_service
+from app.services import agent_service, module_service
 
 
 def _enable(app):
@@ -229,5 +229,112 @@ def test_profile_menu_links_aiutils_only_when_enabled(auth_client, app):
     _enable(app)
     assert b"/m/aiutils/" in auth_client.get("/settings/profile").data
     with app.app_context():
-        from app.services import module_service
         assert "aiutils" not in [i["name"] for i in module_service.nav_items()]
+
+
+def _set_toggles(app, sections=None, tools=None):
+    with app.app_context():
+        return module_service.set_tool_toggles(
+            "aiutils", sections or [], tools or [])
+
+
+def _promote_first_user(app):
+    with app.app_context():
+        u = User.query.first()
+        u.is_admin = True
+        db.session.commit()
+
+
+def test_toggles_default_to_all_enabled(app):
+    _enable(app)
+    with app.app_context():
+        assert module_service.get_tool_toggles("aiutils") == {
+            "sections": [], "tools": []}
+        defs, _, _ = agent_service._active_tools()
+    ours = [d for d in defs
+            if d["function"]["name"].startswith("aiutils.")]
+    assert len(ours) == 23
+
+
+def test_disable_single_tool_hides_it_from_agent(app):
+    _enable(app)
+    assert "aiutils.calculate" in _handlers(app)
+    assert _set_toggles(app, tools=["calculate"]) == {
+        "sections": [], "tools": ["calculate"]}
+    handlers = _handlers(app)
+    assert "aiutils.calculate" not in handlers
+    assert "aiutils.statistics" in handlers  # rest of the section stays
+    with app.app_context():
+        defs, _, _ = agent_service._active_tools()
+    assert not any(d["function"]["name"] == "aiutils.calculate"
+                   for d in defs)
+
+
+def test_disable_section_hides_all_its_tools(app):
+    _enable(app)
+    _set_toggles(app, sections=["Math"])
+    handlers = _handlers(app)
+    for name in ("calculate", "statistics", "base_convert", "fraction"):
+        assert f"aiutils.{name}" not in handlers
+    assert "aiutils.loan" in handlers  # other sections unaffected
+
+
+def test_section_and_tool_toggles_combine(app):
+    _enable(app)
+    _set_toggles(app, sections=["Text"], tools=["loan"])
+    handlers = _handlers(app)
+    assert "aiutils.text_slug" not in handlers
+    assert "aiutils.loan" not in handlers
+    assert "aiutils.compound" in handlers
+
+
+def test_unknown_toggle_names_are_ignored(app):
+    _enable(app)
+    saved = _set_toggles(app, sections=["Nope"], tools=["calculate", "nope"])
+    assert saved == {"sections": [], "tools": ["calculate"]}
+    assert "aiutils.calculate" not in _handlers(app)
+
+
+def test_reenable_restores_tools(app):
+    _enable(app)
+    _set_toggles(app, sections=["Math"], tools=["loan"])
+    assert "aiutils.calculate" not in _handlers(app)
+    _set_toggles(app)
+    handlers = _handlers(app)
+    assert "aiutils.calculate" in handlers
+    assert "aiutils.loan" in handlers
+
+
+def test_toggles_post_requires_admin(app, auth_client):
+    _enable(app)
+    resp = auth_client.post("/m/aiutils/toggles",
+                            json={"tools": ["calculate"]})
+    assert resp.status_code == 403
+    _promote_first_user(app)
+    resp = auth_client.post("/m/aiutils/toggles",
+                            json={"sections": [], "tools": ["calculate"]})
+    assert resp.status_code == 200
+    assert resp.get_json()["disabled"] == {
+        "sections": [], "tools": ["calculate"]}
+    assert "aiutils.calculate" not in _handlers(app)
+    assert "aiutils.loan" in _handlers(app)
+
+
+def test_reference_page_hides_disabled_from_users(app, auth_client):
+    _enable(app)
+    _set_toggles(app, tools=["calculate"])
+    body = auth_client.get("/m/aiutils/").data
+    assert b"aiutils.calculate" not in body
+    assert b"aiutils.statistics" in body
+    assert b"aiu-tool-toggle" not in body  # no switches for non-admins
+
+
+def test_reference_page_shows_switches_to_admin(app, auth_client):
+    _enable(app)
+    _set_toggles(app, sections=["Math"])
+    _promote_first_user(app)
+    body = auth_client.get("/m/aiutils/").data
+    # Disabled tools still render for admins (unchecked switches).
+    assert b"aiutils.calculate" in body
+    assert b"aiu-tool-toggle" in body
+    assert b"aiu-section-toggle" in body

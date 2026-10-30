@@ -39,7 +39,8 @@ questions about your files by searching and reading them step by step.
   DocIndex — the real folder is never touched. Note: the folder path is read
   with the permissions of the process running DocIndex.
 - **Git drives (module)** — clone a Git repository (GitHub, Azure DevOps)
-  as a read-only mirror drive; every sync pulls and re-indexes. The
+  as a read-only mirror drive; every sync pulls and re-indexes. Pure-Python
+  [dulwich](https://github.com/jelmer/dulwich), no `git` binary needed. The
   personal access token is stored encrypted. Enable it in
   *Settings → Modules*. Git LFS is not fetched (LFS files stay pointers).
 - **Version history** — re-uploading a file with the same name into the same
@@ -92,6 +93,12 @@ questions about your files by searching and reading them step by step.
   Notebooks page groups by drive and folder and offers one-click
   **Organize** (with preview) and **Revert last organize**, plus an opt-in
   full-history mode per notebook.
+- **Whiteboards (module)** — infinite-canvas boards powered by
+  [Excalidraw](https://github.com/excalidraw/excalidraw), stored as regular
+  versioned files on your drives: draw by hand, or ask the assistant to
+  build and edit diagrams (shapes with bound text labels, auto-layout,
+  lock/hide from AI). Open boards live-update while the AI works and export
+  to PNG. Enable it in *Settings → Modules*.
 - **Automation (module)** — visual workflows on a drag & drop canvas:
   chain file inputs (text/CSV/Excel/JSON), notebooks, transforms, AI
   prompts (with custom behavior) and logic into flows that run manually,

@@ -759,7 +759,7 @@
                 const el = box.querySelector('[data-ai-tok="' + k + '"]');
                 const sub = box.querySelector('[data-ai-tok-sub="' + k + '"]');
                 if (el) el.textContent = fmt(s.total_tokens);
-                if (sub) sub.textContent = '↑ ' + fmt(s.prompt_tokens) + ' · ↓ ' + fmt(s.completion_tokens);
+                if (sub) sub.innerHTML = '<b>↑</b> ' + fmt(s.prompt_tokens) + ' · <b>↓</b> ' + fmt(s.completion_tokens);
             });
             const daily = document.getElementById('ai-token-daily');
             if (daily && Array.isArray(stats.daily)) {

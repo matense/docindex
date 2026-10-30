@@ -1361,13 +1361,26 @@ def _active_tools():
     if testing or (now - _active_tools_cache["at"] > 5
             or _active_tools_cache["all_mods"] != mods):
         enabled = {m for m in mods if module_service.is_enabled(m)}
+        # Per-tool opt-outs (e.g. AI Utils sections/tools disabled by an
+        # admin) — expanded to full "<module>.<tool>" names, cached with
+        # the same TTL so toggles apply within seconds.
+        disabled = set()
+        for m in enabled:
+            try:
+                disabled |= module_service.disabled_tool_names(m)
+            except Exception:  # noqa: BLE001 - a bad toggle never breaks tools
+                continue
         _active_tools_cache.update(at=now, enabled=frozenset(enabled),
+                                   disabled=frozenset(disabled),
                                    all_mods=set(mods))
     else:
         enabled = _active_tools_cache["enabled"]
+        disabled = _active_tools_cache.get("disabled", frozenset())
     definitions, handlers, labels = [], {}, {}
     for full, entry in _TOOL_REGISTRY.items():
         if entry["module"] and entry["module"] not in enabled:
+            continue
+        if full in disabled:
             continue
         definitions.append(entry["definition"])
         handlers[full] = entry["handler"]
