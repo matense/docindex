@@ -104,8 +104,7 @@ def create_app(config_class=Config):
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every
     # page. Alembic's upgrade is a no-op when the DB is already at head, and
-    # a stamp pointing at a revision that no longer exists (first-release
-    # databases) is repaired automatically.
+    # unknown revisions are reported without rewriting migration stamps.
     # Skipped in tests (they build the schema with db.create_all()).
     if not app.config.get("TESTING"):
         from .services import db_maintenance

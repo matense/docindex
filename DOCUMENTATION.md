@@ -1203,6 +1203,17 @@ Module migrations are **independent alembic roots** living in
 upgrades use `db upgrade heads` (multiple heads when modules have
 migrations).
 
+Unknown revisions are not automatically repaired or re-stamped. They may
+belong to another branch or a module missing from the current checkout.
+For example, `gitsync_0001` belongs to the `gitsync` module introduced in
+commit `25ec285` on `git-sync-changes-module`; it is not a core revision.
+Keep the original migration files available for every stamped module, even
+when that module is disabled. Choose the intended branch/module history
+explicitly and take a consistent database backup before recovery. Never
+replace an unknown stamp with `heads` without verifying schema compatibility.
+Both update scripts stop on upgrade errors; the legacy `db-repair` command
+refuses unverified repair without creating tables or changing stamps.
+
 ## Module system
 
 Extension points so new features can ship as self-contained modules under
