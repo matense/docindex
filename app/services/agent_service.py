@@ -843,7 +843,7 @@ def _tool_view_image(user, file_id, question=None):
     try:
         caption = ai_service.caption_image(
             file_service.file_path(stored), config=cfg,
-            instruction=instruction)
+            instruction=instruction, user=user)
     except ai_service.AIError as exc:
         return {"error": str(exc)[:300]}
     except Exception:  # noqa: BLE001 - vision backend down etc.
@@ -1522,6 +1522,10 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
     Yields, in order:
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
+      ("usage", {...})                       — token spend of one model call
+                                      (prompt_tokens, completion_tokens,
+                                      estimated, model); emitted after every
+                                      call, including the out-of-steps final
       ("thinking", text)                       — the model's intermediate reasoning
       ("tool_start", {"label", "name", "index", "max_steps"}) — a tool is
                                      about to run; yielded BEFORE the handler
@@ -1591,10 +1595,18 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
                    "context window. Use Summarize & reset to compact the "
                    "history into a summary instead of losing it.")
         message = yield from _complete(messages, active_tools, config, block=block)
-        # finish_reason is metadata for the loop, not part of the message —
-        # strip it so it is never sent back to the provider in the history
+        # finish_reason and usage are metadata for the loop, not part of the
+        # message — strip them so they are never sent back to the provider
         # (strict APIs reject unknown message fields).
         finish_reason = message.pop("finish_reason", None)
+        usage = message.pop("usage", None)
+        if isinstance(usage, dict):
+            # One event per model call: the task runner persists these as
+            # AIUsageEvent rows (per-message badge + global stats).
+            yield ("usage", {"prompt_tokens": usage.get("prompt_tokens", 0),
+                             "completion_tokens": usage.get("completion_tokens", 0),
+                             "estimated": bool(usage.get("estimated")),
+                             "model": config.get("model")})
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -1702,11 +1714,18 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
         "with the information you already have. If something is still "
         "missing, say so honestly and summarize what you found.")})
     answer = ""
+    usage_tail = None
     try:
         final = yield from _complete(messages, None, config, block=block)
+        usage_tail = final.pop("usage", None)
         answer = (final.get("content") or "").strip()
     except ai_service.AIError:
         answer = ""
+    if isinstance(usage_tail, dict):
+        yield ("usage", {"prompt_tokens": usage_tail.get("prompt_tokens", 0),
+                         "completion_tokens": usage_tail.get("completion_tokens", 0),
+                         "estimated": bool(usage_tail.get("estimated")),
+                         "model": config.get("model")})
     yield ("answer",
            answer or "I reached the maximum number of search steps without a "
                       "final answer. Please try rephrasing your question.")

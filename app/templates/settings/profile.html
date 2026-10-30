@@ -234,6 +234,30 @@
                 </div>
             </div>
         </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2" id="ai-token-stats">
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="today">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · today</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="today"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="week">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · 7 days</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="week"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="month">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · 30 days</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="month"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="total">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · all time</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="total"></div>
+            </div>
+        </div>
+        <div id="ai-token-daily" class="flex items-end gap-[2px] h-8 mt-2" title="Tokens per day, last 30 days"></div>
+        <div class="text-[11px] opacity-50 mt-1">↑ input · ↓ output · ~ estimated (provider did not report usage)</div>
     </div>
 
     <!-- Indexing queue (hidden unless there is work: running or paused with jobs left) -->
@@ -710,6 +734,47 @@
             });
         })
         .catch(() => { els.forEach((el) => { el.textContent = '—'; }); });
+})();
+
+// AI token spend: loaded lazily (same pattern as word-stats) so the
+// aggregation never blocks the initial render.
+(function () {
+    const box = document.getElementById('ai-token-stats');
+    if (!box) return;
+    const fmt = (n) => {
+        n = Number(n) || 0;
+        if (n < 1000) return String(n);
+        if (n < 1000000) { const v = n / 1000; return (v.toFixed(1).replace(/\.0$/, '') + 'k'); }
+        const v = n / 1000000; return (v.toFixed(1).replace(/\.0$/, '') + 'M');
+    };
+    const setAll = (txt) => {
+        box.querySelectorAll('[data-ai-tok]').forEach((el) => { el.textContent = txt; });
+    };
+    fetch('/settings/profile/ai-usage')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((stats) => {
+            if (!stats) { setAll('—'); return; }
+            ['today', 'week', 'month', 'total'].forEach((k) => {
+                const s = stats[k] || {};
+                const el = box.querySelector('[data-ai-tok="' + k + '"]');
+                const sub = box.querySelector('[data-ai-tok-sub="' + k + '"]');
+                if (el) el.textContent = fmt(s.total_tokens);
+                if (sub) sub.textContent = '↑ ' + fmt(s.prompt_tokens) + ' · ↓ ' + fmt(s.completion_tokens);
+            });
+            const daily = document.getElementById('ai-token-daily');
+            if (daily && Array.isArray(stats.daily)) {
+                const max = Math.max(1, ...stats.daily.map((d) => d.total_tokens || 0));
+                stats.daily.forEach((d) => {
+                    const bar = document.createElement('div');
+                    const h = Math.max(2, Math.round(((d.total_tokens || 0) / max) * 100));
+                    bar.className = 'flex-1 rounded-sm bg-primary/60 min-w-[2px]';
+                    bar.style.height = h + '%';
+                    bar.title = d.day + ': ↑ ' + fmt(d.prompt_tokens) + ' · ↓ ' + fmt(d.completion_tokens);
+                    daily.appendChild(bar);
+                });
+            }
+        })
+        .catch(() => { setAll('—'); });
 })();
 </script>
 {% endblock %}

@@ -223,6 +223,19 @@ def profile_word_stats():
     return jsonify({str(drive_id): int(words) for drive_id, words in rows})
 
 
+@bp.route("/profile/ai-usage")
+@login_required
+def profile_ai_usage():
+    """Token spend for the AI usage card as JSON: totals for today, last
+    7 / 30 days and all time, plus a 30-day per-day series for the chart.
+
+    Lazy-fetched by the profile page (same pattern as word-stats) so the
+    aggregation never blocks the initial render.
+    """
+    from ..services import ai_usage_service
+    return jsonify(ai_usage_service.get_stats(current_user.id))
+
+
 # --------------------------------------------------------------------------
 # Trash bin
 # --------------------------------------------------------------------------

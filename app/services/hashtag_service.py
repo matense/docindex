@@ -136,6 +136,10 @@ def suggest_tags(stored_file, cfg):
     ]
     message = ai_service.chat_completion(messages, config=cfg, block=True)
     raw = (message.get("content") or "").strip()
+    from . import ai_usage_service
+    ai_usage_service.record_usage(
+        stored_file.user_id, message.get("usage"),
+        model=(cfg or {}).get("model"), kind="hashtag")
     return _clean_tags(re.split(r"[,\n;]+", raw), source="ai")
 
 

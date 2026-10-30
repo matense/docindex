@@ -12,7 +12,13 @@ from werkzeug.datastructures import FileStorage
 
 from app.extensions import db
 from app.models import Drive, Folder, StoredFile
-from app.services import ai_service, file_service, indexing_service, search_service
+from app.services import (
+    ai_service,
+    ai_usage_service,
+    file_service,
+    indexing_service,
+    search_service,
+)
 
 from .engine import (
     WorkflowError,
@@ -905,6 +911,8 @@ def _exec_ai_prompt(ctx, config, inputs, outputs):
             _ai_messages(config, prompt, outputs), config=cfg, block=True)
     except ai_service.AIError as exc:
         raise WorkflowError(str(exc)) from exc
+    ai_usage_service.record_usage(ctx["user"].id, message.get("usage"),
+                                  model=cfg.get("model"), kind="automation")
     return p_text((message.get("content") or "").strip())
 
 
@@ -928,6 +936,9 @@ def _exec_ai_extract_json(ctx, config, inputs, outputs):
                                                  block=True)
         except ai_service.AIError as exc:
             raise WorkflowError(str(exc)) from exc
+        ai_usage_service.record_usage(ctx["user"].id, message.get("usage"),
+                                      model=cfg.get("model"),
+                                      kind="automation")
         text = (message.get("content") or "").strip()
         candidate = _JSON_BLOCK_RE.search(text)
         try:
@@ -961,6 +972,10 @@ def _exec_ai_agent(ctx, config, inputs, outputs):
                 ctx["log"](f"step {len(steps)}: {payload.get('label', '…')}")
             elif kind in ("thinking", "answer"):
                 answer = payload
+            elif kind == "usage":
+                ai_usage_service.record_usage(
+                    ctx["user"].id, payload, model=payload.get("model"),
+                    kind="automation")
     except ai_service.AIError as exc:
         raise WorkflowError(str(exc)) from exc
     ctx["log"](f"agent finished after {len(steps)} step(s)")

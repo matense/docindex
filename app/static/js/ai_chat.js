@@ -1029,13 +1029,33 @@
             chipsEl.classList.toggle('flex', hasChips);
         }
 
+        function fmtTokens(n) {
+            n = Number(n) || 0;
+            if (n < 1000) return String(n);
+            if (n < 1000000) { const v = n / 1000; return v.toFixed(1).replace(/\.0$/, '') + 'k'; }
+            return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        }
+
         function addMetaFooter(div, meta) {
             const time = fmtTime(meta.created_at);
-            if (!time && !meta.model) return;
+            const bits = [];
+            if (time) bits.push(time);
+            if (meta.model) bits.push(meta.model);
+            if (!bits.length && !meta.usage) return;
             const footer = document.createElement('div');
             footer.className = 'chat-footer opacity-40 text-[10px]';
-            footer.textContent = (time && meta.model) ? `${time} · ${meta.model}`
-                                                      : (meta.model || time);
+            const u = meta.usage || {};
+            const hasTok = (Number(u.prompt_tokens) || 0) + (Number(u.completion_tokens) || 0) > 0;
+            footer.textContent = bits.join(' · ') + (bits.length && hasTok ? ' · ' : '');
+            if (hasTok) {
+                const tok = document.createElement('span');
+                tok.textContent = (u.estimated ? '~' : '') + '↑' + fmtTokens(u.prompt_tokens) +
+                    ' ↓' + fmtTokens(u.completion_tokens);
+                tok.title = 'Tokens this answer cost: ' + (Number(u.prompt_tokens) || 0).toLocaleString() +
+                    ' in / ' + (Number(u.completion_tokens) || 0).toLocaleString() + ' out' +
+                    (u.estimated ? ' (estimated — provider did not report usage)' : ' (measured)');
+                footer.appendChild(tok);
+            }
             div.appendChild(footer);
         }
 
@@ -1463,9 +1483,15 @@
                         const steps = conv.messages.filter(m => m.role === 'step').length;
                         const lastAssistant = [...conv.messages].reverse()
                             .find(m => m.role === 'assistant' && m.model);
+                        let tokens = 0;
+                        conv.messages.forEach((m) => {
+                            if (m.usage) tokens += (Number(m.usage.prompt_tokens) || 0) +
+                                (Number(m.usage.completion_tokens) || 0);
+                        });
                         conv.task.stats = {
                             steps,
                             model: lastAssistant ? lastAssistant.model : null,
+                            tokens,
                         };
                         enterTaskMode(conv.task);
                     }
@@ -2131,7 +2157,8 @@
                 settleToolChip();
                 collapseReasoningBox();
                 finalizeLiveBubble(event.answer,
-                                   { created_at: new Date().toISOString(), model: event.model });
+                                   { created_at: new Date().toISOString(), model: event.model,
+                                     usage: event.usage });
             } else if (event.type === 'error') {
                 state.gotResult = true;
                 settleToolChip();
@@ -2187,6 +2214,7 @@
             const end = Date.parse(taskMode.finished_at || '');
             if (!isNaN(start) && !isNaN(end)) bits.push(fmtTaskDur(end - start));
             if (stats.model) bits.push(stats.model);
+            if (stats.tokens) bits.push('↑↓ ' + fmtTokens(stats.tokens));
             return ' · ' + bits.join(' · ');
         }
 

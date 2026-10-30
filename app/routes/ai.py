@@ -4,8 +4,16 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, str
 from flask_login import current_user, login_required
 
 from ..extensions import db
-from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile
-from ..services import ai_service, ai_task_service, drive_service, log_service
+from ..models import (
+    AIConnection,
+    AITask,
+    AIUsageEvent,
+    ChatConversation,
+    ChatMessage,
+    Drive,
+    StoredFile,
+)
+from ..services import ai_service, ai_task_service, ai_usage_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -455,6 +463,10 @@ def conversation(conv_id):
     # conversation can own several sequential tasks: the latest decides.
     task = (AITask.query.filter_by(conversation_id=conv.id)
             .order_by(AITask.id.desc()).first())
+    # Per-message token spend in one grouped query: sums every model call
+    # that produced each assistant message (an answer backed by N agent
+    # steps sums all N calls).
+    usage = ai_usage_service.message_usage_map(conv.id)
     return jsonify({
         "id": conv.id,
         "title": conv.title,
@@ -472,7 +484,7 @@ def conversation(conv_id):
                  if task and not task.notified else None),
         "messages": [
             {"role": m.role, "content": m.content, "model": m.model,
-             "archived": bool(m.archived),
+             "archived": bool(m.archived), "usage": usage.get(m.id),
              "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in conv.messages
         ],
@@ -488,6 +500,7 @@ def delete_conversation(conv_id):
     # A conversation can own several background tasks — remove them with it
     # so the dock never points at a deleted transcript.
     AITask.query.filter_by(conversation_id=conv.id).delete()
+    AIUsageEvent.query.filter_by(conversation_id=conv.id).delete()
     db.session.delete(conv)
     db.session.commit()
     return jsonify({"ok": True})
@@ -553,10 +566,14 @@ def summarize_conversation(conv_id):
     # instead of deleting — the user can still read the old conversation.
     for m in conv.messages:
         m.archived = True
-    db.session.add(ChatMessage(conversation_id=conv.id, role="assistant",
-                               content=SUMMARY_PREFIX + summary,
-                               model=config.get("model") or None))
+    summary_msg = ChatMessage(conversation_id=conv.id, role="assistant",
+                              content=SUMMARY_PREFIX + summary,
+                              model=config.get("model") or None)
+    db.session.add(summary_msg)
     db.session.commit()
+    ai_usage_service.record_usage(
+        current_user.id, reply.get("usage"), model=config.get("model"),
+        kind="summarize", conversation_id=conv.id, message_id=summary_msg.id)
     return jsonify({"ok": True, "summary": summary})
 
 

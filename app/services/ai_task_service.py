@@ -24,7 +24,7 @@ from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, User, utcnow
-from . import agent_service, ai_service, log_service
+from . import agent_service, ai_service, ai_usage_service, log_service
 
 _TASK_NOTE = (
     "This is a long-horizon background task: the user is not watching live "
@@ -466,11 +466,33 @@ def _run_task(task_id, app):
     pending_step = None  # {"label", "detail"} waiting for its tool_result
     answer = None
     stopped = False
+    pending_usage = []  # ("usage" event payloads) not yet linked to a message
+    answer_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                    "estimated": False}
 
     def persist(role, content, model=None):
-        db.session.add(ChatMessage(conversation_id=conv_id, role=role,
-                                   content=content, model=model))
+        msg = ChatMessage(conversation_id=conv_id, role=role,
+                          content=content, model=model)
+        db.session.add(msg)
         db.session.commit()  # live progress: visible if the user opens the chat
+        return msg
+
+    def flush_usage(message_id=None):
+        """Persist accumulated model-call spend, linked to a message when the
+        spend produced one (per-message badge); leftovers stay message-less
+        but still count in the global stats."""
+        nonlocal pending_usage, answer_usage
+        for u in pending_usage:
+            row = ai_usage_service.record_usage(
+                user.id, u, model=u.get("model") or model_name,
+                kind="chat", conversation_id=conv_id, task_id=task_id,
+                message_id=message_id)
+            if row is not None and message_id is not None:
+                answer_usage["prompt_tokens"] += row.prompt_tokens
+                answer_usage["completion_tokens"] += row.completion_tokens
+                answer_usage["estimated"] = (answer_usage["estimated"]
+                                             or row.estimated)
+        pending_usage = []
 
     def flush_step(summary=None):
         nonlocal pending_step
@@ -534,24 +556,36 @@ def _run_task(task_id, app):
                 block_tokens = None
                 stopped = True
                 flush_step()
-                persist("assistant", "⏹ " + payload, model=model_name)
+                msg = persist("assistant", "⏹ " + payload, model=model_name)
+                flush_usage(msg.id)
                 ev = {"type": "answer", "answer": "⏹ " + payload,
-                      "conversation_id": conv_id, "model": model_name}
+                      "conversation_id": conv_id, "model": model_name,
+                      "usage": answer_usage}
+            elif kind == "usage":
+                # Token spend of one model call — persisted, never broadcast
+                # (the totals ride on the final answer event instead).
+                pending_usage.append(payload)
+                ev = None
             else:  # answer
                 block_tokens = None
                 answer = payload
                 flush_step()
-                persist("assistant", answer, model=model_name)
+                msg = persist("assistant", answer, model=model_name)
+                flush_usage(msg.id)
                 ev = {"type": "answer", "answer": answer,
-                      "conversation_id": conv_id, "model": model_name}
+                      "conversation_id": conv_id, "model": model_name,
+                      "usage": answer_usage}
             if ev is not None:
                 _broadcast(task_id, ev)
         flush_step()
+        flush_usage()  # calls whose answer never materialized (e.g. stopped
+        # mid-tool): still real spend, counted globally without a message link
     except ai_service.AIError as exc:
         msg = _friendly_error(exc)
         log_service.log_event("error", "ai_task", msg,
                               user_id=user.id, path=f"/ai/tasks/{task_id}")
-        persist("assistant", f"⚠ {msg}", model=model_name)
+        err_msg = persist("assistant", f"⚠ {msg}", model=model_name)
+        flush_usage(err_msg.id)
         _broadcast(task_id, {"type": "error", "error": msg})
         task.status = "error"
         task.error = msg[:500]

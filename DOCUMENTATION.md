@@ -482,7 +482,12 @@ or per division (enable/disable all) on `/behaviors`.
   costs ~300ms, so the template leaves `data-word-stats` placeholders and
   fetches them lazily from `GET /settings/profile/word-stats`, one grouped
   query returning `{drive_id: words}`), AI usage
-  (conversations, messages, active connection), a card linking to the trash
+  (conversations, messages, active connection, plus measured token spend —
+  `ai_usage_events` rows written per model call with provider usage numbers
+  or chars//4 estimates when the provider stays silent; `GET
+  /settings/profile/ai-usage` returns today / 7-day / 30-day / all-time
+  totals and a 30-day daily series, lazy-fetched like word-stats; each chat
+  message carries its `usage` in `GET /ai/conversations/<id>`), a card linking to the trash
   bin (`GET /settings/trash` — deleted files with name search and
   pagination; restore / delete forever / empty trash), a card linking to the
   behaviors & personas page (`/behaviors`) and, for admins only,

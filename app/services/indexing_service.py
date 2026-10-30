@@ -239,7 +239,8 @@ def index_file(file_id, app=None):
             if stored.is_image and captions_on and ai_cfg["enabled"] and ai_cfg["base_url"]:
                 try:
                     caption = ai_service.caption_image(
-                        file_service.file_path(stored), config=ai_cfg)
+                        file_service.file_path(stored), config=ai_cfg,
+                        user=stored.owner)
                 except Exception as exc:  # noqa: BLE001 - AI backend down etc.
                     # A caption outage must not fail the file's index: the
                     # OCR text (if any) still goes in and the image stays
