@@ -415,6 +415,7 @@
 
         // --- Per-window state ---
         let conversationId = null;
+        let lastConvSig = null; // signature of the rendered transcript (skip no-op re-renders)
         let convFilter = 'all'; // history list filter: all | tasks
         let pendingConvId = null; // conversation being loaded (async fetch)
         let attachments = []; // [{id, name}]
@@ -791,8 +792,19 @@
             pendingSummaries[fileId] = { name };
             renderChips();
             let tries = 0;
+            let hiddenWaits = 0;
             const tick = async () => {
                 if (!pendingSummaries[fileId]) return;
+                // Hidden tabs just wait — indexing is server-side — but not
+                // forever: after ~3 min hidden, report and stop polling.
+                if (document.hidden) {
+                    hiddenWaits++;
+                    if (hiddenWaits < 36) { setTimeout(tick, 5000); return; }
+                    delete pendingSummaries[fileId];
+                    renderChips();
+                    addMessage('step', '⚠️ "' + name + '" is still indexing — ask anyway, the AI reads it live by id.');
+                    return;
+                }
                 tries++;
                 try {
                     const resp = await fetch('/file/' + fileId + '/summary',
@@ -820,7 +832,8 @@
                     addMessage('step', '⚠️ "' + name + '" is still indexing — ask anyway, the AI reads it live by id.');
                     return;
                 }
-                setTimeout(tick, 2000);
+                // Back off: fresh files index in seconds, slow ones take a minute.
+                setTimeout(tick, tries < 6 ? 2000 : 5000);
             };
             setTimeout(tick, 2500);
         }
@@ -1016,13 +1029,40 @@
             chipsEl.classList.toggle('flex', hasChips);
         }
 
+        function fmtTokens(n) {
+            n = Number(n) || 0;
+            if (n < 1000) return String(n);
+            if (n < 1000000) { const v = n / 1000; return v.toFixed(1).replace(/\.0$/, '') + 'k'; }
+            return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        }
+
         function addMetaFooter(div, meta) {
             const time = fmtTime(meta.created_at);
-            if (!time && !meta.model) return;
+            const bits = [];
+            if (time) bits.push(time);
+            if (meta.model) bits.push(meta.model);
+            if (!bits.length && !meta.usage) return;
             const footer = document.createElement('div');
             footer.className = 'chat-footer opacity-40 text-[10px]';
-            footer.textContent = (time && meta.model) ? `${time} · ${meta.model}`
-                                                      : (meta.model || time);
+            const u = meta.usage || {};
+            const hasTok = (Number(u.prompt_tokens) || 0) + (Number(u.completion_tokens) || 0) > 0;
+            footer.textContent = bits.join(' · ') + (bits.length && hasTok ? ' · ' : '');
+            if (hasTok) {
+                const tok = document.createElement('span');
+                if (u.estimated) tok.textContent = '~';
+                const up = document.createElement('b');
+                up.textContent = '↑';
+                tok.appendChild(up);
+                tok.appendChild(document.createTextNode(' ' + fmtTokens(u.prompt_tokens) + ' '));
+                const down = document.createElement('b');
+                down.textContent = '↓';
+                tok.appendChild(down);
+                tok.appendChild(document.createTextNode(' ' + fmtTokens(u.completion_tokens)));
+                tok.title = 'Tokens this answer cost: ' + (Number(u.prompt_tokens) || 0).toLocaleString() +
+                    ' in / ' + (Number(u.completion_tokens) || 0).toLocaleString() + ' out' +
+                    (u.estimated ? ' (estimated — provider did not report usage)' : ' (measured)');
+                footer.appendChild(tok);
+            }
             div.appendChild(footer);
         }
 
@@ -1194,6 +1234,7 @@
             reasoningBody.appendChild(chip);
             toolChipEl = chip;
             toolElapsedTimer = setInterval(() => {
+                if (document.hidden) return;  // cosmetic — recomputes on return
                 const s = Math.floor((Date.now() - chip._startedAt) / 1000);
                 const elSpan = chip.querySelector('.ai-tool-elapsed');
                 if (elSpan && s > 0) elSpan.textContent = '· ' + s + 's';
@@ -1340,8 +1381,9 @@
             stopHeartbeat();
             lastEventAt = Date.now();
             heartbeatTimer = setInterval(() => {
-                if (!taskAbort) { stopHeartbeat(); return; }
+                if (!taskAbort && !sending) { stopHeartbeat(); return; }
                 if (toolChipEl) return;  // a tool is visibly running
+                if (document.hidden) return;  // cosmetic — resumes on return
                 const wait = Date.now() - lastEventAt;
                 if (wait < 2000) return;
                 if (!heartbeatEl) {
@@ -1352,7 +1394,6 @@
                 }
                 heartbeatEl.querySelector('span').textContent =
                     'Waiting for the model… ' + Math.floor(wait / 1000) + 's';
-                scrollDown();
             }, 1000);
         }
 
@@ -1413,24 +1454,34 @@
                 .then(conv => {
                     conversationId = conv.id;
                     pendingConvId = null;
-                    clearMessages();
-                    let seenArchived = false;
-                    conv.messages.forEach(m => {
-                        if (!m.archived && seenArchived) {
-                            addArchiveDivider();
-                            seenArchived = false;
-                        }
-                        const el = addMessage(m.role, m.content, m);
-                        if (m.role === 'user') {
-                            // Strip the rendered 📎 attachment suffix: a
-                            // regenerated turn must re-send the question only.
-                            lastUserQuestion = m.content.replace(/\n\n📎 [^\n]*$/, '');
-                        }
-                        if (m.archived) {
-                            seenArchived = true;
-                            if (el) el.classList.add('ai-archived');
-                        }
-                    });
+                    // Skip no-op re-renders (e.g. reconcile after Stop found
+                    // nothing new): a full parse+highlight of a long history
+                    // is the most expensive DOM op on this page.
+                    const lastMsg = conv.messages[conv.messages.length - 1];
+                    const sig = conv.messages.length + '|'
+                        + (lastMsg ? lastMsg.created_at : '') + '|'
+                        + (conv.task ? conv.task.status : '');
+                    if (sig !== lastConvSig) {
+                        lastConvSig = sig;
+                        clearMessages();
+                        let seenArchived = false;
+                        conv.messages.forEach(m => {
+                            if (!m.archived && seenArchived) {
+                                addArchiveDivider();
+                                seenArchived = false;
+                            }
+                            const el = addMessage(m.role, m.content, m);
+                            if (m.role === 'user') {
+                                // Strip the rendered 📎 attachment suffix: a
+                                // regenerated turn must re-send the question only.
+                                lastUserQuestion = m.content.replace(/\n\n📎 [^\n]*$/, '');
+                            }
+                            if (m.archived) {
+                                seenArchived = true;
+                                if (el) el.classList.add('ai-archived');
+                            }
+                        });
+                    }
                     // Conversations owned by a background task reopen in
                     // task mode until the task is dismissed.
                     if (conv.task) {
@@ -1439,9 +1490,15 @@
                         const steps = conv.messages.filter(m => m.role === 'step').length;
                         const lastAssistant = [...conv.messages].reverse()
                             .find(m => m.role === 'assistant' && m.model);
+                        let tokens = 0;
+                        conv.messages.forEach((m) => {
+                            if (m.usage) tokens += (Number(m.usage.prompt_tokens) || 0) +
+                                (Number(m.usage.completion_tokens) || 0);
+                        });
                         conv.task.stats = {
                             steps,
                             model: lastAssistant ? lastAssistant.model : null,
+                            tokens,
                         };
                         enterTaskMode(conv.task);
                     }
@@ -2107,7 +2164,8 @@
                 settleToolChip();
                 collapseReasoningBox();
                 finalizeLiveBubble(event.answer,
-                                   { created_at: new Date().toISOString(), model: event.model });
+                                   { created_at: new Date().toISOString(), model: event.model,
+                                     usage: event.usage });
             } else if (event.type === 'error') {
                 state.gotResult = true;
                 settleToolChip();
@@ -2163,6 +2221,7 @@
             const end = Date.parse(taskMode.finished_at || '');
             if (!isNaN(start) && !isNaN(end)) bits.push(fmtTaskDur(end - start));
             if (stats.model) bits.push(stats.model);
+            if (stats.tokens) bits.push('↑↓ ' + fmtTokens(stats.tokens));
             return ' · ' + bits.join(' · ');
         }
 
@@ -2305,28 +2364,55 @@
         // just ends is not an error here (gotResult starts true).
         async function watchTask(task) {
             taskAbort = new AbortController();
+            setBusy(true); // the run owns this window until it finishes
+            startHeartbeat(); // ticks "Waiting…" until the first event lands
             const state = { gotResult: true };
             try {
                 const resp = await fetch('/ai/tasks/' + task.id + '/stream',
                                          { signal: taskAbort.signal });
-                if (!resp.ok || !resp.body) return;
-                await readNdjson(resp.body.getReader(), (event) => {
-                    if (event.type === 'task_status') {
-                        if (taskMode && event.status !== 'queued'
-                            && event.status !== 'running') {
-                            taskMode.status = event.status;
-                            renderTaskBanner();
+                if (resp.ok && resp.body) {
+                    await readNdjson(resp.body.getReader(), (event) => {
+                        if (event.type === 'task_status') {
+                            if (taskMode && event.status !== 'queued'
+                                && event.status !== 'running') {
+                                taskMode.status = event.status;
+                                renderTaskBanner();
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    handleStreamEvent(event, state);
-                });
+                        handleStreamEvent(event, state);
+                    });
+                }
             } catch (err) { /* aborted or offline — the transcript persists */ }
             taskAbort = null;
             setBusy(false);
             // Reconcile with the persisted transcript (covers anything
             // missed between the history load and the subscription).
             if (conversationId) loadConversation(conversationId);
+        }
+
+        // After Stop the subscription is gone, so the run's finish (or
+        // error) would never render — poll until it lands, then reconcile.
+        async function pollTaskEnd(stopId) {
+            const convId = conversationId;
+            for (let i = 0; i < 30; i++) {
+                // Back off: early finish is common, late finish is rare.
+                // Hidden tabs just wait — the transcript persists.
+                await new Promise(r => setTimeout(r, i < 5 ? 2000 : 5000));
+                if (document.hidden) continue;
+                if (!document.contains(el)) return;  // window closed
+                if (taskAbort) return;  // a new run streams here now
+                if (taskMode && taskMode.id !== stopId) return;
+                let status = null;
+                try {
+                    const resp = await fetch('/ai/tasks/' + stopId);
+                    if (resp.ok) status = (await resp.json()).status;
+                } catch { return; }
+                if (status !== 'queued' && status !== 'running') {
+                    if (conversationId === convId) loadConversation(convId);
+                    return;
+                }
+            }
         }
 
         // --- Submit (streams NDJSON agent events) ---
@@ -2343,6 +2429,9 @@
                     try {
                         await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
                     } catch (err) { /* the dock widget can stop it instead */ }
+                    // The live subscription is dropped, so the run's finish
+                    // won't arrive here — poll until it lands, then show it.
+                    pollTaskEnd(stopId);
                 }
                 return;
             }
@@ -2381,6 +2470,7 @@
                        { created_at: new Date().toISOString() });
             lastUserQuestion = question;  // for the Regenerate action
             setBusy(true);
+            startHeartbeat();  // "Waiting for the model…" until events arrive
             try {
                 const resp = await fetch('/ai/chat', {
                     method: 'POST',
@@ -2416,6 +2506,7 @@
                 if (!resp.ok) {
                     setBusy(false);
                     sending = false;
+                    stopHeartbeat();
                     echo.remove();
                     if (resp.status === 409) {
                         // Run still active: put the message back in the
@@ -2443,6 +2534,7 @@
             } catch (err) {
                 setBusy(false);
                 sending = false;
+                stopHeartbeat();
                 echo.remove();
                 addMessage('assistant', '**Error:** could not reach the server.',
                            { created_at: new Date().toISOString() });
@@ -2452,6 +2544,7 @@
         // --- Header buttons ---
         function newConversation() {
             conversationId = null;
+            lastConvSig = null;
             pendingConvId = null;
             attachments = [];
             cellRef = null;

@@ -47,6 +47,7 @@
             <a href="#help-ai-search" class="link link-hover"><i class="fas fa-wand-magic-sparkles w-5 text-primary/70"></i> AI search page</a>
             <a href="#help-behaviors" class="link link-hover"><i class="fas fa-masks-theater w-5 text-primary/70"></i> Behaviors &amp; personas</a>
             <a href="#help-notebooks" class="link link-hover"><i class="fas fa-book-open w-5 text-primary/70"></i> Notebooks</a>
+            <a href="#help-whiteboards" class="link link-hover"><i class="fas fa-pen-ruler w-5 text-primary/70"></i> Whiteboards</a>
             <a href="#help-profile" class="link link-hover"><i class="fas fa-user w-5 text-primary/70"></i> Profile page</a>
             <a href="#help-ai-settings" class="link link-hover"><i class="fas fa-gear w-5 text-primary/70"></i> AI settings</a>
             {% if enabled_modules %}
@@ -268,6 +269,15 @@
         too.</p>
     {% endcall %}
 
+    {% call section('help-whiteboards', 'fa-pen-ruler', 'Whiteboards') %}
+        <p>Whiteboards are hand-drawn-style Excalidraw scenes saved as files
+        on your drives — indexed, searchable and fully available to the AI.
+        Open a board to draw by hand; while it is open, AI edits appear
+        live. The lock icon blocks AI edits and the eye icon hides the board
+        from the AI entirely. Every AI answer leaves a single restorable
+        history entry, and the board exports to PNG from the toolbar.</p>
+    {% endcall %}
+
     {% call section('help-profile', 'fa-user', 'Profile page') %}
         <p>Your profile centralizes everything about your account:</p>
         <ul class="list-disc pl-5 flex flex-col gap-1">
@@ -275,14 +285,18 @@
             password.</li>
             <li><strong>Display &amp; settings</strong> — light/dark theme, a static
             (non-animated) background option easier on screen-sharing
-            codecs, and the chat send key (Enter or Shift+Enter).</li>
+            codecs, Performance mode for slower machines, and the chat send
+            key (Enter or Shift+Enter).</li>
             <li><strong>Drive cards</strong> — files, folders, space used and
             indexed words per drive, grouped into collapsible
             <strong>Native</strong>, <strong>Shared sync</strong> and
             <strong>Mirror</strong> sections; synced drives also show sync
             controls and stats.</li>
-            <li><strong>AI usage</strong> — conversation and message counts
-            and the active connection.</li>
+            <li><strong>AI usage</strong> — conversation and message counts,
+            the active connection, and measured token spend (input/output)
+            for today, the last 7 and 30 days and all time, with a 30-day
+            daily chart. Each assistant reply also shows what it cost
+            (~ means estimated: the provider did not report usage).</li>
             <li><strong>Indexing queue</strong> — appears only while there is
             work: live progress of background indexing, with
             pause/resume.</li>

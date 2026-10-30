@@ -21,3 +21,8 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Frontend deps (whiteboards editor bundle is built into modules/whiteboards/static/dist/)
+modules/whiteboards/frontend/node_modules/
+# Vite build entry artifact (never served; the JS bundle is loaded directly)
+modules/whiteboards/static/dist/index.html

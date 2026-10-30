@@ -30,23 +30,18 @@
     <!-- Tailwind CSS + DaisyUI -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="{{ url_for('static', filename='js/ui.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/ui.js') }}?v=1" defer></script>
     <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
     <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Highlight.js -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <!-- PDF.js for PDF preview -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script>
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
     <!-- Markdown rendering for AI answers -->
-    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js" defer></script>
     <!-- DOMPurify: sanitize model markdown before innerHTML (XSS guard) -->
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-    <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=2" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
+    <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=3" defer></script>
 
     {% if current_user.is_authenticated and current_drive %}
     <script>
@@ -56,10 +51,10 @@
     </script>
     {% endif %}
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=14">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=16">
     {% block head %}{% endblock %}
 </head>
-<body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'static-background' if current_user.is_authenticated and current_user.static_background }} {{ 'shift-enter-send' if current_user.is_authenticated and current_user.shift_enter_to_send }} {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
+<body class="h-screen w-screen m-0 p-0 overflow-hidden text-base-content animated-background {{ 'static-background' if current_user.is_authenticated and current_user.static_background }} {{ 'perf-mode' if current_user.is_authenticated and current_user.perf_mode }} {{ 'shift-enter-send' if current_user.is_authenticated and current_user.shift_enter_to_send }} {{ 'search-hero-mode' if request.endpoint == 'search.results' and (not request.args.get('q', '').strip() or request.args.get('mode') == 'ai') }}" id="app-body">
     {% if current_user.is_authenticated %}
         <div class="flex flex-col h-full w-full relative" id="app-container">
 
@@ -366,14 +361,14 @@
             {% endif %}
             {% if ai_enabled %}
                 {% include 'components/ai_chat.html' %}
-                <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=15" defer></script>
-                <script src="{{ url_for('static', filename='js/ai_tasks_widget.js') }}?v=1" defer></script>
+                <script src="{{ url_for('static', filename='js/ai_chat.js') }}?v=21" defer></script>
+                <script src="{{ url_for('static', filename='js/ai_tasks_widget.js') }}?v=2" defer></script>
             {% endif %}
-            <script src="{{ url_for('static', filename='js/sync_widget.js') }}?v=4" defer></script>
+            <script src="{{ url_for('static', filename='js/sync_widget.js') }}?v=6" defer></script>
             {% if automation_enabled %}
-            <script src="{{ url_for('static', filename='js/automation_runs_widget.js') }}?v=1" defer></script>
+            <script src="{{ url_for('static', filename='js/automation_runs_widget.js') }}?v=2" defer></script>
             {% endif %}
-            <script src="{{ url_for('static', filename='js/spa.js') }}" defer></script>
+            <script src="{{ url_for('static', filename='js/spa.js') }}?v=1" defer></script>
         </div>
     {% else %}
         <!-- Auth layout (login/register) -->
@@ -413,5 +408,19 @@
             </div>
         </div>
     {% endif %}
+    <!-- Connection monitor overlay: shown when the server becomes
+         unreachable (sleep/wake, network drop, server restart). The page
+         stays dimmed behind it; Reconnect re-verifies, Reload refreshes. -->
+    <div id="conn-overlay" class="hidden">
+        <div class="conn-card">
+            <i class="fas fa-plug-circle-xmark conn-icon"></i>
+            <h2 class="conn-title">Connection lost</h2>
+            <p class="conn-status">Trying to reach the server…</p>
+            <div class="conn-actions">
+                <button type="button" id="conn-retry" class="btn btn-primary btn-sm">Reconnect</button>
+                <button type="button" id="conn-reload" class="btn btn-ghost btn-sm">Reload page</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

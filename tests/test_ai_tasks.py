@@ -154,11 +154,11 @@ def test_active_lists_running_and_unnotified_finished(auth_client, app, user):
 
 
 def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
-    """One dock icon per chat: acking it dismisses every finished run of
-    that conversation, so no older sibling pops back up."""
+    """One X dismisses the whole chat: acking the latest run also dismisses
+    older finished runs of the same conversation (no resurfacing icons)."""
     _enable_ai(app)
     with patch("app.services.ai_service.chat_completion",
-               side_effect=_answers("one", "two")):
+               side_effect=_answers("first", "second", "third")):
         first = auth_client.post(
             "/ai/tasks", json={"message": "first"}).get_json()["task"]
         auth_client.post("/ai/tasks", json={
@@ -166,7 +166,8 @@ def test_ack_dismisses_whole_conversation_runs(auth_client, app, user):
             "conversation_id": first["conversation_id"]})
 
     tasks = auth_client.get("/ai/tasks/active").get_json()["tasks"]
-    assert len(tasks) == 1  # latest run only, not one icon per message
+    assert len(tasks) == 1
+    assert tasks[0]["id"] != first["id"]
     assert auth_client.post(f"/ai/tasks/{tasks[0]['id']}/ack").status_code == 200
     assert auth_client.get("/ai/tasks/active").get_json()["tasks"] == []
 
@@ -380,6 +381,41 @@ def test_worker_broadcasts_live_events(app, user):
     assert "answer" in kinds
     assert kinds[-1] == "task_status"
     assert events[-1]["status"] == "done"
+
+
+def test_late_subscriber_replays_missed_events(app, user):
+    """A window (re)opened mid-run subscribes late: its queue is primed
+    with recent events so live progress rebuilds instead of showing a gap.
+    The end-of-stream sentinel is live-only and never replayed."""
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    task_id = _make_task(app, user, "running")
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "part one "})
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "part two"})
+    ai_task_service._broadcast(task_id, None)  # sentinel: not replayed
+    q = ai_task_service.subscribe(task_id)
+    assert q.get(timeout=2) == {"type": "thinking_token",
+                                "content": "part one "}
+    assert q.get(timeout=2) == {"type": "thinking_token",
+                                "content": "part two"}
+    assert q.empty()
+    ai_task_service.unsubscribe(task_id, q)
+
+
+def test_late_subscriber_still_gets_live_events(app, user):
+    """Replayed history then live events, in order, no duplicates."""
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    task_id = _make_task(app, user, "running")
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "old "})
+    q = ai_task_service.subscribe(task_id)
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "new "})
+    assert q.get(timeout=2)["content"] == "old "
+    assert q.get(timeout=2)["content"] == "new "
+    assert q.empty()
+    ai_task_service.unsubscribe(task_id, q)
 
 
 def test_stream_requires_ownership(auth_client, app, user):

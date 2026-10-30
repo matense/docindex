@@ -118,9 +118,17 @@ def _tool_create(user, args, drive):
         # drive's notebooks separated by context.
         folder = doc_service.notebooks_folder(user, target_drive)
     try:
-        cells = [doc_service.new_cell(c.get("type", "markdown"),
-                                      c.get("content", ""), c.get("meta"))
-                 for c in (args.get("cells") or [])]
+        raw_cells = args.get("cells") or []
+        cells = []
+        for c in raw_cells:
+            # Be liberal in what the model may send: a bare string becomes
+            # a markdown cell; anything else must be a cell object.
+            if isinstance(c, str):
+                c = {"type": "markdown", "content": c}
+            if not isinstance(c, dict):
+                return {"error": "Each cell must be an object like {\"type\": \"markdown\", \"content\": \"...\"} or a plain string."}
+            cells.append(doc_service.new_cell(c.get("type", "markdown"),
+                                              c.get("content", ""), c.get("meta")))
         stored = doc_service.create_notebook(
             user, target_drive, args.get("name", ""), folder=folder,
             cells=cells or None)

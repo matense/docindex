@@ -153,6 +153,36 @@
                 </form>
             </div>
         </div>
+        <div class="flex items-center gap-4 flex-wrap border-t border-base-content/10 pt-3">
+            <div class="flex items-center gap-3 flex-1 min-w-[11rem]">
+                <span class="w-9 h-9 rounded-lg bg-success/10 text-success flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-gauge-high"></i>
+                </span>
+                <div>
+                    <h2 class="font-bold leading-tight text-sm">Performance mode</h2>
+                    <p class="text-xs opacity-50">Lite visuals, calm background polling — same features, less CPU</p>
+                </div>
+            </div>
+            <div class="ai-mode-switch">
+                <form method="POST" action="{{ url_for('settings.profile_perf_mode') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" onclick="document.getElementById('app-body').classList.remove('perf-mode')"
+                            class="ai-mode-btn {{ 'active' if not current_user.perf_mode }}"
+                            title="Full visuals and default background polling">
+                        <i class="fas fa-sparkles"></i><span>Full</span>
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('settings.profile_perf_mode') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="enabled" value="on">
+                    <button type="submit" onclick="document.getElementById('app-body').classList.add('perf-mode')"
+                            class="ai-mode-btn {{ 'active' if current_user.perf_mode }}"
+                            title="Lite visuals and calmer background polling">
+                        <i class="fas fa-gauge-high"></i><span>Eco</span>
+                    </button>
+                </form>
+            </div>
+        </div>
     </div>
 
     <!-- Behaviors & personas -->
@@ -204,6 +234,30 @@
                 </div>
             </div>
         </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2" id="ai-token-stats">
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="today">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · today</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="today"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="week">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · 7 days</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="week"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="month">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · 30 days</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="month"></div>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <div class="text-lg font-extrabold leading-tight" data-ai-tok="total">…</div>
+                <div class="text-[11px] font-bold uppercase tracking-wider opacity-70">tokens · all time</div>
+                <div class="text-[11px] opacity-60" data-ai-tok-sub="total"></div>
+            </div>
+        </div>
+        <div id="ai-token-daily" class="flex items-end gap-[2px] h-8 mt-2" title="Tokens per day, last 30 days"></div>
+        <div class="text-[11px] opacity-50 mt-1">↑ input · ↓ output · ~ estimated (provider did not report usage)</div>
     </div>
 
     <!-- Indexing queue (hidden unless there is work: running or paused with jobs left) -->
@@ -680,6 +734,47 @@
             });
         })
         .catch(() => { els.forEach((el) => { el.textContent = '—'; }); });
+})();
+
+// AI token spend: loaded lazily (same pattern as word-stats) so the
+// aggregation never blocks the initial render.
+(function () {
+    const box = document.getElementById('ai-token-stats');
+    if (!box) return;
+    const fmt = (n) => {
+        n = Number(n) || 0;
+        if (n < 1000) return String(n);
+        if (n < 1000000) { const v = n / 1000; return (v.toFixed(1).replace(/\.0$/, '') + 'k'); }
+        const v = n / 1000000; return (v.toFixed(1).replace(/\.0$/, '') + 'M');
+    };
+    const setAll = (txt) => {
+        box.querySelectorAll('[data-ai-tok]').forEach((el) => { el.textContent = txt; });
+    };
+    fetch('/settings/profile/ai-usage')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((stats) => {
+            if (!stats) { setAll('—'); return; }
+            ['today', 'week', 'month', 'total'].forEach((k) => {
+                const s = stats[k] || {};
+                const el = box.querySelector('[data-ai-tok="' + k + '"]');
+                const sub = box.querySelector('[data-ai-tok-sub="' + k + '"]');
+                if (el) el.textContent = fmt(s.total_tokens);
+                if (sub) sub.innerHTML = '<b>↑</b> ' + fmt(s.prompt_tokens) + ' · <b>↓</b> ' + fmt(s.completion_tokens);
+            });
+            const daily = document.getElementById('ai-token-daily');
+            if (daily && Array.isArray(stats.daily)) {
+                const max = Math.max(1, ...stats.daily.map((d) => d.total_tokens || 0));
+                stats.daily.forEach((d) => {
+                    const bar = document.createElement('div');
+                    const h = Math.max(2, Math.round(((d.total_tokens || 0) / max) * 100));
+                    bar.className = 'flex-1 rounded-sm bg-primary/60 min-w-[2px]';
+                    bar.style.height = h + '%';
+                    bar.title = d.day + ': ↑ ' + fmt(d.prompt_tokens) + ' · ↓ ' + fmt(d.completion_tokens);
+                    daily.appendChild(bar);
+                });
+            }
+        })
+        .catch(() => { setAll('—'); });
 })();
 </script>
 {% endblock %}

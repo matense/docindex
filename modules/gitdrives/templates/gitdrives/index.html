@@ -21,7 +21,10 @@
 
     <div class="glass-panel rounded-2xl p-6">
         <h2 class="font-bold text-lg mb-4">Clone a repository</h2>
-        <form method="POST" action="{{ url_for('gitdrives.create') }}" class="flex flex-col gap-3">
+        <!-- Full navigation (no SPA swap): the result either pops a modal
+             with the failure reason or redirects to the drive list. -->
+        <form method="POST" action="{{ url_for('gitdrives.create') }}" data-no-spa
+              class="flex flex-col gap-3">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label class="flex flex-col gap-1">
                 <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Repository URL</span>
@@ -104,4 +107,15 @@
     </div>
 
 </div>
+{% if clone_error %}
+<script>
+    // A clone that failed outright pops a modal with the reason — a toast
+    // alone is too easy to miss for a failed setup step.
+    window.addEventListener('DOMContentLoaded', () => {
+        if (window.uiAlert) {
+            window.uiAlert({{ clone_error | tojson }}, { title: 'Could not clone' });
+        }
+    });
+</script>
+{% endif %}
 {% endblock %}

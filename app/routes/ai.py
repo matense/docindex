@@ -4,8 +4,16 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, str
 from flask_login import current_user, login_required
 
 from ..extensions import db
-from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, StoredFile
-from ..services import ai_service, ai_task_service, drive_service, log_service
+from ..models import (
+    AIConnection,
+    AITask,
+    AIUsageEvent,
+    ChatConversation,
+    ChatMessage,
+    Drive,
+    StoredFile,
+)
+from ..services import ai_service, ai_task_service, ai_usage_service, drive_service, log_service
 
 bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -98,6 +106,36 @@ def _notebook_access_note(stored):
     return ""
 
 
+def _whiteboard_access_note(stored):
+    """Extra instruction appended to the open-file context note when the
+    open board is locked or hidden for the AI (wboard only)."""
+    if stored.extension != "wboard":
+        return ""
+    from ..services import file_service, module_service
+    if not module_service.is_enabled("whiteboards"):
+        return ""
+    try:
+        scene = json.loads(file_service.read_text_content(stored,
+                                                          max_chars=500_000))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(scene, dict):
+        return ""
+    if scene.get("ai_hidden"):
+        return (" This whiteboard is HIDDEN from the AI by the user: do not "
+                "read or mention its content — if they ask about it, tell "
+                "them it is hidden and can be unhidden with the eye button "
+                "in the board header.")
+    if scene.get("ai_lock"):
+        return (" This whiteboard is LOCKED against AI edits by the user: do "
+                "not generate or propose edits to it. If they ask for "
+                "changes, tell them the board is locked and ask them to "
+                "unlock it with the lock button in the board header, "
+                "then repeat the request. Reading it and answering "
+                "questions about it is fine.")
+    return ""
+
+
 def _attachment_brief(file_service, stored, cap=1000):
     """One-line pre-extracted content for an attached file, so the model
     answers from the gist without a tool call: image caption, table columns
@@ -119,6 +157,9 @@ def _attachment_brief(file_service, stored, cap=1000):
         if rows:
             text += f" First rows: {'; '.join(rows)}."
         return text[:cap]
+    if kind == "whiteboard":
+        head = (desc.get("head") or "").strip().replace("\n", " ")
+        return f"Whiteboard: {head[:cap]}" if head else None
     if kind == "text":
         head = (desc.get("head") or "").strip().replace("\n", " ")
         return f"Starts with: {head[:cap]}" if head else None
@@ -237,14 +278,22 @@ def _resolve_context(user, data):
                         .filter(StoredFile.deleted_at.is_(None))
                         .first())
     if context_file:
-        kind = "notebook" if context_file.extension == "pdocnb" else "file"
+        if context_file.extension == "wboard":
+            kind = "whiteboard"
+        elif context_file.extension == "pdocnb":
+            kind = "notebook"
+        else:
+            kind = "file"
         notes.append(
             f"The user currently has the {kind} "
             f"[id {context_file.id}] {context_file.name} open on screen. "
-            "When they say things like \"this notebook\", \"this file\" or "
-            "\"here\" without naming a target, they mean that one — you "
+            "When they say things like \"this board\", \"this notebook\", "
+            "\"this file\" or \"here\" without naming a target, they mean "
+            "that one — you "
             "can read or edit it directly by id, no need to search first."
-            + _notebook_access_note(context_file))
+            + (_whiteboard_access_note(context_file)
+               if kind == "whiteboard"
+               else _notebook_access_note(context_file)))
         snapshot["context_file_id"] = context_file.id
         snapshot["context_file_name"] = context_file.name
 
@@ -414,6 +463,10 @@ def conversation(conv_id):
     # conversation can own several sequential tasks: the latest decides.
     task = (AITask.query.filter_by(conversation_id=conv.id)
             .order_by(AITask.id.desc()).first())
+    # Per-message token spend in one grouped query: sums every model call
+    # that produced each assistant message (an answer backed by N agent
+    # steps sums all N calls).
+    usage = ai_usage_service.message_usage_map(conv.id)
     return jsonify({
         "id": conv.id,
         "title": conv.title,
@@ -431,7 +484,7 @@ def conversation(conv_id):
                  if task and not task.notified else None),
         "messages": [
             {"role": m.role, "content": m.content, "model": m.model,
-             "archived": bool(m.archived),
+             "archived": bool(m.archived), "usage": usage.get(m.id),
              "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in conv.messages
         ],
@@ -447,6 +500,7 @@ def delete_conversation(conv_id):
     # A conversation can own several background tasks — remove them with it
     # so the dock never points at a deleted transcript.
     AITask.query.filter_by(conversation_id=conv.id).delete()
+    AIUsageEvent.query.filter_by(conversation_id=conv.id).delete()
     db.session.delete(conv)
     db.session.commit()
     return jsonify({"ok": True})
@@ -512,10 +566,14 @@ def summarize_conversation(conv_id):
     # instead of deleting — the user can still read the old conversation.
     for m in conv.messages:
         m.archived = True
-    db.session.add(ChatMessage(conversation_id=conv.id, role="assistant",
-                               content=SUMMARY_PREFIX + summary,
-                               model=config.get("model") or None))
+    summary_msg = ChatMessage(conversation_id=conv.id, role="assistant",
+                              content=SUMMARY_PREFIX + summary,
+                              model=config.get("model") or None)
+    db.session.add(summary_msg)
     db.session.commit()
+    ai_usage_service.record_usage(
+        current_user.id, reply.get("usage"), model=config.get("model"),
+        kind="summarize", conversation_id=conv.id, message_id=summary_msg.id)
     return jsonify({"ok": True, "summary": summary})
 
 

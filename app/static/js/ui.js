@@ -150,3 +150,156 @@
         }
     };
 })();
+
+// DocIndex connection monitor — a "site is asleep" overlay instead of a
+// silently dead page. Browsers throttle/sleep tabs, laptops sleep, servers
+// restart: fetches then fail while the UI looks alive. This watches the
+// traffic the app already makes (zero extra requests) and shows a
+// full-screen overlay with Reconnect/Reload once the server is unreachable.
+(function () {
+    'use strict';
+
+    const FAIL_THRESHOLD = 3;
+    // Only network-level failures and bad-gateway statuses count (refused /
+    // timeout / DNS, or a 502/503/504 from a proxy in front of a dead
+    // server). Other HTTP statuses — even 500s — mean the server IS
+    // reachable. Aborts (Stop buttons, superseded navigations/streams)
+    // never count.
+    function unreachableStatus(status) {
+        return status === 502 || status === 503 || status === 504;
+    }
+    let fails = 0;
+    let down = false;
+    let pendingUrl = null;  // SPA navigation that failed while down
+    let overlay = null, statusEl = null, retryBtn = null, wired = false;
+
+    function ensureOverlay() {
+        if (overlay) return true;
+        overlay = document.getElementById('conn-overlay');
+        if (!overlay) return false;
+        statusEl = overlay.querySelector('.conn-status');
+        retryBtn = overlay.querySelector('#conn-retry');
+        const reloadBtn = overlay.querySelector('#conn-reload');
+        if (retryBtn) retryBtn.addEventListener('click', () => {
+            setStatus('Checking…');
+            verifyNow();
+        });
+        if (reloadBtn) reloadBtn.addEventListener('click', () => {
+            window.location.reload();
+        });
+        return true;
+    }
+
+    function setStatus(text) {
+        if (statusEl) statusEl.textContent = text;
+    }
+
+    function setDown(v, recovered) {
+        if (v === down && v) return;
+        down = v;
+        if (v) {
+            fails = Math.max(fails, FAIL_THRESHOLD);
+            if (ensureOverlay()) {
+                setStatus('Trying to reach the server…');
+                overlay.classList.remove('hidden');
+            }
+        } else {
+            fails = 0;
+            if (overlay) overlay.classList.add('hidden');
+            // A failed SPA navigation is held until we're back, then
+            // retried through the router (full reload as fallback).
+            if (recovered && pendingUrl) {
+                const next = pendingUrl;
+                pendingUrl = null;
+                if (window.spaNavigate) window.spaNavigate(next);
+                else window.location.href = next;
+            } else {
+                pendingUrl = null;
+            }
+            if (recovered) {
+                if (window.uiToast) window.uiToast('Back online.', 'success');
+                // Re-poke every background poller immediately.
+                document.dispatchEvent(new CustomEvent('spa:mutated',
+                    { detail: { action: 'reconnect' } }));
+            }
+        }
+    }
+
+    function noteSuccess() {
+        fails = 0;
+        if (down) setDown(false, true);
+    }
+
+    function noteFailure() {
+        fails++;
+        if (!down && fails >= FAIL_THRESHOLD) setDown(true, false);
+    }
+
+    // Explicit reachability check: any HTTP response except 502/503/504
+    // proves the server is reachable; only a network failure (or a
+    // bad-gateway in front of a dead server) means down.
+    async function verifyNow() {
+        try {
+            const resp = await rawFetch(window.location.href,
+                                        { method: 'HEAD', cache: 'no-store' });
+            if (unreachableStatus(resp.status)) throw new Error('bad gateway');
+            noteSuccess();
+            return true;
+        } catch (e) {
+            if (!down) setDown(true, false);
+            else setStatus('Still unreachable — will keep trying.');
+            return false;
+        }
+    }
+
+    // Observe the app's own traffic. Installed over the CSRF wrapper in
+    // base.html (chained: CSRF headers still applied). Streams that break
+    // mid-read reject on read(), not here — the concurrent widget polls
+    // cover detection in that case.
+    const rawFetch = window.fetch.bind(window);
+    window.fetch = function (resource, options) {
+        return rawFetch(resource, options).then(
+            (resp) => {
+                if (unreachableStatus(resp.status)) noteFailure();
+                else noteSuccess();
+                return resp;
+            },
+            (err) => {
+                if (!err || err.name !== 'AbortError') noteFailure();
+                throw err;
+            }
+        );
+    };
+
+    // Lid-open / tab-back: verify immediately instead of showing stale UI
+    // until the next poll interval.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) verifyNow();
+    });
+    window.addEventListener('offline', () => {
+        fails = FAIL_THRESHOLD;
+        setDown(true, false);
+    });
+    window.addEventListener('online', () => verifyNow());
+
+    // SPA navigation that failed: if we're down, hold the URL and offer it
+    // on reconnect; otherwise keep the historic full-reload fallback.
+    function reportNavFailure(url) {
+        if (down) {
+            pendingUrl = url;
+            if (ensureOverlay()) overlay.classList.remove('hidden');
+        } else {
+            verifyNow().then((ok) => {
+                if (ok) window.location.href = url;
+                else pendingUrl = url;
+            });
+        }
+    }
+
+    // On reconnect with a held navigation, go there via the SPA router.
+    window.DocIndexNet = {
+        isDown: () => down,
+        verifyNow,
+        reportNavFailure,
+    };
+})();

@@ -482,7 +482,12 @@ or per division (enable/disable all) on `/behaviors`.
   costs ~300ms, so the template leaves `data-word-stats` placeholders and
   fetches them lazily from `GET /settings/profile/word-stats`, one grouped
   query returning `{drive_id: words}`), AI usage
-  (conversations, messages, active connection), a card linking to the trash
+  (conversations, messages, active connection, plus measured token spend —
+  `ai_usage_events` rows written per model call with provider usage numbers
+  or chars//4 estimates when the provider stays silent; `GET
+  /settings/profile/ai-usage` returns today / 7-day / 30-day / all-time
+  totals and a 30-day daily series, lazy-fetched like word-stats; each chat
+  message carries its `usage` in `GET /ai/conversations/<id>`), a card linking to the trash
   bin (`GET /settings/trash` — deleted files with name search and
   pagination; restore / delete forever / empty trash), a card linking to the
   behaviors & personas page (`/behaviors`) and, for admins only,
@@ -1280,7 +1285,10 @@ tool + table).
   date arithmetic and differences, current date/time, Roman numerals,
   base64/URL/hex codecs and text tools (case, stats, lines,
   regex, hash, slug). Twenty-three `aiutils.*` tools, pure stdlib, plus a reference
-  page under `/m/aiutils/` listing every tool with an example.
+  page under `/m/aiutils/` listing every tool with an example — admins see
+  enable switches there (whole sections or individual tools; stored in the
+  `aiutils_disabled_tools` setting, enforced in `agent_service._active_tools`)
+  while other users only see the tools actually offered to the model.
 - `gitdrives` — read-only Git mirror drives (GitHub, Azure DevOps Git):
   clone a repo into a local checkout and pull-then-scan on every sync
   (pure-Python dulwich, no git binary). Registers the `git` source via

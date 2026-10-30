@@ -4119,3 +4119,221 @@ body.dragging-chat #acw-edge-right.active {
 @media (max-width: 900px) {
     #acw-ghost, .acw-edge-zone { display: none !important; }
 }
+
+/* ============================================================================
+   PERFORMANCE MODE (body.perf-mode) — paint/composite cost only.
+   Scoped entirely under `body.perf-mode` (set server-side on <body> when the
+   user enables Performance mode in Profile), so default visuals are untouched.
+   These rules only kill backdrop blur, decorative animations, heavy shadows
+   and `transition: all` sprawl. Layout, visibility and content do not change.
+   Appended as one section at the end of the file; nothing above was modified.
+   ============================================================================ */
+
+/* --- 1. Animated background: flat static fill (light + dark) ---
+   Values mirror .static-background (.f4f6fb light, #101828 dark). Dark scope
+   matches this file's convention (`[data-theme="dark"] ...`, data-theme lives
+   on <html> per base.html, perf-mode on <body>), i.e.
+   `[data-theme="dark"] body.perf-mode ...`. */
+body.perf-mode.animated-background,
+body.perf-mode .animated-background {
+    animation: none;
+    background: #f4f6fb;
+    background-size: auto;
+}
+[data-theme="dark"] body.perf-mode.animated-background,
+[data-theme="dark"] body.perf-mode .animated-background {
+    animation: none;
+    background: #101828;
+    background-size: auto;
+}
+
+/* --- 2. Backdrop blur off ---
+   Every selector below was verified to exist in this file with a
+   backdrop-filter declaration (line numbers at time of writing):
+   .glass-panel (570), .glass-dock (577), .glass-menu (603),
+   .pdo-search-dropdown (956), #attachment-preview-modal::backdrop (1344),
+   #shortcut-help-panel (1503), .ai-task-banner (2362), .ai-composer (2565),
+   .view-switch (3323), .ai-mode-switch (3413), .aip-suggestion (3455),
+   #aip-messages (3477), .auth-card (3585), .ui-dialog::backdrop (3681).
+   .backdrop-blur-md/.backdrop-blur-xl/.backdrop-blur-sm are NOT defined in
+   this file (Tailwind utilities) but were verified in templates: header
+   `backdrop-blur-md` (base.html:62), search bars `backdrop-blur-xl`
+   (base.html:181, search/results.html:36), drop overlays `backdrop-blur-sm`
+   (components/ai_chat.html:154, search/ai.html:120) — included so perf-mode
+   also kills those blurs. .modal-overlay intentionally untouched (not listed). */
+body.perf-mode .glass-panel,
+body.perf-mode .glass-dock,
+body.perf-mode .glass-menu,
+body.perf-mode .pdo-search-dropdown,
+body.perf-mode #attachment-preview-modal::backdrop,
+body.perf-mode #shortcut-help-panel,
+body.perf-mode .ai-task-banner,
+body.perf-mode .ai-composer,
+body.perf-mode .view-switch,
+body.perf-mode .ai-mode-switch,
+body.perf-mode .aip-suggestion,
+body.perf-mode #aip-messages,
+body.perf-mode .auth-card,
+body.perf-mode .ui-dialog::backdrop,
+body.perf-mode .backdrop-blur-md,
+body.perf-mode .backdrop-blur-xl,
+body.perf-mode .backdrop-blur-sm {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* Opaque fallbacks ONLY for the two verified-translucent surfaces:
+   .glass-panel was rgba(255,255,255,0.95) / dark rgba(17,25,40,0.85);
+   .glass-dock was rgba(255,255,255,0.4) / dark rgba(17,25,40,0.55).
+   Solid #ffffff / #111928 (= rgb(17,25,40)) keep text contrast without blur. */
+body.perf-mode .glass-panel { background-color: #ffffff; }
+[data-theme="dark"] body.perf-mode .glass-panel { background-color: #111928; }
+body.perf-mode .glass-dock { background-color: #ffffff; }
+[data-theme="dark"] body.perf-mode .glass-dock { background-color: #111928; }
+
+/* --- 3. Decorative animations off (elements stay visible statically) ---
+   card-in users: .acw-attachments .badge (2124), .drive-card (2512),
+   #ai-attachments .badge (2820). Without the entrance keyframe they render
+   in their final state. */
+body.perf-mode .acw-attachments .badge,
+body.perf-mode .drive-card,
+body.perf-mode #ai-attachments .badge {
+    animation: none !important;
+}
+/* search-hero-in user: #search-hero (3252). One-shot entrance; static = shown. */
+body.perf-mode #search-hero {
+    animation: none !important;
+}
+/* Auth blobs: base rule (3533) sets no transform (only the keyframes do),
+   so transform: none is trivially safe; blobs render as static circles. */
+body.perf-mode .auth-blob {
+    animation: none !important;
+    transform: none;
+}
+/* Snap ghost keeps its .show opacity/visibility, only the pulse stops. */
+body.perf-mode #acw-ghost.show {
+    animation: none !important;
+}
+/* Live tool chip: kill ONLY the shimmer (3057). The spin
+   (.ai-tool-spin, ai-tool-spin-anim) and waiting dots (ai-tool-dot) are
+   intentionally untouched, as is the static gradient/border. */
+body.perf-mode .ai-tool-line[data-status="running"] {
+    animation: none !important;
+}
+/* SPA progress bar: killing the slide on the ACTIVE state keeps the bar
+   statically visible (opacity: 1 comes from .spa-progress-active::after);
+   the done-state fade (.spa-progress-done::after) is untouched. */
+body.perf-mode #spa-progress.spa-progress-active::after {
+    animation: none !important;
+}
+/* ai-task-pulse users: banner icon (2383), conversation-list dot (2949),
+   waiting-line icon (3201). Only the pulse stops; icons/dots stay visible. */
+body.perf-mode .ai-task-banner i,
+body.perf-mode .ai-conv-dot-active,
+body.perf-mode .ai-wait-line i {
+    animation: none !important;
+}
+/* KEPT running (deliberately not overridden): previewPulse (#preview-loading
+   .loading), ai-cursor-blink (.ai-cursor), page-enter (.page-enter),
+   ui-dialog-in (.ui-dialog-box), ctx-in (.context-menu), searchGlow
+   (.search-glow-animation), aiLiveFlash (.ai-live-flash), acw-edge-pulse
+   (.acw-edge-zone while dragging). */
+
+/* --- 4. `transition: all` scoping ---
+   Each selector below was verified verbatim in this file (original line in
+   parens). Narrowing to opacity/color-affecting properties removes
+   transform/box-shadow interpolation; hover end-states apply instantly.
+   Layout, visibility and content are unchanged. */
+body.perf-mode .sidebar nav ul li a,          /* ~106 */
+body.perf-mode .btn,                          /* ~193 */
+body.perf-mode .btn-icon,                     /* ~225 */
+body.perf-mode .kanban-card,                  /* ~284 */
+body.perf-mode .dock-icon,                    /* ~587 */
+body.perf-mode .glass-menu li a,              /* ~614 */
+body.perf-mode .pdo-btn-action,               /* ~805 ("pager") */
+body.perf-mode .pdo-view-toggle a,            /* ~834 */
+body.perf-mode .pdo-search-dropdown-item,     /* ~1012 */
+body.perf-mode .pdo-search-dropdown-item-remove, /* ~1074 ("result inner") */
+body.perf-mode .pdo-search-result-inner,      /* ~1159 ("doc cards") */
+body.perf-mode .pdo-search-result-actions,    /* ~1230 ("overview rows") */
+body.perf-mode .attachment-thumbnail-hover,   /* ~1414 */
+body.perf-mode .shortcut-badge,               /* ~1482 */
+body.perf-mode #shortcut-help-panel,          /* ~1517 */
+body.perf-mode .ai-attach-btn,                /* ~2594 ("attach btn") */
+body.perf-mode .ai-plus-btn,                  /* ~2706 ("stop-all btn") */
+body.perf-mode .view-switch-btn,              /* ~3345 */
+body.perf-mode .ai-mode-btn,                  /* ~3435 */
+body.perf-mode .wpill,                        /* ~3450 */
+body.perf-mode .aip-suggestion {               /* ~3462 */
+    transition: background-color .15s, border-color .15s, color .15s, opacity .15s !important;
+}
+
+/* --- 5. Drive/search card shadows ---
+   .drive-card verified (borders already exist, so no separation is lost).
+   .doc-card: NOT FOUND anywhere in the repo — skipped. */
+body.perf-mode .drive-card {
+    box-shadow: none !important;
+}
+
+/* --- 6. Blurred search bars: no transform ---
+   #search-dock-container verified (3237). Safe: in search-hero-mode the dock
+   is hidden via opacity:0 + pointer-events:none (untouched), so forcing
+   transform:none only removes the slide, not the hiding.
+   .search-hero-bar: NOT FOUND anywhere in the repo — skipped. */
+body.perf-mode #search-dock-container {
+    transform: none !important;
+}
+
+/* ============================================================================
+   CONNECTION OVERLAY (always active, both visual modes)
+   Shown by the ui.js connection monitor when the server is unreachable.
+   Plain CSS (no Tailwind dependency): solid dim + solid card, no blur, no
+   animation — it must render even when everything else has failed.
+   ============================================================================ */
+#conn-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(15, 23, 42, 0.55);
+}
+#conn-overlay.hidden {
+    display: none;
+}
+#conn-overlay .conn-card {
+    max-width: 22rem;
+    width: 100%;
+    text-align: center;
+    padding: 1.75rem 1.5rem 1.5rem;
+    border-radius: 1rem;
+    background: #ffffff;
+    color: #1e293b;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.35);
+}
+[data-theme="dark"] #conn-overlay .conn-card {
+    background: #1e293b;
+    color: #f1f5f9;
+}
+#conn-overlay .conn-icon {
+    font-size: 2rem;
+    color: #ef4444;
+    margin-bottom: 0.5rem;
+}
+#conn-overlay .conn-title {
+    font-size: 1.15rem;
+    font-weight: 800;
+    margin: 0 0 0.25rem;
+}
+#conn-overlay .conn-status {
+    font-size: 0.85rem;
+    opacity: 0.65;
+    margin: 0 0 1.25rem;
+}
+#conn-overlay .conn-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+}

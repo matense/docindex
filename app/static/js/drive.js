@@ -521,26 +521,39 @@
                 rect.className = 'lasso-rect';
                 document.body.appendChild(rect);
                 lasso.rect = rect;
+                // Cache item geometry once per drag: per-event
+                // getBoundingClientRect over a big folder forces sync layout
+                // at pointer rate. Rects go stale on scroll mid-drag.
+                lasso.cache = visibleItems().map((el) => [el, el.getBoundingClientRect()]);
             }
             e.preventDefault();
-            const left = Math.min(lasso.x0, e.clientX), top = Math.min(lasso.y0, e.clientY);
-            Object.assign(lasso.rect.style, {
-                left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' });
-            const box = { left, top, right: left + w, bottom: top + h };
-            S.selected.clear();
-            lasso.base.forEach((v, k) => S.selected.set(k, v));
-            visibleItems().forEach((el) => {
-                const r = el.getBoundingClientRect();
-                if (r.left < box.right && r.right > box.left &&
-                    r.top < box.bottom && r.bottom > box.top) {
-                    S.selected.set(itemKey(el), itemEntry(el));
-                }
+            // One hit-test pass per animation frame, not per mousemove.
+            lasso.x1 = e.clientX;
+            lasso.y1 = e.clientY;
+            if (lasso.raf) return;
+            lasso.raf = requestAnimationFrame(() => {
+                lasso.raf = null;
+                if (!lasso || !lasso.rect) return;
+                const w2 = Math.abs(lasso.x1 - lasso.x0), h2 = Math.abs(lasso.y1 - lasso.y0);
+                const left = Math.min(lasso.x0, lasso.x1), top = Math.min(lasso.y0, lasso.y1);
+                Object.assign(lasso.rect.style, {
+                    left: left + 'px', top: top + 'px', width: w2 + 'px', height: h2 + 'px' });
+                const box = { left, top, right: left + w2, bottom: top + h2 };
+                S.selected.clear();
+                lasso.base.forEach((v, k) => S.selected.set(k, v));
+                (lasso.cache || []).forEach(([el, r]) => {
+                    if (r.left < box.right && r.right > box.left &&
+                        r.top < box.bottom && r.bottom > box.top) {
+                        S.selected.set(itemKey(el), itemEntry(el));
+                    }
+                });
+                paint();
             });
-            paint();
         });
 
         window.addEventListener('mouseup', () => {
             if (!lasso) return;
+            if (lasso.raf) cancelAnimationFrame(lasso.raf);
             if (lasso.rect) {
                 lasso.rect.remove();
                 suppressNextClear = true; // the trailing click must not clear
@@ -550,6 +563,13 @@
 
         ['scroll', 'resize'].forEach(evt =>
             window.addEventListener(evt, closeContextMenu, true));
+        // Scrolling mid-drag moves every card: refresh the cached geometry
+        // (no-op unless a lasso drag is in progress).
+        window.addEventListener('scroll', () => {
+            if (lasso && lasso.rect) {
+                lasso.cache = visibleItems().map((el) => [el, el.getBoundingClientRect()]);
+            }
+        }, true);
         document.addEventListener('click', (e) => {
             if (S.ctxMenu && !e.target.closest('.context-menu')) closeContextMenu();
         });

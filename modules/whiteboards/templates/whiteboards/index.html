@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Whiteboards - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto w-full flex flex-col gap-4 pb-10">
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-pen-ruler text-white"></i>
+            </span>
+            Whiteboards
+        </h1>
+        <p class="opacity-60 text-sm mt-2">
+            Hand-drawn-style boards (Excalidraw) that live on your drives like
+            files: searchable, versioned, and drawable by hand — or by the AI
+            while you watch.
+        </p>
+    </div>
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4">New board</h2>
+        <form method="POST" action="{{ url_for('whiteboards.create') }}" class="flex flex-col sm:flex-row gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="Board name"
+                   class="input input-bordered flex-1 text-sm">
+            <select name="drive_id" class="select select-bordered text-sm max-w-xs">
+                {% for d in drives %}
+                <option value="{{ d.id }}">{{ d.name }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-primary gap-1">
+                <i class="fas fa-plus"></i> Create
+            </button>
+        </form>
+        {% if not drives %}
+        <p class="text-sm text-warning mt-2">No writable drive — boards need a local (non-synced) drive.</p>
+        {% endif %}
+    </div>
+
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-4">Your boards</h2>
+        {% if boards %}
+        <div class="flex flex-col gap-2">
+            {% for b in boards %}
+            <div class="flex items-center gap-3 rounded-xl border border-base-content/10 px-4 py-3">
+                <a href="{{ url_for('whiteboards.board', file_id=b.id) }}" class="flex items-center gap-3 min-w-0 flex-1 hover:opacity-80">
+                    <span class="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-pen-ruler"></i>
+                    </span>
+                    <span class="min-w-0 flex-1">
+                        <span class="font-semibold truncate block">{{ b.name[:-7] if b.name.endswith('.wboard') else b.name }}</span>
+                        <span class="text-xs opacity-50 truncate block">
+                            {{ b.drive.name if b.drive else 'No drive' }} &middot; updated {{ (b.updated_at|string)[:16] if b.updated_at else '&mdash;' }}
+                        </span>
+                    </span>
+                    <i class="fas fa-chevron-right opacity-30"></i>
+                </a>
+                <form method="POST" action="{{ url_for('whiteboards.delete', file_id=b.id) }}"
+                      data-confirm="Move board &quot;{{ b.name }}&quot; to the trash? You can restore it from the Trash page."
+                      data-confirm-danger>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-ghost btn-xs btn-circle text-error/70 hover:text-error flex-shrink-0" title="Move to trash">
+                        <i class="fas fa-trash-can"></i>
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-sm opacity-50">No boards yet — create one above, or ask the AI to draw one.</p>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

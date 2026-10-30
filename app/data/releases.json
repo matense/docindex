@@ -1,6 +1,73 @@
 {
   "releases": [
     {
+      "version": "0.1.10",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "New Whiteboards module (admin toggle): hand-drawn-style boards backed by Excalidraw, stored as files on your drives — searchable, versioned, and fully drawable/edited by the AI (shapes, text, arrows, alignment) while you watch. Coordinates are optional for the AI: elements without x/y flow into free space instead of piling at the corner."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Whiteboards: boards can be moved to the trash from the board list; the editor now loads on in-app navigation (no more forced refresh); board titles no longer show the .wboard extension."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.9",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Profile → Display & settings now offers Performance mode: same features with lite visuals (no animated background or backdrop blur, calmer animations) and calmer background polling — for slower machines."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Background widgets (AI tasks, sync, hashtags, automation runs) now pause when the tab is hidden, back off when there is nothing going on, and re-check instantly when you return — far fewer idle requests and DOM writes.",
+            "Chat transcripts skip redundant full re-renders, the drive lasso hit-tests once per frame with cached geometry, and bounded wait loops back off instead of polling at full rate."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Reopening a chat while its run is still going now shows the live progress immediately — including the thinking produced while the window was minimized — instead of an empty transcript that only fills in at the end.",
+            "Git drive clone failures are now unmissable: outright failures pop a modal with the reason, and a background clone that fails later keeps a persistent error card with the reason and a dismiss button instead of vanishing after a few seconds."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.8",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "The chat composer now locks while a run is in progress: the input is disabled, the send button becomes Stop, and a follow-up sent too early is put back in the composer with a notice instead of forking a second conversation (server also rejects it with a clear message).",
+            "The \"Waiting for the model…\" progress line now appears from the moment you send until the first events arrive, and stopping a run re-loads its final result — errors and late finishes are never silently lost from an open window.",
+            "A notebook tool call that sends plain strings instead of cell objects no longer kills the whole run with no message: strings become markdown cells, anything else gets a clean error the model can adapt to — and any tool crash is reported back to the model instead of ending the run silently."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.7",
       "date": "2026-10-25",
       "title": "In development",

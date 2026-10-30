@@ -26,6 +26,8 @@ class User(UserMixin, db.Model):
                                   server_default="false")  # no animated background
     shift_enter_to_send = db.Column(db.Boolean, nullable=False, default=False,
                                    server_default="false")  # Shift+Enter sends, Enter newline
+    perf_mode = db.Column(db.Boolean, nullable=False, default=False,
+                          server_default="false")  # Performance mode: no costly visuals/timers
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",
@@ -378,6 +380,40 @@ class ChatMessage(db.Model):
 
     def __repr__(self):
         return f"<ChatMessage {self.role} conv={self.conversation_id}>"
+
+
+class AIUsageEvent(db.Model):
+    """Measured token spend for one LLM call.
+
+    The provider's own ``usage`` numbers (prompt_tokens/completion_tokens)
+    are the source of truth; when a provider does not report them the row
+    is estimated (chars//4) and ``estimated`` is True.
+    ``kind`` tells which feature spent the tokens: chat (agent step),
+    summarize, hashtag, caption or automation.
+    """
+
+    __tablename__ = "ai_usage_events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    conversation_id = db.Column(db.Integer,
+                               db.ForeignKey("chat_conversations.id"),
+                               nullable=True, index=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("ai_tasks.id"),
+                        nullable=True, index=True)
+    message_id = db.Column(db.Integer, db.ForeignKey("chat_messages.id"),
+                           nullable=True, index=True)
+    kind = db.Column(db.String(20), nullable=False, default="chat")
+    model = db.Column(db.String(120), nullable=True)
+    prompt_tokens = db.Column(db.Integer, nullable=False, default=0)
+    completion_tokens = db.Column(db.Integer, nullable=False, default=0)
+    estimated = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow, index=True)
+
+    def __repr__(self):
+        return (f"<AIUsage {self.kind} u={self.prompt_tokens} "
+                f"d={self.completion_tokens} est={int(self.estimated)}>")
 
 
 class AITask(db.Model):

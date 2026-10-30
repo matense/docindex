@@ -437,7 +437,8 @@ def file_caption_suggest(file_id):
     try:
         caption = ai_service.caption_image(
             file_service.file_path(stored),
-            config=ai_service.config_for(current_user), block=True)
+            config=ai_service.config_for(current_user), block=True,
+            user=current_user)
     except ai_service.AIError as exc:
         log_service.log_event("error", "ai_caption", str(exc)[:300],
                               user_id=current_user.id)

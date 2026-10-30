@@ -206,6 +206,23 @@ def test_no_dock_entry_but_dropdown_link_when_enabled(auth_client, app,
     assert "Clone a Git repo" in html
 
 
+def test_clone_validation_error_pops_modal_with_reason(auth_client, app,
+                                                      enabled):
+    """A clone that fails outright must be unmissable: the redirected
+    index page pops a modal carrying the reason (not just a toast)."""
+    resp = auth_client.post(
+        "/m/gitdrives/create",
+        data={"repo_url": "/nonexistent/path/no-repo-here"},
+        follow_redirects=True)
+    assert resp.status_code == 200
+    html = resp.data.decode()
+    assert "Could not clone" in html
+    assert "window.uiAlert" in html
+    # One-shot: a second visit shows no modal.
+    html2 = auth_client.get("/m/gitdrives/").data.decode()
+    assert "Could not clone" not in html2
+
+
 def test_no_clone_entry_when_disabled(auth_client):
     html = auth_client.get("/").data.decode()
     assert "Clone a Git repository" not in html

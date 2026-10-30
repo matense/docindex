@@ -6,29 +6,100 @@
         <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
             <i class="fas fa-calculator"></i>
         </span>
-        <div>
+        <div class="flex-1 min-w-0">
             <h1 class="text-xl font-bold">AI Utils</h1>
             <p class="text-xs opacity-50">
                 Calculator, converters and text tools the assistant calls while
                 answering — exact math, units, money and text transforms,
                 computed locally with no network access.
+                {% if is_admin %}Switch sections or individual tools off to
+                stop offering them to the model.{% endif %}
             </p>
         </div>
+        {% if is_admin %}
+        <span id="aiu-save-state" class="text-xs opacity-50 flex-shrink-0"></span>
+        {% endif %}
     </div>
 
     {% for category, tools in groups.items() %}
-    <div class="glass-panel rounded-2xl px-6 py-5">
-        <h2 class="font-bold text-lg mb-3">{{ category }}</h2>
+    {% set section_on = tools[0].section_enabled if tools else true %}
+    <div class="glass-panel rounded-2xl px-6 py-5" data-aiu-section="{{ category }}">
+        <div class="flex items-center gap-3 mb-3">
+            <h2 class="font-bold text-lg">{{ category }}</h2>
+            {% if is_admin %}
+            <input type="checkbox" class="toggle toggle-primary toggle-sm ml-auto"
+                   data-aiu-section-toggle="{{ category }}"
+                   {% if section_on %}checked{% endif %}
+                   title="Enable/disable the whole {{ category }} section" />
+            {% endif %}
+        </div>
         <div class="flex flex-col gap-3">
             {% for tool in tools %}
-            <div class="rounded-xl border border-base-content/10 px-4 py-3">
-                <div class="font-mono text-sm font-bold text-primary">aiutils.{{ tool.name }}</div>
-                <p class="text-xs opacity-70 mt-1">{{ tool.description }}</p>
-                <p class="text-xs opacity-50 mt-1"><span class="font-bold">Try:</span> “{{ tool.example }}”</p>
+            <div class="rounded-xl border border-base-content/10 px-4 py-3 flex items-start gap-3 {% if not tool.enabled %}opacity-50{% endif %}">
+                <div class="flex-1 min-w-0">
+                    <div class="font-mono text-sm font-bold text-primary">aiutils.{{ tool.name }}</div>
+                    <p class="text-xs opacity-70 mt-1">{{ tool.description }}</p>
+                    <p class="text-xs opacity-50 mt-1"><span class="font-bold">Try:</span> “{{ tool.example }}”</p>
+                </div>
+                {% if is_admin %}
+                <input type="checkbox" class="toggle toggle-primary toggle-sm mt-1 flex-shrink-0"
+                       data-aiu-tool-toggle="{{ tool.name }}"
+                       {% if tool.enabled %}checked{% endif %}
+                       title="Enable/disable aiutils.{{ tool.name }}" />
+                {% endif %}
             </div>
             {% endfor %}
         </div>
     </div>
     {% endfor %}
 </div>
+{% if is_admin %}
+<script>
+(function () {
+    const state = document.getElementById('aiu-save-state');
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    let timer = null;
+    function collect() {
+        const sections = [], tools = [];
+        document.querySelectorAll('[data-aiu-section-toggle]').forEach((t) => {
+            if (!t.checked) sections.push(t.dataset.aiuSectionToggle);
+        });
+        document.querySelectorAll('[data-aiu-tool-toggle]').forEach((t) => {
+            if (!t.checked) tools.push(t.dataset.aiuToolToggle);
+        });
+        return { sections, tools };
+    }
+    function save() {
+        if (state) state.textContent = 'Saving…';
+        fetch('{{ url_for("aiutils.save_toggles") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
+            body: JSON.stringify(collect()),
+        }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+            if (state) state.textContent = d && d.ok ? 'Saved' : 'Save failed';
+        }).catch(() => { if (state) state.textContent = 'Save failed'; });
+    }
+    document.querySelectorAll('[data-aiu-section-toggle]').forEach((t) => {
+        t.addEventListener('change', () => {
+            // A section switch flips every tool switch inside it, so the
+            // saved state always matches what the admin sees.
+            const section = t.closest('[data-aiu-section]');
+            section.querySelectorAll('[data-aiu-tool-toggle]').forEach((tool) => {
+                tool.checked = t.checked;
+                tool.closest('div.rounded-xl').classList.toggle('opacity-50', !t.checked);
+            });
+            clearTimeout(timer);
+            timer = setTimeout(save, 400);
+        });
+    });
+    document.querySelectorAll('[data-aiu-tool-toggle]').forEach((t) => {
+        t.addEventListener('change', () => {
+            t.closest('div.rounded-xl').classList.toggle('opacity-50', !t.checked);
+            clearTimeout(timer);
+            timer = setTimeout(save, 400);
+        });
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -15,7 +15,11 @@
     function createJobWidget(cfg) {
         let widget, barEl, percentEl, titleEl, currentEl, pauseBtn, stopBtn, iconEl;
         let lastDriveId = null;
+        let lastSig = null;
         let doneTimer = null;
+        let timer = null;
+        let idle = true;
+        let finishedState = null; // 'done' | 'error' after showFinished
 
         function build() {
             widget = document.createElement('div');
@@ -58,6 +62,11 @@
             });
 
             stopBtn.addEventListener('click', async () => {
+                if (finishedState) {  // finished card: this button dismisses
+                    widget.classList.add('hidden');
+                    finishedState = null;
+                    return;
+                }
                 if (!lastDriveId) return;
                 const ok = await window.uiConfirm(cfg.stopConfirm,
                     { title: 'Stop', confirmText: 'Stop' });
@@ -76,11 +85,25 @@
                     showFinished(lastDriveId);
                 }
                 lastDriveId = null;
+                lastSig = null;
                 return;
             }
+            // Memoize: identical polls must not touch the DOM (rewriting
+            // innerHTML every 2s restarts the fa-spin animation and forces
+            // style/layout churn for zero visual change).
+            const sig = [job.drive_id, job.state, job.current || "",
+                         job.processed, job.total, job.percent].join("|");
+            if (sig === lastSig) return;
+            lastSig = sig;
             lastDriveId = job.drive_id;
             clearTimeout(doneTimer);
+            finishedState = null;
             widget.classList.remove('hidden');
+            // A previous finished card may have repurposed the buttons.
+            pauseBtn.style.display = '';
+            stopBtn.style.display = '';
+            stopBtn.title = 'Stop';
+            stopBtn.innerHTML = '<i class="fas fa-stop"></i>';
 
             const paused = job.state === 'paused';
             titleEl.textContent = (paused ? 'Paused — ' : cfg.verb + ' ') + `“${job.drive_name}”`;
@@ -106,18 +129,35 @@
                 pauseBtn.style.display = 'none';
                 stopBtn.style.display = 'none';
                 const failed = s.state === 'error' || s.state === 'cancelled';
+                finishedState = s.state === 'done' ? 'done'
+                    : failed ? 'error' : null;
                 iconEl.innerHTML = failed
                     ? '<i class="fas fa-triangle-exclamation"></i>' : '<i class="fas fa-check"></i>';
                 titleEl.textContent = s.state === 'error' ? cfg.verb + ' failed'
                     : s.state === 'cancelled' ? cfg.verb + ' stopped' : cfg.verb + ' complete';
                 currentEl.textContent = s.state === 'error'
                     ? (s.error || '') : cfg.summary(s.stats);
+                currentEl.title = s.state === 'error' ? (s.error || '') : '';
                 barEl.value = s.state === 'done' ? 100 : s.percent || 0;
                 percentEl.textContent = s.state === 'done' ? '100%' : '!';
+                if (s.state === 'error') {
+                    // A failed clone/sync stays visible with the reason until
+                    // dismissed — an 8s toast is how clone errors went
+                    // unnoticed. The ■ button becomes an explicit dismiss.
+                    stopBtn.title = 'Dismiss';
+                    stopBtn.innerHTML = '<i class="fas fa-xmark"></i>';
+                    if (window.uiToast) {
+                        window.uiToast(cfg.verb + ' failed: ' + (s.error || 'unknown error'), 'error');
+                    }
+                    return;
+                }
                 doneTimer = setTimeout(() => {
                     widget.classList.add('hidden');
                     pauseBtn.style.display = '';
                     stopBtn.style.display = '';
+                    stopBtn.title = 'Stop';
+                    stopBtn.innerHTML = '<i class="fas fa-stop"></i>';
+                    finishedState = null;
                 }, 8000);
             } catch { /* ignore */ }
         }
@@ -125,20 +165,33 @@
         async function poll() {
             try {
                 const resp = await fetch(cfg.activeUrl, { headers: { 'Accept': 'application/json' } });
-                if (!resp.ok) return;
                 const contentType = resp.headers.get('Content-Type') || '';
-                if (!contentType.includes('application/json')) return; // login page etc.
-                const data = await resp.json();
-                render(data.job);
+                if (resp.ok && contentType.includes('application/json')) {
+                    const data = await resp.json();
+                    idle = !data.job;
+                    render(data.job);
+                }
             } catch { /* offline etc. — try again on the next tick */ }
+            schedule();
+        }
+
+        function schedule() {
+            // Calm polling: hidden tabs and empty states check rarely;
+            // user actions poke an immediate poll (below).
+            clearTimeout(timer);
+            const calm = window.DocIndex && window.DocIndex.pollDelay;
+            timer = setTimeout(poll, calm ? calm(2000, idle) : 2000);
         }
 
         build();
         poll();
-        setInterval(poll, 2000);
         // A form was just submitted via the SPA router (e.g. "Sync now") —
         // check immediately instead of waiting for the next interval tick.
         document.addEventListener('spa:mutated', () => setTimeout(poll, 300));
+        // Hidden tabs don't need 2s updates — re-check on return.
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) poll();
+        });
     }
 
     function start() {

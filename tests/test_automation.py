@@ -1132,6 +1132,19 @@ def test_save_validates_graph(auth_client, app, user, enabled):
     assert "Unknown node type" in resp.get_json()["error"]
 
 
+def test_graph_endpoint_carries_version(auth_client, app, user, enabled):
+    """The editor polls graph + version to pick up AI edits made while no
+    chat window was open to forward the ui_action event."""
+    wf_id = _workflow(app, user, _text_graph("v1"))
+    v1 = auth_client.get(f"/m/automation/{wf_id}/graph").get_json()
+    assert v1["version"], "editor needs a version to poll against"
+    auth_client.post(f"/m/automation/{wf_id}/save",
+                     json={"graph": _text_graph("v2")})
+    v2 = auth_client.get(f"/m/automation/{wf_id}/graph").get_json()
+    assert v2["version"] != v1["version"]
+    assert v2["graph"]["nodes"][0]["config"]["content"] == "v2"
+
+
 def test_save_schedule_fields(auth_client, app, user, enabled):
     wf_id = _workflow(app, user)
     resp = auth_client.post(f"/m/automation/{wf_id}/save",

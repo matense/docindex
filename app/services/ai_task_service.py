@@ -12,6 +12,7 @@ connection's requests/minute limit is reached it sleeps for a slot instead
 of failing — long runs throttle themselves.
 """
 
+import collections
 import json
 import queue
 import threading
@@ -23,7 +24,7 @@ from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import AIConnection, AITask, ChatConversation, ChatMessage, Drive, User, utcnow
-from . import agent_service, ai_service, log_service
+from . import agent_service, ai_service, ai_usage_service, log_service
 
 _TASK_NOTE = (
     "This is a long-horizon background task: the user is not watching live "
@@ -43,6 +44,13 @@ _live = {}
 # the task's stream endpoint). Events are NDJSON-shaped dicts; None is the
 # end-of-stream sentinel.
 _subscribers = {}
+# task_id -> deque of recent broadcast events. A window (re)opened mid-run
+# subscribes late and would otherwise miss everything emitted while it was
+# away; the stream endpoint replays this buffer first so the reopened chat
+# rebuilds live state (partial thinking, running tool chip) and continues
+# live from there. Bounded per task, dropped when the task finishes.
+_replay = {}
+_REPLAY_MAX = 400
 _lock = threading.Lock()
 
 # Global bound: raw threads per task would let 100 users x tasks exhaust
@@ -52,10 +60,19 @@ _task_pool = _Pool(max_workers=8, thread_name_prefix="ai-task")
 
 
 def subscribe(task_id):
-    """Register a live-event subscriber; returns its queue."""
+    """Register a live-event subscriber; returns its queue.
+
+    The queue is primed with the task's recent events first, so a window
+    (re)opened mid-run rebuilds live state instead of showing a gap.
+    Snapshot-before-register avoids duplicates (a small gap can remain,
+    covered by the transcript reconcile).
+    """
     q = queue.Queue()
     with _lock:
+        pending = list(_replay.get(task_id, ()))
         _subscribers.setdefault(task_id, []).append(q)
+    for ev in pending:
+        q.put(ev)
     return q
 
 
@@ -69,7 +86,13 @@ def unsubscribe(task_id, q):
 
 
 def _broadcast(task_id, event):
+    # The None end-of-stream sentinel is live-only, never replayed.
     with _lock:
+        if event is not None:
+            buf = _replay.get(task_id)
+            if buf is None:
+                buf = _replay[task_id] = collections.deque(maxlen=_REPLAY_MAX)
+            buf.append(event)
         subs = list(_subscribers.get(task_id, ()))
     for q in subs:
         q.put(event)
@@ -319,10 +342,14 @@ def _task_worker(task_id, app):
             app.logger.exception("AI task %s failed", task_id)
             task = db.session.get(AITask, task_id)
             if task is not None and task.is_active:
+                msg = f"Unexpected error: {exc}"
                 task.status = "error"
-                task.error = str(exc)[:500]
+                task.error = msg[:500]
                 task.finished_at = utcnow()
+                db.session.add(ChatMessage(conversation_id=task.conversation_id,
+                                           role="assistant", content="⚠ " + msg))
                 db.session.commit()
+                _broadcast(task_id, {"type": "error", "error": msg})
         finally:
             # Close any live stream watchers (None = end-of-stream sentinel).
             task = db.session.get(AITask, task_id)
@@ -333,6 +360,7 @@ def _task_worker(task_id, app):
                 _stop_events.pop(task_id, None)
                 _subscribers.pop(task_id, None)
                 _live.pop(task_id, None)
+                _replay.pop(task_id, None)
 
 
 def _friendly_error(exc):
@@ -438,11 +466,33 @@ def _run_task(task_id, app):
     pending_step = None  # {"label", "detail"} waiting for its tool_result
     answer = None
     stopped = False
+    pending_usage = []  # ("usage" event payloads) not yet linked to a message
+    answer_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                    "estimated": False}
 
     def persist(role, content, model=None):
-        db.session.add(ChatMessage(conversation_id=conv_id, role=role,
-                                   content=content, model=model))
+        msg = ChatMessage(conversation_id=conv_id, role=role,
+                          content=content, model=model)
+        db.session.add(msg)
         db.session.commit()  # live progress: visible if the user opens the chat
+        return msg
+
+    def flush_usage(message_id=None):
+        """Persist accumulated model-call spend, linked to a message when the
+        spend produced one (per-message badge); leftovers stay message-less
+        but still count in the global stats."""
+        nonlocal pending_usage, answer_usage
+        for u in pending_usage:
+            row = ai_usage_service.record_usage(
+                user.id, u, model=u.get("model") or model_name,
+                kind="chat", conversation_id=conv_id, task_id=task_id,
+                message_id=message_id)
+            if row is not None and message_id is not None:
+                answer_usage["prompt_tokens"] += row.prompt_tokens
+                answer_usage["completion_tokens"] += row.completion_tokens
+                answer_usage["estimated"] = (answer_usage["estimated"]
+                                             or row.estimated)
+        pending_usage = []
 
     def flush_step(summary=None):
         nonlocal pending_step
@@ -506,24 +556,36 @@ def _run_task(task_id, app):
                 block_tokens = None
                 stopped = True
                 flush_step()
-                persist("assistant", "⏹ " + payload, model=model_name)
+                msg = persist("assistant", "⏹ " + payload, model=model_name)
+                flush_usage(msg.id)
                 ev = {"type": "answer", "answer": "⏹ " + payload,
-                      "conversation_id": conv_id, "model": model_name}
+                      "conversation_id": conv_id, "model": model_name,
+                      "usage": answer_usage}
+            elif kind == "usage":
+                # Token spend of one model call — persisted, never broadcast
+                # (the totals ride on the final answer event instead).
+                pending_usage.append(payload)
+                ev = None
             else:  # answer
                 block_tokens = None
                 answer = payload
                 flush_step()
-                persist("assistant", answer, model=model_name)
+                msg = persist("assistant", answer, model=model_name)
+                flush_usage(msg.id)
                 ev = {"type": "answer", "answer": answer,
-                      "conversation_id": conv_id, "model": model_name}
+                      "conversation_id": conv_id, "model": model_name,
+                      "usage": answer_usage}
             if ev is not None:
                 _broadcast(task_id, ev)
         flush_step()
+        flush_usage()  # calls whose answer never materialized (e.g. stopped
+        # mid-tool): still real spend, counted globally without a message link
     except ai_service.AIError as exc:
         msg = _friendly_error(exc)
         log_service.log_event("error", "ai_task", msg,
                               user_id=user.id, path=f"/ai/tasks/{task_id}")
-        persist("assistant", f"⚠ {msg}", model=model_name)
+        err_msg = persist("assistant", f"⚠ {msg}", model=model_name)
+        flush_usage(err_msg.id)
         _broadcast(task_id, {"type": "error", "error": msg})
         task.status = "error"
         task.error = msg[:500]

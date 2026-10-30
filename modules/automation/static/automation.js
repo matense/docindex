@@ -2155,6 +2155,7 @@
             return false;
         }
         setSaved('Saved ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+        lastSaveAt = Date.now();
         return true;
     }
 
@@ -2163,6 +2164,9 @@
         const elm = document.getElementById('wf-saved');
         if (elm) elm.textContent = text;
     }
+    let lastSaveAt = 0;
+    let lastApplyAt = 0;
+    let graphVersion = null;
     function markDirty() {
         setSaved('● Por guardar');
         if (_dirtyTimer) clearTimeout(_dirtyTimer);
@@ -2535,27 +2539,52 @@
         // AI copilot: the chat can edit this workflow via the
         // automation.edit_workflow tool; the backend then emits a
         // ui_action event so the canvas reloads the saved graph.
+        // Fallback: a version poll catches edits made while no chat
+        // window was open to forward the event (dock runs, other tabs).
+        const applyRemote = async attempt => {
+            const configOpen = document.getElementById('wf-config-modal');
+            if (configOpen && configOpen.open) {
+                if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
+                return;  // don't clobber a config form the user is editing
+            }
+            // Don't clobber the user's own unsaved edits: autosave lands
+            // within ~2s, so a version newer than the last save by a
+            // margin must come from elsewhere (the AI).
+            if (Date.now() - lastSaveAt < 8000) {
+                if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
+                return;
+            }
+            try {
+                const resp = await fetch(root.dataset.graphUrl);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                loadGraph(data.graph);
+                if (data.version) graphVersion = data.version;
+                lastApplyAt = Date.now();
+                window.uiToast('Workflow updated by the AI.', 'info');
+            } catch { /* offline - user can reload manually */ }
+        };
         window.addEventListener('docindex-ui-action', e => {
             const detail = e.detail || {};
             if (detail.type !== 'workflow_changed') return;
             if (!window.currentWorkflow ||
                 detail.workflow_id !== window.currentWorkflow.id) return;
-            const apply = async attempt => {
-                const configOpen = document.getElementById('wf-config-modal');
-                if (configOpen && configOpen.open) {
-                    if (attempt < 5) setTimeout(() => apply(attempt + 1), 2000);
-                    return;  // don't clobber a config form the user is editing
-                }
-                try {
-                    const resp = await fetch(root.dataset.graphUrl);
-                    if (!resp.ok) return;
-                    const data = await resp.json();
-                    loadGraph(data.graph);
-                    window.uiToast('Workflow updated by the AI.', 'info');
-                } catch { /* offline — user can reload manually */ }
-            };
-            apply(0);
+            applyRemote(0);
         });
+        setInterval(async () => {
+            if (document.hidden) return;
+            if (Date.now() - lastApplyAt < 10000) return;
+            let data = null;
+            try {
+                const resp = await fetch(root.dataset.graphUrl);
+                if (!resp.ok) return;
+                data = await resp.json();
+            } catch { return; }  // offline - try again on the next tick
+            if (!data || !data.version) return;
+            if (graphVersion === null) { graphVersion = data.version; return; }
+            if (data.version === graphVersion) return;
+            applyRemote(0);
+        }, 5000);
     }
 
     window.AutomationEditor = { mount };
