@@ -142,6 +142,15 @@ def validate_element(raw):
         el["groupIds"] = [_str(g, "", 64) for g in groups[:20] if g]
     cid = raw.get("containerId")
     el["containerId"] = cid.strip()[:64] if isinstance(cid, str) and cid.strip() else None
+    bound = raw.get("boundElements")
+    if isinstance(bound, list) and bound:
+        clean_bound = []
+        for b in bound[:50]:
+            if isinstance(b, dict) and isinstance(b.get("id"), str):
+                clean_bound.append({"id": b["id"][:64],
+                                    "type": _str(b.get("type"), "text", 16)})
+        if clean_bound:
+            el["boundElements"] = clean_bound
     link = raw.get("link")
     el["link"] = link.strip()[:2000] if isinstance(link, str) and link.strip() else None
     rnd = raw.get("roundness")
@@ -218,6 +227,29 @@ def empty_scene(title="Untitled board"):
             "ai_lock": False, "ai_hidden": False}
 
 
+def _wire_bound_text(elements):
+    """Ensure every text label with a containerId is also listed in the
+    container's boundElements (Excalidraw reads that back-reference when
+    rendering bound text, especially on live updateScene applies)."""
+    by_id = {e.get("id"): e for e in elements if isinstance(e, dict)}
+    for el in elements:
+        if not isinstance(el, dict):
+            continue
+        cid = el.get("containerId")
+        if el.get("type") != "text" or not cid:
+            continue
+        container = by_id.get(cid)
+        if container is None:
+            continue
+        bound = container.get("boundElements")
+        if not isinstance(bound, list):
+            bound = []
+            container["boundElements"] = bound
+        if not any(isinstance(b, dict) and b.get("id") == el["id"]
+                   for b in bound):
+            bound.append({"id": el["id"], "type": "text"})
+
+
 def validate_scene(scene):
     if not isinstance(scene, dict):
         raise ValueError("A scene must be an object with an 'elements' list.")
@@ -226,10 +258,12 @@ def validate_scene(scene):
         raise ValueError("'elements' must be a list.")
     if len(elements) > _MAX_ELEMENTS:
         raise ValueError(f"Too many elements (max {_MAX_ELEMENTS}).")
+    cleaned = [validate_element(e) for e in elements]
+    _wire_bound_text(cleaned)
     return {
         "version": SCENE_VERSION,
         "title": _str(scene.get("title"), "Untitled board", 120),
-        "elements": [validate_element(e) for e in elements],
+        "elements": cleaned,
         "appState": {"viewBackgroundColor": _str(
             (scene.get("appState") or {}).get("viewBackgroundColor"),
             "#ffffff", 32)},

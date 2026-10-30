@@ -226,6 +226,32 @@ def test_tool_add_auto_places_and_reports(app, user, enabled):
     assert (texts[1]["x"], texts[1]["y"]) == (5, 5)
 
 
+def test_bound_elements_preserved_and_wired(app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Wired", elements=[
+        {"type": "rectangle", "x": 0, "y": 0, "text": "Labeled"}])
+    with app.app_context():
+        from app.models import StoredFile
+        scene = wb.load(db.session.get(StoredFile, fid))
+        labels = [e for e in scene["elements"] if e.get("type") == "text"]
+        assert len(labels) == 1
+        label, shape = labels[0], scene["elements"][0]
+        # Back-reference present on the container (needed for live render).
+        assert {"id": label["id"], "type": "text"} in shape.get(
+            "boundElements", [])
+        assert label["containerId"] == shape["id"]
+    # Legacy scene: label carries containerId but container lacks the
+    # back-reference - validation must heal it.
+    raw = {"version": 1, "title": "Old", "elements": [
+        {"id": "s", "type": "rectangle", "x": 0, "y": 0,
+         "width": 100, "height": 50},
+        {"id": "t", "type": "text", "x": 10, "y": 10, "text": "Hi",
+         "containerId": "s"}]}
+    fixed = wb.validate_scene(raw)
+    cont = next(e for e in fixed["elements"] if e["id"] == "s")
+    assert {"id": "t", "type": "text"} in cont.get("boundElements", [])
+
+
 def test_text_on_shape_becomes_bound_label(app, user, enabled):
     _drive(app, user)
     user_obj = _user(app, user)

@@ -4,6 +4,7 @@ import {
   exportToBlob,
   restoreElements,
 } from "@excalidraw/excalidraw";
+import { mergeScenes } from "./merge.js";
 
 function setSaveState(text) {
   const el = document.getElementById("wb-save-state");
@@ -23,7 +24,10 @@ export default function App() {
   // Without this, hand- or AI-made elements can be invisible or uneditable.
   const restoredInitial = useMemo(() => {
     try {
-      return restoreElements(initialScene.elements || [], null);
+      return restoreElements(initialScene.elements || [], null, {
+        refreshDimensions: true,
+        repairBindings: true,
+      });
     } catch {
       return initialScene.elements || [];
     }
@@ -35,6 +39,13 @@ export default function App() {
     files: {},
   });
   const versionRef = useRef(cfg.initialVersion || null);
+  // Last mutually-synced scene (what the server had when we last agreed
+  // with it). doSave three-way merges local edits against the server
+  // instead of blindly overwriting, so concurrent AI edits survive.
+  const baseRef = useRef({
+    elements: initialScene.elements || [],
+    appState: initialScene.appState || {},
+  });
   // Dirty rule (see poll effect below): while `pendingRef` is true (local
   // edits not yet saved) or `savingRef` is true (a PUT is in flight), the
   // poller must NOT apply a remote scene, so it can never clobber the
@@ -55,7 +66,33 @@ export default function App() {
       saveTimerRef.current = setTimeout(doSave, 2000);
       return;
     }
-    const { elements, appState } = snapshotRef.current;
+    // Merge first: the AI may have edited the board since our last
+    // sync. PUTting our snapshot blindly would silently delete that work
+    // (this is how AI-added text used to "disappear").
+    let toSave = snapshotRef.current;
+    try {
+      const latest = await fetch(cfg.sceneUrl, {
+        headers: { Accept: "application/json" },
+      });
+      if (latest.ok) {
+        const data = await latest.json();
+        if (data && data.scene && data.version
+            && data.version !== versionRef.current) {
+          const merged = mergeScenes(
+            baseRef.current.elements || [],
+            (snapshotRef.current.elements || []),
+            (data.scene.elements || []));
+          toSave = {
+            elements: merged,
+            appState: snapshotRef.current.appState
+              || data.scene.appState || {},
+            files: snapshotRef.current.files || {},
+          };
+          snapshotRef.current = toSave;
+        }
+      }
+    } catch { /* offline - fall through and try the plain save */ }
+    const { elements, appState } = toSave;
     savingRef.current = true;
     setSaveState("Saving…");
     try {
@@ -79,6 +116,7 @@ export default function App() {
       }
       versionRef.current =
         data.version !== undefined ? data.version : versionRef.current;
+      baseRef.current = { elements, appState };
       pendingRef.current = false;
       setSaveState("Saved");
     } catch {
@@ -112,6 +150,10 @@ export default function App() {
   );
 
   // Live AI updates: poll the scene endpoint and apply remote versions.
+  // NOTE: restore MUST run with repairBindings + refreshDimensions.
+  // Without them, container-bound text labels silently fail to render
+  // on live updates (they only appeared after a full reload, whose
+  // own restore pass repairs bindings).
   useEffect(() => {
     const id = setInterval(async () => {
       if (document.hidden) {
@@ -144,11 +186,17 @@ export default function App() {
       if (api && typeof api.updateScene === "function") {
         // Server scenes carry only the whitelisted fields; restore fills
         // in Excalidraw runtime defaults (seed, versionNonce, ...).
+        // repairBindings + refreshDimensions are REQUIRED here: without
+        // them container-bound text labels silently fail to render on
+        // live updates (they only appeared after a full reload).
         // The echo onChange this triggers schedules one redundant save of
         // identical content, which is benign (versions converge).
         let elements = scene.elements || [];
         try {
-          elements = restoreElements(elements, null);
+          elements = restoreElements(elements, null, {
+            refreshDimensions: true,
+            repairBindings: true,
+          });
         } catch {
           elements = scene.elements || [];
         }
@@ -157,6 +205,10 @@ export default function App() {
           elements,
           appState: scene.appState || {},
           files: snapshotRef.current.files || {},
+        };
+        baseRef.current = {
+          elements,
+          appState: scene.appState || {},
         };
       }
       versionRef.current = data.version;
