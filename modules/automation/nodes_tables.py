@@ -440,5 +440,12 @@ def register_table_nodes():
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "advanced": True, "default": "",
              "placeholder": "Reports/2026",
-             "help": "Pick an existing folder — or leave empty for the drive root."},
+             "help": "Pick an existing folder (or decide it at run time "
+                     "with {{ nX }} from a Run input). Empty = drive root."},
+            {"name": "create_folders", "label": "Create missing folders",
+             "kind": "select", "advanced": True, "default": "no",
+             "options": [{"value": "no", "label": "No — folders must exist"},
+                         {"value": "yes",
+                          "label": "Yes — create the path if needed"}],
+             "help": "Needed when the folder is decided at run time."},
         ]}, _exec_save_table)

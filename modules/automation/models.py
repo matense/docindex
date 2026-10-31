@@ -55,6 +55,11 @@ class AutomationWorkflow(db.Model):
     enabled = db.Column(db.Boolean, nullable=False, default=False)
     interval_minutes = db.Column(db.Integer, nullable=True)
     last_run_at = db.Column(db.DateTime, nullable=True)
+    # Schedule profile: frozen answers for scheduled runs (JSON
+    # {params: {name: value}, file_id: N|null}) — the run form values the
+    # schedule replays every tick, since nobody is there to answer.
+    schedule_params = db.Column(db.Text, nullable=True)
+    schedule_file_id = db.Column(db.Integer, nullable=True)
     # AI access flags (editor toolbar): ai_lock blocks AI edits via the
     # edit_workflow tool; ai_hidden hides the workflow from the AI entirely
     # (list/get/edit/run tools refuse it).

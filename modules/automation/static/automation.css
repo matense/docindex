@@ -236,9 +236,8 @@
 .drawflow .drawflow-node .input:hover { transform: translateX(-50%) scale(1.25); }
 .drawflow .drawflow-node .output:hover { transform: translateX(50%) scale(1.25); }
 
-/* Branch labels: condition true/false as colored chips, merge A/B. */
-.drawflow .wf-type-logic-condition .output::after,
-.drawflow .wf-type-logic-merge .input::after {
+/* Branch labels: condition true/false as colored chips. */
+.drawflow .wf-type-logic-condition .output::after {
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
@@ -252,7 +251,6 @@
 }
 
 .drawflow .wf-type-logic-condition .output::after { right: 20px; }
-.drawflow .wf-type-logic-merge .input::after { left: 20px; }
 
 .drawflow .wf-type-logic-condition .output_1::after {
     content: '✓ Yes';
@@ -264,15 +262,29 @@
     color: oklch(var(--er));
     background: oklch(var(--er) / 0.12);
 }
-.drawflow .wf-type-logic-merge .input_1::after {
-    content: 'A';
-    color: oklch(var(--p));
-    background: oklch(var(--p) / 0.12);
+
+/* {{ ref }} wires: dashed amber curves drawn by the overlay layer —
+   template references with no physical socket wire. */
+.wf-ref-layer {
+    z-index: 0;
 }
-.drawflow .wf-type-logic-merge .input_2::after {
-    content: 'B';
-    color: oklch(var(--in));
-    background: oklch(var(--in) / 0.14);
+.wf-ref-wire {
+    fill: none;
+    stroke: #f59e0b;
+    stroke-width: 2;
+    stroke-dasharray: 7 5;
+    opacity: 0.7;
+}
+.wf-ref-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.wf-ref-legend::before {
+    content: '';
+    width: 18px;
+    border-top: 2px dashed #f59e0b;
+    opacity: 0.8;
 }
 
 /* Reroute points on the wires: subtle, on-theme. */
@@ -771,7 +783,6 @@
     max-height: 92vh;
 }
 
-#wf-params-modal .modal-box,
 #wf-file-modal .modal-box {
     width: min(96vw, 660px);
     max-width: 660px;
@@ -787,7 +798,6 @@
     #wf-preview-modal .modal-box,
     #wf-output-modal .modal-box,
     #node-output-modal .modal-box,
-    #wf-params-modal .modal-box,
     #wf-file-modal .modal-box {
         width: 100vw;
         max-width: 100vw;

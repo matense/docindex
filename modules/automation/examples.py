@@ -13,10 +13,14 @@ EXAMPLES = [
         "icon": "fa-language",
         "needs": ["ai", "drive"],
         "description": "Right-click any file in a drive → Run workflow. "
-                       "The file is translated and saved next to your "
-                       "documents.",
+                       "The file is translated and the run asks where to "
+                       "save the translation.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.trigger", "x": 60, "y": 120,
                  "config": {}},
                 {"id": "n2", "type": "ai.prompt", "x": 340, "y": 120,
@@ -27,7 +31,7 @@ EXAMPLES = [
                                "only with the translated text, no "
                                "commentary."}},
                 {"id": "n3", "type": "output.save_file", "x": 640, "y": 120,
-                 "config": {"name": "translated.txt", "drive_id": "",
+                 "config": {"name": "translated.txt", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -47,6 +51,10 @@ EXAMPLES = [
                        "to a notebook you pick (or a new one).",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.trigger", "x": 60, "y": 120,
                  "config": {}},
                 {"id": "n2", "type": "ai.prompt", "x": 340, "y": 120,
@@ -57,7 +65,7 @@ EXAMPLES = [
                      "system": ""}},
                 {"id": "n3", "type": "notebook.output", "x": 640, "y": 120,
                  "config": {"notebook_id": "", "mode": "append",
-                            "name": "Summaries", "drive_id": ""}},
+                            "name": "Summaries", "drive_id": "{{ nd }}"}},
             ],
             "edges": [
                 {"from": "n1", "from_port": "out",
@@ -77,6 +85,10 @@ EXAMPLES = [
                        "schedule in the editor to run it periodically.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "docindex.search_files",
                  "x": 60, "y": 120,
                  "config": {"query": "report", "limit": 10}},
@@ -91,7 +103,7 @@ EXAMPLES = [
                                "well-structured digests in markdown."}},
                 {"id": "n4", "type": "notebook.output", "x": 900, "y": 120,
                  "config": {"notebook_id": "", "mode": "append",
-                            "name": "Digest", "drive_id": ""}},
+                            "name": "Digest", "drive_id": "{{ nd }}"}},
             ],
             "edges": [
                 {"from": "n1", "from_port": "out",
@@ -112,6 +124,10 @@ EXAMPLES = [
                        "match a condition and saves the result as CSV.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.file", "x": 60, "y": 120,
                  "config": {"file_id": ""}},
                 {"id": "n2", "type": "transform.table_filter",
@@ -119,7 +135,7 @@ EXAMPLES = [
                  "config": {"conditions": [
                      {"column": "", "op": "contains", "value": ""}]}},
                 {"id": "n3", "type": "output.save_file", "x": 640, "y": 120,
-                 "config": {"name": "filtered.csv", "drive_id": "",
+                 "config": {"name": "filtered.csv", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -140,6 +156,10 @@ EXAMPLES = [
                        "next to your documents.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.trigger", "x": 60, "y": 120,
                  "config": {}},
                 {"id": "n2", "type": "ai.caption_image", "x": 340, "y": 120,
@@ -149,7 +169,7 @@ EXAMPLES = [
                                     "people, scenes, colors and any visible "
                                     "text."}},
                 {"id": "n3", "type": "output.save_file", "x": 640, "y": 120,
-                 "config": {"name": "caption.txt", "drive_id": "",
+                 "config": {"name": "caption.txt", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -171,6 +191,10 @@ EXAMPLES = [
                        "recurring analysis.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.param", "x": 60, "y": 40,
                  "config": {
                      "param": "question",
@@ -187,7 +211,7 @@ EXAMPLES = [
                      "system": "You are a data analyst. Ground every claim "
                                "in the provided table."}},
                 {"id": "n4", "type": "output.save_file", "x": 700, "y": 140,
-                 "config": {"name": "report.md", "drive_id": "",
+                 "config": {"name": "report.md", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -208,12 +232,16 @@ EXAMPLES = [
                        "it as CSV — the simplest way to handle JSON data.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.file", "x": 60, "y": 120,
                  "config": {"file_id": ""}},
                 {"id": "n2", "type": "transform.json_to_table",
                  "x": 340, "y": 120, "config": {}},
                 {"id": "n3", "type": "output.save_file", "x": 640, "y": 120,
-                 "config": {"name": "data.csv", "drive_id": "",
+                 "config": {"name": "data.csv", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -234,6 +262,10 @@ EXAMPLES = [
                        "condition + merge example.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.param", "x": 60, "y": 120,
                  "config": {"param": "topic", "label": "Which topic?",
                             "kind": "text", "ask": "yes", "default": ""}},
@@ -249,7 +281,7 @@ EXAMPLES = [
                 {"id": "n5", "type": "logic.merge", "x": 880, "y": 120,
                  "config": {}},
                 {"id": "n6", "type": "output.save_file", "x": 1140, "y": 120,
-                 "config": {"name": "result.txt", "drive_id": "",
+                 "config": {"name": "result.txt", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -258,9 +290,9 @@ EXAMPLES = [
                 {"from": "n2", "from_port": "false",
                  "to": "n4", "to_port": "in"},
                 {"from": "n3", "from_port": "out",
-                 "to": "n5", "to_port": "in1"},
+                 "to": "n5", "to_port": "in"},
                 {"from": "n4", "from_port": "out",
-                 "to": "n5", "to_port": "in2"},
+                 "to": "n5", "to_port": "in"},
                 {"from": "n5", "from_port": "out",
                  "to": "n6", "to_port": "in"},
             ],
@@ -275,6 +307,10 @@ EXAMPLES = [
                        "the AI, turns them into a table and saves CSV.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.file", "x": 60, "y": 120,
                  "config": {"file_id": ""}},
                 {"id": "n2", "type": "ai.extract_json", "x": 340, "y": 120,
@@ -286,7 +322,7 @@ EXAMPLES = [
                  "x": 620, "y": 120, "config": {}},
                 {"id": "n4", "type": "output.save_table", "x": 900, "y": 120,
                  "config": {"name": "invoices.csv", "format": "csv",
-                            "drive_id": "", "folder": ""}},
+                            "drive_id": "{{ nd }}", "folder": ""}},
             ],
             "edges": [
                 {"from": "n1", "from_port": "out",
@@ -307,8 +343,12 @@ EXAMPLES = [
                        "writes one AI summary file. No per-file picking.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.folder_list", "x": 60, "y": 120,
-                 "config": {"drive_id": "", "folder_id": "",
+                 "config": {"drive_id": "{{ nd }}", "folder_id": "",
                             "extension": ""}},
                 {"id": "n2", "type": "transform.read_files",
                  "x": 340, "y": 120, "config": {"max_chars": 4000}},
@@ -319,7 +359,7 @@ EXAMPLES = [
                                "them.",
                      "system": "You are a precise summarizer."}},
                 {"id": "n4", "type": "output.save_file", "x": 900, "y": 120,
-                 "config": {"name": "folder-summary.md", "drive_id": "",
+                 "config": {"name": "folder-summary.md", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -341,10 +381,14 @@ EXAMPLES = [
                        "as a file. Runs on schedule for periodic snapshots.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.http", "x": 60, "y": 120,
                  "config": {"url": "https://api.github.com/zen"}},
                 {"id": "n2", "type": "output.save_file", "x": 340, "y": 120,
-                 "config": {"name": "api-response.txt", "drive_id": "",
+                 "config": {"name": "api-response.txt", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [
@@ -362,6 +406,10 @@ EXAMPLES = [
                        "table as CSV or Excel.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.file", "x": 60, "y": 120,
                  "config": {"file_id": ""}},
                 {"id": "n2", "type": "transform.table_dedupe",
@@ -371,7 +419,7 @@ EXAMPLES = [
                  "config": {"column": "", "direction": "asc"}},
                 {"id": "n4", "type": "output.save_table", "x": 900, "y": 120,
                  "config": {"name": "clean.csv", "format": "csv",
-                            "drive_id": "", "folder": ""}},
+                            "drive_id": "{{ nd }}", "folder": ""}},
             ],
             "edges": [
                 {"from": "n1", "from_port": "out",
@@ -392,12 +440,16 @@ EXAMPLES = [
                        "photo with OCR and saves it as text.",
         "graph": {
             "nodes": [
+                {"id": "nd", "type": "input.drive", "x": 60, "y": 300,
+                 "config": {"param": "target",
+                            "label": "Where should I save?",
+                            "ask": "yes"}},
                 {"id": "n1", "type": "input.file", "x": 60, "y": 120,
                  "config": {"file_id": ""}},
                 {"id": "n2", "type": "transform.ocr_image",
                  "x": 340, "y": 120, "config": {"file_id": ""}},
                 {"id": "n3", "type": "output.save_file", "x": 620, "y": 120,
-                 "config": {"name": "scan.txt", "drive_id": "",
+                 "config": {"name": "scan.txt", "drive_id": "{{ nd }}",
                             "folder": ""}},
             ],
             "edges": [

@@ -295,9 +295,15 @@ def create():
 @bp.get("/<int:workflow_id>")
 def editor(workflow_id):
     workflow = _owned_workflow(workflow_id)
+    schedule_file = None
+    if workflow.schedule_file_id:
+        stored = db.session.get(StoredFile, workflow.schedule_file_id)
+        if stored is not None and stored.user_id == current_user.id:
+            schedule_file = {"id": stored.id, "name": stored.name}
     return render_template("automation/editor.html", workflow=workflow,
                            palette=palette(), drives=_writable_drives(),
-                           notebooks=_notebooks())
+                           notebooks=_notebooks(),
+                           schedule_file=schedule_file)
 
 
 def _notebooks():
@@ -335,14 +341,17 @@ def graph_json(workflow_id):
 def save(workflow_id):
     workflow = _owned_workflow(workflow_id)
     data = request.get_json(silent=True) or {}
-    raw_graph = data.get("graph")
-    try:
-        graph = engine.parse_graph(raw_graph if isinstance(raw_graph, str)
-                                   else json.dumps(raw_graph or {}))
-        engine.validate_graph(graph, active_node_types())
-    except engine.WorkflowError as exc:
-        return jsonify({"error": str(exc)}), 400
-    workflow.graph = json.dumps(graph)
+    # Only replace the graph when one is sent — meta-only saves (schedule
+    # toggles, renames) must not wipe it.
+    if "graph" in data:
+        raw_graph = data.get("graph")
+        try:
+            graph = engine.parse_graph(raw_graph if isinstance(raw_graph, str)
+                                       else json.dumps(raw_graph or {}))
+            engine.validate_graph(graph, active_node_types())
+        except engine.WorkflowError as exc:
+            return jsonify({"error": str(exc)}), 400
+        workflow.graph = json.dumps(graph)
     workflow.name = (data.get("name") or workflow.name or
                      "Untitled workflow")[:160]
     workflow.description = (data.get("description")
@@ -363,6 +372,54 @@ def save(workflow_id):
         return jsonify({"error": "The schedule interval must be a positive "
                                  "number of minutes."}), 400
     workflow.interval_minutes = interval
+    # Schedule profile: frozen run-form answers the schedule replays.
+    # Validated only when scheduling itself is touched, so unrelated
+    # saves on legacy scheduled workflows keep working.
+    schedule_touched = any(k in data for k in (
+        "enabled", "interval_minutes", "schedule_params",
+        "schedule_file_id"))
+    sched_params, sched_file = None, None
+    if "schedule_params" in data:
+        raw = data.get("schedule_params")
+        if isinstance(raw, dict):
+            sched_params = {str(k)[:80]: v
+                            for k, v in raw.items()
+                            if v not in (None, "")}
+        workflow.schedule_params = json.dumps(sched_params) \
+            if sched_params else None
+    if "schedule_file_id" in data:
+        try:
+            sched_file = int(data.get("schedule_file_id"))
+        except (TypeError, ValueError):
+            sched_file = None
+        workflow.schedule_file_id = sched_file
+    if schedule_touched and workflow.enabled and workflow.interval_minutes:
+        try:
+            _graph_for_schedule = engine.parse_graph(workflow.graph)
+        except engine.WorkflowError as exc:
+            return jsonify({"error": f"Cannot schedule a broken workflow: "
+                                     f"{exc}"}), 400
+        profile = {}
+        if workflow.schedule_params:
+            try:
+                profile = json.loads(workflow.schedule_params) or {}
+            except ValueError:
+                profile = {}
+        _clean, _errors = nodes.validate_run_params(
+            _graph_for_schedule, profile, current_user)
+        if _errors:
+            return jsonify({"error": "The schedule needs answers for: "
+                                     + "; ".join(_errors)}), 400
+        if nodes.run_contract(_graph_for_schedule)["trigger"]:
+            if not workflow.schedule_file_id:
+                return jsonify({"error": "This workflow starts from a file "
+                                         "— pick the schedule's starting "
+                                         "file."}), 400
+            stored = db.session.get(StoredFile, workflow.schedule_file_id)
+            if (stored is None or stored.user_id != current_user.id
+                    or stored.deleted_at is not None):
+                return jsonify({"error": "The schedule's starting file does "
+                                         "not exist (or is in the trash)."}), 400
     db.session.commit()
     return jsonify({"ok": True})
 
@@ -428,48 +485,40 @@ def run(workflow_id):
                 or stored.deleted_at is not None):
             return jsonify({"error": "The trigger file does not exist "
                                      "(or is in the trash)."}), 404
-    # Answers to input.param nodes collected in the run form.
+    # Answers to input.param nodes collected in the run form — one
+    # shared validator for every entry point (editor, drive menu, chat,
+    # AI, schedule profiles): trims, canonicalizes and checks ownership.
     params = {}
     raw_params = data.get("params")
     if isinstance(raw_params, dict):
-        params = {str(k)[:80]: str(v)[:20000]
+        params = {str(k)[:80]: v
                   for k, v in raw_params.items() if v not in (None, "")}
-    missing = [s["label"] for s in nodes.run_param_specs(graph)
-               if s["required"] and s["param"] not in params]
-    if missing:
-        return jsonify({"error": "Missing run parameters: "
-                                 + ", ".join(missing)}), 400
-    for spec in nodes.run_param_specs(graph):
-        if spec["param"] not in params:
-            continue
-        if spec["kind"] == "file":
-            try:
-                fid = int(params[spec["param"]])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"Run parameter '{spec['label']}' is "
-                                         "not a valid file."}), 400
-            stored = db.session.get(StoredFile, fid)
-            if (stored is None or stored.user_id != current_user.id
-                    or stored.deleted_at is not None):
-                return jsonify({"error": f"The file for '{spec['label']}' does "
-                                         "not exist (or is in the trash)."}), 404
-            params[spec["param"]] = str(fid)
-        elif spec["kind"] == "drive":
-            try:
-                did = int(params[spec["param"]])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"Run parameter '{spec['label']}' is "
-                                         "not a valid drive."}), 400
-            drive = db.session.get(Drive, did)
-            if drive is None or drive.user_id != current_user.id:
-                return jsonify({"error": f"The drive for '{spec['label']}' "
-                                         "does not exist."}), 404
-            params[spec["param"]] = str(did)
+    clean, errors = nodes.validate_run_params(graph, params, current_user)
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
     active = runtime.start_run(workflow, current_user, trigger="manual",
                                trigger_file_id=trigger_file_id,
-                               params=params or None)
+                               params=clean or None)
     return jsonify({"ok": True, "run_id": active.id,
                     "url": url_for("automation.run_detail", run_id=active.id)})
+
+
+@bp.get("/<int:workflow_id>/run-contract")
+def run_contract(workflow_id):
+    """The run contract: what a run of this workflow needs (starting file
+    + parameter questions). Every run form renders from here, so the
+    editor, drive menu, chat and AI all ask the same questions."""
+    workflow = _owned_workflow(workflow_id)
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return jsonify({"error": f"The workflow is broken: {exc}"}), 400
+    contract = nodes.run_contract(graph)
+    drives = [{"id": d.id, "name": d.name}
+              for d in Drive.query.filter_by(user_id=current_user.id)
+              .order_by(Drive.name).all()]
+    contract["drives"] = drives
+    return jsonify(contract)
 
 
 @bp.get("/api/attachable")
@@ -571,22 +620,31 @@ def api_file_shape():
     """Columns/keys of a picked file — the editor shows them as live hints
     next to the column/path fields of the table and JSON nodes."""
     file_id = request.args.get("file_id", type=int)
-    stored = db.session.get(StoredFile, file_id) if file_id else None
-    if (stored is None or stored.user_id != current_user.id
-            or stored.deleted_at is not None):
+    shape = _file_shape(current_user, file_id)
+    if shape is None:
         abort(404)
+    return jsonify(shape)
+
+
+def _file_shape(user, file_id):
+    """{kind, columns, keys} for a CSV/Excel/JSON file, or None when the
+    file is missing, foreign, trashed or not tabular."""
+    stored = db.session.get(StoredFile, file_id) if file_id else None
+    if (stored is None or stored.user_id != user.id
+            or stored.deleted_at is not None):
+        return None
     ext = (stored.extension or "").lower()
     empty = {"kind": "text", "columns": [], "keys": []}
     if ext not in ("csv", "xlsx", "xlsm", "xls", "json"):
-        return jsonify(empty)
+        return empty
     try:
-        payload = nodes.load_file_payload(current_user, stored.id)
+        payload = nodes.load_file_payload(user, stored.id)
     except Exception:  # noqa: BLE001 - unreadable file: just no hints
-        return jsonify(empty)
+        return empty
     if payload["kind"] == "table":
-        return jsonify({"kind": "table",
-                        "columns": payload["data"]["columns"][:50],
-                        "keys": []})
+        return {"kind": "table",
+                "columns": payload["data"]["columns"][:50],
+                "keys": []}
     if payload["kind"] == "json":
         data = payload["data"]
         if isinstance(data, dict):
@@ -595,8 +653,99 @@ def api_file_shape():
             keys = list(data[0].keys())
         else:
             keys = []
-        return jsonify({"kind": "json", "columns": [], "keys": keys[:50]})
-    return jsonify(empty)
+        return {"kind": "json", "columns": [], "keys": keys[:50]}
+    return empty
+
+
+# Node types whose output columns derive mechanically from their input —
+# the editor walks these backwards to offer real column names on table
+# nodes several hops away from the source file.
+_SHAPE_PRESERVING = {
+    "transform.table_filter", "transform.table_sort",
+    "transform.table_dedupe", "logic.merge",
+}
+
+
+def _trace_columns(graph, target_id):
+    """Column names available at a node's input, traced backwards.
+
+    Returns (columns|None, certain: bool): walks back through
+    shape-preserving nodes and one static input.file; table_select
+    narrows to its picks, table_compute adds its new column. Anything
+    else (pivot, json_to_table, AI, ...) stops the trace as uncertain.
+    """
+    by_id = {n.get("id"): n for n in graph.get("nodes", [])}
+    inbound = {}
+    for edge in graph.get("edges", []):
+        inbound.setdefault(edge.get("to"), []).append(edge)
+
+    def _file_columns(config):
+        try:
+            fid = int(config.get("file_id"))
+        except (TypeError, ValueError):
+            return None
+        shape = _file_shape(current_user, fid)
+        if shape and shape["kind"] == "table" and shape["columns"]:
+            return shape["columns"]
+        return None
+
+    seen = set()
+
+    def walk(nid):
+        if nid in seen:
+            return None
+        seen.add(nid)
+        node = by_id.get(nid)
+        if node is None:
+            return None
+        ntype = node.get("type")
+        config = node.get("config") or {}
+        if ntype == "input.file":
+            return _file_columns(config)
+        if ntype == "transform.table_select":
+            picks = config.get("picks") or []
+            cols = [p.get("column") for p in picks if p.get("column")]
+            if cols:
+                return cols
+            # No picks yet: whatever flows in.
+            ins = inbound.get(nid, [])
+            return walk(ins[0]["from"]) if len(ins) == 1 else None
+        if ntype == "transform.table_compute":
+            ins = inbound.get(nid, [])
+            base = walk(ins[0]["from"]) if len(ins) == 1 else None
+            if base is None:
+                return None
+            new_col = (config.get("new_column") or "").strip()
+            return base + ([new_col] if new_col and new_col not in base
+                           else [])
+        if ntype in _SHAPE_PRESERVING:
+            ins = inbound.get(nid, [])
+            if len(ins) == 1:
+                return walk(ins[0]["from"])
+            return None
+        return None
+
+    cols = walk(target_id)
+    return cols
+
+
+@bp.get("/api/upstream-shape")
+def api_upstream_shape():
+    """Column names available at a node's input, traced backwards through
+    shape-preserving nodes to the source file. The editor's column
+    pickers use this when no file is wired directly. Reads the SAVED
+    graph (autosave lands within ~2s)."""
+    workflow = _owned_workflow(request.args.get("workflow_id", type=int)
+                               or 0)
+    node_id = request.args.get("node")
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError:
+        return jsonify({"columns": [], "certain": False})
+    cols = _trace_columns(graph, node_id)
+    if not cols:
+        return jsonify({"columns": [], "certain": False})
+    return jsonify({"columns": cols[:100], "certain": True})
 
 
 @bp.get("/api/notebook-cells")
@@ -631,6 +780,21 @@ def api_notebook_cells():
 @bp.get("/behaviors")
 def behaviors():
     return redirect(url_for("behaviors.index"))
+
+
+@bp.get("/<int:workflow_id>/diagnose")
+def diagnose(workflow_id):
+    """Static check without running: every problem at once (node, field,
+    severity, message). Powers the editor's Check button; the AI uses
+    validate_workflow for the same plus reference checks."""
+    workflow = _owned_workflow(workflow_id)
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return jsonify({"ok": False, "issues": [
+            {"node": None, "type": None, "field": None,
+             "severity": "error", "message": str(exc)}]})
+    return jsonify(engine.diagnose_graph(graph, active_node_types()))
 
 
 @bp.post("/<int:workflow_id>/preview")
@@ -788,7 +952,35 @@ def run_detail(run_id):
             params = json.loads(run.params)
         except ValueError:
             params = None
-    return render_template("automation/run.html", run=run, params=params)
+    # Human-readable badges: resolve drive/file answers to names.
+    badges, trigger_file = [], None
+    try:
+        graph = engine.parse_graph(run.workflow.graph) \
+            if run.workflow is not None else {"nodes": []}
+    except engine.WorkflowError:
+        graph = {"nodes": []}
+    if params:
+        kinds = {s["param"]: s for s in nodes.run_contract(graph)["params"]}
+        for key, value in params.items():
+            spec = kinds.get(key, {})
+            label = spec.get("label") or key
+            kind = spec.get("kind")
+            display = str(value)
+            if kind == "drive":
+                drive = db.session.get(Drive, value)
+                if drive is not None and drive.user_id == run.user_id:
+                    display = drive.name
+            elif kind == "file":
+                stored = db.session.get(StoredFile, value)
+                if (stored is not None and stored.user_id == run.user_id):
+                    display = stored.name
+            badges.append({"label": label, "display": display})
+    if run.trigger_file_id:
+        stored = db.session.get(StoredFile, run.trigger_file_id)
+        if stored is not None and stored.user_id == run.user_id:
+            trigger_file = {"id": stored.id, "name": stored.name}
+    return render_template("automation/run.html", run=run, params=params,
+                           badges=badges, trigger_file=trigger_file)
 
 
 @bp.get("/runs/<int:run_id>/status")

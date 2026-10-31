@@ -460,12 +460,18 @@ def validate_graph(graph, node_types=None):
     edges = []
     deps = {nid: set() for nid in nodes_by_id}
     seen_targets = set()
+    merge_ins = {nid for nid, n in nodes_by_id.items()
+                 if n.get("type") == "logic.merge"}
     for edge in graph["edges"]:
         src, dst = edge.get("from"), edge.get("to")
         if src not in nodes_by_id or dst not in nodes_by_id:
             raise WorkflowError("An edge connects a node that does not exist.")
         if src == dst:
             raise WorkflowError(f"Node '{src}' connects to itself.")
+        # Backward compatibility: logic.merge used to have in1/in2 ports
+        # (now a single multiple fan-in "in").
+        if dst in merge_ins and edge.get("to_port") in ("in1", "in2"):
+            edge = dict(edge, to_port="in")
         src_spec = node_types[nodes_by_id[src]["type"]]["spec"]
         dst_spec = node_types[nodes_by_id[dst]["type"]]["spec"]
         out_ports = {p["name"]: p.get("kind", "any")

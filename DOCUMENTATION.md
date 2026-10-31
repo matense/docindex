@@ -1337,10 +1337,14 @@ tool + table).
   executed server-side. Node categories: **Input** (text/JSON, file from
   drive — CSV/Excel become tables, JSON parses to nested data, anything
   else yields its text; search files; trigger input — the file the run
-  was started from; run input — a parameter the workflow asks for in a
-  run form before it starts, or falls back to a static default for
-  scheduled/triggered/AI runs; kinds: short/long text, number, file —
-  the answers ride on `AutomationRun.params` and duplicate/unnamed
+  was started from; run input — a parameter the workflow asks for in the
+  single shared run form before it starts (editor, drive menu, chat,
+  run page and AI all render the same contract from
+  `GET /<id>/run-contract`), or falls back to a static default for
+  scheduled/triggered/AI runs; kinds: short/long text, number, dropdown
+  (select), yes/no, date, file — explicit Required auto/yes/no
+  (auto = required when asked with no static fallback); the answers ride
+  on `AutomationRun.params` and duplicate/unnamed
   parameters are rejected at validation; notebook input; folder input — a
   single folder from a drive, as a `folders` payload for the copy/move
   nodes), **Transform**
@@ -1366,8 +1370,12 @@ tool + table).
   optional instruction), **Logic** (condition with true/false ports —
   both sides accept literal text or `{{ node }}` references picked from
   a datalist, the right side hides for the empty/not-empty operators —
-  and merge), **Output** (save file to a writable drive — read-only
-  drives are refused — save table as CSV/Excel, copy or move one file or
+  and merge, now a multiple fan-in port joining any number of
+  branches), **Output** (save file to a writable drive — read-only
+  drives are refused; several files arrive as one ZIP; destinations
+  are runtime-decidable (`{{ nX }}` refs from Run input nodes in
+  name/drive/folder fields, exact drive names, `a/b/c` folder paths,
+  optional auto-create) — save table as CSV/Excel, copy or move one file or
   a whole folder tree to another writable drive (`output.copy_file` /
   `output.move_file`, with an optional destination folder; folders arrive
   as a `folders` payload, e.g. from the `input.folder` node), notebook
@@ -1380,14 +1388,20 @@ tool + table).
   page with an output console and per-node output inspection,
   cooperative stop, startup recovery of interrupted runs, and a
   daemon scheduler (`AUTOMATION_SCHEDULER`) that fires enabled workflows
-  every N minutes without overlapping themselves. Triggers: manual,
+  every N minutes without overlapping themselves, replaying frozen
+  schedule answers (`schedule_params` + `schedule_file_id`, configured
+  in the editor's Schedule-values form or via `set_schedule params`,
+  validated at configure time). Triggers: manual,
   schedule, the drive UI (a file's context menu offers "Run workflow…"
-  for every workflow containing a trigger-input node, passing the file
-  as the trigger payload), and the AI chat via the namespaced tools
-  `automation.list_workflows` / `automation.run_workflow` /
+  for every workflow containing a trigger-input node — the shared run
+  form asks the remaining questions), and the AI chat via the namespaced
+  tools `automation.list_workflows` / `automation.get_run_contract` /
+  `automation.run_workflow` /
   `automation.get_node_catalog` / `automation.create_workflow` /
-  `automation.get_workflow` / `automation.edit_workflow` — so the
-  assistant can design, inspect and edit workflows on request.
+  `automation.get_workflow` / `automation.edit_workflow` /
+  `automation.validate_workflow` (now also flags incomplete schedule
+  profiles) / `automation.set_schedule` (now takes frozen params) — so
+  the assistant can design, inspect and edit workflows on request.
   `edit_workflow` applies a list of operations (add_node, update_node —
   config merged, remove_node, connect, disconnect), re-validates the
   whole graph before saving, and returns a `ui.workflow_changed` payload

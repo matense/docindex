@@ -656,16 +656,78 @@
             }, { once: true }));
         }
 
+        async function ensureRunForm() {
+            if (window.AutomationRunForm) return true;
+            try {
+                await new Promise((res, rej) => {
+                    const s = document.createElement('script');
+                    s.src = '/m/automation/static/run_form.js?v=1';
+                    s.onload = res;
+                    s.onerror = rej;
+                    document.body.appendChild(s);
+                });
+                return true;
+            } catch { return false; }
+        }
+
         async function startWorkflowRun(wf, a) {
-            let body;
+            // Shared run form: trigger-only workflows run immediately,
+            // everything else asks in the same form as the editor.
             const params = wf.file_params || [];
-            if (wf.trigger && !params.length) body = { file_id: a.id };
-            else if (params.length === 1 && !wf.trigger) body = { params: { [params[0].param]: String(a.id) } };
-            else if (wf.trigger) body = { file_id: a.id };
-            else {
-                window.uiToast('"' + wf.name + '" needs several inputs — ask the AI to run it.', 'info');
+            let contract = null;
+            try {
+                const cresp = await fetch('/m/automation/' + wf.id + '/run-contract',
+                                          { headers: { Accept: 'application/json' } });
+                if (cresp.ok) contract = await cresp.json();
+            } catch { contract = null; }
+            if (!contract) {
+                // Fallback to the old fast paths when the contract is
+                // unreachable (offline / module disabled mid-click).
+                let body;
+                if (wf.trigger && !params.length) body = { file_id: a.id };
+                else if (params.length === 1 && !wf.trigger) {
+                    body = { params: { [params[0].param]: String(a.id) } };
+                }
+                else if (wf.trigger) body = { file_id: a.id };
+                else {
+                    window.uiToast('"' + wf.name + '" needs several inputs — ask the AI to run it.', 'info');
+                    return;
+                }
+                postWorkflowRun(wf, a, body);
                 return;
             }
+            if (contract.trigger && !(contract.params || []).length) {
+                postWorkflowRun(wf, a, { file_id: a.id });
+                return;
+            }
+            if (!(await ensureRunForm())) {
+                window.uiToast('Could not load the run form.', 'error');
+                return;
+            }
+            const initialParams = {};
+            (contract.params || []).forEach((spec) => {
+                if (spec.kind === 'file') initialParams[spec.param] = { id: a.id, name: a.name };
+            });
+            window.AutomationRunForm.open({
+                title: 'Run "' + wf.name + '"',
+                subtitle: 'With "' + a.name + '"',
+                contract,
+                drives: contract.drives || [],
+                initialParams,
+                fixedTrigger: contract.trigger ? { id: a.id, name: a.name } : null,
+                allowTriggerPicker: false,
+                browseUrl: '/m/automation/api/browse',
+                onSubmit: ({ params: answers, triggerFileId }) => {
+                    const body = {};
+                    if (triggerFileId) body.file_id = triggerFileId;
+                    else if (contract.trigger) body.file_id = a.id;
+                    if (answers && Object.keys(answers).length) body.params = answers;
+                    postWorkflowRun(wf, a, body);
+                },
+            });
+        }
+
+        async function postWorkflowRun(wf, a, body) {
             let resp, data = {};
             try {
                 resp = await fetch('/m/automation/' + wf.id + '/run', {
