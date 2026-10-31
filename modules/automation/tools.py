@@ -135,6 +135,51 @@ def _tool_run(user, args, drive):
                     "use automation.get_run_status to poll it."}
 
 
+def _tool_run_contract(user, args, drive):
+    try:
+        workflow_id = int(args.get("workflow_id"))
+    except (TypeError, ValueError):
+        return {"error": "workflow_id must be an integer."}
+    workflow = (AutomationWorkflow.query
+                .filter_by(id=workflow_id, user_id=user.id).first())
+    if workflow is None:
+        return {"error": f"Workflow {workflow_id} not found."}
+    if workflow.ai_hidden:
+        return _hidden_error()
+    from . import nodes as _nodes
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return {"error": f"The workflow is broken: {exc}."}
+    contract = _nodes.run_contract(graph)
+    contract["workflow_id"] = workflow.id
+    contract["workflow_name"] = workflow.name
+    return contract
+
+
+def _spec_view(spec):
+    """The node-type shape the AI builds against (catalog + get_workflow).
+    Multiple fan-in ports are flagged so the model wires them correctly."""
+    return {
+        "inputs": [{"name": p["name"], "kind": p.get("kind", "any"),
+                    "multiple": bool(p.get("multiple"))}
+                   for p in spec.get("inputs", [])],
+        "outputs": [{"name": p["name"], "kind": p.get("kind", "any")}
+                    for p in spec.get("outputs", [])],
+        "config_fields": [
+            {"name": f["name"], "kind": f.get("kind") or "text",
+             "label": f.get("label", f["name"]),
+             "default": f.get("default", ""),
+             "required": bool(f.get("required")),
+             "advanced": bool(f.get("advanced")),
+             "options": f.get("options", []),
+             "placeholder": f.get("placeholder", ""),
+             "help": f.get("help", "")}
+            for f in spec.get("fields", [])
+        ],
+    }
+
+
 def _tool_node_catalog(user, args, drive):
     catalog = []
     for type_name, entry in sorted(active_node_types().items()):
@@ -145,21 +190,7 @@ def _tool_node_catalog(user, args, drive):
             "category": spec.get("category", ""),
             "description": spec.get("description", ""),
             "example": spec.get("description", "") and spec.get("example", ""),
-            "inputs": [{"name": p["name"], "kind": p.get("kind", "any")}
-                       for p in spec.get("inputs", [])],
-            "outputs": [{"name": p["name"], "kind": p.get("kind", "any")}
-                        for p in spec.get("outputs", [])],
-            "config_fields": [
-                {"name": f["name"], "kind": f.get("kind") or "text",
-                 "label": f.get("label", f["name"]),
-                 "default": f.get("default", ""),
-                 "required": bool(f.get("required")),
-                 "advanced": bool(f.get("advanced")),
-                 "options": f.get("options", []),
-                 "placeholder": f.get("placeholder", ""),
-                 "help": f.get("help", "")}
-                for f in spec.get("fields", [])
-            ],
+            **_spec_view(spec),
         })
     return {"node_types": catalog,
             "graph_format": {
@@ -173,6 +204,12 @@ def _tool_node_catalog(user, args, drive):
                 "merge takes any number of wires on one 'in' port, "
                 "condition outputs true/false.",
                 "save nodes need a writable drive_id (not synced).",
+                "Run inputs (input.param/input.drive): kind can be text, "
+                "longtext, number, select (options 'value | Label' lines), "
+                "boolean, date or file; required auto|yes|no. Call "
+                "automation.get_run_contract for the exact questions.",
+                "Schedules replay frozen answers: set them with "
+                "automation.set_schedule params.",
             ]}
 
 
@@ -232,21 +269,7 @@ def _tool_get_workflow(user, args, drive):
         if type_name not in used:
             continue
         spec = entry["spec"]
-        specs[type_name] = {
-            "inputs": [{"name": p["name"], "kind": p.get("kind", "any")}
-                       for p in spec.get("inputs", [])],
-            "outputs": [{"name": p["name"], "kind": p.get("kind", "any")}
-                        for p in spec.get("outputs", [])],
-            "config_fields": [
-                {"name": f["name"], "kind": f.get("kind") or "text",
-                 "label": f.get("label", f["name"]),
-                 "default": f.get("default", ""),
-                 "required": bool(f.get("required")),
-                 "advanced": bool(f.get("advanced")),
-                 "options": f.get("options", [])}
-                for f in spec.get("fields", [])
-            ],
-        }
+        specs[type_name] = _spec_view(spec)
     # Last run for diagnose-fix loop.
     last_run = None
     if workflow.runs:
@@ -267,6 +290,13 @@ def _tool_get_workflow(user, args, drive):
               "ai_lock": locked, "specs": specs, "last_run": last_run}
     # Full static vision: every problem at once, no run needed.
     result["diagnosis"] = engine.diagnose_graph(graph, active_node_types())
+    # Run contract + schedule profile, so the AI knows what to ask before
+    # run_workflow and whether the schedule is complete.
+    from . import nodes as _contract_nodes
+    try:
+        result["run_contract"] = _contract_nodes.run_contract(graph)
+    except Exception:  # noqa: BLE001 - contract is informational
+        result["run_contract"] = {"trigger": False, "params": []}
     if locked:
         result["note"] = ("This workflow is LOCKED against AI edits by the "
                           "user — do not edit it; ask the user to unlock it "
@@ -573,6 +603,33 @@ def _tool_validate(user, args, drive):
                                for i in result["issues"])
     except Exception:  # noqa: BLE001 - reference checks are best-effort
         pass
+    # Schedules replay frozen answers: flag an enabled schedule whose
+    # profile cannot satisfy the contract.
+    if workflow.enabled and workflow.interval_minutes:
+        from . import nodes as _sched_nodes
+        try:
+            profile = json.loads(workflow.schedule_params or "{}") or {}
+        except ValueError:
+            profile = {}
+        _clean, _errors = _sched_nodes.validate_run_params(
+            graph, profile, user)
+        trig = _sched_nodes.run_contract(graph)["trigger"]
+        if _errors:
+            result["issues"].append({
+                "node": None, "type": None, "field": None,
+                "severity": "error",
+                "message": "Schedule is enabled but its frozen answers "
+                           "are incomplete: " + "; ".join(_errors) +
+                           ". Fix with set_schedule params."})
+        if trig and not workflow.schedule_file_id:
+            result["issues"].append({
+                "node": None, "type": None, "field": None,
+                "severity": "error",
+                "message": "Schedule is enabled but the workflow starts "
+                           "from a file and no schedule file is set. Fix "
+                           "with set_schedule trigger_file_id."})
+        result["ok"] = not any(i["severity"] == "error"
+                               for i in result["issues"])
     result["note"] = ("All clear — safe to run." if result["ok"]
                       else "Fix the error issues with edit_workflow "
                            "(field names match the editor), then validate "
@@ -729,6 +786,44 @@ def _tool_set_schedule(user, args, drive):
         if interval < 1:
             return {"error": "interval_minutes must be >= 1."}
         workflow.interval_minutes = interval
+        # Frozen run answers the schedule replays (nobody is there to
+        # answer the run form). Validated like a manual run.
+        from . import nodes as _nodes
+        try:
+            graph = engine.parse_graph(workflow.graph)
+        except engine.WorkflowError as exc:
+            return {"error": f"Cannot schedule a broken workflow: {exc}."}
+        profile = args.get("params")
+        if profile is not None and not isinstance(profile, dict):
+            return {"error": "params must be an object {name: value}."}
+        clean, errors = _nodes.validate_run_params(graph, profile or {},
+                                                   user)
+        if errors:
+            return {"error": "The schedule needs answers for: "
+                             + "; ".join(errors) + ". Ask the user, then "
+                             "call set_schedule again with params."}
+        trigger_file_id = args.get("trigger_file_id")
+        if _nodes.run_contract(graph)["trigger"]:
+            if trigger_file_id in (None, ""):
+                return {"error": "This workflow starts from a file — pass "
+                                 "its trigger_file_id."}
+            try:
+                trigger_file_id = int(trigger_file_id)
+            except (TypeError, ValueError):
+                return {"error": "trigger_file_id must be an integer."}
+            from app.models import StoredFile
+            stored = db.session.get(StoredFile, trigger_file_id)
+            if (stored is None or stored.user_id != user.id
+                    or stored.deleted_at is not None):
+                return {"error": "The trigger file does not exist (or is "
+                                 "in the trash)."}
+            workflow.schedule_file_id = trigger_file_id
+        elif trigger_file_id not in (None, ""):
+            return {"error": "This workflow has no trigger input — "
+                             "trigger_file_id is not needed."}
+        else:
+            workflow.schedule_file_id = None
+        workflow.schedule_params = json.dumps(clean) if clean else None
     else:
         workflow.interval_minutes = None
     workflow.enabled = enabled
@@ -779,6 +874,19 @@ def register_tools():
                                      "description": "File the run starts from"}},
                 required=("workflow_id",)),
         _tool_run, label="Starting workflow", module="automation")
+    register_tool(
+        "get_run_contract",
+        _schema("get_run_contract",
+                "What a workflow run needs: the starting file (trigger) "
+                "and every parameter question (kind, required, options). "
+                "Call this BEFORE run_workflow on a parameterized workflow "
+                "— ask the user for the missing required values in chat, "
+                "then pass them as run_workflow params.",
+                {"workflow_id": {"type": "integer",
+                                  "description": "The workflow id"}},
+                required=("workflow_id",)),
+        _tool_run_contract, label="Reading run contract",
+        module="automation")
     register_tool(
         "get_node_catalog",
         _schema("get_node_catalog",
@@ -902,12 +1010,20 @@ def register_tools():
         "set_schedule",
         _schema("set_schedule",
                 "Enable/disable a workflow's automatic schedule. "
-                "interval_minutes is required when enabled=true.",
+                "interval_minutes is required when enabled=true. "
+                "Schedules replay frozen answers (nobody is there to "
+                "answer the run form): pass params {name: value} for the "
+                "run contract questions and trigger_file_id when it "
+                "starts from a file. Call get_run_contract first.",
                 {"workflow_id": {"type": "integer",
                                  "description": "The workflow id"},
                  "enabled": {"type": "boolean",
                              "description": "Run automatically?"},
                  "interval_minutes": {"type": "integer",
-                                       "description": "Every N minutes"}},
+                                       "description": "Every N minutes"},
+                 "params": {"type": "object",
+                            "description": "{name: value} frozen answers"},
+                 "trigger_file_id": {"type": "integer",
+                                      "description": "Schedule file"}},
                 required=("workflow_id", "enabled")),
         _tool_set_schedule, label="Setting schedule", module="automation")

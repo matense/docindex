@@ -1269,6 +1269,85 @@ def test_schedule_profile_needs_trigger_file(auth_client, app, user,
     assert resp.get_json() == {"ok": True}
 
 
+def test_tool_run_contract(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "select",
+         "options": "a | A\nb | B", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        contract = tools._tool_run_contract(
+            user_obj, {"workflow_id": wf_id}, None)
+    assert contract["params"][0]["kind"] == "select"
+    assert contract["params"][0]["options"] == [
+        {"value": "a", "label": "A"}, {"value": "b", "label": "B"}]
+    assert contract["params"][0]["required"] is True
+
+
+def test_tool_run_validates_new_kinds(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "n", "kind": "number", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        bad = tools._tool_run(user_obj, {"workflow_id": wf_id,
+                                         "params": {"n": "twelve"}}, None)
+        assert "error" in bad and "number" in bad["error"]
+        ok = tools._tool_run(user_obj, {"workflow_id": wf_id,
+                                        "params": {"n": "12,5"}}, None)
+        assert ok["status"] == "done"
+
+
+def test_tool_set_schedule_with_profile(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        missing = tools._tool_set_schedule(
+            user_obj, {"workflow_id": wf_id, "enabled": True,
+                       "interval_minutes": 10}, None)
+        assert "error" in missing \
+            and "q" in missing["error"].lower()
+        done = tools._tool_set_schedule(
+            user_obj, {"workflow_id": wf_id, "enabled": True,
+                       "interval_minutes": 10, "params": {"q": "nightly"}},
+            None)
+        assert done["ok"] is True
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert json.loads(wf.schedule_params) == {"q": "nightly"}
+
+
+def test_tool_validate_flags_incomplete_schedule(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}),
+                      enabled=True, interval_minutes=10)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_validate(user_obj, {"workflow_id": wf_id},
+                                      None)
+    assert result["ok"] is False
+    assert any("frozen answers" in i["message"] for i in result["issues"])
+
+
+def test_get_workflow_includes_run_contract(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        got = tools._tool_get_workflow(user_obj, {"workflow_id": wf_id},
+                                       None)
+    assert got["run_contract"]["params"][0]["param"] == "q"
+
+
+def test_catalog_flags_multiple_ports(app, user, enabled):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        catalog = tools._tool_node_catalog(user_obj, {}, None)["node_types"]
+    by_type = {n["type"]: n for n in catalog}
+    merge_ins = by_type["logic.merge"]["inputs"]
+    assert merge_ins == [{"name": "in", "kind": "any", "multiple": True}]
+    template_ins = by_type["transform.template"]["inputs"]
+    assert template_ins[0]["multiple"] is True
+
+
 def test_run_endpoint_executes_and_reports(auth_client, app, user, enabled):
     wf_id = _workflow(app, user, _text_graph("endpoint run"))
     resp = auth_client.post(f"/m/automation/{wf_id}/run")
