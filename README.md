@@ -253,14 +253,16 @@ upgrades are applied through migrations, never by recreating the database.
 ```
 
 The script pulls the latest code, updates dependencies and applies database
-migrations. Restart the server afterwards.
+migrations. Restart the server afterwards. Everything the scripts print is
+also saved to `logs/install.log` / `logs/update.log` (previous run kept as
+`.prev`) — send that file when reporting a problem.
 
-**Manual step by step:**
+**Manual step by step (no git binary needed — updates go through dulwich):**
 
 **Local installation:**
 
 ```bash
-git pull
+venv/bin/python tools/git_sync.py pull   # Windows: venv\Scripts\python.exe
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt   # pick up new/updated dependencies
 python run.py                     # migrations are applied automatically on start
@@ -268,7 +270,7 @@ python run.py                     # migrations are applied automatically on star
 
 > Database migrations run automatically when the app starts (Alembic
 > `upgrade` is a no-op when the schema is already current), so a plain
-> `git pull` + restart is enough. `flask --app run.py db upgrade heads` is still
+> pull + restart is enough. `flask --app run.py db upgrade heads` is still
 > available if you prefer to migrate explicitly before starting.
 
 > **"Can't locate revision identified by ..." during an update?** Databases

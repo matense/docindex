@@ -19,6 +19,7 @@ from flask import current_app
 from ..extensions import db
 from ..models import FileEmbedding, StoredFile
 from . import ai_service
+from .db_locks import serialized
 
 try:
     import numpy as _np
@@ -152,6 +153,7 @@ def cosine(a, b):
     return sum(x * y for x, y in zip(a, b, strict=False))
 
 
+@serialized
 def embed_file(stored, user=None):
     """(Re)embed one file's chunks; skips unchanged chunks by text hash.
 

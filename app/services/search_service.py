@@ -8,6 +8,7 @@ from sqlalchemy import text as sql_text
 from ..extensions import db
 from ..models import FileIndex, StoredFile
 from . import hashtag_service
+from .db_locks import serialized
 
 SNIPPET_RADIUS = 120
 MAX_RESULTS = 50
@@ -24,8 +25,9 @@ def fts_available():
     """True when SQLite FTS5 is usable and SEARCH_FTS is on.
 
     Probed once per engine (each app/test gets its own): the probe also
-    creates the file_fts table when missing (IF NOT EXISTS), so databases
-    built with db.create_all() (no migrations) get it too.
+    creates the file_fts table in the attached index db (`idx` schema)
+    when missing (IF NOT EXISTS), so databases built with db.create_all()
+    (no migrations) get it too.
     """
     global _fts_ready
     if not current_app.config.get("SEARCH_FTS", True):
@@ -39,7 +41,7 @@ def fts_available():
         try:
             with engine.begin() as conn:
                 conn.execute(sql_text(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS file_fts "
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS idx.file_fts "
                     "USING fts5(name, text, caption, tags)"))
             ready = True
         except Exception:  # noqa: BLE001 - any failure means: no FTS5
@@ -48,6 +50,7 @@ def fts_available():
     return ready
 
 
+@serialized
 def fts_upsert(file_id, commit=True):
     """Refresh a file's FTS row from files/file_index. No-op without FTS5."""
     if not fts_available():
@@ -58,7 +61,7 @@ def fts_upsert(file_id, commit=True):
         return
     index = stored.index
     db.session.execute(sql_text(
-        "INSERT OR REPLACE INTO file_fts(rowid, name, text, caption, tags) "
+        "INSERT OR REPLACE INTO idx.file_fts(rowid, name, text, caption, tags) "
         "VALUES (:id, :name, :text, :caption, :tags)"),
         {"id": stored.id, "name": stored.name,
          "text": (index.extracted_text if index else "") or "",
@@ -70,10 +73,11 @@ def fts_upsert(file_id, commit=True):
         db.session.flush()
 
 
+@serialized
 def fts_delete(file_id, commit=True):
     if not fts_available():
         return
-    db.session.execute(sql_text("DELETE FROM file_fts WHERE rowid = :id"),
+    db.session.execute(sql_text("DELETE FROM idx.file_fts WHERE rowid = :id"),
                        {"id": file_id})
     if commit:
         db.session.commit()
@@ -84,6 +88,7 @@ def fts_delete(file_id, commit=True):
 _FTS_BATCH = 500  # keep well under SQLite's bound-variable limit
 
 
+@serialized
 def fts_delete_many(file_ids, commit=True):
     """Delete many FTS rows in one go (batched — SQLite caps the number of
     bound variables per statement). No-op without FTS5."""
@@ -93,7 +98,7 @@ def fts_delete_many(file_ids, commit=True):
     for i in range(0, len(ids), _FTS_BATCH):
         chunk = ids[i:i + _FTS_BATCH]
         db.session.execute(sql_text(
-            "DELETE FROM file_fts WHERE rowid IN "
+            "DELETE FROM idx.file_fts WHERE rowid IN "
             "(" + ", ".join(str(int(fid)) for fid in chunk) + ")"))
     if commit:
         db.session.commit()
@@ -101,22 +106,23 @@ def fts_delete_many(file_ids, commit=True):
         db.session.flush()
 
 
+@serialized
 def fts_rebuild():
     """Drop and repopulate the whole FTS index from file_index (the source
     of truth). Returns the number of indexed rows."""
     if not fts_available():
         return 0
-    db.session.execute(sql_text("DELETE FROM file_fts"))
+    db.session.execute(sql_text("DELETE FROM idx.file_fts"))
     db.session.execute(sql_text(
-        "INSERT INTO file_fts(rowid, name, text, caption, tags) "
+        "INSERT INTO idx.file_fts(rowid, name, text, caption, tags) "
         "SELECT f.id, f.name, "
         "       COALESCE(fi.extracted_text, ''), "
         "       COALESCE(fi.caption, ''), "
         "       COALESCE(fi.hashtags, '') "
-        "FROM files f LEFT JOIN file_index fi ON fi.file_id = f.id "
+        "FROM files f LEFT JOIN idx.file_index fi ON fi.file_id = f.id "
         "WHERE f.deleted_at IS NULL"))
     db.session.commit()
-    return db.session.execute(sql_text("SELECT count(*) FROM file_fts")).scalar()
+    return db.session.execute(sql_text("SELECT count(*) FROM idx.file_fts")).scalar()
 
 
 def _fts_query(terms):
@@ -156,7 +162,7 @@ def _fts_candidates(terms, user, drive, limit):
     """
     sql = ("SELECT file_fts.rowid AS file_id, "
            "       bm25(file_fts, 0.2, 1.0, 0.6, 0.4) AS rank "
-           "FROM file_fts JOIN files ON files.id = file_fts.rowid "
+           "FROM idx.file_fts JOIN files ON files.id = file_fts.rowid "
            "WHERE file_fts MATCH :match "
            "  AND files.user_id = :uid AND files.deleted_at IS NULL")
     params = {"match": _fts_query(terms), "uid": user.id}
@@ -425,8 +431,8 @@ def _advanced_base(user, query, filters):
     # Fall through to the ILIKE path with no LIKE clauses = match-all filters
     # (e.g. count all .csv files).
     if query and fts_available() and terms:
-        base = ("FROM file_fts JOIN files ON files.id = file_fts.rowid "
-                "LEFT JOIN file_index fi ON fi.file_id = files.id "
+        base = ("FROM idx.file_fts JOIN files ON files.id = file_fts.rowid "
+                "LEFT JOIN idx.file_index fi ON fi.file_id = files.id "
                 f"WHERE file_fts MATCH :match AND {where}")
         # Raw FTS5 syntax first; if SQLite rejects it, retry with the safe
         # term-prefix query built from the plain words in the query — the
@@ -444,7 +450,7 @@ def _advanced_base(user, query, filters):
                 return base, probe, terms, True
             except Exception:  # noqa: BLE001 - invalid MATCH syntax
                 db.session.rollback()
-    base = ("FROM files LEFT JOIN file_index fi ON fi.file_id = files.id "
+    base = ("FROM files LEFT JOIN idx.file_index fi ON fi.file_id = files.id "
             f"WHERE {where}")
     if query and terms:
         likes = []
