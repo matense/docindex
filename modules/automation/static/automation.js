@@ -64,6 +64,116 @@
     }
 
     // ------------------------------------------------------------------
+    // {{ nX }} reference wires (dashed): template references create real
+    // execution dependencies but Drawflow draws no wire for them, so the
+    // node looks orphaned. This overlay draws dashed amber curves for
+    // every {{ ref }} between nodes on the canvas.
+    // ------------------------------------------------------------------
+    let refSvg = null;
+    let refRaf = 0;
+
+    function ensureRefLayer() {
+        if (refSvg || !editor || !editor.precanvas) return refSvg;
+        refSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        refSvg.setAttribute('class', 'wf-ref-layer');
+        refSvg.style.cssText =
+            'position:absolute;left:0;top:0;overflow:visible;' +
+            'pointer-events:none;';
+        editor.precanvas.insertBefore(refSvg, editor.precanvas.firstChild);
+        return refSvg;
+    }
+
+    function scanRefs(value, into) {
+        if (typeof value === 'string') {
+            const re = /\{\{\s*([A-Za-z0-9_]+)/g;
+            let m;
+            while ((m = re.exec(value))) into.add(m[1]);
+        } else if (Array.isArray(value)) {
+            value.forEach(v => scanRefs(v, into));
+        } else if (value && typeof value === 'object') {
+            Object.values(value).forEach(v => scanRefs(v, into));
+        }
+    }
+
+    function refDfId(graphId) {
+        // Saved-graph id -> canvas id: exact match first (custom ids like
+        // 'nd' survive round-trips now), then the 'nX' convention.
+        for (const [dfId, gid] of Object.entries(exportIds)) {
+            if (gid === graphId) return parseInt(dfId, 10);
+        }
+        const m = /^n(\d+)$/.exec(graphId);
+        return m ? parseInt(m[1], 10) : null;
+    }
+
+    function graphRefs() {
+        // dfId -> [graph ids it references], self-refs excluded.
+        const out = {};
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return out; }
+        Object.keys(data).forEach(dfId => {
+            const node = nodeData(dfId);
+            if (!node) return;
+            const refs = new Set();
+            scanRefs(node.config || {}, refs);
+            refs.delete('n' + dfId);  // self-reference
+            if (refs.size) out[dfId] = [...refs];
+        });
+        return out;
+    }
+
+    function scheduleRefRender() {
+        if (refRaf) return;
+        refRaf = requestAnimationFrame(() => {
+            refRaf = 0;
+            renderRefWires();
+        });
+    }
+
+    function renderRefWires() {
+        const svg = ensureRefLayer();
+        if (!svg) return;
+        svg.innerHTML = '';
+        const refs = graphRefs();
+        const dfIds = Object.keys(refs);
+        if (!dfIds.length) {
+            svg.setAttribute('width', 1);
+            svg.setAttribute('height', 1);
+            return;
+        }
+        const NS = 'http://www.w3.org/2000/svg';
+        let maxX = 0, maxY = 0;
+        dfIds.forEach(dfId => {
+            const dstEl = document.getElementById(`node-${dfId}`);
+            if (!dstEl) return;
+            refs[dfId].forEach(gid => {
+                const srcDf = refDfId(gid);
+                if (srcDf == null) return;
+                const srcEl = document.getElementById(`node-${srcDf}`);
+                if (!srcEl || srcEl === dstEl) return;
+                const x1 = srcEl.offsetLeft + srcEl.offsetWidth;
+                const y1 = srcEl.offsetTop + srcEl.offsetHeight / 2;
+                const x2 = dstEl.offsetLeft;
+                const y2 = dstEl.offsetTop + dstEl.offsetHeight / 2;
+                const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+                const path = document.createElementNS(NS, 'path');
+                path.setAttribute('d',
+                    `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+                path.setAttribute('class', 'wf-ref-wire');
+                const title = document.createElementNS(NS, 'title');
+                title.textContent = `{{ ${gid} }} reference — data flows here at run time`;
+                path.appendChild(title);
+                svg.appendChild(path);
+                maxX = Math.max(maxX, x1, x2);
+                maxY = Math.max(maxY, y1, y2);
+            });
+        });
+        svg.setAttribute('width', Math.max(1, maxX + 60));
+        svg.setAttribute('height', Math.max(1, maxY + 60));
+    }
+
+    // ------------------------------------------------------------------
     // Node card summary line (what the node is configured to do)
     // ------------------------------------------------------------------
     function configSummary(type, config) {
@@ -311,8 +421,15 @@
     // ------------------------------------------------------------------
     // Graph conversion: our JSON <-> drawflow
     // ------------------------------------------------------------------
+    // Drawflow ids are session-local (1, 2, 3…): the graph's own node
+    // ids ('n3', 'filter1', …) — which {{ refs }} point at — live here so
+    // exportGraph writes them back unchanged instead of renumbering
+    // nodes and silently breaking every {{ ref }} on autosave.
+    let exportIds = {};
+
     function loadGraph(graph) {
         editor.clear();
+        exportIds = {};
         const idMap = {};  // our id -> drawflow id
         (graph.nodes || []).forEach(node => {
             const spec = specByType[node.type];
@@ -326,6 +443,7 @@
                 { type: node.type, config: Object.assign({}, node.config) },
                 nodeHtml(node.type, spec));
             idMap[node.id] = dfId;
+            exportIds[dfId] = node.id;
             refreshCard(dfId);
         });
         (graph.edges || []).forEach(edge => {
@@ -346,6 +464,7 @@
         // so a single early redraw leaves wires detached. Redraw repeatedly
         // until everything has settled.
         scheduleRedraws();
+        scheduleRefRender();
     }
 
     let _redrawTimers = [];
@@ -376,12 +495,13 @@
 
     function exportGraph() {
         const data = editor.export().drawflow.Home.data;
+        const gid = dfId => exportIds[dfId] || ('n' + dfId);
         const nodes = [], edges = [];
         Object.values(data).forEach(dfNode => {
             const type = dfNode.data.type;
             const spec = specByType[type] || {};
             nodes.push({
-                id: 'n' + dfNode.id,
+                id: gid(dfNode.id),
                 type,
                 x: Math.round(dfNode.pos_x),
                 y: Math.round(dfNode.pos_y),
@@ -398,9 +518,9 @@
                     const inPort = (tSpec.inputs || [])[inIdx];
                     if (outPort && inPort) {
                         edges.push({
-                            from: 'n' + dfNode.id,
+                            from: gid(dfNode.id),
                             from_port: outPort.name,
-                            to: 'n' + c.node,
+                            to: gid(c.node),
                             to_port: inPort.name,
                         });
                     }
@@ -1720,6 +1840,7 @@
         data.config = data.config || {};
         data.config[field] = value;
         refreshCard(nodeId);
+        scheduleRefRender();  // a {{ ref }} may have been added/removed
         markDirty();
         if (configChangeHook) configChangeHook(nodeId, field, value);
     }
@@ -1933,7 +2054,9 @@
             type, (spec.inputs || []).length, (spec.outputs || []).length,
             x, y, typeClass(type), { type, config: {} },
             nodeHtml(type, spec));
+        exportIds[dfId] = 'n' + dfId;
         refreshCard(dfId);
+        scheduleRefRender();
         openConfig(dfId);
     }
 
@@ -1981,12 +2104,16 @@
             (copy.pos_x || 60) + 40, (copy.pos_y || 60) + 40,
             typeClass(type), { type, config: Object.assign({}, data.config) },
             nodeHtml(type, spec));
+        exportIds[newId] = 'n' + newId;
         refreshCard(newId);
+        scheduleRefRender();
     }
 
     function deleteNode(dfId) {
         delete nodeOutputs[dfId];
+        delete exportIds[dfId];
         editor.removeNodeId('node-' + dfId);
+        scheduleRefRender();
     }
 
     // Show the output the node produced in the last preview run.
@@ -2308,6 +2435,16 @@
          'connectionRemoved'].forEach(ev => {
             try { editor.on(ev, () => markDirty()); } catch {}
         });
+        // Reference wires follow nodes, zoom and pan (rAF-throttled).
+        ['nodeMoved', 'zoom', 'translate', 'nodeCreated', 'nodeRemoved',
+         'connectionCreated', 'connectionRemoved'].forEach(ev => {
+            try { editor.on(ev, () => scheduleRefRender()); } catch {}
+        });
+        try {
+            editor.on('mouseMove', () => {
+                if (editor.drag) scheduleRefRender();
+            });
+        } catch {}
         ['wf-name', 'wf-description', 'wf-interval', 'wf-enabled'].forEach(id => {
             const elm = document.getElementById(id);
             if (elm) elm.addEventListener('input', () => markDirty());
