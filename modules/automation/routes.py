@@ -428,48 +428,35 @@ def run(workflow_id):
                 or stored.deleted_at is not None):
             return jsonify({"error": "The trigger file does not exist "
                                      "(or is in the trash)."}), 404
-    # Answers to input.param nodes collected in the run form.
+    # Answers to input.param nodes collected in the run form — one
+    # shared validator for every entry point (editor, drive menu, chat,
+    # AI, schedule profiles): trims, canonicalizes and checks ownership.
     params = {}
     raw_params = data.get("params")
     if isinstance(raw_params, dict):
-        params = {str(k)[:80]: str(v)[:20000]
+        params = {str(k)[:80]: v
                   for k, v in raw_params.items() if v not in (None, "")}
-    missing = [s["label"] for s in nodes.run_param_specs(graph)
-               if s["required"] and s["param"] not in params]
-    if missing:
-        return jsonify({"error": "Missing run parameters: "
-                                 + ", ".join(missing)}), 400
-    for spec in nodes.run_param_specs(graph):
-        if spec["param"] not in params:
-            continue
-        if spec["kind"] == "file":
-            try:
-                fid = int(params[spec["param"]])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"Run parameter '{spec['label']}' is "
-                                         "not a valid file."}), 400
-            stored = db.session.get(StoredFile, fid)
-            if (stored is None or stored.user_id != current_user.id
-                    or stored.deleted_at is not None):
-                return jsonify({"error": f"The file for '{spec['label']}' does "
-                                         "not exist (or is in the trash)."}), 404
-            params[spec["param"]] = str(fid)
-        elif spec["kind"] == "drive":
-            try:
-                did = int(params[spec["param"]])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"Run parameter '{spec['label']}' is "
-                                         "not a valid drive."}), 400
-            drive = db.session.get(Drive, did)
-            if drive is None or drive.user_id != current_user.id:
-                return jsonify({"error": f"The drive for '{spec['label']}' "
-                                         "does not exist."}), 404
-            params[spec["param"]] = str(did)
+    clean, errors = nodes.validate_run_params(graph, params, current_user)
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
     active = runtime.start_run(workflow, current_user, trigger="manual",
                                trigger_file_id=trigger_file_id,
-                               params=params or None)
+                               params=clean or None)
     return jsonify({"ok": True, "run_id": active.id,
                     "url": url_for("automation.run_detail", run_id=active.id)})
+
+
+@bp.get("/<int:workflow_id>/run-contract")
+def run_contract(workflow_id):
+    """The run contract: what a run of this workflow needs (starting file
+    + parameter questions). Every run form renders from here, so the
+    editor, drive menu, chat and AI all ask the same questions."""
+    workflow = _owned_workflow(workflow_id)
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return jsonify({"error": f"The workflow is broken: {exc}"}), 400
+    return jsonify(nodes.run_contract(graph))
 
 
 @bp.get("/api/attachable")

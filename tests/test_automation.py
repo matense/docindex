@@ -173,7 +173,8 @@ def test_save_file_accepts_drive_ref(app, user, enabled):
         # run_param_specs exposes the drive question for the run form + AI.
         specs = nodes.run_param_specs(
             {"nodes": graph["nodes"], "edges": []})
-        assert specs == []  # ask=no → static, no question
+        assert specs == [{"param": "target", "label": "target",
+                          "kind": "drive", "required": False}]  # ask=no → optional
         graph["nodes"][0]["config"].update({"ask": "yes", "drive_id": ""})
         specs = nodes.run_param_specs(
             {"nodes": graph["nodes"], "edges": []})
@@ -2234,10 +2235,11 @@ def test_run_param_specs_marks_required_and_skips_static():
                     "default": "x"}},
     ], "edges": []}
     specs = nodes.run_param_specs(graph)
-    assert [s["param"] for s in specs] == ["q", "region"]
+    assert [s["param"] for s in specs] == ["q", "region", "mode"]
     assert specs[0] == {"param": "q", "label": "Question?", "kind": "text",
                         "required": True}
     assert specs[1]["required"] is False  # static default = fallback
+    assert specs[2]["required"] is False  # ask=no = optional
 
 
 def test_run_endpoint_requires_missing_params(auth_client, app, user,
@@ -2266,11 +2268,87 @@ def test_run_endpoint_validates_file_param(auth_client, app, user, enabled):
     assert resp.status_code == 400
     resp = auth_client.post(f"/m/automation/{wf_id}/run",
                             json={"params": {"doc": "99999"}})
-    assert resp.status_code == 404
+    assert resp.status_code == 400  # unified validator: 400 with ownership msg
+    assert "Document" in resp.get_json()["error"]
     fid = _make_file(app, user, "ok.txt", "content")
     resp = auth_client.post(f"/m/automation/{wf_id}/run",
                             json={"params": {"doc": str(fid)}})
     assert resp.status_code == 200
+
+
+def test_explicit_required_overrides_auto(app):
+    graph = {"nodes": [
+        {"id": "a", "type": "input.param",
+         "config": {"param": "q", "kind": "text", "ask": "yes",
+                    "required": "no"}},
+        {"id": "b", "type": "input.param",
+         "config": {"param": "m", "kind": "text", "ask": "no",
+                    "default": "", "required": "yes"}},
+    ], "edges": []}
+    specs = {s["param"]: s for s in nodes.run_param_specs(graph)}
+    assert specs["q"]["required"] is False  # explicit No beats ask=yes
+    assert specs["m"]["required"] is True  # explicit Yes beats empty default
+
+
+def test_select_kind_options_and_validation(app, user):
+    config = {"param": "color", "kind": "select", "ask": "yes",
+              "options": "red | Red (urgent)\nblue"}
+    graph = _param_graph(config)
+    specs = nodes.run_param_specs(graph)
+    assert specs[0]["required"] is True
+    contract = nodes.run_contract(graph)
+    assert contract["params"][0]["options"] == [
+        {"value": "red", "label": "Red (urgent)"},
+        {"value": "blue", "label": "blue"}]
+    with app.app_context():
+        clean, errors = nodes.validate_run_params(
+            graph, {"color": "red"}, user)
+        assert clean == {"color": "red"} and errors == []
+        _, errors = nodes.validate_run_params(
+            graph, {"color": "green"}, user)
+        assert errors and "color" in errors[0].lower() or "choice" in errors[0]
+
+
+def test_new_kinds_normalize_and_reject(app, user):
+    for kind, good, bad in (
+            ("number", "12,5", "twelve"),
+            ("boolean", "YES", "maybe"),
+            ("date", "2026-10-31", "31/10/2026")):
+        graph = _param_graph({"param": "v", "kind": kind, "ask": "yes"})
+        with app.app_context():
+            clean, errors = nodes.validate_run_params(
+                graph, {"v": good}, user)
+            assert clean.get("v") and errors == [], (kind, errors)
+            _, errors = nodes.validate_run_params(graph, {"v": bad}, user)
+            assert len(errors) == 1, kind
+    with app.app_context():
+        clean, _ = nodes.validate_run_params(
+            _param_graph({"param": "v", "kind": "boolean", "ask": "yes"}),
+            {"v": "YES"}, user)
+        assert clean == {"v": "true"}
+
+
+def test_run_contract_endpoint(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "p", "type": "input.param",
+         "config": {"param": "q", "label": "Question?", "kind": "text",
+                    "ask": "yes"}},
+    ], "edges": []})
+    resp = auth_client.get(f"/m/automation/{wf_id}/run-contract")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["trigger"] is True
+    assert data["params"] == [{"param": "q", "label": "Question?",
+                               "kind": "text", "required": True,
+                               "default": "", "options": [], "node": "p"}]
+
+
+def test_run_contract_no_trigger_no_params(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph("hi"))
+    data = auth_client.get(
+        f"/m/automation/{wf_id}/run-contract").get_json()
+    assert data == {"trigger": False, "params": []}
 
 
 # ---------------------------------------------------------------------------

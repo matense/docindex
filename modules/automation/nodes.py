@@ -317,6 +317,62 @@ def resolve_drive_id(ctx, config, outputs, field="drive_id"):
     return drive
 
 
+def _param_required(config, has_static):
+    """Is this run input required? Explicit Yes/No wins; Auto means
+    required when the run form asks and there is no static fallback
+    (the historical behavior)."""
+    req = str(config.get("required", "auto") or "auto").strip().lower()
+    if req == "yes":
+        return True
+    if req == "no":
+        return False
+    return str(config.get("ask", "yes")) != "no" and not has_static
+
+
+def _normalize_param_value(kind, value):
+    """Canonicalize an answered value. Raises WorkflowError when the
+    value does not fit the kind."""
+    text = str(value).strip()
+    if kind == "number":
+        try:
+            float(text.replace(",", "."))
+        except ValueError as err:
+            raise WorkflowError(
+                f"'{text}' is not a number.") from err
+        return text
+    if kind == "boolean":
+        low = text.lower()
+        if low in ("1", "true", "yes", "on"):
+            return "true"
+        if low in ("0", "false", "no", "off"):
+            return "false"
+        raise WorkflowError(
+            f"'{text}' is not yes/no — answer true or false.")
+    if kind == "date":
+        import re as _re
+        if not _re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+            raise WorkflowError(
+                f"'{text}' is not a date — use YYYY-MM-DD.")
+        return text
+    return text
+
+
+def _select_options(config):
+    """Parse the dropdown options textarea: one option per line,
+    ``value | Label`` (label defaults to the value)."""
+    options = []
+    for line in str(config.get("options") or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            value, label = line.split("|", 1)
+            options.append((value.strip(), label.strip() or value.strip()))
+        else:
+            options.append((line, line))
+    return options
+
+
 def _exec_input_drive(ctx, config, inputs):
     """Drive picker run parameter: the drive answered in the run form
     (user or AI), or the static drive below for schedules and triggers."""
@@ -342,10 +398,14 @@ def _exec_input_drive(ctx, config, inputs):
         drive_id = None
     drive = db.session.get(Drive, drive_id) if drive_id else None
     if drive is None or drive.user_id != ctx["user"].id:
-        if ask:
+        if _param_required(config, has_static=False):
             raise WorkflowError(f"Run parameter '{name}' was not provided.")
         raise WorkflowError(
-            f"Drive parameter '{name}' has no drive — pick a static drive.")
+            f"Drive parameter '{name}' has no drive — answer it in the run "
+            "form or pick a static drive. (Optional only skips text-like "
+            "answers; a run cannot proceed without a drive.)")
+    ctx["log"](f"using drive '{drive.name}'")
+    return p_drive(drive.id, drive.name)
     ctx["log"](f"using drive '{drive.name}'")
     return p_drive(drive.id, drive.name)
 
@@ -367,44 +427,134 @@ def _exec_input_param(ctx, config, inputs):
         if value in (None, ""):
             raise WorkflowError(
                 f"Run parameter '{name}' has no file — answer it in the "
-                "run form or pick a static file.")
+                "run form or pick a static file. (Optional only skips "
+                "text-like answers; a run cannot proceed without a file.)")
     else:
         value = config.get("default") or ""
-        if ask and not str(value).strip():
+        if _param_required(config, has_static=bool(str(value).strip())):
             raise WorkflowError(f"Run parameter '{name}' was not provided.")
+    if kind == "file":
+        return load_file_payload(ctx["user"], value, log=ctx["log"])
+    if kind == "select":
+        allowed = _select_options(config)
+        if str(value).strip() not in [v for v, _label in allowed]:
+            raise WorkflowError(
+                f"Run parameter '{name}': '{value}' is not one of the "
+                "allowed choices.")
+        return p_text(str(value).strip())
+    if kind in ("number", "boolean", "date"):
+        return p_text(_normalize_param_value(kind, value))
+    return p_text(str(value))
     if kind == "file":
         return load_file_payload(ctx["user"], value, log=ctx["log"])
     return p_text(str(value))
 
 
-def run_param_specs(graph):
-    """The input.param nodes that want an answer in the run form.
+def run_contract(graph):
+    """The run contract of a workflow: what a run needs to start.
 
-    Returns [{param, label, kind, required}] for nodes with ask=yes;
-    ``required`` means there is no static fallback, so the run cannot
-    start without an answer."""
-    specs = []
+    Returns {"trigger": bool, "params": [{param, label, kind, required,
+    default, options, node}]}. ``trigger`` is True when an input.trigger
+    node exists (the run wants a starting file). ``required`` honors the
+    explicit Required flag, falling back to the historical rule (asked
+    with no static fallback). ``default``/``options`` let every run form
+    (editor, drive menu, chat, AI) render from this single source.
+    """
+    params = []
     for node in graph.get("nodes", []):
-        if node.get("type") not in ("input.param", "input.drive"):
+        ntype = node.get("type")
+        if ntype not in ("input.param", "input.drive"):
             continue
         config = node.get("config") or {}
-        if str(config.get("ask", "yes")) == "no":
-            continue
-        if node.get("type") == "input.drive":
+        pname = (config.get("param") or "").strip()
+        if not pname:
+            continue  # validate_graph rejects it; contract skips silently
+        if ntype == "input.drive":
             kind, has_static = "drive", config.get("drive_id") not in (
                 None, "")
-        elif (kind := config.get("kind") or "text") == "file":
-            has_static = bool(config.get("file_id"))
+            default, options = config.get("drive_id") or "", []
         else:
-            has_static = bool(str(config.get("default") or "").strip())
-        specs.append({
-            "param": (config.get("param") or "").strip(),
-            "label": (config.get("label") or "").strip()
-                     or (config.get("param") or "").strip(),
+            kind = config.get("kind") or "text"
+            if kind == "file":
+                has_static = config.get("file_id") not in (None, "")
+                default, options = config.get("file_id") or "", []
+            elif kind == "select":
+                has_static = False
+                default = ""
+                options = [{"value": v, "label": label}
+                           for v, label in _select_options(config)]
+            else:
+                has_static = bool(str(config.get("default") or "").strip())
+                default, options = config.get("default") or "", []
+        params.append({
+            "param": pname,
+            "label": ((config.get("label") or "").strip() or pname),
             "kind": kind,
-            "required": not has_static,
+            "required": _param_required(config, has_static),
+            "default": default,
+            "options": options,
+            "node": node.get("id"),
         })
-    return specs
+    trigger = any(n.get("type") == "input.trigger"
+                  for n in graph.get("nodes", []))
+    return {"trigger": trigger, "params": params}
+
+
+def run_param_specs(graph):
+    """Legacy shape for existing callers: [{param, label, kind, required}]."""
+    return [{k: s[k] for k in ("param", "label", "kind", "required")}
+            for s in run_contract(graph)["params"]]
+
+
+def validate_run_params(graph, params, user):
+    """Check run-form answers against the contract. Returns
+    (clean_params, errors): clean values (whitespace-trimmed, canonical
+    booleans, str file/drive ids) and a list of human messages.
+    Ownership of file/drive answers is verified here."""
+    from app.models import Drive, StoredFile
+    uid = user.id if hasattr(user, "id") else user
+    contract = run_contract(graph)
+    by_param = {s["param"]: s for s in contract["params"]}
+    clean, errors = {}, []
+    params = params or {}
+    for pname, spec in by_param.items():
+        raw = params.get(pname)
+        value = raw.strip() if isinstance(raw, str) else raw
+        if value in (None, ""):
+            if spec["required"]:
+                errors.append(f"Missing run parameter: {spec['label']}")
+            continue
+        kind = spec["kind"]
+        try:
+            if kind == "file":
+                fid = int(value)
+                stored = db.session.get(StoredFile, fid)
+                if (stored is None or stored.user_id != uid
+                        or stored.deleted_at is not None):
+                    raise WorkflowError("does not exist (or is in the trash)")
+                clean[pname] = str(fid)
+            elif kind == "drive":
+                did = int(value)
+                drive = db.session.get(Drive, did)
+                if drive is None or drive.user_id != uid:
+                    raise WorkflowError("does not exist")
+                clean[pname] = str(did)
+            elif kind == "select":
+                allowed = [o["value"] for o in spec["options"]]
+                if str(value).strip() not in allowed:
+                    raise WorkflowError(
+                        f"'{value}' is not an allowed choice")
+                clean[pname] = str(value).strip()
+            elif kind in ("number", "boolean", "date"):
+                clean[pname] = _normalize_param_value(kind, value)
+            else:
+                clean[pname] = str(value).strip()
+        except (TypeError, ValueError):
+            errors.append(f"Run parameter '{spec['label']}' is not a "
+                          f"valid {kind}.")
+        except WorkflowError as exc:
+            errors.append(f"Run parameter '{spec['label']}': {exc}")
+    return clean, errors
 
 
 def _exec_trigger(ctx, config, inputs):
@@ -1300,14 +1450,32 @@ def register_defaults():
              "options": [{"value": "text", "label": "Short text"},
                          {"value": "longtext", "label": "Long text"},
                          {"value": "number", "label": "Number"},
+                         {"value": "select", "label": "Dropdown choice"},
+                         {"value": "boolean", "label": "Yes / No"},
+                         {"value": "date", "label": "Date"},
                          {"value": "file", "label": "File from a drive"}],
              "default": "text"},
+            {"name": "options", "label": "Dropdown options", "kind": "textarea",
+             "default": "",
+             "show_when": {"field": "kind", "equals": "select"},
+             "placeholder": "one per line: value | Label",
+             "help": "One option per line. 'red | Red (urgent)' shows "
+                     "'Red (urgent)' but passes 'red'."},
             {"name": "ask", "label": "Ask at run time", "kind": "select",
-             "advanced": True,
              "options": [{"value": "yes", "label": "Yes — ask every run"},
                          {"value": "no", "label": "No — always use the "
                                                   "static value"}],
-             "default": "yes"},
+             "default": "yes",
+             "help": "Off means scheduled, triggered and AI runs silently "
+                     "use the static value below."},
+            {"name": "required", "label": "Required", "kind": "select",
+             "options": [{"value": "auto",
+                          "label": "Auto (required when asked with no "
+                                   "static fallback)"},
+                         {"value": "yes", "label": "Always required"},
+                         {"value": "no", "label": "Optional"}],
+             "default": "auto",
+             "help": "Explicit Yes/No wins over Auto."},
             {"name": "default", "label": "Static default", "kind": "text",
              "advanced": True, "default": "",
              "show_when": {"field": "kind", "not_in": ["file"]},
@@ -1342,11 +1510,20 @@ def register_defaults():
              "help": "Used when nobody answers (schedules, triggers, AI) "
                      "or when asking is off."},
             {"name": "ask", "label": "Ask at run time", "kind": "select",
-             "advanced": True,
              "options": [{"value": "yes", "label": "Yes — ask every run"},
                          {"value": "no", "label": "No — always use the "
                                                   "static drive"}],
-             "default": "yes"},
+             "default": "yes",
+             "help": "Off means scheduled, triggered and AI runs silently "
+                     "use the static drive below."},
+            {"name": "required", "label": "Required", "kind": "select",
+             "options": [{"value": "auto",
+                          "label": "Auto (required when asked with no "
+                                   "static drive)"},
+                         {"value": "yes", "label": "Always required"},
+                         {"value": "no", "label": "Optional"}],
+             "default": "auto",
+             "help": "Explicit Yes/No wins over Auto."},
         ]}, _exec_input_drive)
 
     register_node_type("docindex.search_files", {

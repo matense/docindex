@@ -115,20 +115,20 @@ def _tool_run(user, args, drive):
             return {"error": "The trigger file does not exist (or is in the trash)."}
     else:
         trigger_file_id = None
-    # Validate required params up front (same rules as the manual run form).
+    # Same contract rules as the manual run form (shared validator).
     from . import nodes as _nodes
     try:
         graph = engine.parse_graph(workflow.graph)
     except engine.WorkflowError as exc:
         return {"error": f"The workflow is broken: {exc}."}
-    missing = [s["label"] for s in _nodes.run_param_specs(graph)
-               if s["required"] and (not params or s["param"] not in params)]
-    if missing:
-        return {"error": "Missing run parameters: " + ", ".join(missing) +
-                         ". Pass them in params."}
+    clean, errors = _nodes.validate_run_params(graph, params or {}, user)
+    if errors:
+        return {"error": "Missing or invalid run parameters: "
+                         + "; ".join(errors) + ". Ask the user for these "
+                         "values, then call run_workflow again with params."}
     run = runtime.start_run(workflow, user, trigger="ai",
                             trigger_file_id=trigger_file_id,
-                            params=params or None)
+                            params=clean or None)
     return {"run_id": run.id, "status": run.status,
             "url": f"/m/automation/runs/{run.id}",
             "note": f"Workflow '{workflow.name}' started in the background; "
