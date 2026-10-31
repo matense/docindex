@@ -1040,6 +1040,73 @@ def test_chat_context_size_error_gets_friendly_message(auth_client, app, user):
     assert "508691" not in data["task"]["error"]
 
 
+def test_provider_json_error_gets_headline_plus_expandable_details(
+        auth_client, app, user):
+    from app.services import ai_task_service
+
+    body = ('{"error": {"message": "Failed to load model '
+            '\\"qwen/qwen3.8-27b\\". Error: Engine protocol startup was '
+            'aborted.", "type": "invalid_request_error", "param": "model", '
+            '"code": null}}')
+    exc = agent_service.ai_service.AIError(
+        f"AI backend returned 400: {body}")
+
+    headline = ai_task_service._friendly_error(exc)
+    assert headline.startswith("The AI server returned an error (HTTP 400):")
+    assert "Failed to load model" in headline
+    # Headline stays short: no raw JSON dump in it.
+    assert '"type"' not in headline
+    assert '"param"' not in headline
+
+    details = ai_task_service._error_details(exc)
+    assert details is not None
+    assert details.startswith('<details class="ai-error-details">')
+    assert "<summary>Provider details (HTTP 400)</summary>" in details
+    # Full provider payload is preserved inside, HTML-escaped.
+    assert "Engine protocol startup was aborted." in details
+    assert "&quot;" in details or "&#x27;" in details or "qwen" in details
+
+    # End to end: the chat bubble carries the headline plus the
+    # expandable block, while the task row keeps the headline only.
+    app.config["AI_ENABLED"] = True
+    with patch("app.services.ai_service.chat_completion",
+               side_effect=agent_service.ai_service.AIError(
+                   f"AI backend returned 400: {body}")):
+        resp = auth_client.post("/ai/chat", json={"message": "hello"})
+        data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["task"]["status"] == "error"
+    assert data["task"]["error"].startswith(
+        "The AI server returned an error (HTTP 400):")
+    assert '"type"' not in data["task"]["error"]
+    with app.app_context():
+        last = ChatConversation.query.one().messages[-1]
+        assert last.role == "assistant"
+        assert "The AI server returned an error (HTTP 400):" in last.content
+        assert '<details class="ai-error-details">' in last.content
+        assert "Engine protocol startup was aborted." in last.content
+
+
+def test_provider_plain_text_error_gets_headline(auth_client, app, user):
+    from app.services import ai_task_service
+
+    exc = agent_service.ai_service.AIError(
+        "AI backend returned 404: No matching route found.")
+    assert ai_task_service._friendly_error(exc) == (
+        "The AI server returned an error (HTTP 404): "
+        "No matching route found.")
+
+
+def test_non_provider_error_has_no_details_block():
+    from app.services import ai_task_service
+
+    exc = agent_service.ai_service.AIError(
+        "Cannot reach AI backend at http://localhost:1234: refused")
+    assert ai_task_service._friendly_error(exc) == str(exc)
+    assert ai_task_service._error_details(exc) is None
+
+
 # ------------------------------------------------------- context-window caps
 
 

@@ -385,7 +385,76 @@ def _friendly_error(exc):
                 "base URL may be incorrect. Go to Settings → AI, "
                 "check the base URL and model (use the Test button to "
                 "see the available models), and try again.")
+    headline = _provider_headline(msg)
+    if headline is not None:
+        return headline
     return msg
+
+
+def _provider_headline(msg):
+    """Short human headline for raw provider HTTP errors.
+
+    Turns ``AI backend returned 400: {"error": {"message": ...}}``
+    into ``The AI server returned an error (HTTP 400): ...``. The full
+    body is kept separately by `_error_details` for the expandable
+    part. Returns None when the message is not a provider HTTP error.
+    """
+    import re as _re
+    m = _re.match(r"AI backend returned (\d{3}):\s*(.*)$", msg, _re.S)
+    if not m:
+        return None
+    status, body = m.group(1), m.group(2).strip()
+    provider_msg = None
+    try:
+        import json as _json
+        data = _json.loads(body)
+        if isinstance(data, dict):
+            err = data.get("error", data)
+            if isinstance(err, dict):
+                provider_msg = (err.get("message") or err.get("msg")
+                                or err.get("detail"))
+            elif isinstance(err, str):
+                provider_msg = err
+    except (ValueError, AttributeError):
+        pass
+    if not provider_msg:
+        # Plain-text body (e.g. "No matching route found").
+        provider_msg = body.splitlines()[0] if body else ""
+    provider_msg = " ".join(str(provider_msg).split())
+    if len(provider_msg) > 200:
+        provider_msg = provider_msg[:200].rstrip() + "…"
+    if provider_msg:
+        return (f"The AI server returned an error (HTTP {status}): "
+                f"{provider_msg}")
+    return f"The AI server returned an error (HTTP {status})."
+
+
+def _error_details(exc):
+    """Full provider payload as an expandable HTML block, or None.
+
+    The chat renders message markdown (which passes block-level HTML
+    through), so a ``<details>`` block shows as a collapsed "Provider
+    details" section with the complete body inside.
+    """
+    import html as _html
+    import json as _json
+    import re as _re
+    m = _re.match(r"AI backend returned (\d{3}):\s*(.*)$", str(exc), _re.S)
+    if not m:
+        return None
+    status, body = m.group(1), m.group(2).strip()
+    if not body:
+        return None
+    try:
+        pretty = _json.dumps(_json.loads(body), indent=2,
+                             ensure_ascii=False)
+    except ValueError:
+        pretty = body
+    if len(pretty) > 2000:
+        pretty = pretty[:2000].rstrip() + "…"
+    return (f'<details class="ai-error-details">'
+            f'<summary>Provider details (HTTP {status})</summary>\n'
+            f'<pre>{_html.escape(pretty)}</pre></details>')
 
 
 def _run_task(task_id, app):
@@ -584,9 +653,14 @@ def _run_task(task_id, app):
         msg = _friendly_error(exc)
         log_service.log_event("error", "ai_task", msg,
                               user_id=user.id, path=f"/ai/tasks/{task_id}")
-        err_msg = persist("assistant", f"⚠ {msg}", model=model_name)
+        # Chat presentation: short headline in the bubble, full provider
+        # payload inside an expandable <details> block. The task row keeps
+        # the headline only (widget/tooltips show plain text).
+        details = _error_details(exc)
+        full = msg if not details else msg + "\n\n" + details
+        err_msg = persist("assistant", f"⚠ {full}", model=model_name)
         flush_usage(err_msg.id)
-        _broadcast(task_id, {"type": "error", "error": msg})
+        _broadcast(task_id, {"type": "error", "error": full})
         task.status = "error"
         task.error = msg[:500]
         task.finished_at = utcnow()

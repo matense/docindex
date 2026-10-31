@@ -1091,11 +1091,23 @@ modal (`/file/<id>/info`), rename, and drag & drop:
 
 `window.currentFile` tracks the file open in the viewer for `@here`.
 
-### Chat UIs (`ai_chat.js`, `ai_page.js`)
+### Chat engine (`ai_core.js`) + hosts (`ai_chat.js`, `ai_page.js`)
 
-Two near-identical clients: `ai_chat.js` is the floating dock panel
-(toggle/center modes, used everywhere), `ai_page.js` is the full-page
-assistant at `/search?mode=ai` (adds suggestion chips). Both:
+One shared session engine drives both chats: `window.DocIndexChat.
+createSession(view, opts)` owns all behavior (transcript rendering,
+streaming, composer, chips/mentions/personas/uploads, conversations,
+task mode, run workflows); the hosts only supply DOM refs (`view`,
+including `classPrefix` for the few host-specific class names) and
+capabilities (`opts`: `taskMode`, `consumeContext`,
+`onPlusMenuToggle`, ...). `ai_chat.js` is the floating dock panel
+(focus/drag/resize, dock/snap chrome, header menus — one session per
+window); `ai_page.js` is a thin wiring of the full-page assistant at
+`/search?mode=ai` (single session, sticky context). Pure helpers
+(`fmtTokens`, `fmtTime`, `toolIcon`, `iconFor`, `copyWithToast`,
+`TOOL_ICONS`) live on `window.DocIndexChat` for both hosts. The
+factory + view-adapter shape maps 1:1 onto a future component-based
+UI (view = props, opts = callbacks). Both hosts expose the same
+minimal surface (`newConversation`, `toggleList`, `conversationId`):
 
 - POST `{message, conversation_id, attachments, ...context}` to `/ai/chat`,
   which creates a run and returns `{task, conversation_id, stream_url}`;
@@ -1332,6 +1344,17 @@ tool + table).
   snapshotted state is then also embedded in the file (`synced_history`,
   capped), so shared-drive collaborators reconstruct the full history on
   sync; corrupt remote notebooks are quarantined instead of adopted.
+- `whiteboards` — hand-drawn-style boards (Excalidraw, vendored). A board
+  is a regular `StoredFile` with extension `.wboard` whose blob is an
+  Excalidraw scene JSON, so it gets drives, trash, `FileVersion` history
+  and FTS search for free — no new tables. Own board list/editor pages
+  under `/m/whiteboards/` (SPA-proof editor mount, boards trashable from
+  the list, titles hide the extension); text on shapes becomes bound
+  labels, elements without coordinates auto-flow into free space, and the
+  scene graph keeps stable ids across saves. AI tools `whiteboards.*`
+  (list/create/get_scene/context/add/update/delete/arrange/clear) let the
+  assistant draw and edit boards live; boards support the same AI lock /
+  hide-from-AI flags as notebooks.
 - `automation` — visual workflow builder. Workflows are DAGs of
   typed nodes edited on a drag & drop canvas (Drawflow, vendored) and
   executed server-side. Node categories: **Input** (text/JSON, file from
@@ -1433,11 +1456,15 @@ tool + table).
   Tables: `mod_automation_workflow` (graph JSON, schedule fields) and
   `mod_automation_run` (status, log, output, optional trigger file,
   answered run params), with an independent alembic
-  branch (`automation`).
+  branch (`automation`). The canvas renders template references as
+  dashed wires with port tooltips, a Check button validates the graph
+  (node shapes, reference targets, schedule completeness) via an
+  upstream-shape API before running, and graph export preserves node
+  ids so references survive autosave.
 
 ## Testing
 
-pytest suite in `tests/`, 650+ tests across 20+ modules:
+pytest suite in `tests/`, 750+ tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
@@ -1471,7 +1498,10 @@ pytest suite in `tests/`, 650+ tests across 20+ modules:
   files, agent, JSON-to-table and notebook nodes — run lifecycle/stop/
   recovery, trigger-file runs, example instantiation, the file-shape
   hint endpoint, scheduler due-workflow rules and tick, AI tools, routes
-  with ownership and disabled-module 404s).
+  with ownership and disabled-module 404s), the whiteboards module
+  (scene CRUD, AI tools, stable ids), measured token usage (provider
+  numbers, per-message badges, aggregates), and AI utils enable
+  switches.
 
 Run with `pytest`.
 

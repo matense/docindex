@@ -1,6 +1,37 @@
 {
   "releases": [
     {
+      "version": "0.1.11",
+      "date": "2026-10-31",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Measured token usage: every AI answer now carries its real token counts (bold ↑ prompt / ↓ completion badges, reported by the provider — not estimates), and Profile → AI usage shows today / 7-day / 30-day / all-time spend with a 30-day chart.",
+            "AI Utils switches (admins, on the AI Utils reference page): enable or disable whole sections or individual tools — only the enabled tools are offered to the model.",
+            "Automation overhaul: one shared run form everywhere (editor, drive menu, chat, run page) driven by the workflow's contract; inputs can be Required, with new select / yes-no / date kinds; schedules use profiles with frozen answers validated when configured; merge nodes join any number of branches; saving several files produces one ZIP; file destinations can be decided at run time (workflow references, drive names, folder paths); example workflows ask for the destination when they run.",
+            "Automation editor: template references ({{ nX }}) render as dashed wires with port tooltips, and a Check button validates the graph (shapes, references, schedule) before running."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Chat internals unified: the dock panel and the full-page assistant now share one session engine — identical behavior with roughly half the code, and ready for a future component-based UI."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Automation run page no longer flickers while a run streams; template references survive autosave instead of breaking after the first save."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.10",
       "date": "2026-10-29",
       "title": "In development",
