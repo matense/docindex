@@ -153,6 +153,8 @@
         let sending = false;
         let inputPlaceholder = '';
         let deepMode = false;
+        let composerBound = false;
+        let chromeBound = false;
         let pendingSummaries = {};
         let personaCache = null;
         let taskMode = null;
@@ -1825,8 +1827,30 @@
         // The submit path is identical everywhere: stop-in-flight first,
         // then a guarded single create-POST per message.
         function bindComposer() {
-            if (!form || !input) return;
+            if (!form || !input || composerBound) return;
+            composerBound = true;
             input.addEventListener('input', growInput);
+            // Clipboard images (e.g. straight from the Snipping Tool — no
+            // saved file, image lives only in memory): upload + attach them
+            // like a dropped file. Anything else pastes normally.
+            input.addEventListener('paste', (e) => {
+                const files = Array.from(
+                    (e.clipboardData && e.clipboardData.files) || [])
+                    .filter(f => f && f.type && f.type.startsWith('image/'));
+                if (!files.length) return;
+                e.preventDefault();
+                const stamp = new Date().toISOString().slice(0, 19)
+                    .replace(/[-:T]/g, '');
+                const named = files.map((f, i) => {
+                    const ext = (f.type.split('/')[1] || 'png')
+                        .replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'png';
+                    const suffix = files.length > 1 ? '-' + (i + 1) : '';
+                    return new File([f],
+                        'pasted-image-' + stamp + suffix + '.' + ext,
+                        { type: f.type });
+                });
+                uploadDeviceFiles(named);
+            });
             // @here / # / $ autocomplete triggers (same on both clients).
             input.addEventListener('input', () => {
                 const val = input.value;
@@ -2031,6 +2055,8 @@
         // behavior in dock and page; only the elements differ (view).
         // Per-host extras (dock more-menu interlock) go through opts.
         function bindChrome() {
+            if (chromeBound) return;
+            chromeBound = true;
             bindComposer();
             if (plusBtn) plusBtn.addEventListener('click', () => togglePlusMenu());
             if (plusMenu) {
