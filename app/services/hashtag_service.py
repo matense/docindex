@@ -24,6 +24,7 @@ from flask import current_app
 from ..extensions import db
 from ..models import Drive, FileIndex, StoredFile, User
 from . import ai_service
+from .db_locks import serialized
 
 MAX_TAGS = 20          # sanity cap on tags per file
 MAX_SOURCE_CHARS = 6000  # text excerpt sent to the AI
@@ -65,6 +66,7 @@ def _clean_tags(tags, source):
     return clean
 
 
+@serialized
 def set_tags(stored_file, tags, source="user"):
     """Normalize, dedupe and persist the file's tags. Returns the final list.
 

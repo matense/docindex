@@ -266,14 +266,20 @@ def index_file(file_id, app=None):
             index.error = str(exc)[:1000]
 
         from ..models import utcnow
+        from .db_locks import index_write
+
         index.indexed_at = utcnow()
-        db.session.commit()
-        # Keep the FTS5 search index in sync (no-op when FTS5 is unavailable).
-        search_service.fts_upsert(stored.id)
-        # Embed for semantic search (no-op when embeddings are off; skips
-        # unchanged chunks). Covers every path through here: queue drainers,
-        # synchronous uploads/reindexes and direct calls.
-        _embed_if_enabled(app, stored)
+        # Index writes are serialized process-wide (single SQLite writer):
+        # extraction above stays parallel, only this commit-sized tail
+        # takes the lock.
+        with index_write():
+            db.session.commit()
+            # Keep the FTS5 search index in sync (no-op when FTS5 is unavailable).
+            search_service.fts_upsert(stored.id)
+            # Embed for semantic search (no-op when embeddings are off; skips
+            # unchanged chunks). Covers every path through here: queue drainers,
+            # synchronous uploads/reindexes and direct calls.
+            _embed_if_enabled(app, stored)
 
 
 # --------------------------------------------------------------------------

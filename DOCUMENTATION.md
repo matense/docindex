@@ -134,6 +134,35 @@ All models live in `app/models.py`. `utcnow()` provides timezone-aware UTC
 defaults. Deleting a user cascades to everything they own; deleting a folder
 cascades to its children and files; deleting a file cascades to its index row.
 
+### Two database files (core + index)
+
+Since the split-index migration, the data lives in **two SQLite files**:
+
+- `instance/docindex.sqlite` — the **core** database: users, drives,
+  folders, files (metadata only), versions, chat, tasks, AI connections,
+  settings, module tables. Small, hot in cache, cheap to back up.
+- `instance/docindex_index.sqlite` — the **search index**, fully
+  derivable from the stored files: `file_index` (extracted text, captions,
+  hashtags, stats), `file_fts*` (FTS5), `file_embeddings`. Drop + reindex
+  rebuilds it; it is never the backup priority.
+
+Every connection `ATTACH`es the index file as `idx` on connect (see
+`_sqlite_listener` in `app/__init__.py`; path derived from the core URI,
+`:memory:` for `:memory:` cores so tests keep working unchanged). The
+index models carry `__table_args__ = {"schema": "idx"}` and the raw FTS
+SQL is schema-qualified (`FROM idx.file_fts ... WHERE file_fts MATCH`,
+unqualified in `MATCH`/`bm25`/`snippet` — SQLite requires the bare table
+name there). One SQLite connection spans both files, so meta + index
+writes stay in a single transaction; cross-database foreign keys are not
+enforced by SQLite and are covered by service-layer deletes plus the
+indexer's per-file flow.
+
+SQLite has a single writer per file, so all index writes are serialized
+process-wide through `app/services/db_locks.py` (`@serialized` on
+`index_file`'s commit tail, embedding store, tag writes and the FTS
+writers; reentrant, reads stay lock-free under WAL). Extraction itself
+stays parallel — only the commit-sized tail takes the lock.
+
 ### `users`
 
 | Column | Type | Notes |

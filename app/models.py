@@ -204,9 +204,16 @@ class FileVersion(db.Model):
 
 
 class FileIndex(db.Model):
-    """Full-text search index for a stored file."""
+    """Full-text search index for a stored file.
+
+    Lives in the attached index database (`idx` schema) — see
+    `_sqlite_listener` in ``app/__init__.py`` and the split-index
+    migration. All access is plain ORM; the schema prefix is the only
+    thing that changed, so callers are untouched.
+    """
 
     __tablename__ = "file_index"
+    __table_args__ = {"schema": "idx"}
 
     id = db.Column(db.Integer, primary_key=True)
     file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=False,
@@ -231,6 +238,8 @@ class FileEmbedding(db.Model):
     Chunk texts come from the extracted text (or image caption + name);
     ``text_hash`` skips re-embedding unchanged chunks; ``model``/``dims``
     record what produced the vector so a model change re-embeds cleanly.
+
+    Lives in the attached index database (`idx` schema) like FileIndex.
     """
 
     __tablename__ = "file_embeddings"
@@ -246,7 +255,8 @@ class FileEmbedding(db.Model):
     dims = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
 
-    __table_args__ = (db.UniqueConstraint("file_id", "chunk_index"),)
+    __table_args__ = (db.UniqueConstraint("file_id", "chunk_index"),
+                      {"schema": "idx"})
 
     def __repr__(self):
         return f"<FileEmbedding file={self.file_id} chunk={self.chunk_index}>"
