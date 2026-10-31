@@ -63,6 +63,12 @@ rem 6. First admin user (prompts; or pass args: install.bat user email -
 rem    the password is always prompted, never passed as an argument)
 echo -^> Creating the admin user...
 "%VENV_PY%" create_admin.py %*
+if errorlevel 1 (
+    echo.
+    echo WARNING: the admin user was not created. Create it later with:
+    echo     "%VENV_PY%" create_admin.py
+    exit /b 1
+)
 
 echo.
 echo === Done! To start the app: ===

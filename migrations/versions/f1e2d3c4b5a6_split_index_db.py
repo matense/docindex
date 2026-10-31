@@ -10,7 +10,7 @@ as `idx` on every connection (see `_sqlite_listener` in app/__init__.py).
 The ORM models carry `__table_args__ = {"schema": "idx"}`, so all Python
 access is unchanged.
 
-Why: SQLite has a single writer per file — index drainers used to contend
+Why: SQLite has a single writer per file - index drainers used to contend
 with interactive writes ("database is locked"). After this split, index
 writes only contend with each other (additionally serialized in-process
 via `app.services.db_locks`), and the index file is fully derivable from
@@ -52,7 +52,7 @@ def _index_path(core_path):
 
 def _attach(bind, index_path):
     # The migration connection may already carry `idx` (the app engine's
-    # connect listener attaches it) — ATTACH-ing twice errors out.
+    # connect listener attaches it) - ATTACH-ing twice errors out.
     names = [row[1] for row in bind.execute(sa.text("PRAGMA database_list"))]
     if "idx" in names:
         return
@@ -94,7 +94,7 @@ def _copy_table_chunked(bind, table, src="main", dst="idx", chunk=_COPY_CHUNK):
         last = bind.execute(
             sa.text(f"SELECT MAX(id) FROM {dst}.{table}")).scalar() or last
         _log(f"{table}: {copied}/{total} "
-             f"({copied * 100 // total}%) — "
+             f"({copied * 100 // total}%) - "
              f"{time.monotonic() - start:.0f}s elapsed")
         if n < chunk:
             break
@@ -119,7 +119,7 @@ def _copy_fts_chunked(bind, src="main", dst="idx", chunk=_COPY_CHUNK):
             {"a": first, "b": first + chunk - 1}).rowcount or 0
         copied += n
         _log(f"file_fts: {copied}/{total} "
-             f"({copied * 100 // total}%) — "
+             f"({copied * 100 // total}%) - "
              f"{time.monotonic() - start:.0f}s elapsed")
     return copied
 
@@ -150,7 +150,7 @@ def upgrade():
 
     n_files = _count(bind, "SELECT COUNT(*) FROM main.files")
     _log(f"starting split: {n_files} files, "
-         f"core is {_file_mb(core_path):.0f} MB — "
+         f"core is {_file_mb(core_path):.0f} MB - "
          f"copying the search index to {os.path.basename(index_path)}")
     t0 = time.monotonic()
 
@@ -177,7 +177,7 @@ def upgrade():
     op.execute("DROP TABLE main.file_index")
     op.execute("DROP TABLE main.file_embeddings")
     _log("old index tables dropped from the core database")
-    _log("compacting the core database (VACUUM — can take minutes, "
+    _log("compacting the core database (VACUUM - can take minutes, "
          "do not interrupt)...")
     with op.get_context().autocommit_block():
         op.execute("VACUUM")
