@@ -442,7 +442,14 @@
             }
         }
         lines.forEach(l => consoleEl.appendChild(el('div', l.cls, l.text)));
-        consoleEl.scrollTop = consoleEl.scrollHeight;
+        // Autoscroll only when the user is already at the bottom — never
+        // yank the scroll while they read older lines.
+        const nearBottom = consoleEl.scrollHeight - consoleEl.scrollTop -
+                           consoleEl.clientHeight < 40;
+        if (nearBottom || !renderConsole._stuck) {
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+        renderConsole._stuck = !nearBottom;
     }
 
     // --- Live elapsed timer for the running node --------------------------
@@ -462,6 +469,26 @@
 
     function apply(data) {
         lastData = data;
+        // Skip the heavy re-render when nothing visible changed (status,
+        // log tail, progress, outputs): rebuilding the pipeline rows,
+        // console and spinner every 2s reads as flicker and yanks the
+        // console scroll. Duration still updates below.
+        const log = data.log || [];
+        const last = log[log.length - 1];
+        const p = data.progress || {};
+        const sig = [data.status, log.length,
+                     last ? last.node + last.status + (last.ms || 0) : '',
+                     p.percent, p.finished, p.total,
+                     data.output ? JSON.stringify(data.output).length : 0,
+                     data.error || ''].join('|');
+        if (sig === apply._sig) {
+            if (data.started_at) {
+                const end = data.finished_at ? new Date(data.finished_at) : new Date();
+                durEl.textContent = ' · duration: ' + fmtMs(end - new Date(data.started_at));
+            }
+            return;
+        }
+        apply._sig = sig;
         renderProgress(data.progress, data.status);
         renderPipeline(data.pipeline, data.log || [], data.status);
         renderConsole(data);
