@@ -720,30 +720,70 @@ async function openRunWorkflow(fileId, fileName) {
         btn.appendChild(main);
         btn.addEventListener('click', async () => {
             btn.disabled = true;
-            try {
-                const resp = await fetch('/m/automation/' + wf.id + '/run', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file_id: parseInt(fileId, 10) }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                modal.close();
-                if (!resp.ok) {
+            const directRun = async (body) => {
+                try {
+                    const resp = await fetch('/m/automation/' + wf.id + '/run', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    modal.close();
+                    if (!resp.ok) {
+                        if (window.uiAlert) {
+                            window.uiAlert(data.error || 'Could not start the run.',
+                                           { title: 'Run workflow' });
+                        }
+                        btn.disabled = false;
+                        return;
+                    }
+                    if (window.spaNavigate) window.spaNavigate(data.url);
+                    else location.href = data.url;
+                } catch {
+                    modal.close();
                     if (window.uiAlert) {
-                        window.uiAlert(data.error || 'Could not start the run.',
+                        window.uiAlert('Could not reach the server.',
                                        { title: 'Run workflow' });
                     }
-                    btn.disabled = false;
+                }
+            };
+            const runBody = { file_id: parseInt(fileId, 10) };
+            // Same run form as everywhere else: fetch the contract, run
+            // directly when nothing is asked, otherwise ask in a form.
+            try {
+                if (!window.AutomationRunForm) {
+                    await new Promise((res, rej) => {
+                        const s = document.createElement('script');
+                        s.src = '/m/automation/static/run_form.js?v=1';
+                        s.onload = res;
+                        s.onerror = rej;
+                        document.body.appendChild(s);
+                    });
+                }
+                const cresp = await fetch('/m/automation/' + wf.id + '/run-contract',
+                                          { headers: { Accept: 'application/json' } });
+                const contract = cresp.ok ? await cresp.json() : { trigger: false, params: [] };
+                if (!contract.trigger && !(contract.params || []).length) {
+                    directRun(runBody);
                     return;
                 }
-                if (window.spaNavigate) window.spaNavigate(data.url);
-                else location.href = data.url;
-            } catch {
                 modal.close();
-                if (window.uiAlert) {
-                    window.uiAlert('Could not reach the server.',
-                                   { title: 'Run workflow' });
-                }
+                window.AutomationRunForm.open({
+                    title: 'Run "' + wf.name + '"',
+                    subtitle: 'On "' + fileName + '"',
+                    contract,
+                    drives: contract.drives || [],
+                    fixedTrigger: contract.trigger
+                        ? { id: parseInt(fileId, 10), name: fileName } : null,
+                    allowTriggerPicker: false,
+                    browseUrl: '/m/automation/api/browse',
+                    onSubmit: ({ params }) => directRun(
+                        Object.assign({}, runBody, params && Object.keys(params).length
+                            ? { params } : {})),
+                });
+                btn.disabled = false;
+            } catch {
+                directRun(runBody);
             }
         });
         return btn;

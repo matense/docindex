@@ -2398,41 +2398,16 @@
         // input.param AND input.drive nodes with "ask at run time" — the
         // Run button opens a small form first when the workflow wants
         // answers.
-        function askedParams() {
-            return exportGraph().nodes
-                .filter(n => (n.type === 'input.param' || n.type === 'input.drive')
-                    && String((n.config || {}).ask || 'yes') !== 'no')
-                .map(n => {
-                    const c = n.config || {};
-                    if (n.type === 'input.drive') {
-                        return {
-                            param: (c.param || '').trim(),
-                            label: (c.label || '').trim() || (c.param || '').trim(),
-                            kind: 'drive',
-                            required: !c.drive_id,
-                        };
-                    }
-                    const kind = c.kind || 'text';
-                    const hasStatic = kind === 'file'
-                        ? !!c.file_id
-                        : !!String(c.default || '').trim();
-                    return {
-                        param: (c.param || '').trim(),
-                        label: (c.label || '').trim() || (c.param || '').trim(),
-                        kind,
-                        required: !hasStatic,
-                    };
-                })
-                .filter(p => p.param);
-        }
-
-        async function startRun(params) {
+        async function startRun(params, triggerFileId) {
             wfConsoleOpen();
             wfConsoleLog('starting the run…');
+            const body = {};
+            if (params && Object.keys(params).length) body.params = params;
+            if (triggerFileId) body.file_id = triggerFileId;
             const resp = await fetch(root.dataset.runUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params ? { params } : {}),
+                body: JSON.stringify(body),
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -2450,90 +2425,35 @@
             if (window.automationRunsPoll) window.automationRunsPoll();
         }
 
-        function openParamsForm(specs) {
-            const form = document.getElementById('wf-params-form');
-            form.innerHTML = '';
-            const inputs = {};
-            specs.forEach(spec => {
-                const wrap = document.createElement('div');
-                wrap.className = 'wf-field';
-                const head = document.createElement('div');
-                head.className = 'wf-field-head';
-                const lbl = document.createElement('span');
-                lbl.className = 'wf-field-label';
-                lbl.textContent = spec.label + (spec.required ? ' *' : '');
-                head.appendChild(lbl);
-                wrap.appendChild(head);
-                let input;
-                if (spec.kind === 'file') {
-                    input = document.createElement('input');
-                    input.type = 'hidden';
-                    const pick = document.createElement('button');
-                    pick.type = 'button';
-                    pick.className = 'btn btn-outline btn-sm w-full gap-2';
-                    pick.innerHTML = '<i class="fas fa-folder-open"></i> Pick a file…';
-                    pick.addEventListener('click', () => {
-                        openFileBrowser(f => {
-                            input.value = f.id;
-                            pick.innerHTML = `<i class="fas ${fileIcon(f.ext)}"></i> ${esc(f.name)}`;
-                        });
-                    });
-                    wrap.append(input, pick);
-                } else if (spec.kind === 'longtext') {
-                    input = document.createElement('textarea');
-                    input.className = 'textarea textarea-bordered textarea-sm w-full';
-                    input.rows = 3;
-                    wrap.appendChild(input);
-                } else if (spec.kind === 'drive') {
-                    input = document.createElement('select');
-                    input.className = 'select select-bordered select-sm w-full';
-                    const blank = document.createElement('option');
-                    blank.value = '';
-                    blank.textContent = '— pick a drive —';
-                    input.appendChild(blank);
-                    (window.automationEditorData.drives || []).forEach(d => {
-                        const o = document.createElement('option');
-                        o.value = d.id;
-                        o.textContent = d.name;
-                        input.appendChild(o);
-                    });
-                    wrap.appendChild(input);
-                } else {
-                    input = document.createElement('input');
-                    input.type = spec.kind === 'number' ? 'number' : 'text';
-                    input.className = 'input input-bordered input-sm w-full';
-                    wrap.appendChild(input);
-                }
-                inputs[spec.param] = input;
-                form.appendChild(wrap);
-            });
-            const go = document.getElementById('wf-params-go');
-            const fresh = go.cloneNode(true);
-            go.replaceWith(fresh);
-            fresh.addEventListener('click', () => {
-                const params = {};
-                const missing = [];
-                specs.forEach(spec => {
-                    const v = (inputs[spec.param].value || '').trim();
-                    if (v) params[spec.param] = v;
-                    else if (spec.required) missing.push(spec.label);
-                });
-                if (missing.length) {
-                    window.uiAlert('Missing: ' + missing.join(', '),
-                                   { title: 'Run inputs' });
-                    return;
-                }
-                document.getElementById('wf-params-modal').close();
-                startRun(params);
-            });
-            document.getElementById('wf-params-modal').showModal();
-        }
-
         document.getElementById('wf-run').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            const specs = askedParams();
-            if (specs.length) openParamsForm(specs);
-            else startRun(null);
+            let contract = { trigger: false, params: [] };
+            try {
+                const resp = await fetch(root.dataset.contractUrl,
+                                         { headers: { Accept: 'application/json' } });
+                if (resp.ok) contract = await resp.json();
+            } catch { /* offline - run blind, the server validates */ }
+            if (!contract.trigger && !(contract.params || []).length) {
+                startRun(null, null);
+                return;
+            }
+            window.AutomationRunForm.open({
+                title: 'Run this workflow',
+                subtitle: 'Answer what the run needs — same questions everywhere.',
+                contract,
+                drives: contract.drives || [],
+                pickFile: (cur) => new Promise((res) => {
+                    let done = false;
+                    const finish = (v) => { if (!done) { done = true; res(v); } };
+                    const modal = document.getElementById('wf-file-modal');
+                    const onClose = () => finish(null);
+                    modal.addEventListener('close', onClose, { once: true });
+                    openFileBrowser((f) => finish(f || null));
+                }),
+                submitLabel: 'Run',
+                onSubmit: ({ params, triggerFileId }) =>
+                    startRun(params, triggerFileId),
+            });
         });
 
         // AI copilot: the chat can edit this workflow via the

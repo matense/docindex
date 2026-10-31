@@ -771,7 +771,6 @@
     max-height: 92vh;
 }
 
-#wf-params-modal .modal-box,
 #wf-file-modal .modal-box {
     width: min(96vw, 660px);
     max-width: 660px;
@@ -787,7 +786,6 @@
     #wf-preview-modal .modal-box,
     #wf-output-modal .modal-box,
     #node-output-modal .modal-box,
-    #wf-params-modal .modal-box,
     #wf-file-modal .modal-box {
         width: 100vw;
         max-width: 100vw;

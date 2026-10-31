@@ -456,7 +456,12 @@ def run_contract(workflow_id):
         graph = engine.parse_graph(workflow.graph)
     except engine.WorkflowError as exc:
         return jsonify({"error": f"The workflow is broken: {exc}"}), 400
-    return jsonify(nodes.run_contract(graph))
+    contract = nodes.run_contract(graph)
+    drives = [{"id": d.id, "name": d.name}
+              for d in Drive.query.filter_by(user_id=current_user.id)
+              .order_by(Drive.name).all()]
+    contract["drives"] = drives
+    return jsonify(contract)
 
 
 @bp.get("/api/attachable")
@@ -775,7 +780,35 @@ def run_detail(run_id):
             params = json.loads(run.params)
         except ValueError:
             params = None
-    return render_template("automation/run.html", run=run, params=params)
+    # Human-readable badges: resolve drive/file answers to names.
+    badges, trigger_file = [], None
+    try:
+        graph = engine.parse_graph(run.workflow.graph) \
+            if run.workflow is not None else {"nodes": []}
+    except engine.WorkflowError:
+        graph = {"nodes": []}
+    if params:
+        kinds = {s["param"]: s for s in nodes.run_contract(graph)["params"]}
+        for key, value in params.items():
+            spec = kinds.get(key, {})
+            label = spec.get("label") or key
+            kind = spec.get("kind")
+            display = str(value)
+            if kind == "drive":
+                drive = db.session.get(Drive, value)
+                if drive is not None and drive.user_id == run.user_id:
+                    display = drive.name
+            elif kind == "file":
+                stored = db.session.get(StoredFile, value)
+                if (stored is not None and stored.user_id == run.user_id):
+                    display = stored.name
+            badges.append({"label": label, "display": display})
+    if run.trigger_file_id:
+        stored = db.session.get(StoredFile, run.trigger_file_id)
+        if stored is not None and stored.user_id == run.user_id:
+            trigger_file = {"id": stored.id, "name": stored.name}
+    return render_template("automation/run.html", run=run, params=params,
+                           badges=badges, trigger_file=trigger_file)
 
 
 @bp.get("/runs/<int:run_id>/status")

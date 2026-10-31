@@ -2348,7 +2348,8 @@ def test_run_contract_no_trigger_no_params(auth_client, app, user, enabled):
     wf_id = _workflow(app, user, _text_graph("hi"))
     data = auth_client.get(
         f"/m/automation/{wf_id}/run-contract").get_json()
-    assert data == {"trigger": False, "params": []}
+    assert data["trigger"] is False and data["params"] == []
+    assert data["drives"] == []
 
 
 # ---------------------------------------------------------------------------

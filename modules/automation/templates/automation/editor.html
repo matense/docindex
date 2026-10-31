@@ -14,6 +14,7 @@
      data-behaviors-url="{{ url_for('behaviors.api_presets') }}"
      data-personas-url="{{ url_for('ai.personas') }}"
      data-graph-url="{{ url_for('automation.graph_json', workflow_id=workflow.id) }}"
+ data-contract-url="{{ url_for('automation.run_contract', workflow_id=workflow.id) }}"
      data-flags-url="{{ url_for('automation.ai_flags', workflow_id=workflow.id) }}">
 
     <!-- Toolbar -->
@@ -170,28 +171,6 @@
     <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
 
-<!-- Run parameters modal (input.param nodes with "ask at run time") -->
-<dialog id="wf-params-modal" class="modal">
-    <div class="modal-box glass-panel max-w-md">
-        <h3 class="font-bold text-lg mb-1">
-            <i class="fas fa-circle-question text-primary"></i> Run inputs
-        </h3>
-        <p class="text-xs opacity-50 mb-3">
-            This workflow asks for a few values before it starts. Leave a
-            field empty to use its default.
-        </p>
-        <div id="wf-params-form" class="flex flex-col gap-2.5 max-h-[55vh] overflow-y-auto pr-1"></div>
-        <div class="modal-action">
-            <button type="button" class="btn btn-ghost btn-sm"
-                    onclick="document.getElementById('wf-params-modal').close()">Cancel</button>
-            <button type="button" id="wf-params-go" class="btn btn-primary btn-sm gap-1">
-                <i class="fas fa-play"></i> Start run
-            </button>
-        </div>
-    </div>
-    <form method="dialog" class="modal-backdrop"><button>close</button></form>
-</dialog>
-
 <!-- File browser modal (input.file picker) -->
 <dialog id="wf-file-modal" class="modal">
     <div class="modal-box glass-panel max-w-lg">
@@ -259,6 +238,13 @@ window.automationEditorData = {
 window.currentWorkflow = { id: {{ workflow.id }},
                            name: {{ workflow.name | tojson }} };
 (function bootstrap() {
+    function ensureRunForm(next) {
+        if (window.AutomationRunForm) { next(); return; }
+        const s = document.createElement('script');
+        s.src = "{{ url_for('automation.static', filename='run_form.js') }}?v=1";
+        s.onload = next;
+        document.body.appendChild(s);
+    }
     function mount() {
         if (window.AutomationEditor) {
             window.AutomationEditor.mount(document.getElementById('automation-editor-root'));
@@ -273,10 +259,10 @@ window.currentWorkflow = { id: {{ workflow.id }},
     if (!window.Drawflow) {
         const s = document.createElement('script');
         s.src = "{{ url_for('automation.static', filename='vendor/drawflow.min.js') }}";
-        s.onload = mount;
+        s.onload = () => ensureRunForm(mount);
         document.body.appendChild(s);
     } else {
-        mount();
+        ensureRunForm(mount);
     }
 })();
 </script>

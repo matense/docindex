@@ -4,7 +4,12 @@
 <div class="max-w-4xl mx-auto w-full flex flex-col gap-4" id="automation-run-root"
      data-status-url="{{ url_for('automation.run_status', run_id=run.id) }}"
      data-stop-url="{{ url_for('automation.run_stop', run_id=run.id) }}"
-     data-active="{{ '1' if run.is_active else '0' }}">
+     data-active="{{ '1' if run.is_active else '0' }}"
+     {% if run.workflow %}data-workflow-id="{{ run.workflow_id }}"
+     data-contract-url="{{ url_for('automation.run_contract', workflow_id=run.workflow_id) }}"
+     data-run-url="{{ url_for('automation.run', workflow_id=run.workflow_id) }}"
+     data-params="{{ (params | tojson) if params else '{}' }}"
+     data-trigger-file="{{ (trigger_file | tojson) if trigger_file else '' }}"{% endif %}>
 
     <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
         <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
@@ -17,12 +22,22 @@
             <p class="text-xs opacity-50">
                 {{ run.created_at.strftime('%d %b %Y %H:%M:%S') if run.created_at }} · {% if run.trigger == 'manual' %}Started by you{% elif run.trigger == 'schedule' %}Automatic schedule{% elif run.trigger == 'ai' %}Started by AI chat{% else %}{{ run.trigger }}{% endif %}<span id="run-duration"></span>
             </p>
-            {% if params %}
+            {% if badges %}
             <p class="text-xs opacity-60 mt-1 flex items-center gap-1 flex-wrap">
                 <i class="fas fa-circle-question text-primary/60"></i>
-                {% for key, value in params.items() %}
-                <span class="badge badge-ghost badge-sm">{{ key }}: {{ value if value|length < 60 else value[:60] + '…' }}</span>
+                {% if trigger_file %}
+                <span class="badge badge-ghost badge-sm" title="Starting file">
+                    <i class="fas fa-file mr-1"></i>{{ trigger_file.name }}
+                </span>
+                {% endif %}
+                {% for b in badges %}
+                <span class="badge badge-ghost badge-sm" title="{{ b.label }}">{{ b.label }}: {{ b.display if b.display|length < 60 else b.display[:60] + '…' }}</span>
                 {% endfor %}
+            </p>
+            {% elif trigger_file %}
+            <p class="text-xs opacity-60 mt-1 flex items-center gap-1 flex-wrap">
+                <i class="fas fa-file text-primary/60"></i>
+                <span class="badge badge-ghost badge-sm" title="Starting file">{{ trigger_file.name }}</span>
             </p>
             {% endif %}
         </div>
@@ -42,6 +57,9 @@
                 <i class="fas fa-rotate-right"></i> Run again
             </button>
         </form>
+        <button type="button" id="run-change-inputs" class="btn btn-outline btn-sm gap-1" title="Change the inputs and run again">
+            <i class="fas fa-sliders"></i> Change inputs
+        </button>
         {% endif %}
         {% if run.workflow %}
         <a href="{{ url_for('automation.editor', workflow_id=run.workflow_id) }}" class="btn btn-ghost btn-sm gap-1" title="Open in editor">
@@ -498,6 +516,65 @@
     poll();
     document.addEventListener('spa:navigate', () => { clearTimeout(timer); stopTicker(); },
                               { once: true });
+
+    // Re-run with different inputs: same shared run form as everywhere
+    // else, prefilled with this run's answers.
+    const rerunBtn = document.getElementById('run-change-inputs');
+    if (rerunBtn && root.dataset.contractUrl) {
+        rerunBtn.addEventListener('click', async () => {
+            let contract = null;
+            try {
+                const resp = await fetch(root.dataset.contractUrl,
+                                         { headers: { Accept: 'application/json' } });
+                if (resp.ok) contract = await resp.json();
+            } catch { contract = null; }
+            if (!contract) return;
+            const ensureForm = window.AutomationRunForm ? Promise.resolve() : new Promise((res, rej) => {
+                const s = document.createElement('script');
+                s.src = '/m/automation/static/run_form.js?v=1';
+                s.onload = res;
+                s.onerror = rej;
+                document.body.appendChild(s);
+            });
+            try { await ensureForm; } catch { return; }
+            let initialParams = {};
+            try { initialParams = JSON.parse(root.dataset.params || '{}'); } catch { initialParams = {}; }
+            let fixedTrigger = null;
+            try {
+                fixedTrigger = root.dataset.triggerFile ? JSON.parse(root.dataset.triggerFile) : null;
+            } catch { fixedTrigger = null; }
+            window.AutomationRunForm.open({
+                title: 'Run again with different inputs',
+                subtitle: '',
+                contract,
+                drives: contract.drives || [],
+                initialParams,
+                fixedTrigger,
+                allowTriggerPicker: true,
+                browseUrl: '/m/automation/api/browse',
+                onSubmit: async ({ params, triggerFileId }) => {
+                    const body = {};
+                    if (triggerFileId) body.file_id = triggerFileId;
+                    if (params && Object.keys(params).length) body.params = params;
+                    try {
+                        const resp = await fetch(root.dataset.runUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                        });
+                        const data = await resp.json().catch(() => ({}));
+                        if (!resp.ok) {
+                            if (window.uiAlert) window.uiAlert(data.error || 'Could not start the run.', { title: 'Run workflow' });
+                            return;
+                        }
+                        location.href = data.url;
+                    } catch {
+                        if (window.uiAlert) window.uiAlert('Could not reach the server.', { title: 'Run workflow' });
+                    }
+                },
+            });
+        });
+    }
 })();
 </script>
 {% endblock %}
