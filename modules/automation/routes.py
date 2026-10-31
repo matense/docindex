@@ -620,22 +620,31 @@ def api_file_shape():
     """Columns/keys of a picked file — the editor shows them as live hints
     next to the column/path fields of the table and JSON nodes."""
     file_id = request.args.get("file_id", type=int)
-    stored = db.session.get(StoredFile, file_id) if file_id else None
-    if (stored is None or stored.user_id != current_user.id
-            or stored.deleted_at is not None):
+    shape = _file_shape(current_user, file_id)
+    if shape is None:
         abort(404)
+    return jsonify(shape)
+
+
+def _file_shape(user, file_id):
+    """{kind, columns, keys} for a CSV/Excel/JSON file, or None when the
+    file is missing, foreign, trashed or not tabular."""
+    stored = db.session.get(StoredFile, file_id) if file_id else None
+    if (stored is None or stored.user_id != user.id
+            or stored.deleted_at is not None):
+        return None
     ext = (stored.extension or "").lower()
     empty = {"kind": "text", "columns": [], "keys": []}
     if ext not in ("csv", "xlsx", "xlsm", "xls", "json"):
-        return jsonify(empty)
+        return empty
     try:
-        payload = nodes.load_file_payload(current_user, stored.id)
+        payload = nodes.load_file_payload(user, stored.id)
     except Exception:  # noqa: BLE001 - unreadable file: just no hints
-        return jsonify(empty)
+        return empty
     if payload["kind"] == "table":
-        return jsonify({"kind": "table",
-                        "columns": payload["data"]["columns"][:50],
-                        "keys": []})
+        return {"kind": "table",
+                "columns": payload["data"]["columns"][:50],
+                "keys": []}
     if payload["kind"] == "json":
         data = payload["data"]
         if isinstance(data, dict):
@@ -644,8 +653,99 @@ def api_file_shape():
             keys = list(data[0].keys())
         else:
             keys = []
-        return jsonify({"kind": "json", "columns": [], "keys": keys[:50]})
-    return jsonify(empty)
+        return {"kind": "json", "columns": [], "keys": keys[:50]}
+    return empty
+
+
+# Node types whose output columns derive mechanically from their input —
+# the editor walks these backwards to offer real column names on table
+# nodes several hops away from the source file.
+_SHAPE_PRESERVING = {
+    "transform.table_filter", "transform.table_sort",
+    "transform.table_dedupe", "logic.merge",
+}
+
+
+def _trace_columns(graph, target_id):
+    """Column names available at a node's input, traced backwards.
+
+    Returns (columns|None, certain: bool): walks back through
+    shape-preserving nodes and one static input.file; table_select
+    narrows to its picks, table_compute adds its new column. Anything
+    else (pivot, json_to_table, AI, ...) stops the trace as uncertain.
+    """
+    by_id = {n.get("id"): n for n in graph.get("nodes", [])}
+    inbound = {}
+    for edge in graph.get("edges", []):
+        inbound.setdefault(edge.get("to"), []).append(edge)
+
+    def _file_columns(config):
+        try:
+            fid = int(config.get("file_id"))
+        except (TypeError, ValueError):
+            return None
+        shape = _file_shape(current_user, fid)
+        if shape and shape["kind"] == "table" and shape["columns"]:
+            return shape["columns"]
+        return None
+
+    seen = set()
+
+    def walk(nid):
+        if nid in seen:
+            return None
+        seen.add(nid)
+        node = by_id.get(nid)
+        if node is None:
+            return None
+        ntype = node.get("type")
+        config = node.get("config") or {}
+        if ntype == "input.file":
+            return _file_columns(config)
+        if ntype == "transform.table_select":
+            picks = config.get("picks") or []
+            cols = [p.get("column") for p in picks if p.get("column")]
+            if cols:
+                return cols
+            # No picks yet: whatever flows in.
+            ins = inbound.get(nid, [])
+            return walk(ins[0]["from"]) if len(ins) == 1 else None
+        if ntype == "transform.table_compute":
+            ins = inbound.get(nid, [])
+            base = walk(ins[0]["from"]) if len(ins) == 1 else None
+            if base is None:
+                return None
+            new_col = (config.get("new_column") or "").strip()
+            return base + ([new_col] if new_col and new_col not in base
+                           else [])
+        if ntype in _SHAPE_PRESERVING:
+            ins = inbound.get(nid, [])
+            if len(ins) == 1:
+                return walk(ins[0]["from"])
+            return None
+        return None
+
+    cols = walk(target_id)
+    return cols
+
+
+@bp.get("/api/upstream-shape")
+def api_upstream_shape():
+    """Column names available at a node's input, traced backwards through
+    shape-preserving nodes to the source file. The editor's column
+    pickers use this when no file is wired directly. Reads the SAVED
+    graph (autosave lands within ~2s)."""
+    workflow = _owned_workflow(request.args.get("workflow_id", type=int)
+                               or 0)
+    node_id = request.args.get("node")
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError:
+        return jsonify({"columns": [], "certain": False})
+    cols = _trace_columns(graph, node_id)
+    if not cols:
+        return jsonify({"columns": [], "certain": False})
+    return jsonify({"columns": cols[:100], "certain": True})
 
 
 @bp.get("/api/notebook-cells")
@@ -680,6 +780,21 @@ def api_notebook_cells():
 @bp.get("/behaviors")
 def behaviors():
     return redirect(url_for("behaviors.index"))
+
+
+@bp.get("/<int:workflow_id>/diagnose")
+def diagnose(workflow_id):
+    """Static check without running: every problem at once (node, field,
+    severity, message). Powers the editor's Check button; the AI uses
+    validate_workflow for the same plus reference checks."""
+    workflow = _owned_workflow(workflow_id)
+    try:
+        graph = engine.parse_graph(workflow.graph)
+    except engine.WorkflowError as exc:
+        return jsonify({"ok": False, "issues": [
+            {"node": None, "type": None, "field": None,
+             "severity": "error", "message": str(exc)}]})
+    return jsonify(engine.diagnose_graph(graph, active_node_types()))
 
 
 @bp.post("/<int:workflow_id>/preview")

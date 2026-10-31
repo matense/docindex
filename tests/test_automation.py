@@ -2460,6 +2460,49 @@ def test_run_contract_no_trigger_no_params(auth_client, app, user, enabled):
     assert data["drives"] == []
 
 
+def test_diagnose_endpoint(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "p", "type": "input.param", "config": {}},
+    ], "edges": []})
+    data = auth_client.get(
+        f"/m/automation/{wf_id}/diagnose").get_json()
+    assert data["ok"] is False
+    assert any("parameter name" in i["message"] for i in data["issues"])
+    wf2 = _workflow(app, user, _text_graph("hi"))
+    assert auth_client.get(
+        f"/m/automation/{wf2}/diagnose").get_json()["ok"] is True
+
+
+def test_upstream_shape_traces_filter_chain(auth_client, app, user,
+                                             enabled):
+    _drive(app, user)
+    fid = _make_file(app, user, "s.csv", "a,b\n1,2\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "flt", "type": "transform.table_filter",
+         "config": {"conditions": [{"column": "a", "op": "gt",
+                                    "value": "0"}]}},
+        {"id": "sel", "type": "transform.table_select",
+         "config": {"picks": [{"column": "b", "alias": ""}]}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "flt", "to_port": "in"},
+        {"from": "flt", "from_port": "out", "to": "sel", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph, name="shape")
+    sel = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "sel"}).get_json()
+    assert sel == {"columns": ["b"], "certain": True}
+    flt = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "flt"}).get_json()
+    assert flt == {"columns": ["a", "b"], "certain": True}
+    nope = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "nope"}).get_json()
+    assert nope == {"columns": [], "certain": False}
+
+
 # ---------------------------------------------------------------------------
 # Behaviors moved to core (/behaviors) — the old module URL redirects.
 # CRUD/toggle/preset coverage lives in tests/test_behaviors.py.

@@ -3,12 +3,15 @@
 {% block content %}
 <div class="max-w-full w-full flex flex-col gap-3" id="automation-editor-root"
      data-save-url="{{ url_for('automation.save', workflow_id=workflow.id) }}"
+     data-workflow-id="{{ workflow.id }}"
      data-run-url="{{ url_for('automation.run', workflow_id=workflow.id) }}"
      data-runs-url="{{ url_for('automation.runs', workflow_id=workflow.id) }}"
      data-list-url="{{ url_for('automation.index') }}"
      data-preview-url="{{ url_for('automation.preview', workflow_id=workflow.id) }}"
+     data-diagnose-url="{{ url_for('automation.diagnose', workflow_id=workflow.id) }}"
      data-browse-url="{{ url_for('automation.api_browse') }}"
      data-shape-url="{{ url_for('automation.api_file_shape') }}"
+     data-upstream-shape-url="{{ url_for('automation.api_upstream_shape') }}"
      data-folders-url="{{ url_for('automation.api_folders') }}"
      data-cells-url="{{ url_for('automation.api_notebook_cells') }}"
      data-behaviors-url="{{ url_for('behaviors.api_presets') }}"
@@ -56,6 +59,9 @@
                 class="btn btn-ghost btn-sm gap-1 {{ 'btn-active text-warning' if workflow.ai_hidden }}"
                 title="Hide from the AI — the assistant can't see, run or edit this workflow" aria-label="Hide from the AI">
             <i class="fas {{ 'fa-eye-slash' if workflow.ai_hidden else 'fa-eye' }}"></i><span class="hidden lg:inline">AI hide</span>
+        </button>
+        <button type="button" id="wf-check" class="btn btn-ghost btn-sm gap-1" title="Check the workflow without running it">
+            <i class="fas fa-stethoscope"></i><span class="hidden lg:inline">Check</span>
         </button>
         <button type="button" id="wf-console-toggle" class="btn btn-ghost btn-sm gap-1"
                 title="Toggle the run console" aria-label="Toggle the run console">

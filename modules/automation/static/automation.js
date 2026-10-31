@@ -42,6 +42,23 @@
         return idx >= 0 ? idx + 1 : 1;  // drawflow ports are 1-based
     }
 
+    // Label every socket with "port: kind" (tooltips + tiny tags) so
+    // wiring mistakes are visible before validation complains.
+    function decoratePorts(dfId, spec) {
+        const el = document.getElementById(`node-${dfId}`);
+        if (!el || !spec) return;
+        (spec.inputs || []).forEach((p, i) => {
+            el.querySelectorAll(`.input_${i + 1}`).forEach(s => {
+                s.title = `${p.name}: ${p.kind || 'any'}${p.multiple ? ' (many wires)' : ''}`;
+            });
+        });
+        (spec.outputs || []).forEach((p, i) => {
+            el.querySelectorAll(`.output_${i + 1}`).forEach(s => {
+                s.title = `${p.name}: ${p.kind || 'any'}`;
+            });
+        });
+    }
+
     function typeClass(type) {
         return 'wf-node wf-type-' + type.replace(/[^a-z0-9]+/g, '-');
     }
@@ -234,6 +251,41 @@
         return entry ? entry.data : null;
     }
 
+    // Missing-required detection from the spec (not string-matching the
+    // summary): which required fields are still empty. Special cases
+    // mirror the backend diagnose rules.
+    function configIssues(type, config) {
+        const c = config || {};
+        const spec = specByType[type] || {};
+        const missing = [];
+        (spec.fields || []).forEach(f => {
+            if (!f.required) return;
+            const v = c[f.name];
+            const empty = (typeof v === 'string' && !v.trim()) ||
+                v === null || v === undefined || v === '' ||
+                (Array.isArray(v) && !v.length);
+            if (empty) missing.push(f.label || f.name);
+        });
+        if (type === 'notebook.output' &&
+                !(String(c.notebook_id || '').trim() || String(c.name || '').trim()) &&
+                !missing.includes('Notebook')) {
+            missing.push('Notebook or new name');
+        }
+        if (type === 'logic.condition' &&
+                !(c.conditions || []).length && !String(c.left || '').trim()) {
+            missing.push('Conditions');
+        }
+        if (type === 'input.param' && (c.kind || 'text') === 'select' &&
+                !String(c.options || '').trim()) {
+            missing.push('Dropdown options');
+        }
+        if (type === 'input.param' && (c.kind || 'text') === 'file' &&
+                !String(c.file_id || '').trim()) {
+            missing.push('Static file');
+        }
+        return missing;
+    }
+
     function refreshCard(dfId) {
         const el = document.getElementById(`node-${dfId}`);
         if (!el) return;
@@ -246,11 +298,13 @@
         }
         const card = el.querySelector('.wf-node-card');
         if (card) {
-            const needs = /not configured|no file|no query|no prompt|empty|pick a|select/i.test(text || '');
-            card.classList.toggle('is-missing', !!needs);
+            const missing = configIssues(data.type, data.config);
+            card.classList.toggle('is-missing', missing.length > 0);
+            card.title = missing.length ? 'Missing: ' + missing.join(', ') : '';
             const kind = ((specByType[data.type] || {}).outputs || [])[0];
             const kindEl = el.querySelector('.wf-node-kind');
             if (kindEl) kindEl.textContent = kind ? kind.kind || '' : '';
+            decoratePorts(dfId, specByType[data.type]);
         }
     }
 
@@ -521,15 +575,30 @@
     }
 
     // Fetch the connected file's real columns (CSV/Excel) — used by the
-    // Filter rows and Select columns widgets for their dropdowns.
+    // Filter rows and Select columns widgets for their dropdowns. Falls
+    // back to the server-side trace (saved graph) when no file is wired
+    // directly, e.g. filter -> select chains.
     function fetchUpstreamColumns(nodeId, cb, port) {
         const fileId = upstreamFileId(nodeId, port);
-        if (!fileId) return;
-        fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
+        if (fileId) {
+            fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
+                .then(r => (r.ok ? r.json() : null))
+                .then(shape => {
+                    if (shape && shape.kind === 'table'
+                            && shape.columns.length) {
+                        cb(shape.columns.map(String));
+                    }
+                })
+                .catch(() => {});
+            return;
+        }
+        if (port || !root.dataset.workflowId || !root.dataset.upstreamShapeUrl) return;
+        fetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
+              encodeURIComponent(root.dataset.workflowId) +
+              '&node=' + encodeURIComponent('n' + nodeId))
             .then(r => (r.ok ? r.json() : null))
             .then(shape => {
-                if (shape && shape.kind === 'table'
-                        && shape.columns.length) {
+                if (shape && shape.certain && (shape.columns || []).length) {
                     cb(shape.columns.map(String));
                 }
             })
@@ -1733,6 +1802,38 @@
             ex.appendChild(document.createTextNode(spec.example));
             meta.appendChild(ex);
         }
+        // Run-contract preview for the two run-input nodes: what the run
+        // form will do with the current settings (updates while editing).
+        let refreshContractPreview = null;
+        if (type === 'input.param' || type === 'input.drive') {
+            const pv = document.createElement('div');
+            pv.className = 'wf-config-example';
+            pv.innerHTML = '<i class="fas fa-circle-question"></i> ';
+            const pvt = document.createElement('span');
+            pv.appendChild(pvt);
+            meta.appendChild(pv);
+            refreshContractPreview = () => {
+                const c = ((nodeData(dfId) || {}).config) || {};
+                const ask = String(c.ask || 'yes') !== 'no';
+                const kind = c.kind || (type === 'input.drive' ? 'drive' : 'text');
+                const hasStatic = type === 'input.drive'
+                    ? !!String(c.drive_id || '').trim()
+                    : kind === 'file'
+                        ? !!String(c.file_id || '').trim()
+                        : !!String(c.default || '').trim();
+                const req = String(c.required || 'auto');
+                const required = req === 'yes' ||
+                    (req !== 'no' && ask && !hasStatic);
+                pvt.textContent = !ask
+                    ? 'Never asked — scheduled and triggered runs use the static value.'
+                    : required
+                        ? 'The run form will ASK this every run (required).'
+                        : hasStatic
+                            ? 'The run form asks it; empty answers fall back to the static value.'
+                            : 'The run form asks it (optional).';
+            };
+            refreshContractPreview();
+        }
 
         const form = document.getElementById('wf-config-form');
         form.innerHTML = '';
@@ -1775,6 +1876,7 @@
         configChangeHook = (changedId, fieldName) => {
             if (changedId !== dfId) return;
             applyFieldVisibility(spec, dfId);
+            if (refreshContractPreview) refreshContractPreview();
             if (fieldName === 'notebook_id') {
                 cellWidgetReloaders.forEach(fn => fn());
             }
@@ -2431,6 +2533,36 @@
                            'info');
             if (window.automationRunsPoll) window.automationRunsPoll();
         }
+
+        document.getElementById('wf-check').addEventListener('click', async () => {
+            if (!(await saveGraph())) return;
+            wfConsoleOpen();
+            wfConsoleLog('checking…');
+            let data = null;
+            try {
+                const resp = await fetch(root.dataset.diagnoseUrl,
+                                         { headers: { Accept: 'application/json' } });
+                data = await resp.json();
+            } catch { data = null; }
+            if (!data) {
+                wfConsoleLog('could not check (offline?)', 'error');
+                return;
+            }
+            const issues = data.issues || [];
+            if (!issues.length) {
+                wfConsoleLog('all clear — no problems found.');
+                window.uiToast('Workflow looks good.', 'success');
+                return;
+            }
+            issues.forEach(i => {
+                const where = i.node ? `node ${i.node}` : 'workflow';
+                wfConsoleLog(`${i.severity === 'error' ? '✕' : '!'} [${where}] ${i.message}`,
+                             i.severity === 'error' ? 'error' : undefined);
+            });
+            const errs = issues.filter(i => i.severity === 'error').length;
+            window.uiToast(`${errs} error(s), ${issues.length - errs} warning(s) — see console.`,
+                           errs ? 'error' : 'info');
+        });
 
         document.getElementById('wf-schedule-values').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
