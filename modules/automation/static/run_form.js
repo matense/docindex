@@ -291,8 +291,14 @@ window.AutomationRunForm = (function () {
             });
             summaryEl.textContent = bits.length ? 'Runs with: ' + bits.join(' · ') : '';
         };
-        form.addEventListener('input', refreshSummary);
-        form.addEventListener('change', refreshSummary);
+        // The form element persists across opens (only its content is
+        // rebuilt): bind the summary listeners once, or every keystroke
+        // would run N stacked refreshSummary calls.
+        if (!form.dataset.rfBound) {
+            form.dataset.rfBound = "1";
+            form.addEventListener('input', () => { if (refreshSummary) refreshSummary(); });
+            form.addEventListener('change', () => { if (refreshSummary) refreshSummary(); });
+        }
         refreshSummary();
 
         const go = dlg.querySelector('[data-rf="go"]');

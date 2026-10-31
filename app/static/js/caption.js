@@ -109,6 +109,8 @@
             }
         });
         document.addEventListener('click', (e) => {
+            // Stale handler from a previous SPA visit: its popup is detached.
+            if (!document.contains(popup)) return;
             if (!popup.classList.contains('hidden')
                     && !e.target.closest('#caption-popup')
                     && !e.target.closest('#caption-ai')) {

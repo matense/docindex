@@ -104,6 +104,10 @@
                 .some((l) => l.getAttribute('href') === href);
             if (!exists) document.head.appendChild(document.importNode(link, true));
         });
+        // Teardown hook for the outgoing page (islands, tickers, in-flight
+        // saves): runs while the old DOM still exists. Pair with
+        // 'spa:navigated' (fired below, after the swap).
+        document.dispatchEvent(new CustomEvent('spa:navigate', { detail: { url } }));
         container.innerHTML = newContent.innerHTML;
         execScripts(container);
         updatePageState(doc, url);

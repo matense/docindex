@@ -9,6 +9,9 @@
     let specByType = {};      // node type -> spec
     let stagger = 0;          // placement offset for palette clicks
     let nodeOutputs = {};     // dfId -> {port: text} from the last preview run
+    let currentUnmount = null; // teardown of the live mount (SPA-safe re-mount)
+    let versionPollTimer = null;
+    let resizeRO = null;
 
     // ------------------------------------------------------------------
     // Helpers
@@ -2092,6 +2095,14 @@
         ctxNodeId = null;
     }
 
+    // Document/window-level handlers, named so unmount() can remove them.
+    function onDocClick(e) {
+        if (!e.target.closest('#wf-context-menu')) closeContextMenu();
+    }
+    function onDocKeydown(e) {
+        if (e.key === 'Escape') closeContextMenu();
+    }
+
     function duplicateNode(dfId) {
         const data = nodeData(dfId);
         if (!data) return;
@@ -2415,6 +2426,8 @@
     // Mount
     // ------------------------------------------------------------------
     function mount(rootEl) {
+        // Re-mount safety (SPA revisits): tear down the live mount first.
+        if (currentUnmount) currentUnmount();
         root = rootEl;
         specByType = {};
         stagger = 0;
@@ -2460,7 +2473,8 @@
         // Layout can still shift after load (async styles, window resize,
         // SPA navigation): recompute wire geometry when it does.
         const canvasEl = document.getElementById('drawflow');
-        if (canvasEl && !canvasEl._wfRO && window.ResizeObserver) {
+        if (canvasEl && window.ResizeObserver) {
+            if (canvasEl._wfRO) canvasEl._wfRO.disconnect();
             let t = null;
             const ro = new ResizeObserver(() => {
                 clearTimeout(t);
@@ -2468,6 +2482,7 @@
             });
             ro.observe(canvasEl);
             canvasEl._wfRO = ro;
+            resizeRO = ro;
         }
         if (!window._wfLoadHook) {
             window._wfLoadHook = true;
@@ -2498,12 +2513,8 @@
             openContextMenu(parseInt(el.id.replace('node-', ''), 10),
                             e.clientX, e.clientY);
         });
-        document.addEventListener('click', e => {
-            if (!e.target.closest('#wf-context-menu')) closeContextMenu();
-        });
-        document.addEventListener('keydown', e => {
-            if (e.key === 'Escape') closeContextMenu();
-        });
+        document.addEventListener('click', onDocClick);
+        document.addEventListener('keydown', onDocKeydown);
         canvas.addEventListener('wheel', closeContextMenu);
         document.querySelectorAll('#wf-context-menu button[data-action]')
             .forEach(btn => {
@@ -2818,14 +2829,17 @@
                 window.uiToast('Workflow updated by the AI.', 'info');
             } catch { /* offline - user can reload manually */ }
         };
-        window.addEventListener('docindex-ui-action', e => {
+        // Named so unmount() can remove it (uses mount-scoped applyRemote).
+        function onUiAction(e) {
             const detail = e.detail || {};
             if (detail.type !== 'workflow_changed') return;
             if (!window.currentWorkflow ||
                 detail.workflow_id !== window.currentWorkflow.id) return;
             applyRemote(0);
-        });
-        setInterval(async () => {
+        }
+        window.addEventListener('docindex-ui-action', onUiAction);
+        if (versionPollTimer) clearInterval(versionPollTimer);
+        versionPollTimer = setInterval(async () => {
             if (document.hidden) return;
             if (Date.now() - lastApplyAt < 10000) return;
             let data = null;
@@ -2839,7 +2853,31 @@
             if (data.version === graphVersion) return;
             applyRemote(0);
         }, 5000);
+
+        // Teardown for SPA navigation (no page unload fires): drop timers,
+        // the observer and the document/window handlers. Canvas-bound
+        // listeners die with the dropped DOM; Drawflow handlers are scoped
+        // to the replaced `editor` instance. Only the live mount acts.
+        function unmount() {
+            if (currentUnmount !== unmount) return;
+            currentUnmount = null;
+            _redrawTimers.forEach(clearTimeout);
+            _redrawTimers = [];
+            clearTimeout(_dirtyTimer);
+            if (versionPollTimer) { clearInterval(versionPollTimer); versionPollTimer = null; }
+            if (resizeRO) { try { resizeRO.disconnect(); } catch {} resizeRO = null; }
+            document.removeEventListener('click', onDocClick);
+            document.removeEventListener('keydown', onDocKeydown);
+            window.removeEventListener('docindex-ui-action', onUiAction);
+            editor = null;
+            root = null;
+        }
+        currentUnmount = unmount;
+        document.addEventListener('spa:navigate', unmount, { once: true });
     }
 
-    window.AutomationEditor = { mount };
+    window.AutomationEditor = {
+        mount,
+        unmount: () => { if (currentUnmount) currentUnmount(); },
+    };
 })();

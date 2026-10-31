@@ -204,8 +204,12 @@
         document.head.appendChild(script);
     }
 
+    let currentUnmount = null;
+
     function mount(root, opts) {
-        if (root.dataset.nbMounted) return;
+        // Re-mount safety (SPA revisits): tear down the previous instance
+        // first — its listeners/timers would otherwise outlive its DOM.
+        if (currentUnmount) currentUnmount();
         root.dataset.nbMounted = "1";
 
         const doc = opts.doc && Array.isArray(opts.doc.cells)
@@ -1151,7 +1155,26 @@
         }
 
         render();
+
+        // Teardown for SPA navigation (no beforeunload fires): flush a
+        // debounce-pending save first so edits are never lost, then drop
+        // timers and global listeners. Only the latest mounted instance
+        // acts — stale closures from previous visits are no-ops.
+        function unmount() {
+            if (currentUnmount !== unmount) return;
+            currentUnmount = null;
+            try { flushSync(); } catch (err) { /* best effort */ }
+            clearTimeout(timer);
+            clearInterval(pollTimer);
+            detach();
+            delete root.dataset.nbMounted;
+        }
+        currentUnmount = unmount;
+        document.addEventListener("spa:navigate", unmount, { once: true });
     }
 
-    window.NotebookEditor = { mount: mount };
+    window.NotebookEditor = {
+        mount: mount,
+        unmount: () => { if (currentUnmount) currentUnmount(); },
+    };
 })();

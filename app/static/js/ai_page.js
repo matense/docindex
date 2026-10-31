@@ -63,28 +63,40 @@
     sess.renderChips();
     sess.refreshSendKeyHint();
 
+    // Page scripts re-run on every SPA navigation to this page; guard the
+    // document/window-level bindings so repeats don't stack handlers and
+    // observers on detached DOM (drive.js uses the same _driveGlobalBound
+    // pattern for its own globals).
+    if (!window._aiPageBound) {
+        window._aiPageBound = true;
+        // Live send-key sync: class flips at runtime refresh the hint at once;
+        // the keydown handler reads it live per press.
+        new MutationObserver((muts) => {
+            const sess = window.aiPage && window.aiPage._sess;
+            if (sess && muts.some(m => m.attributeName === 'class')) sess.refreshSendKeyHint();
+        }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        window.addEventListener('storage', (e) => {
+            const sess = window.aiPage && window.aiPage._sess;
+            if (!sess || e.key !== 'docindex.sendKey') return;
+            const on = e.newValue === '1';
+            if (on !== sess.sendKeySwapped()) {
+                document.body.classList.toggle('shift-enter-send', on);
+            }
+        });
+        // SPA navigation swaps the context chips (file, workflow) live.
+        document.addEventListener('spa:navigated', () => {
+            const sess = window.aiPage && window.aiPage._sess;
+            if (sess) sess.renderChips();
+        });
+    }
+
     window.aiPage = {
         newConversation: (...args) => sess.newConversation(...args),
         toggleList: (...args) => sess.toggleList(...args),
         openConversation: (id) => sess.loadConversation(id),
         get conversationId() { return sess.conversationId; },
+        _sess: sess,
     };
-
-    // Live send-key sync: class flips at runtime refresh the hint at once;
-    // the keydown handler reads it live per press.
-    new MutationObserver((muts) => {
-        if (muts.some(m => m.attributeName === 'class')) sess.refreshSendKeyHint();
-    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    window.addEventListener('storage', (e) => {
-        if (e.key !== 'docindex.sendKey') return;
-        const on = e.newValue === '1';
-        if (on !== sess.sendKeySwapped()) {
-            document.body.classList.toggle('shift-enter-send', on);
-        }
-    });
-
-    // SPA navigation swaps the context chips (file, workflow) live.
-    document.addEventListener('spa:navigated', () => sess.renderChips());
 
     input.focus();
 })();

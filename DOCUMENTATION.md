@@ -1057,6 +1057,46 @@ AI_MAX_STEPS`).
 
 All JS is vanilla, loaded via CDN/`<script>` tags — no bundler.
 
+### Server → client data contract (future `/api/bootstrap` spec)
+
+Everything the server injects into JS today — i.e. what a single
+`GET /api/bootstrap` must return for the React shell. Audited
+2026-10-31; keep in sync until the endpoint exists.
+
+- **Current context** (today: `window.currentDrive` from `base.html`,
+  `window.currentFile` from `drive/view.html`, `notebooks/edit.html`,
+  `whiteboards/board.html`, `window.currentWorkflow` from
+  `automation/editor.html`, `window.currentWorkflowNode` set by the
+  canvas on selection; all reset to null on `spa:navigated`):
+  `{ drive: {id, name} | null, file: {id, name} | null,
+  workflow: {id, name} | null, workflowNode: {...} | null }`.
+- **CSRF + theme**: `<meta name="csrf-token">` and
+  `<html data-theme>` — bootstrap must carry `{ csrfToken, theme }`
+  (every mutating fetch needs the token header).
+- **AI settings page data**: provider preset library
+  `{key: {label, base_url, model, vision_model, embedding_model}}`
+  + the connection being edited
+  (`EDIT_ID/CURRENT_MODEL/CURRENT_VISION/CURRENT_EMBED`).
+- **Automation editor payload**: `window.automationEditorData =
+  {graphRaw, palette, drives: [{id, name}], notebooks}` plus the
+  `data-*-url` set on `#automation-editor-root` (save/run/preview/shape/
+  graph/contract/...), `workflow.id`, `schedule_params`, `schedule_file`.
+- **Run page payload**: `#automation-run-root` dataset — status/stop
+  URLs, contract URL, answered `params`, `trigger_file`.
+- **Notebook editor payload**: `{fileId, saveUrl, docUrl, assetsUrl,
+  checksum, location, doc: {version, title, cells[]}}`.
+- **Whiteboard payload**: `WB_CONFIG = {sceneUrl, saveUrl, csrfToken,
+  initialScene, initialVersion, readOnly}`.
+- **File view payload**: file identity + `tags[]` (`#hashtags-section`
+  dataset, re-fetchable via `/file/<id>/hashtags`) + `caption`
+  (`#caption-section`, re-fetchable via `/file/<id>/caption`).
+- **Behaviors/personas/aiutils pages**: URL templates with `__KEY__`
+  placeholders + live JSON (`/ai/personas`, toggles POST) — these need
+  no bootstrap snapshot beyond the URL roots.
+- **Run-contract payload** (`GET <id>/run-contract` →
+  `{trigger, params[]}`) stays a live fetch — it is already the
+  contract-driven form's spec, not bootstrap state.
+
 ### SPA router (`spa.js`)
 
 Pjax-style navigation for authenticated pages (everything inside
