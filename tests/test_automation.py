@@ -2129,7 +2129,26 @@ def test_example_use_creates_workflow(auth_client, app, user, enabled):
         wf = (models.AutomationWorkflow.query
               .filter_by(name="Translate a file").one())
         graph = json.loads(wf.graph)
-        assert graph["nodes"][0]["type"] == "input.trigger"
+        by_type = {n["type"] for n in graph["nodes"]}
+        assert "input.trigger" in by_type
+        assert "input.drive" in by_type  # destination asked at run time
+
+
+def test_translate_example_asks_destination(auth_client, app, user, enabled):
+    resp = auth_client.post("/m/automation/examples/translate-file/use",
+                            follow_redirects=False)
+    assert resp.status_code == 302
+    with app.app_context():
+        wf = (models.AutomationWorkflow.query
+              .filter_by(name="Translate a file").one())
+        wf_id = wf.id
+    contract = auth_client.get(
+        f"/m/automation/{wf_id}/run-contract").get_json()
+    assert contract["trigger"] is True
+    assert contract["params"] == [{
+        "param": "target", "label": "Where should I save?",
+        "kind": "drive", "required": True, "default": "",
+        "options": [], "node": "nd"}]
 
 
 def test_example_use_unknown_key_404(auth_client, app, user, enabled):
