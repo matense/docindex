@@ -385,9 +385,24 @@ def test_merge_picks_arriving_branch():
         {"from": "cond", "from_port": "true", "to": "join", "to_port": "in1"},
         {"from": "cond", "from_port": "false", "to": "join", "to_port": "in2"},
         {"from": "join", "from_port": "out", "to": "end", "to_port": "in"}]
-    _, results, _ = _execute(graph)
+    _, results, _ = _execute(graph)  # legacy in1/in2 still validates
     assert any(r["node"] == "end" and r["preview"] == "payload"
                for r in results)
+
+
+def test_merge_fan_in_many_branches():
+    graph = {"nodes": [
+        {"id": "a", "type": "input.text", "config": {"content": "A"}},
+        {"id": "b", "type": "input.text", "config": {"content": "B"}},
+        {"id": "m", "type": "logic.merge", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "a", "from_port": "out", "to": "m", "to_port": "in"},
+        {"from": "b", "from_port": "out", "to": "m", "to_port": "in"},
+        {"from": "m", "from_port": "out", "to": "end", "to_port": "in"}]}
+    _, results, _ = _execute(graph)
+    previews = [r["preview"] for r in results if r["node"] == "end"]
+    assert previews and previews[0] in ("A", "B")  # first wire wins
 
 
 def test_should_stop_aborts_between_nodes():
@@ -642,6 +657,33 @@ def test_save_file_into_existing_folder(app, user):
                                  app, user)
         stored = db.session.get(StoredFile, created[0]["file_id"])
         assert stored.folder.name == "Reports"
+
+
+def test_save_file_zips_files_payload(app, user):
+    from app.services import indexing_service
+    drive_id = _drive(app, user)
+    _make_file(app, user, "z1.txt", "zipme one")
+    _make_file(app, user, "z2.txt", "zipme two")
+    with app.app_context():
+        for f in StoredFile.query.filter_by(user_id=user).all():
+            indexing_service.index_file(f.id, app)
+    graph = {"nodes": [
+        {"id": "s", "type": "docindex.search_files",
+         "config": {"query": "zipme", "limit": 5}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "bundle", "drive_id": str(drive_id)}},
+    ], "edges": [
+        {"from": "s", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        _, _, created = _execute(graph, app, user)
+        assert len(created) == 1
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.name == "bundle.zip"  # extension added
+        import zipfile
+        from app.services import file_service
+        names = sorted(zipfile.ZipFile(
+            file_service.file_path(stored)).namelist())
+        assert names == ["z1.txt", "z2.txt"]
 
 
 def test_save_file_refuses_synced_drive(app, user):
@@ -1159,6 +1201,71 @@ def test_save_schedule_fields(auth_client, app, user, enabled):
                             json={"graph": _text_graph(),
                                   "interval_minutes": -5})
     assert resp.status_code == 400
+
+
+def test_schedule_profile_required_for_parameterized(auth_client, app, user,
+                                                    enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "question", "kind": "text", "ask": "yes"}))
+    graph = _param_graph({"param": "question", "kind": "text", "ask": "yes"})
+    # Enabling a schedule without answers fails loudly at configure time.
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15})
+    assert resp.status_code == 400
+    assert "question" in resp.get_json()["error"].lower()
+    # With a profile it saves; unrelated saves keep working.
+    resp = auth_client.post(
+        f"/m/automation/{wf_id}/save",
+        json={"graph": graph, "enabled": True, "interval_minutes": 15,
+              "schedule_params": {"question": "nightly"}})
+    assert resp.get_json() == {"ok": True}
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert json.loads(wf.schedule_params) == {"question": "nightly"}
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": _param_graph(
+                                {"param": "question", "kind": "text",
+                                 "ask": "yes"})})
+    assert resp.get_json() == {"ok": True}
+
+
+def test_tick_replays_schedule_profile(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "question", "kind": "text", "ask": "yes"}),
+                      enabled=True, interval_minutes=10,
+                      schedule_params=json.dumps({"question": "tick-q"}))
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        run = (models.AutomationRun.query
+               .filter_by(workflow_id=wf_id).one())
+        assert run.status == "done"
+        assert json.loads(run.params) == {"question": "tick-q"}
+
+
+def test_schedule_profile_needs_trigger_file(auth_client, app, user,
+                                             enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "t", "from_port": "out", "to": "end", "to_port": "in"}]})
+    graph = {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "t", "from_port": "out", "to": "end", "to_port": "in"}]}
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15})
+    assert resp.status_code == 400
+    assert "starting file" in resp.get_json()["error"]
+    fid = _make_file(app, user, "sched.txt", "x")
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15,
+                                  "schedule_file_id": fid})
+    assert resp.get_json() == {"ok": True}
 
 
 def test_run_endpoint_executes_and_reports(auth_client, app, user, enabled):

@@ -73,11 +73,24 @@ def tick(app):
                 user = db.session.get(User, wf.user_id)
                 if user is None:
                     continue
+                # Schedule profile: frozen run-form answers replayed every
+                # tick (validated when the schedule was configured). A
+                # corrupt profile degrades to static fallbacks, never a crash.
+                import json as _json
+                profile = None
+                if wf.schedule_params:
+                    try:
+                        profile = _json.loads(wf.schedule_params) or None
+                    except ValueError:
+                        profile = None
                 # Small jitter so all due workflows don't fire at once.
                 if random.random() < 0.05:
                     import time as _t
                     _t.sleep(random.uniform(0, 2))
-                runtime.start_run(wf, user, trigger="schedule", app=app)
+                runtime.start_run(wf, user, trigger="schedule", app=app,
+                                  trigger_file_id=wf.schedule_file_id,
+                                  params=(_json.loads(wf.schedule_params)
+                                         if wf.schedule_params else None))
                 launched += 1
             except Exception:  # noqa: BLE001 - one workflow must not kill tick
                 app.logger.exception("Automation schedule failed for %s", wf.id)

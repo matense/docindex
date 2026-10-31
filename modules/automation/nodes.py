@@ -137,8 +137,8 @@ _NODE_EXAMPLES = {
                         "a park.\"",
     "logic.condition": "left {{ n1 }} · contains · \"urgent\" — matching "
                        "data flows down the true branch.",
-    "logic.merge": "After a condition: forwards whichever branch (true or "
-                   "false) produced data.",
+    "logic.merge": "After a condition: forwards whichever branch "
+                   "produced data (any number of branches).",
     "output.save_file": "Saves the AI's answer as summary.md in the drive "
                         "you pick.",
     "output.save_table": "The filtered sales table becomes report.xlsx in "
@@ -1167,8 +1167,13 @@ def _exec_condition(ctx, config, inputs, outputs):
 
 
 def _exec_merge(ctx, config, inputs):
-    for port in sorted(inputs):
-        return inputs[port]
+    branch = inputs.get("in")
+    if isinstance(branch, list):
+        for payload in branch:
+            if payload is not None:
+                return payload
+    elif branch is not None:
+        return branch
     raise WorkflowError("No input arrived — all upstream branches were "
                         "skipped.")
 
@@ -1360,10 +1365,47 @@ def _exec_save_file(ctx, config, inputs, outputs):
                           indent=2).encode("utf-8")
     elif kind == "table":
         blob = table_to_csv(payload["data"]).encode("utf-8")
+    elif kind == "files":
+        blob = _zip_payload_files(ctx, payload, outputs)
+        if not name.lower().endswith(".zip"):
+            name += ".zip"
     else:
         raise WorkflowError(f"Cannot save a {kind} payload as a file.")
 
     return _save_blob_to_drive(ctx, config, blob, name, outputs)
+
+
+def _zip_payload_files(ctx, payload, outputs):
+    """Zip the files carried by a files payload (downloaded from their
+    drives) so save_file can persist N files as one archive."""
+    import io as _io
+    import zipfile as _zf
+    buf = _io.BytesIO()
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        seen = set()
+        for ref in payload.get("data") or []:
+            stored = db.session.get(StoredFile, ref.get("file_id"))
+            if (stored is None or stored.user_id != ctx["user"].id
+                    or stored.deleted_at is not None):
+                continue
+            arcname = stored.name or f"file-{stored.id}"
+            if arcname in seen:
+                base, dot, ext = arcname.rpartition(".")
+                i = 2
+                while f"{base}-{i}{dot}{ext}" in seen:
+                    i += 1
+                arcname = f"{base}-{i}{dot}{ext}"
+            seen.add(arcname)
+            try:
+                path = file_service.file_path(stored)
+                zf.write(path, arcname)
+            except OSError as err:
+                raise WorkflowError(
+                    f"Cannot read '{stored.name}' for the archive.") from err
+    if not seen:
+        raise WorkflowError("No readable files to zip.")
+    ctx["log"](f"zipped {len(seen)} file(s)")
+    return buf.getvalue()
 
 
 def _exec_result(ctx, config, inputs):
@@ -1921,10 +1963,10 @@ def register_defaults():
     register_node_type("logic.merge", {
         "label": "Merge", "icon": "fa-code-merge", "category": "Logic",
         "description": "Forwards whichever branch produced data — use it "
-                       "after a condition to join the flow again. Needs no "
+                       "after a condition to join the flow again (or to "
+                       "join any number of branches). Needs no "
                        "configuration.",
-        "inputs": [{"name": "in1", "kind": "any"},
-                   {"name": "in2", "kind": "any"}],
+        "inputs": [{"name": "in", "kind": "any", "multiple": True}],
         "outputs": [{"name": "out", "kind": "any"}],
         "fields": []}, _exec_merge)
 
@@ -1932,7 +1974,8 @@ def register_defaults():
         "label": "Save file to drive", "icon": "fa-floppy-disk",
         "category": "Output",
         "description": "Writes the incoming content to a new file on one "
-                       "of your drives (tables are saved as CSV).",
+                       "of your drives (tables are saved as CSV, several "
+                       "files arrive as one ZIP).",
         "inputs": [{"name": "in", "kind": "any"}],
         "outputs": [{"name": "out", "kind": "files"}],
         "fields": [

@@ -209,8 +209,9 @@ window.AutomationRunForm = (function () {
                     ? (spec.default ? 'Static file set' : '')
                     : (spec.default ? 'Static default: "' + spec.default + '"' : ''));
             if (spec.kind === 'file') {
-                const fr = fileRow('', false, null, pick,
-                                   init && init.id ? init : null);
+                const norm = (v) => (v && typeof v === 'object' ? v
+                    : (v ? { id: v, name: 'file #' + v } : null));
+                const fr = fileRow('', false, null, pick, norm(init));
                 // Move the input row only (head already rendered above).
                 wrap.appendChild(fr.wrap.querySelector('.flex'));
                 getters[spec.param] = fr.get;

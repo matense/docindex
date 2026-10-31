@@ -2139,6 +2139,10 @@
             enabled: document.getElementById('wf-enabled').checked,
             interval_minutes: document.getElementById('wf-interval').value,
         };
+        if (scheduleProfile !== null) {
+            body.schedule_params = scheduleProfile.params || {};
+            if (scheduleProfile.fileId) body.schedule_file_id = scheduleProfile.fileId;
+        }
         setSaved('A guardar…');
         const resp = await fetch(root.dataset.saveUrl, {
             method: 'POST',
@@ -2160,6 +2164,9 @@
     }
 
     let _dirtyTimer = null;
+    // Schedule profile staging: null = untouched (never sent), otherwise
+    // {params, fileId} included in the next save.
+    let scheduleProfile = null;
     function setSaved(text) {
         const elm = document.getElementById('wf-saved');
         if (elm) elm.textContent = text;
@@ -2424,6 +2431,64 @@
                            'info');
             if (window.automationRunsPoll) window.automationRunsPoll();
         }
+
+        document.getElementById('wf-schedule-values').addEventListener('click', async () => {
+            if (!(await saveGraph())) return;
+            let contract = { trigger: false, params: [] };
+            try {
+                const resp = await fetch(root.dataset.contractUrl,
+                                         { headers: { Accept: 'application/json' } });
+                if (resp.ok) contract = await resp.json();
+            } catch { /* offline - form still opens with empty contract */ }
+            let initialParams = {};
+            let fixedTrigger = null;
+            try { initialParams = JSON.parse(root.dataset.scheduleParams || '{}'); } catch { initialParams = {}; }
+            try {
+                fixedTrigger = root.dataset.scheduleFile ? JSON.parse(root.dataset.scheduleFile) : null;
+            } catch { fixedTrigger = null; }
+            if (scheduleProfile !== null) {
+                initialParams = scheduleProfile.params || {};
+                fixedTrigger = scheduleProfile.file || null;
+            }
+            window.AutomationRunForm.open({
+                title: 'Schedule values',
+                subtitle: 'Frozen answers the schedule replays every run. Leave empty to use static defaults.',
+                contract,
+                drives: contract.drives || [],
+                initialParams,
+                fixedTrigger,
+                allowTriggerPicker: true,
+                pickFile: (cur) => new Promise((res) => {
+                    let done = false;
+                    const finish = (v) => { if (!done) { done = true; res(v); } };
+                    const modal = document.getElementById('wf-file-modal');
+                    const onClose = () => finish(null);
+                    modal.addEventListener('close', onClose, { once: true });
+                    openFileBrowser((f) => finish(f || null));
+                }),
+                submitLabel: 'Save values',
+                onSubmit: ({ params, triggerFileId }) => {
+                    scheduleProfile = { params,
+                                        file: triggerFileId ? { id: triggerFileId } : fixedTrigger,
+                                        fileId: triggerFileId || null };
+                    // Keep the data attrs in sync so reopening shows them.
+                    try {
+                        root.dataset.scheduleParams = JSON.stringify(params);
+                        if (triggerFileId) {
+                            const cur = fixedTrigger && fixedTrigger.id === triggerFileId
+                                ? fixedTrigger : { id: triggerFileId, name: 'file #' + triggerFileId };
+                            root.dataset.scheduleFile = JSON.stringify(cur);
+                            scheduleProfile.file = cur;
+                        } else {
+                            root.dataset.scheduleFile = '';
+                            scheduleProfile.file = null;
+                        }
+                    } catch { /* ignore */ }
+                    markDirty();
+                    window.uiToast('Schedule values staged — saving.', 'info');
+                },
+            });
+        });
 
         document.getElementById('wf-run').addEventListener('click', async () => {
             if (!(await saveGraph())) return;

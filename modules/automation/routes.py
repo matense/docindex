@@ -295,9 +295,15 @@ def create():
 @bp.get("/<int:workflow_id>")
 def editor(workflow_id):
     workflow = _owned_workflow(workflow_id)
+    schedule_file = None
+    if workflow.schedule_file_id:
+        stored = db.session.get(StoredFile, workflow.schedule_file_id)
+        if stored is not None and stored.user_id == current_user.id:
+            schedule_file = {"id": stored.id, "name": stored.name}
     return render_template("automation/editor.html", workflow=workflow,
                            palette=palette(), drives=_writable_drives(),
-                           notebooks=_notebooks())
+                           notebooks=_notebooks(),
+                           schedule_file=schedule_file)
 
 
 def _notebooks():
@@ -335,14 +341,17 @@ def graph_json(workflow_id):
 def save(workflow_id):
     workflow = _owned_workflow(workflow_id)
     data = request.get_json(silent=True) or {}
-    raw_graph = data.get("graph")
-    try:
-        graph = engine.parse_graph(raw_graph if isinstance(raw_graph, str)
-                                   else json.dumps(raw_graph or {}))
-        engine.validate_graph(graph, active_node_types())
-    except engine.WorkflowError as exc:
-        return jsonify({"error": str(exc)}), 400
-    workflow.graph = json.dumps(graph)
+    # Only replace the graph when one is sent — meta-only saves (schedule
+    # toggles, renames) must not wipe it.
+    if "graph" in data:
+        raw_graph = data.get("graph")
+        try:
+            graph = engine.parse_graph(raw_graph if isinstance(raw_graph, str)
+                                       else json.dumps(raw_graph or {}))
+            engine.validate_graph(graph, active_node_types())
+        except engine.WorkflowError as exc:
+            return jsonify({"error": str(exc)}), 400
+        workflow.graph = json.dumps(graph)
     workflow.name = (data.get("name") or workflow.name or
                      "Untitled workflow")[:160]
     workflow.description = (data.get("description")
@@ -363,6 +372,54 @@ def save(workflow_id):
         return jsonify({"error": "The schedule interval must be a positive "
                                  "number of minutes."}), 400
     workflow.interval_minutes = interval
+    # Schedule profile: frozen run-form answers the schedule replays.
+    # Validated only when scheduling itself is touched, so unrelated
+    # saves on legacy scheduled workflows keep working.
+    schedule_touched = any(k in data for k in (
+        "enabled", "interval_minutes", "schedule_params",
+        "schedule_file_id"))
+    sched_params, sched_file = None, None
+    if "schedule_params" in data:
+        raw = data.get("schedule_params")
+        if isinstance(raw, dict):
+            sched_params = {str(k)[:80]: v
+                            for k, v in raw.items()
+                            if v not in (None, "")}
+        workflow.schedule_params = json.dumps(sched_params) \
+            if sched_params else None
+    if "schedule_file_id" in data:
+        try:
+            sched_file = int(data.get("schedule_file_id"))
+        except (TypeError, ValueError):
+            sched_file = None
+        workflow.schedule_file_id = sched_file
+    if schedule_touched and workflow.enabled and workflow.interval_minutes:
+        try:
+            _graph_for_schedule = engine.parse_graph(workflow.graph)
+        except engine.WorkflowError as exc:
+            return jsonify({"error": f"Cannot schedule a broken workflow: "
+                                     f"{exc}"}), 400
+        profile = {}
+        if workflow.schedule_params:
+            try:
+                profile = json.loads(workflow.schedule_params) or {}
+            except ValueError:
+                profile = {}
+        _clean, _errors = nodes.validate_run_params(
+            _graph_for_schedule, profile, current_user)
+        if _errors:
+            return jsonify({"error": "The schedule needs answers for: "
+                                     + "; ".join(_errors)}), 400
+        if nodes.run_contract(_graph_for_schedule)["trigger"]:
+            if not workflow.schedule_file_id:
+                return jsonify({"error": "This workflow starts from a file "
+                                         "— pick the schedule's starting "
+                                         "file."}), 400
+            stored = db.session.get(StoredFile, workflow.schedule_file_id)
+            if (stored is None or stored.user_id != current_user.id
+                    or stored.deleted_at is not None):
+                return jsonify({"error": "The schedule's starting file does "
+                                         "not exist (or is in the trash)."}), 400
     db.session.commit()
     return jsonify({"ok": True})
 

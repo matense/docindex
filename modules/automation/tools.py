@@ -170,7 +170,8 @@ def _tool_node_catalog(user, args, drive):
             "hints": [
                 "Match port kinds: files->files/text via read_files, "
                 "table->table only, json->json/table via json_to_table.",
-                "merge needs in1/in2, condition outputs true/false.",
+                "merge takes any number of wires on one 'in' port, "
+                "condition outputs true/false.",
                 "save nodes need a writable drive_id (not synced).",
             ]}
 
