@@ -4,6 +4,10 @@
 
 (function () {
     'use strict';
+    // Shared core (ai_core.js, loaded before this file) — pure
+    // helpers moved there; local aliases keep call sites unchanged.
+    const { fmtTokens, fmtTime, toolIcon, iconFor, copyWithToast,
+        TOOL_ICONS } = window.DocIndexChat || {};
 
     const page = document.getElementById('ai-page');
     if (!page) return;
@@ -816,42 +820,7 @@
     }
 
     // Per-tool icons for the live "tool is working" chip.
-    const TOOL_ICONS = {
-        search_files: 'fa-magnifying-glass',
-        count_files: 'fa-calculator',
-        read_file: 'fa-book-open',
-        view_image: 'fa-eye',
-        grep_file: 'fa-highlighter',
-        list_files: 'fa-folder-tree',
-        get_file_info: 'fa-circle-info',
-        set_hashtags: 'fa-tags',
-        list_hashtags: 'fa-tags',
-        list_drives: 'fa-hard-drive',
-        list_behaviors: 'fa-list-check',
-        save_behavior: 'fa-floppy-disk',
-        move_files: 'fa-arrow-right',
-        copy_files: 'fa-copy',
-        create_folder: 'fa-folder-plus',
-        delete_folder: 'fa-trash-can',
-    };
 
-    function toolIcon(name) {
-        if (!name) return 'fa-wrench';
-        if (TOOL_ICONS[name]) return TOOL_ICONS[name];
-        if (name.startsWith('notebooks.')) return 'fa-table-cells';
-        if (name.startsWith('automation.')) return 'fa-diagram-project';
-        if (name.startsWith('aiutils.')) return 'fa-calculator';
-        return 'fa-wrench';
-    }
-
-    function copyWithToast(text) {
-        const done = () => { if (window.uiToast) window.uiToast('Copied', 'success'); };
-        if (window.DocIndex && window.DocIndex.copyText) {
-            window.DocIndex.copyText(text, done);
-        } else if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(() => {});
-        }
-    }
 
     function enhanceBubble(bubble) {
         if (window.DocIndex && window.DocIndex.enhanceCodeBlocks) {
@@ -905,20 +874,6 @@
         document.getElementById('aip-empty')?.remove();
     }
 
-    function fmtTime(iso) {
-        if (!iso) return '';
-        // Server timestamps are UTC without a zone suffix — parse them as UTC.
-        const d = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
-        if (isNaN(d)) return '';
-        const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        return d.toDateString() === new Date().toDateString()
-            ? hm
-            : d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + hm;
-    }
-
-    // Conversation history grouping: Today / Yesterday / Previous 7 days /
-    // Previous 30 days / <Month Year>. Conversations arrive newest-first, so
-    // groups appear in order by watching for label changes.
     function convGroupLabel(iso) {
         if (!iso) return 'Older';
         const d = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
@@ -941,12 +896,6 @@
         return div;
     }
 
-    function fmtTokens(n) {
-        n = Number(n) || 0;
-        if (n < 1000) return String(n);
-        if (n < 1000000) { const v = n / 1000; return v.toFixed(1).replace(/\.0$/, '') + 'k'; }
-        return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-    }
 
     function addMetaFooter(div, meta) {
         const time = fmtTime(meta.created_at);
@@ -1748,11 +1697,6 @@
         input.focus();
     }
 
-    function iconFor(ext, isImage) {
-        if (isImage) return 'fa-image text-secondary';
-        const map = { pdf: 'fa-file-pdf text-error', txt: 'fa-file-lines', md: 'fa-file-lines', py: 'fa-file-code', js: 'fa-file-code', html: 'fa-file-code', json: 'fa-file-code', docx: 'fa-file-word text-info', xlsx: 'fa-file-excel text-success', pdocnb: 'fa-book-open text-amber-500' };
-        return map[ext] || 'fa-file';
-    }
 
     function searchMentions(q) {
         if (!q) {
