@@ -1,6 +1,7 @@
 """Split-database layout: index tables live in the attached `idx` db."""
 
 import io
+import os
 import threading
 
 from sqlalchemy import text as sql_text
@@ -92,3 +93,60 @@ def test_index_write_context_manager_is_reentrant():
     with index_write():
         with index_write():
             pass
+
+
+def _load_split_migration():
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), "..", "migrations",
+                        "versions", "f1e2d3c4b5a6_split_index_db.py")
+    spec = importlib.util.spec_from_file_location("split_index_db", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_chunked_copy_helpers_move_tables_and_fts():
+    import sqlalchemy as sa
+
+    mig = _load_split_migration()
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(sa.text("ATTACH DATABASE ':memory:' AS idx"))
+        conn.execute(sa.text(
+            "CREATE TABLE file_index (id INTEGER PRIMARY KEY, "
+            "file_id INTEGER, extracted_text TEXT)"))
+        conn.execute(sa.text(
+            "CREATE TABLE file_embeddings (id INTEGER PRIMARY KEY, "
+            "file_id INTEGER, chunk_index INTEGER)"))
+        conn.execute(sa.text(
+            "CREATE VIRTUAL TABLE file_fts USING fts5(name, text, caption, tags)"))
+        conn.execute(sa.text(
+            "CREATE TABLE idx.file_index (id INTEGER PRIMARY KEY, "
+            "file_id INTEGER, extracted_text TEXT)"))
+        conn.execute(sa.text(
+            "CREATE TABLE idx.file_embeddings (id INTEGER PRIMARY KEY, "
+            "file_id INTEGER, chunk_index INTEGER)"))
+        conn.execute(sa.text(
+            "CREATE VIRTUAL TABLE idx.file_fts "
+            "USING fts5(name, text, caption, tags)"))
+        for i in range(1, 12):
+            conn.execute(
+                sa.text("INSERT INTO file_index VALUES (:i, :i, :t)"),
+                {"i": i, "t": f"text number {i}"})
+            conn.execute(sa.text(
+                "INSERT INTO file_fts(rowid, name, text, caption, tags) "
+                "VALUES (:i, :n, :t, '', '')"),
+                {"i": i, "n": f"f{i}.txt", "t": f"text number {i}"})
+        assert mig._copy_table_chunked(conn, "file_index", chunk=5) == 11
+        assert mig._copy_table_chunked(conn, "file_embeddings") == 0
+        assert mig._copy_fts_chunked(conn, chunk=5) == 11
+        assert conn.execute(
+            sa.text("SELECT COUNT(*) FROM idx.file_index")).scalar() == 11
+        assert conn.execute(sa.text(
+            "SELECT text FROM idx.file_fts WHERE file_fts MATCH 'number'"
+        )).fetchall()
+        # Idempotent: clear + re-copy gives the same counts.
+        conn.execute(sa.text("DELETE FROM idx.file_fts"))
+        conn.execute(sa.text("DELETE FROM idx.file_index"))
+        assert mig._copy_table_chunked(conn, "file_index") == 11
+        assert mig._copy_fts_chunked(conn) == 11

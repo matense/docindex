@@ -24,6 +24,12 @@ echo -^> Updating dependencies...
 if errorlevel 1 exit /b 1
 
 echo -^> Upgrading the database...
+echo    Current version:
+"%VENV_PY%" -m flask --app run.py db current
+echo    Target version:
+"%VENV_PY%" -m flask --app run.py db heads
+echo    Large upgrades ^(e.g. the search-index split^) copy data and show
+echo    progress per step - allow several minutes, do not interrupt.
 "%VENV_PY%" -m flask --app run.py db upgrade heads
 if errorlevel 1 (
     echo -^> Standard upgrade failed ^(the database may carry a stamp from the

@@ -22,6 +22,12 @@ echo "-> Updating dependencies..."
 "$VENV_PY" -m pip install -r requirements.txt
 
 echo "-> Upgrading the database..."
+echo "   Current version:"
+"$VENV_PY" -m flask --app run.py db current || true
+echo "   Target version:"
+"$VENV_PY" -m flask --app run.py db heads || true
+echo "   Large upgrades (e.g. the search-index split) copy data and show"
+echo "   progress per step — allow several minutes, do not interrupt."
 if ! "$VENV_PY" -m flask --app run.py db upgrade heads; then
     echo "-> Standard upgrade failed (the database may carry a stamp from the"
     echo "   first public release) — repairing the migration stamp..."

@@ -22,6 +22,7 @@ construction. Counts are verified before the old tables are dropped.
 """
 
 import os
+import time
 
 import sqlalchemy as sa
 from alembic import op
@@ -68,6 +69,68 @@ def _count(bind, sql):
     return bind.execute(sa.text(sql)).scalar()
 
 
+def _log(msg):
+    # Plain print: visible both in `flask db upgrade` (update.bat/sh) and
+    # in the server log when auto_upgrade runs it at startup.
+    print(f"[db-split] {msg}", flush=True)
+
+
+_COPY_CHUNK = 5000
+
+
+def _copy_table_chunked(bind, table, src="main", dst="idx", chunk=_COPY_CHUNK):
+    """Copy a plain table in id order, logging progress per chunk."""
+    total = _count(bind, f"SELECT COUNT(*) FROM {src}.{table}")
+    if not total:
+        _log(f"{table}: empty, nothing to copy")
+        return 0
+    copied, last, start = 0, 0, time.monotonic()
+    while True:
+        n = bind.execute(
+            sa.text(f"INSERT INTO {dst}.{table} SELECT * FROM {src}.{table} "
+                    f"WHERE id > :last ORDER BY id LIMIT :chunk"),
+            {"last": last, "chunk": chunk}).rowcount or 0
+        copied += n
+        last = bind.execute(
+            sa.text(f"SELECT MAX(id) FROM {dst}.{table}")).scalar() or last
+        _log(f"{table}: {copied}/{total} "
+             f"({copied * 100 // total}%) — "
+             f"{time.monotonic() - start:.0f}s elapsed")
+        if n < chunk:
+            break
+    return copied
+
+
+def _copy_fts_chunked(bind, src="main", dst="idx", chunk=_COPY_CHUNK):
+    """Copy the FTS index through the FTS5 API (never the shadow tables),
+    in rowid ranges so progress is visible on large libraries."""
+    total = _count(bind, f"SELECT COUNT(*) FROM {src}.file_fts")
+    if not total:
+        _log("file_fts: empty, nothing to copy")
+        return 0
+    lo = _count(bind, f"SELECT MIN(rowid) FROM {src}.file_fts")
+    hi = _count(bind, f"SELECT MAX(rowid) FROM {src}.file_fts")
+    copied, start = 0, time.monotonic()
+    for first in range(lo, hi + 1, chunk):
+        n = bind.execute(
+            sa.text(f"INSERT INTO {dst}.file_fts(rowid, name, text, caption, tags) "
+                    f"SELECT rowid, name, text, caption, tags "
+                    f"FROM {src}.file_fts WHERE rowid BETWEEN :a AND :b"),
+            {"a": first, "b": first + chunk - 1}).rowcount or 0
+        copied += n
+        _log(f"file_fts: {copied}/{total} "
+             f"({copied * 100 // total}%) — "
+             f"{time.monotonic() - start:.0f}s elapsed")
+    return copied
+
+
+def _file_mb(path):
+    try:
+        return os.path.getsize(path) / 1048576
+    except OSError:
+        return 0.0
+
+
 def upgrade():
     bind = op.get_bind()
     core_path = _core_path()
@@ -81,38 +144,46 @@ def upgrade():
         _create_idx_tables()
         return
 
-    _attach(bind, _index_path(core_path))
+    index_path = _index_path(core_path)
+    _attach(bind, index_path)
     _create_idx_tables()
+
+    n_files = _count(bind, "SELECT COUNT(*) FROM main.files")
+    _log(f"starting split: {n_files} files, "
+         f"core is {_file_mb(core_path):.0f} MB — "
+         f"copying the search index to {os.path.basename(index_path)}")
+    t0 = time.monotonic()
 
     # Idempotent re-runs: clear the destination first.
     op.execute("DELETE FROM idx.file_fts")
     op.execute("DELETE FROM idx.file_embeddings")
     op.execute("DELETE FROM idx.file_index")
 
-    op.execute("INSERT INTO idx.file_index SELECT * FROM main.file_index")
-    op.execute("INSERT INTO idx.file_embeddings SELECT * FROM main.file_embeddings")
-    op.execute(
-        "INSERT INTO idx.file_fts(rowid, name, text, caption, tags) "
-        "SELECT rowid, name, text, caption, tags FROM main.file_fts")
+    _copy_table_chunked(bind, "file_index")
+    _copy_table_chunked(bind, "file_embeddings")
+    _copy_fts_chunked(bind)
 
-    for table in ("file_index", "file_embeddings"):
+    for table in ("file_index", "file_embeddings", "file_fts"):
         src = _count(bind, f"SELECT COUNT(*) FROM main.{table}")
         dst = _count(bind, f"SELECT COUNT(*) FROM idx.{table}")
         if src != dst:
             raise RuntimeError(
                 f"index split verification failed for {table}: "
                 f"main={src} idx={dst}")
-    src = _count(bind, "SELECT COUNT(*) FROM main.file_fts")
-    dst = _count(bind, "SELECT COUNT(*) FROM idx.file_fts")
-    if src != dst:
-        raise RuntimeError(
-            f"index split verification failed for file_fts: main={src} idx={dst}")
+        _log(f"verified {table}: {dst} rows match")
+    _log(f"copy+verify took {time.monotonic() - t0:.0f}s")
 
     op.execute("DROP TABLE main.file_fts")
     op.execute("DROP TABLE main.file_index")
     op.execute("DROP TABLE main.file_embeddings")
+    _log("old index tables dropped from the core database")
+    _log("compacting the core database (VACUUM — can take minutes, "
+         "do not interrupt)...")
     with op.get_context().autocommit_block():
         op.execute("VACUUM")
+    _log(f"done in {time.monotonic() - t0:.0f}s total: "
+         f"core {_file_mb(core_path):.0f} MB + "
+         f"index {_file_mb(index_path):.0f} MB")
 
 
 def downgrade():
