@@ -8,6 +8,13 @@ set -e
 cd "$(dirname "$0")"
 VENV_PY="venv/bin/python"
 
+# All output is mirrored to logs/update.log (previous run kept as
+# .prev) via tools/tee.py - send that file when reporting a failure.
+if [ -z "$DOCINDEX_LOGGING" ]; then
+    export DOCINDEX_LOGGING=1
+    exec "$VENV_PY" tools/tee.py logs/update.log "$0" "$@"
+fi
+
 echo "=== DocIndex update ==="
 
 if [ ! -x "$VENV_PY" ]; then

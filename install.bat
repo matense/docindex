@@ -11,8 +11,6 @@ setlocal
 cd /d "%~dp0"
 set "VENV_PY=venv\Scripts\python.exe"
 
-echo === DocIndex install ===
-
 rem 1. Python check (3.11+)
 where python >nul 2>nul
 if errorlevel 1 (
@@ -25,6 +23,16 @@ if errorlevel 1 (
     python --version
     exit /b 1
 )
+
+rem All output is mirrored to logs\install.log (previous run kept as
+rem .prev) via tools\tee.py — send that file when reporting a failure.
+if defined DOCINDEX_LOGGING goto :noreexec
+set DOCINDEX_LOGGING=1
+python tools\tee.py logs\install.log "%~f0" %*
+exit /b %errorlevel%
+:noreexec
+
+echo === DocIndex install ===
 
 rem 2. Virtual environment (recreate a broken one from a failed attempt)
 if exist venv\ if not exist "%VENV_PY%" (

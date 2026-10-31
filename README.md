@@ -253,7 +253,9 @@ upgrades are applied through migrations, never by recreating the database.
 ```
 
 The script pulls the latest code, updates dependencies and applies database
-migrations. Restart the server afterwards.
+migrations. Restart the server afterwards. Everything the scripts print is
+also saved to `logs/install.log` / `logs/update.log` (previous run kept as
+`.prev`) — send that file when reporting a problem.
 
 **Manual step by step (no git binary needed — updates go through dulwich):**
 

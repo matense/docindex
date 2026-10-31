@@ -11,6 +11,13 @@ set -e
 cd "$(dirname "$0")"
 VENV_PY="venv/bin/python"
 
+# All output is mirrored to logs/install.log (previous run kept as
+# .prev) via tools/tee.py - send that file when reporting a failure.
+if [ -z "$DOCINDEX_LOGGING" ]; then
+    export DOCINDEX_LOGGING=1
+    exec python3 tools/tee.py logs/install.log "$0" "$@"
+fi
+
 echo "=== DocIndex install ==="
 
 # 1. Python check (3.11+)

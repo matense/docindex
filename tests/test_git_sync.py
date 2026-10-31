@@ -83,3 +83,23 @@ def test_pull_aborts_on_detached_head(pair, capsys):
         git_sync.pull_repo(clone)
     assert excinfo.value.code == 1
     assert "detached HEAD" in capsys.readouterr().out
+
+
+def test_tee_captures_output_and_exit_code(tmp_path):
+    import subprocess
+    log = str(tmp_path / "run.log")
+    cmd = [sys.executable, "-c",
+           "import sys; print('out-line'); "
+           "print('err-line', file=sys.stderr); sys.exit(3)"]
+    proc = subprocess.run(
+        [sys.executable, "tools/tee.py", log] + cmd,
+        capture_output=True, text=True)
+    assert proc.returncode == 3
+    assert "out-line" in proc.stdout
+    assert "err-line" in proc.stdout  # stderr merged, like `2>&1`
+    body = open(log, encoding="utf-8").read()
+    assert "out-line" in body and "err-line" in body
+    # Second run rotates the previous log aside.
+    subprocess.run([sys.executable, "tools/tee.py", log] + cmd,
+                   capture_output=True)
+    assert "out-line" in open(log + ".prev", encoding="utf-8").read()

@@ -8,12 +8,20 @@ setlocal
 cd /d "%~dp0"
 set "VENV_PY=venv\Scripts\python.exe"
 
-echo === DocIndex update ===
-
 if not exist "%VENV_PY%" (
     echo -^> No working venv found - run install.bat first.
     exit /b 1
 )
+
+rem All output is mirrored to logs\update.log (previous run kept as
+rem .prev) via tools\tee.py — send that file when reporting a failure.
+if defined DOCINDEX_LOGGING goto :noreexec
+set DOCINDEX_LOGGING=1
+"%VENV_PY%" tools\tee.py logs\update.log "%~f0" %*
+exit /b %errorlevel%
+:noreexec
+
+echo === DocIndex update ===
 
 echo -^> Pulling the latest code...
 rem Code updates go through dulwich (pure Python, already a dependency) so
