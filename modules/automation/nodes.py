@@ -291,9 +291,10 @@ def _exec_input_file(ctx, config, inputs):
 
 
 def resolve_drive_id(ctx, config, outputs, field="drive_id"):
-    """Drive for a save/folder node: a picked drive id OR a {{ ref }} to an
-    input.drive node (rendered against upstream outputs). Returns the Drive
-    row or raises WorkflowError."""
+    """Drive for a save/folder node: a picked drive id, a drive NAME
+    typed or answered at run time, or a {{ ref }} to an input.drive node
+    rendered against upstream outputs. Returns the Drive row or raises
+    WorkflowError."""
     raw = config.get(field)
     if isinstance(raw, str) and "{{" in raw:
         raw = render_template(raw, outputs)
@@ -308,12 +309,23 @@ def resolve_drive_id(ctx, config, outputs, field="drive_id"):
                 raise ValueError
         except (TypeError, ValueError, KeyError):
             drive_id = None
-    if drive_id is None:
-        raise WorkflowError("Pick a drive (or reference one with "
-                            "{{ nX }} from a Drive picker node).")
-    drive = db.session.get(Drive, drive_id)
+    drive = None
+    if drive_id is not None:
+        drive = db.session.get(Drive, drive_id)
+    elif isinstance(raw, str) and raw.strip():
+        # A drive name typed or answered at run time ("Reports").
+        matches = (Drive.query.filter_by(user_id=ctx["user"].id)
+                   .filter(Drive.name == raw.strip()).all())
+        if len(matches) == 1:
+            drive = matches[0]
+        elif len(matches) > 1:
+            raise WorkflowError(
+                f"Several drives are called '{raw.strip()}' — pick one by "
+                "id (or rename them) so the choice is unambiguous.")
     if drive is None or drive.user_id != ctx["user"].id:
-        raise WorkflowError("The selected drive does not exist.")
+        raise WorkflowError("Pick a drive (an id, an exact drive name, or "
+                            "reference one with {{ nX }} from a Drive "
+                            "picker node).")
     return drive
 
 
@@ -942,6 +954,22 @@ def _move_folder_payload(ctx, payload, drive, folder_id):
     return p_folders([{"folder_id": moved.id, "name": moved.name}])
 
 
+def _folder_id_by_path(user, drive_id, path):
+    """Folder id for an 'a/b/c' path inside a drive, or None."""
+    folder = None
+    for part in path.split("/"):
+        if not part:
+            continue
+        folder = (Folder.query
+                  .filter_by(drive_id=drive_id, name=part,
+                             parent_id=folder.id if folder else None,
+                             user_id=user.id)
+                  .first())
+        if folder is None:
+            return None
+    return folder.id if folder else None
+
+
 def _resolve_dest_folder(ctx, config, outputs, drive):
     """Optional destination folder id inside *drive* (None = root)."""
     raw = config.get("folder_id", "")
@@ -949,6 +977,7 @@ def _resolve_dest_folder(ctx, config, outputs, drive):
         return None
     if isinstance(raw, str) and "{{" in raw:
         raw = render_template(raw, outputs)
+    folder_id = None
     try:
         folder_id = int(raw)
     except (TypeError, ValueError):
@@ -957,6 +986,10 @@ def _resolve_dest_folder(ctx, config, outputs, drive):
             folder_id = int(data["id"]) if isinstance(data, dict) else None
         except (TypeError, ValueError, KeyError):
             folder_id = None
+    if folder_id is None and isinstance(raw, str) and raw.strip():
+        # A folder path answered at run time ("Reports/2026").
+        folder_id = _folder_id_by_path(ctx["user"], drive.id,
+                                       raw.strip().strip("/"))
     if folder_id is None:
         raise WorkflowError("That destination folder does not exist.")
     folder = db.session.get(Folder, folder_id)
@@ -1328,16 +1361,32 @@ def _save_blob_to_drive(ctx, config, blob, name, outputs=None):
                             "pick a writable drive.")
 
     folder = None
-    folder_path = (config.get("folder") or "").strip().strip("/")
+    folder_path = (config.get("folder") or "").strip()
+    if isinstance(folder_path, str) and "{{" in folder_path:
+        folder_path = render_template(folder_path, outputs or {}).strip()
+    folder_path = folder_path.strip().strip("/")
+    create_missing = str(config.get("create_folders", "no")) == "yes"
     if folder_path:
+        parent = None
         for part in folder_path.split("/"):
             folder = (Folder.query
                       .filter_by(drive_id=drive.id, name=part,
-                                 parent_id=folder.id if folder else None)
+                                 parent_id=parent.id if parent else None,
+                                 user_id=ctx["user"].id)
                       .first())
             if folder is None:
-                raise WorkflowError(f"Folder '{folder_path}' does not exist "
-                                    f"in drive '{drive.name}'.")
+                if not create_missing:
+                    raise WorkflowError(
+                        f"Folder '{folder_path}' does not exist in drive "
+                        f"'{drive.name}'. Use a {{{{ ref }}}} to decide it "
+                        "at run time, or turn on 'Create missing folders'.")
+                folder = Folder(drive_id=drive.id, name=part,
+                                parent_id=parent.id if parent else None,
+                                user_id=ctx["user"].id)
+                db.session.add(folder)
+                db.session.flush()
+                ctx["log"](f"created folder '{part}'")
+            parent = folder
 
     stored = file_service.save_upload(
         FileStorage(io.BytesIO(blob), filename=name), ctx["user"], folder,
@@ -1752,10 +1801,12 @@ def register_defaults():
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not synced). {{ n1 }} refs work."},
+             "help": "Must be writable (not synced). Decide it at run "
+                     "time: {{ nX }}, or type an exact drive name."},
             {"name": "folder_id", "label": "Folder (optional)", "kind": "folder",
              "return": "id", "advanced": True, "default": "",
-             "help": "Empty = the drive root."},
+             "help": "Empty = the drive root. Supports {{ nX }} (id or "
+                     "'a/b/c' path) to decide it at run time."},
         ]}, lambda ctx, config, inputs: _exec_copy_file(
             ctx, config, inputs, ctx["_outputs"]))
 
@@ -1771,10 +1822,12 @@ def register_defaults():
         "fields": [
             {"name": "drive_id", "label": "Target drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not synced). {{ n1 }} refs work."},
+             "help": "Must be writable (not synced). Decide it at run "
+                     "time: {{ nX }}, or type an exact drive name."},
             {"name": "folder_id", "label": "Folder (optional)", "kind": "folder",
              "return": "id", "advanced": True, "default": "",
-             "help": "Empty = the drive root."},
+             "help": "Empty = the drive root. Supports {{ nX }} (id or "
+                     "'a/b/c' path) to decide it at run time."},
         ]}, lambda ctx, config, inputs: _exec_move_file(
             ctx, config, inputs, ctx["_outputs"]))
 
@@ -1981,15 +2034,26 @@ def register_defaults():
         "fields": [
             {"name": "name", "label": "File name", "kind": "text",
              "default": "output.txt", "placeholder": "report.txt",
-             "help": "Supports {{ node_id }} references."},
+             "help": "Supports {{ nX }} — wire a Run input node to decide "
+                     "the name at run time."},
             {"name": "drive_id", "label": "Drive", "kind": "drive",
              "required": True, "default": "",
-             "help": "Must be writable (not a synced drive). Or pick "
-                     "Custom and type {{ nX }} for a Drive picker node."},
+             "help": "Must be writable (not a synced drive). Decide it at "
+                     "run time: {{ nX }} from a Drive picker node, or type "
+                     "an exact drive name."},
             {"name": "folder", "label": "Folder", "kind": "folder",
              "return": "path", "advanced": True, "default": "",
              "placeholder": "Reports/2026",
-             "help": "Pick an existing folder — or leave empty for the drive root."},
+             "help": "Pick an existing folder — or leave empty for the "
+                     "drive root. Supports {{ nX }} (e.g. a Run input "
+                     "answer) to decide it at run time."},
+            {"name": "create_folders", "label": "Create missing folders",
+             "kind": "select", "advanced": True, "default": "no",
+             "options": [{"value": "no", "label": "No — folders must exist"},
+                         {"value": "yes",
+                          "label": "Yes — create the path if needed"}],
+             "help": "Needed when the folder is decided at run time "
+                     "(e.g. a date like 2026/10/31)."},
         ]}, lambda ctx, config, inputs: _exec_save_file(
             ctx, config, inputs, ctx["_outputs"]))
 
@@ -2049,7 +2113,8 @@ def register_defaults():
             {"name": "name", "label": "New notebook name", "kind": "text",
              "default": "", "placeholder": "e.g. Weekly digest",
              "show_when": {"field": "notebook_id", "empty": True},
-             "help": "Supports {{ node_id }} references."},
+             "help": "Supports {{ nX }} — wire a Run input node to decide "
+                     "the name at run time."},
             {"name": "drive_id", "label": "Drive (for the new notebook)",
              "kind": "drive", "default": "",
              "show_when": {"field": "notebook_id", "empty": True},

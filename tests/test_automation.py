@@ -694,6 +694,110 @@ def test_save_file_refuses_synced_drive(app, user):
             _execute(_save_graph(drive_id), app, user)
 
 
+def _param_save_graph(drive_id, param_cfg, folder="{{ sub }}",
+                      name="report.txt", create="no"):
+    return {"nodes": [
+        {"id": "sub", "type": "input.param", "config": param_cfg},
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hello", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": name, "drive_id": str(drive_id),
+                    "folder": folder, "create_folders": create}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+
+
+def test_save_file_folder_decided_at_run_time(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        db.session.add(Folder(drive_id=drive.id, name="Q1",
+                              user_id=user))
+        db.session.commit()
+    graph = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"},
+        name="r-{{ sub }}.txt")
+    with app.app_context():
+        _, _, created = _execute(
+            graph, app, user, params={"sub": "Q1"})
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.name == "r-Q1.txt"
+        assert stored.folder is not None and stored.folder.name == "Q1"
+
+
+def test_save_file_creates_runtime_folders(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    graph = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"},
+        create="yes")
+    with app.app_context():
+        _, _, created = _execute(
+            graph, app, user, params={"sub": "2026/10"})
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert [f.name for f in stored.folder.breadcrumb()] == \
+            ["2026", "10"]
+    # Without create_folders the same run fails with a clear error.
+    graph2 = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"})
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="does not exist"):
+            _execute(graph2, app, user, params={"sub": "nope/nada"})
+
+
+def test_save_file_drive_by_name(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hi", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "n.txt", "drive_id": "Runtime"}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        _, _, created = _execute(graph, app, user)
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.drive_id == drive_id
+    bad = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hi", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "n.txt", "drive_id": "No Such Drive"}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="Pick a drive"):
+            _execute(bad, app, user)
+
+
+def test_copy_file_folder_decided_at_run_time(app, user):
+    from app.services import indexing_service
+    _drive(app, user, name="Src")
+    dst_id = _drive(app, user, name="Dst")
+    _make_file(app, user, "mv.txt", "move me please")
+    with app.app_context():
+        drive = db.session.get(Drive, dst_id)
+        db.session.add(Folder(drive_id=drive.id, name="Target",
+                              user_id=user))
+        for f in StoredFile.query.filter_by(user_id=user).all():
+            indexing_service.index_file(f.id, app)
+        db.session.commit()
+    graph = {"nodes": [
+        {"id": "dst", "type": "input.param",
+         "config": {"param": "where", "kind": "text", "ask": "yes"}},
+        {"id": "s", "type": "docindex.search_files",
+         "config": {"query": "move me", "limit": 5}},
+        {"id": "m", "type": "output.copy_file",
+         "config": {"drive_id": str(dst_id), "folder_id": "{{ dst }}"}},
+    ], "edges": [
+        {"from": "s", "from_port": "out", "to": "m", "to_port": "in"}]}
+    with app.app_context():
+        outputs, _, _ = _execute(graph, app, user,
+                                 params={"where": "Target"})
+        ref = outputs["m"]["out"]["data"][0]
+        stored = db.session.get(StoredFile, int(ref["file_id"]))
+        assert stored.folder is not None and stored.folder.name == "Target"
+
+
 # ---------------------------------------------------------------------------
 # Nodes: output.copy_file / output.move_file
 # ---------------------------------------------------------------------------

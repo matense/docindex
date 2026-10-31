@@ -204,6 +204,10 @@ def _tool_node_catalog(user, args, drive):
                 "merge takes any number of wires on one 'in' port, "
                 "condition outputs true/false.",
                 "save nodes need a writable drive_id (not synced).",
+                "Output destinations are runtime-decidable: use "
+                "{{ nX }} refs from Run input nodes in name/drive/folder "
+                "fields, exact drive names, and 'a/b/c' folder paths "
+                "(save nodes can auto-create them).",
                 "Run inputs (input.param/input.drive): kind can be text, "
                 "longtext, number, select (options 'value | Label' lines), "
                 "boolean, date or file; required auto|yes|no. Call "

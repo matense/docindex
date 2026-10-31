@@ -1372,7 +1372,10 @@ tool + table).
   a datalist, the right side hides for the empty/not-empty operators —
   and merge, now a multiple fan-in port joining any number of
   branches), **Output** (save file to a writable drive — read-only
-  drives are refused; several files arrive as one ZIP — save table as CSV/Excel, copy or move one file or
+  drives are refused; several files arrive as one ZIP; destinations
+  are runtime-decidable (`{{ nX }}` refs from Run input nodes in
+  name/drive/folder fields, exact drive names, `a/b/c` folder paths,
+  optional auto-create) — save table as CSV/Excel, copy or move one file or
   a whole folder tree to another writable drive (`output.copy_file` /
   `output.move_file`, with an optional destination folder; folders arrive
   as a `folders` payload, e.g. from the `input.folder` node), notebook
