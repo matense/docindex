@@ -10,13 +10,20 @@ VENV_PY="venv/bin/python"
 
 echo "=== DocIndex update ==="
 
-echo "-> Pulling the latest code..."
-git pull
-
 if [ ! -x "$VENV_PY" ]; then
     echo "-> No working venv found — run ./install.sh first."
     exit 1
 fi
+
+echo "-> Pulling the latest code..."
+# Code updates go through dulwich (pure Python, already a dependency) so
+# no git binary is required. Bootstrap it first if this venv lacks it.
+if ! "$VENV_PY" -c "import dulwich" 2>/dev/null; then
+    echo "-> Installing dulwich for the updater..."
+    DULWICH_PIN=$(grep -m1 -E "^dulwich" requirements.txt)
+    "$VENV_PY" -m pip install "$DULWICH_PIN"
+fi
+"$VENV_PY" tools/git_sync.py pull
 
 echo "-> Updating dependencies..."
 "$VENV_PY" -m pip install -r requirements.txt

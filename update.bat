@@ -10,14 +10,23 @@ set "VENV_PY=venv\Scripts\python.exe"
 
 echo === DocIndex update ===
 
-echo -^> Pulling the latest code...
-git pull
-if errorlevel 1 exit /b 1
-
 if not exist "%VENV_PY%" (
     echo -^> No working venv found - run install.bat first.
     exit /b 1
 )
+
+echo -^> Pulling the latest code...
+rem Code updates go through dulwich (pure Python, already a dependency) so
+rem no git binary is required. Bootstrap it first if this venv lacks it.
+"%VENV_PY%" -c "import dulwich" 2>nul
+if errorlevel 1 (
+    echo -^> Installing dulwich for the updater...
+    for /f "tokens=*" %%p in ('findstr /b "dulwich" requirements.txt') do set DULWICH_PIN=%%p
+    "%VENV_PY%" -m pip install "%DULWICH_PIN%"
+    if errorlevel 1 exit /b 1
+)
+"%VENV_PY%" tools/git_sync.py pull
+if errorlevel 1 exit /b 1
 
 echo -^> Updating dependencies...
 "%VENV_PY%" -m pip install -r requirements.txt
