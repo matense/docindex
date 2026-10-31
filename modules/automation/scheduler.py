@@ -89,8 +89,7 @@ def tick(app):
                     _t.sleep(random.uniform(0, 2))
                 runtime.start_run(wf, user, trigger="schedule", app=app,
                                   trigger_file_id=wf.schedule_file_id,
-                                  params=(_json.loads(wf.schedule_params)
-                                         if wf.schedule_params else None))
+                                  params=profile)
                 launched += 1
             except Exception:  # noqa: BLE001 - one workflow must not kill tick
                 app.logger.exception("Automation schedule failed for %s", wf.id)

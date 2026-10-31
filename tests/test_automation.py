@@ -680,6 +680,7 @@ def test_save_file_zips_files_payload(app, user):
         stored = db.session.get(StoredFile, created[0]["file_id"])
         assert stored.name == "bundle.zip"  # extension added
         import zipfile
+
         from app.services import file_service
         names = sorted(zipfile.ZipFile(
             file_service.file_path(stored)).namelist())
