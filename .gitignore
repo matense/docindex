@@ -26,3 +26,6 @@ Thumbs.db
 modules/whiteboards/frontend/node_modules/
 # Vite build entry artifact (never served; the JS bundle is loaded directly)
 modules/whiteboards/static/dist/index.html
+
+# Local-only plans and notes (never committed)
+plans/
