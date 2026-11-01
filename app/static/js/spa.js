@@ -104,6 +104,10 @@
                 .some((l) => l.getAttribute('href') === href);
             if (!exists) document.head.appendChild(document.importNode(link, true));
         });
+        // Teardown hook for the outgoing page (islands, tickers, in-flight
+        // saves): runs while the old DOM still exists. Pair with
+        // 'spa:navigated' (fired below, after the swap).
+        document.dispatchEvent(new CustomEvent('spa:navigate', { detail: { url } }));
         container.innerHTML = newContent.innerHTML;
         execScripts(container);
         updatePageState(doc, url);
@@ -150,6 +154,8 @@
             if (cache.has(url)) {
                 ({ html } = cache.get(url));
             } else {
+                // RAW fetch: HTML navigation (not JSON) with its own
+                // redirect/fallback handling; apiFetch is JSON-only.
                 const resp = await fetch(url, { headers: { 'Accept': 'text/html' } });
                 if (!resp.ok || token !== navToken) {
                     if (!resp.ok) window.location.href = url;
@@ -233,6 +239,8 @@
 
         showProgress();
         try {
+            // RAW fetch: form POST returning HTML (or JSON handled by the
+            // form's own flow); apiFetch is JSON-only.
             const resp = await fetch(action, {
                 method: 'POST',
                 body: new FormData(form),

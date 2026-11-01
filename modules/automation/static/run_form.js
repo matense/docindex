@@ -78,11 +78,8 @@ window.AutomationRunForm = (function () {
                 list.innerHTML = '<div class="text-xs opacity-40 p-2">loading…</div>';
                 let url = browseUrl + '?drive_id=' + driveSel.value;
                 if (folderId) url += '&folder_id=' + folderId;
-                let data = {};
-                try {
-                    const r = await fetch(url, { headers: { Accept: 'application/json' } });
-                    data = await r.json();
-                } catch { data = {}; }
+                let data = await apiFetch(url, { headers: { Accept: 'application/json' } }, { silent: true });
+                if (!data || typeof data !== 'object') data = {};
                 crumbs.textContent = (data.crumbs || []).map((c) => c.name).join(' / ') || '— root —';
                 list.innerHTML = '';
                 (data.folders || []).forEach((f) => {
@@ -291,8 +288,14 @@ window.AutomationRunForm = (function () {
             });
             summaryEl.textContent = bits.length ? 'Runs with: ' + bits.join(' · ') : '';
         };
-        form.addEventListener('input', refreshSummary);
-        form.addEventListener('change', refreshSummary);
+        // The form element persists across opens (only its content is
+        // rebuilt): bind the summary listeners once, or every keystroke
+        // would run N stacked refreshSummary calls.
+        if (!form.dataset.rfBound) {
+            form.dataset.rfBound = "1";
+            form.addEventListener('input', () => { if (refreshSummary) refreshSummary(); });
+            form.addEventListener('change', () => { if (refreshSummary) refreshSummary(); });
+        }
         refreshSummary();
 
         const go = dlg.querySelector('[data-rf="go"]');

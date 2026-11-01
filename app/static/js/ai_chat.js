@@ -490,7 +490,10 @@
 
 
         // Dismissed from the dock widget -> leave task mode here too.
-        window.addEventListener('ai-task-dismissed', (...a) => sess.onTaskDismissed(...a));
+        // Stored by reference: detachWindow()/destroy() must remove the
+        // SAME function (an inline arrow would never match).
+        const onTaskDismissed = (...a) => sess.onTaskDismissed(...a);
+        window.addEventListener('ai-task-dismissed', onTaskDismissed);
 
         // Stream a running task's events live, exactly like a normal chat
         // answer. The transcript is persisted server-side, so a stream that
@@ -505,7 +508,8 @@
         function detachWindow() {
             // Drop the live subscription; the server-side run continues.
             sess.detachSession();
-            window.removeEventListener('ai-task-dismissed', sess.onTaskDismissed);
+            window.removeEventListener('ai-task-dismissed', onTaskDismissed);
+            document.removeEventListener('spa:navigated', onNavigated);
             // Snap layer: closing the docked window restores the full view.
             if (dockedWin === api) {
                 dockedWin = null;
@@ -527,10 +531,8 @@
                     'The transcript so far is kept. Minimize (—) instead to let it finish.',
                     { title: 'Close chat', confirmText: 'Stop & close' });
                 if (!ok) return;
-                try {
-                    await fetch('/ai/tasks/' + sess.taskId + '/stop',
-                                { method: 'POST' });
-                } catch (err) { /* already finishing; detach anyway */ }
+                await apiFetch('/ai/tasks/' + sess.taskId + '/stop',
+                               { method: 'POST' }, { silent: true });
             }
             detachWindow();
         }
@@ -558,6 +560,8 @@
             btn.disabled = true;
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
             try {
+                // RAW fetch: network vs HTTP-error toasts differ below;
+                // apiFetch returns null for both.
                 const resp = await fetch('/ai/conversations/' + sess.conversationId + '/summarize',
                                          { method: 'POST' });
                 const data = await resp.json().catch(() => ({}));
@@ -664,8 +668,10 @@
         windows.push(api);
         sess.renderChips();  // show the current-context chip if a file is open
         // Re-render on every SPA navigation so the context chips (file,
-        // workflow) follow what is actually on screen.
-        document.addEventListener('spa:navigated', () => sess.renderChips());
+        // workflow) follow what is actually on screen. Stored by reference
+        // so detachWindow() can remove it (anonymous would leak per window).
+        const onNavigated = () => sess.renderChips();
+        document.addEventListener('spa:navigated', onNavigated);
         sess.loadConnections();
         api.focus();
         return api;

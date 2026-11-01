@@ -153,6 +153,8 @@
         body.set('folder_ids', folderIds.join(','));
         body.set('dest', dest || '');
         if (destDriveId !== undefined) body.set('dest_drive_id', destDriveId || '');
+        // RAW fetch: refreshPage() runs on completion either way; apiFetch
+        // never rejects, so this chain would run even on a failed move.
         return fetch('/selection/move', {
             method: 'POST',
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -172,6 +174,8 @@
         body.set('folder_ids', folderIds.join(','));
         body.set('dest_folder_id', destFolder || '');
         body.set('dest_drive_id', destDriveId || '');
+        // RAW fetch: refreshPage() runs on completion either way; apiFetch
+        // never rejects, so this chain would run even on a failed copy.
         return fetch('/selection/copy', {
             method: 'POST',
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -283,6 +287,8 @@
         const body = new URLSearchParams();
         body.set('file_ids', files.join(','));
         body.set('folder_ids', folders.join(','));
+        // RAW fetch: refresh happens on completion either way; apiFetch
+        // never rejects, so this chain would run even on a failed delete.
         fetch('/selection/delete', {
             method: 'POST',
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -405,6 +411,8 @@
                         { danger: true, title: 'Delete folder', confirmText: 'Delete' });
                     if (!ok) return;
                     const body = new URLSearchParams();
+                    // RAW fetch: refresh happens on completion either way; apiFetch
+                    // never rejects, so this chain would run even on a failed delete.
                     fetch('/folder/' + id + '/delete', {
                         method: 'POST',
                         headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -610,9 +618,8 @@ async function openRunWorkflow(fileId, fileName) {
     modal.showModal();
     if (runWfCache === null) {
         try {
-            const resp = await fetch('/m/automation/api/for-file');
-            if (!resp.ok) throw new Error('unavailable');
-            runWfCache = (await resp.json()).workflows || [];
+            const data = await apiFetch('/m/automation/api/for-file', null, { silent: true });
+            runWfCache = (data && data.workflows) || [];
         } catch {
             runWfCache = [];
         }
@@ -722,7 +729,8 @@ async function openRunWorkflow(fileId, fileName) {
             btn.disabled = true;
             const directRun = async (body) => {
                 try {
-                    const resp = await fetch('/m/automation/' + wf.id + '/run', {
+                    // // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
+                const resp = await fetch('/m/automation/' + wf.id + '/run', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(body),
@@ -760,9 +768,9 @@ async function openRunWorkflow(fileId, fileName) {
                         document.body.appendChild(s);
                     });
                 }
-                const cresp = await fetch('/m/automation/' + wf.id + '/run-contract',
-                                          { headers: { Accept: 'application/json' } });
-                const contract = cresp.ok ? await cresp.json() : { trigger: false, params: [] };
+                const contract = await apiFetch('/m/automation/' + wf.id + '/run-contract',
+                                                        { headers: { Accept: 'application/json' } },
+                                                        { silent: true }) || { trigger: false, params: [] };
                 if (!contract.trigger && !(contract.params || []).length) {
                     directRun(runBody);
                     return;
@@ -819,9 +827,9 @@ async function openRunWorkflow(fileId, fileName) {
 }
 
 function showFileInfo(fileId) {
-    fetch('/file/' + fileId + '/info')
-        .then(r => r.json())
+    apiFetch('/file/' + fileId + '/info', null, { silent: true })
         .then(info => {
+            if (!info) return;
             document.getElementById('info-title').textContent = info.name;
             const rows = [
                 ['Type', (info.extension || 'file').toUpperCase()],

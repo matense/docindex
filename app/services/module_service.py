@@ -143,12 +143,16 @@ class ModuleContext:
 
 def _make_guard(name):
     def guard():
-        from flask import abort
+        from flask import abort, jsonify
         from flask_login import current_user
 
         if not current_user.is_authenticated:
             from flask import redirect, request, url_for
 
+            from app.utils import wants_json
+
+            if wants_json():
+                return jsonify({"error": "Authentication required."}), 401
             return redirect(url_for("auth.login", next=request.path))
         if not is_enabled(name):
             abort(404)

@@ -54,9 +54,11 @@
         dropdown.classList.remove('hidden');
         dropdownContent.innerHTML =
             '<div class="pdo-search-dropdown-loading"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
-        fetch('/api/search?q=' + encodeURIComponent(q))
-            .then(r => r.json())
-            .then(renderResults)
+        apiFetch('/api/search?q=' + encodeURIComponent(q), null, { silent: true })
+            .then(results => {
+                if (!Array.isArray(results)) throw new Error('failed');
+                renderResults(results);
+            })
             .catch(() => { dropdownContent.innerHTML = '<div class="pdo-search-dropdown-empty">Search failed</div>'; });
     }
 

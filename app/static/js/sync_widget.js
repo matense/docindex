@@ -55,9 +55,9 @@
             pauseBtn.addEventListener('click', async () => {
                 if (!lastDriveId) return;
                 const action = pauseBtn.dataset.paused === '1' ? 'resume' : 'pause';
-                await fetch(cfg.actionUrl(lastDriveId, action), {
+                await apiFetch(cfg.actionUrl(lastDriveId, action), {
                     method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
-                });
+                }, { silent: true });
                 poll();
             });
 
@@ -71,9 +71,9 @@
                 const ok = await window.uiConfirm(cfg.stopConfirm,
                     { title: 'Stop', confirmText: 'Stop' });
                 if (!ok) return;
-                await fetch(cfg.actionUrl(lastDriveId, 'stop'), {
+                await apiFetch(cfg.actionUrl(lastDriveId, 'stop'), {
                     method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
-                });
+                }, { silent: true });
                 poll();
             });
         }
@@ -118,6 +118,7 @@
 
         async function showFinished(driveId) {
             try {
+                // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
                 const resp = await fetch(cfg.statusUrl(driveId));
                 if (!resp.ok) { // drive was removed — just hide
                     widget.classList.add('hidden');
@@ -163,15 +164,11 @@
         }
 
         async function poll() {
-            try {
-                const resp = await fetch(cfg.activeUrl, { headers: { 'Accept': 'application/json' } });
-                const contentType = resp.headers.get('Content-Type') || '';
-                if (resp.ok && contentType.includes('application/json')) {
-                    const data = await resp.json();
-                    idle = !data.job;
-                    render(data.job);
-                }
-            } catch { /* offline etc. — try again on the next tick */ }
+            const data = await apiFetch(cfg.activeUrl, { headers: { 'Accept': 'application/json' } }, { silent: true });
+            if (data && typeof data === 'object') {
+                idle = !data.job;
+                render(data.job);
+            }
             schedule();
         }
 

@@ -143,9 +143,9 @@
                 clearTimeout(debounce);
                 const q = input.value.trim();
                 debounce = setTimeout(() => {
-                    fetch("/api/search?q=" + encodeURIComponent(q))
-                        .then((r) => r.json())
+                    apiFetch("/api/search?q=" + encodeURIComponent(q), null, { silent: true })
                         .then((files) => {
+                            if (!files) return;
                             results.innerHTML = "";
                             if (!files.length) {
                                 results.innerHTML = '<div class="text-xs opacity-50'
@@ -204,8 +204,12 @@
         document.head.appendChild(script);
     }
 
+    let currentUnmount = null;
+
     function mount(root, opts) {
-        if (root.dataset.nbMounted) return;
+        // Re-mount safety (SPA revisits): tear down the previous instance
+        // first — its listeners/timers would otherwise outlive its DOM.
+        if (currentUnmount) currentUnmount();
         root.dataset.nbMounted = "1";
 
         const doc = opts.doc && Array.isArray(opts.doc.cells)
@@ -255,6 +259,8 @@
             saving = true;
             setStatus("saving");
             try {
+                // RAW fetch: the error status shows data.error || resp.status,
+                // so HTTP status and body are both needed (apiFetch conflates).
                 const resp = await fetch(opts.saveUrl, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -284,6 +290,8 @@
         function flushSync() {
             if (!dirty) return;
             try {
+                // RAW fetch: keepalive fire-and-forget during SPA teardown;
+                // apiFetch would await JSON and toast on failure.
                 fetch(opts.saveUrl, {
                     method: "POST", keepalive: true,
                     headers: { "Content-Type": "application/json" },
@@ -405,11 +413,9 @@
         // notebook, refresh the view in place — unsaved local edits win.
         async function pollRemote() {
             if (!alive()) { clearInterval(pollTimer); return; }
+            const data = await apiFetch(opts.docUrl, null, { silent: true });
+            if (!data || !data.ok || !data.checksum) return;
             try {
-                const resp = await fetch(opts.docUrl);
-                if (!resp.ok) return;
-                const data = await resp.json();
-                if (!data.ok || !data.checksum) return;
                 if (data.checksum === lastChecksum) return;
                 if (dirty || saving) return;  // local edits take precedence
                 doc.cells = data.doc.cells;
@@ -425,7 +431,7 @@
                 doc.cells.forEach((c) => { c._editing = false; });
                 render();
                 setStatus("saved", "updated remotely");
-            } catch (err) { /* offline hiccup — try again next tick */ }
+            } catch (err) { /* malformed payload — try again next tick */ }
         }
         const pollTimer = setInterval(pollRemote, 5000);
         const addBtn = root.querySelector("#nb-add-btn");
@@ -824,8 +830,7 @@
                             if (!file) return;
                             const fd = new FormData();
                             fd.append("file", file);
-                            fetch(opts.assetsUrl, { method: "POST", body: fd })
-                                .then((r) => r.json())
+                            apiFetch(opts.assetsUrl, { method: "POST", body: fd }, { silent: true })
                                 .then((d) => {
                                     if (d && d.ok) {
                                         const range = quill.getSelection(true);
@@ -1151,7 +1156,26 @@
         }
 
         render();
+
+        // Teardown for SPA navigation (no beforeunload fires): flush a
+        // debounce-pending save first so edits are never lost, then drop
+        // timers and global listeners. Only the latest mounted instance
+        // acts — stale closures from previous visits are no-ops.
+        function unmount() {
+            if (currentUnmount !== unmount) return;
+            currentUnmount = null;
+            try { flushSync(); } catch (err) { /* best effort */ }
+            clearTimeout(timer);
+            clearInterval(pollTimer);
+            detach();
+            delete root.dataset.nbMounted;
+        }
+        currentUnmount = unmount;
+        document.addEventListener("spa:navigate", unmount, { once: true });
     }
 
-    window.NotebookEditor = { mount: mount };
+    window.NotebookEditor = {
+        mount: mount,
+        unmount: () => { if (currentUnmount) currentUnmount(); },
+    };
 })();

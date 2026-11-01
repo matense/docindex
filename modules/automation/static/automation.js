@@ -9,6 +9,9 @@
     let specByType = {};      // node type -> spec
     let stagger = 0;          // placement offset for palette clicks
     let nodeOutputs = {};     // dfId -> {port: text} from the last preview run
+    let currentUnmount = null; // teardown of the live mount (SPA-safe re-mount)
+    let versionPollTimer = null;
+    let resizeRO = null;
 
     // ------------------------------------------------------------------
     // Helpers
@@ -541,10 +544,13 @@
     };
 
     async function browseFetch(params) {
-        const resp = await fetch(root.dataset.browseUrl + '?' +
-                                 new URLSearchParams(params));
-        if (!resp.ok) throw new Error('browse failed');
-        return resp.json();
+        // Silent: callers translate failure into their own UI (throw caught
+        // by resolveFileInfo/list rendering), so no toast here.
+        const data = await apiFetch(root.dataset.browseUrl + '?' +
+                                    new URLSearchParams(params),
+                                    null, { silent: true });
+        if (!data) throw new Error('browse failed');
+        return data;
     }
 
     // Font Awesome icon per file extension — makes the picker scannable.
@@ -701,8 +707,7 @@
     function fetchUpstreamColumns(nodeId, cb, port) {
         const fileId = upstreamFileId(nodeId, port);
         if (fileId) {
-            fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
-                .then(r => (r.ok ? r.json() : null))
+            apiFetch(root.dataset.shapeUrl + '?file_id=' + fileId, null, { silent: true })
                 .then(shape => {
                     if (shape && shape.kind === 'table'
                             && shape.columns.length) {
@@ -713,10 +718,9 @@
             return;
         }
         if (port || !root.dataset.workflowId || !root.dataset.upstreamShapeUrl) return;
-        fetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
+        apiFetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
               encodeURIComponent(root.dataset.workflowId) +
-              '&node=' + encodeURIComponent('n' + nodeId))
-            .then(r => (r.ok ? r.json() : null))
+              '&node=' + encodeURIComponent('n' + nodeId), null, { silent: true })
             .then(shape => {
                 if (shape && shape.certain && (shape.columns || []).length) {
                     cb(shape.columns.map(String));
@@ -763,12 +767,9 @@
         const fileId = upstreamFileId(dfId);
         if (!fileId) return;
         let shape;
-        try {
-            const resp = await fetch(root.dataset.shapeUrl +
-                                     '?file_id=' + fileId);
-            if (!resp.ok) return;
-            shape = await resp.json();
-        } catch { return; }
+        shape = await apiFetch(root.dataset.shapeUrl +
+                               '?file_id=' + fileId, null, { silent: true });
+        if (!shape) return;
         const input = document.querySelector(
             `#wf-config-form [data-field="${fieldName}"]`);
         if (!input) return;
@@ -863,25 +864,22 @@
             } else if (sel.value.startsWith('persona:')) {
                 const key = sel.value.slice('persona:'.length);
                 sel.value = '';
-                fetch(root.dataset.personasUrl + '/' + encodeURIComponent(key))
-                    .then(r => (r.ok ? r.json() : null))
+                apiFetch(root.dataset.personasUrl + '/' + encodeURIComponent(key), null, { silent: true })
                     .then(p => { if (p) apply(p.content); })
                     .catch(() => {});
             } else {
                 sel.value = '';
             }
         });
-        fetch(root.dataset.behaviorsUrl)
-            .then(r => (r.ok ? r.json() : { behaviors: [] }))
+        apiFetch(root.dataset.behaviorsUrl, null, { silent: true })
             .then(data => {
-                behaviorsCache = data.behaviors || [];
+                behaviorsCache = (data && data.behaviors) || [];
                 fill(behaviorsCache);
             })
             .catch(() => {});
-        fetch(root.dataset.personasUrl)
-            .then(r => (r.ok ? r.json() : { personas: [] }))
+        apiFetch(root.dataset.personasUrl, null, { silent: true })
             .then(data => {
-                personasCache = data.personas || [];
+                personasCache = (data && data.personas) || [];
                 fillPersonas(personasCache);
             })
             .catch(() => {});
@@ -1619,10 +1617,10 @@
                 input.appendChild(blank);
                 if (!nbId) return;
                 try {
-                    const resp = await fetch(
-                        root.dataset.cellsUrl + '?notebook_id=' + nbId);
-                    if (!resp.ok) return;
-                    ((await resp.json()).cells || []).forEach(c => {
+                    const data = await apiFetch(
+                        root.dataset.cellsUrl + '?notebook_id=' + nbId, null, { silent: true });
+                    if (!data) return;
+                    (data.cells || []).forEach(c => {
                         const o = document.createElement('option');
                         o.value = c.id;
                         o.textContent = `#${c.index} · ${c.type}` +
@@ -1646,18 +1644,17 @@
                 const cfg = (nodeData(nodeId) || {}).config || {};
                 const driveId = cfg.drive_id;
                 input.innerHTML = '';
-                const root = document.createElement('option');
-                root.value = '';
-                root.textContent = driveId
+                const blank = document.createElement('option');
+                blank.value = '';
+                blank.textContent = driveId
                     ? '— drive root —'
                     : '— pick a drive first —';
-                input.appendChild(root);
+                input.appendChild(blank);
                 if (!driveId) { input.value = ''; return; }
                 try {
-                    const resp = await fetch(
-                        root.dataset.foldersUrl + '?drive_id=' + driveId);
-                    if (!resp.ok) return;
-                    const data = await resp.json();
+                    const data = await apiFetch(
+                        root.dataset.foldersUrl + '?drive_id=' + driveId, null, { silent: true });
+                    if (!data) return;
                     (data.folders || []).forEach(f => {
                         const o = document.createElement('option');
                         o.value = wantId ? String(f.id) : f.path;
@@ -1668,7 +1665,7 @@
                         const has = [...input.options].some(o => o.value === String(keep));
                         if (has) input.value = String(keep);
                     }
-                } catch { /* keep root option only */ }
+                } catch { /* keep the blank option only */ }
             };
             folderWidgetReloaders.push(() => reloadFolders(input.value));
             reloadFolders(value);
@@ -2092,6 +2089,14 @@
         ctxNodeId = null;
     }
 
+    // Document/window-level handlers, named so unmount() can remove them.
+    function onDocClick(e) {
+        if (!e.target.closest('#wf-context-menu')) closeContextMenu();
+    }
+    function onDocKeydown(e) {
+        if (e.key === 'Escape') closeContextMenu();
+    }
+
     function duplicateNode(dfId) {
         const data = nodeData(dfId);
         if (!data) return;
@@ -2250,6 +2255,8 @@
             '<i class="fas fa-circle-notch fa-spin"></i> running…</div>';
         document.getElementById('wf-preview-modal').showModal();
         try {
+            // RAW fetch: HTTP status drives the branches below (renderPreview
+            // gets resp.ok; apiFetch returns null on any HTTP error).
             const resp = await fetch(root.dataset.previewUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2373,6 +2380,8 @@
             if (scheduleProfile.fileId) body.schedule_file_id = scheduleProfile.fileId;
         }
         setSaved('A guardar…');
+        // RAW fetch: the error alert shows data.error from the HTTP-error
+        // body; apiFetch returns null on any HTTP error.
         const resp = await fetch(root.dataset.saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2415,6 +2424,8 @@
     // Mount
     // ------------------------------------------------------------------
     function mount(rootEl) {
+        // Re-mount safety (SPA revisits): tear down the live mount first.
+        if (currentUnmount) currentUnmount();
         root = rootEl;
         specByType = {};
         stagger = 0;
@@ -2460,7 +2471,8 @@
         // Layout can still shift after load (async styles, window resize,
         // SPA navigation): recompute wire geometry when it does.
         const canvasEl = document.getElementById('drawflow');
-        if (canvasEl && !canvasEl._wfRO && window.ResizeObserver) {
+        if (canvasEl && window.ResizeObserver) {
+            if (canvasEl._wfRO) canvasEl._wfRO.disconnect();
             let t = null;
             const ro = new ResizeObserver(() => {
                 clearTimeout(t);
@@ -2468,6 +2480,7 @@
             });
             ro.observe(canvasEl);
             canvasEl._wfRO = ro;
+            resizeRO = ro;
         }
         if (!window._wfLoadHook) {
             window._wfLoadHook = true;
@@ -2498,12 +2511,8 @@
             openContextMenu(parseInt(el.id.replace('node-', ''), 10),
                             e.clientX, e.clientY);
         });
-        document.addEventListener('click', e => {
-            if (!e.target.closest('#wf-context-menu')) closeContextMenu();
-        });
-        document.addEventListener('keydown', e => {
-            if (e.key === 'Escape') closeContextMenu();
-        });
+        document.addEventListener('click', onDocClick);
+        document.addEventListener('keydown', onDocKeydown);
         canvas.addEventListener('wheel', closeContextMenu);
         document.querySelectorAll('#wf-context-menu button[data-action]')
             .forEach(btn => {
@@ -2607,6 +2616,8 @@
         // the notebook toolbar; persisted via the ai-flags endpoint.
         async function toggleAiFlag(btn, flag, icons) {
             const on = !btn.classList.contains('btn-active');
+            // RAW fetch: resp.ok and data.ok are checked separately; network
+            // failures currently reject (no toast) — apiFetch would conflate.
             const resp = await fetch(root.dataset.flagsUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2650,6 +2661,8 @@
             const body = {};
             if (params && Object.keys(params).length) body.params = params;
             if (triggerFileId) body.file_id = triggerFileId;
+            // RAW fetch: HTTP-error body (data.error) feeds both the console
+            // and the alert; apiFetch returns null on any HTTP error.
             const resp = await fetch(root.dataset.runUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2677,6 +2690,9 @@
             wfConsoleLog('checking…');
             let data = null;
             try {
+                // RAW fetch: the response is parsed without an ok-check, so
+                // an HTTP-error JSON body still counts as data; apiFetch
+                // returns null on any HTTP error.
                 const resp = await fetch(root.dataset.diagnoseUrl,
                                          { headers: { Accept: 'application/json' } });
                 data = await resp.json();
@@ -2703,12 +2719,10 @@
 
         document.getElementById('wf-schedule-values').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            let contract = { trigger: false, params: [] };
-            try {
-                const resp = await fetch(root.dataset.contractUrl,
-                                         { headers: { Accept: 'application/json' } });
-                if (resp.ok) contract = await resp.json();
-            } catch { /* offline - form still opens with empty contract */ }
+            let contract = await apiFetch(root.dataset.contractUrl,
+                                          { headers: { Accept: 'application/json' } },
+                                          { silent: true });
+            if (!contract || typeof contract !== 'object') contract = { trigger: false, params: [] };
             let initialParams = {};
             let fixedTrigger = null;
             try { initialParams = JSON.parse(root.dataset.scheduleParams || '{}'); } catch { initialParams = {}; }
@@ -2761,12 +2775,10 @@
 
         document.getElementById('wf-run').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            let contract = { trigger: false, params: [] };
-            try {
-                const resp = await fetch(root.dataset.contractUrl,
-                                         { headers: { Accept: 'application/json' } });
-                if (resp.ok) contract = await resp.json();
-            } catch { /* offline - run blind, the server validates */ }
+            let contract = await apiFetch(root.dataset.contractUrl,
+                                          { headers: { Accept: 'application/json' } },
+                                          { silent: true });
+            if (!contract || typeof contract !== 'object') contract = { trigger: false, params: [] };
             if (!contract.trigger && !(contract.params || []).length) {
                 startRun(null, null);
                 return;
@@ -2809,37 +2821,61 @@
                 return;
             }
             try {
-                const resp = await fetch(root.dataset.graphUrl);
-                if (!resp.ok) return;
-                const data = await resp.json();
+                const data = await apiFetch(root.dataset.graphUrl, null, { silent: true });
+                if (!data) return;
                 loadGraph(data.graph);
                 if (data.version) graphVersion = data.version;
                 lastApplyAt = Date.now();
                 window.uiToast('Workflow updated by the AI.', 'info');
             } catch { /* offline - user can reload manually */ }
         };
-        window.addEventListener('docindex-ui-action', e => {
+        // Named so unmount() can remove it (uses mount-scoped applyRemote).
+        function onUiAction(e) {
             const detail = e.detail || {};
             if (detail.type !== 'workflow_changed') return;
             if (!window.currentWorkflow ||
                 detail.workflow_id !== window.currentWorkflow.id) return;
             applyRemote(0);
-        });
-        setInterval(async () => {
+        }
+        window.addEventListener('docindex-ui-action', onUiAction);
+        if (versionPollTimer) clearInterval(versionPollTimer);
+        versionPollTimer = setInterval(async () => {
             if (document.hidden) return;
             if (Date.now() - lastApplyAt < 10000) return;
             let data = null;
             try {
-                const resp = await fetch(root.dataset.graphUrl);
-                if (!resp.ok) return;
-                data = await resp.json();
+                data = await apiFetch(root.dataset.graphUrl, null, { silent: true });
             } catch { return; }  // offline - try again on the next tick
             if (!data || !data.version) return;
             if (graphVersion === null) { graphVersion = data.version; return; }
             if (data.version === graphVersion) return;
             applyRemote(0);
         }, 5000);
+
+        // Teardown for SPA navigation (no page unload fires): drop timers,
+        // the observer and the document/window handlers. Canvas-bound
+        // listeners die with the dropped DOM; Drawflow handlers are scoped
+        // to the replaced `editor` instance. Only the live mount acts.
+        function unmount() {
+            if (currentUnmount !== unmount) return;
+            currentUnmount = null;
+            _redrawTimers.forEach(clearTimeout);
+            _redrawTimers = [];
+            clearTimeout(_dirtyTimer);
+            if (versionPollTimer) { clearInterval(versionPollTimer); versionPollTimer = null; }
+            if (resizeRO) { try { resizeRO.disconnect(); } catch {} resizeRO = null; }
+            document.removeEventListener('click', onDocClick);
+            document.removeEventListener('keydown', onDocKeydown);
+            window.removeEventListener('docindex-ui-action', onUiAction);
+            editor = null;
+            root = null;
+        }
+        currentUnmount = unmount;
+        document.addEventListener('spa:navigate', unmount, { once: true });
     }
 
-    window.AutomationEditor = { mount };
+    window.AutomationEditor = {
+        mount,
+        unmount: () => { if (currentUnmount) currentUnmount(); },
+    };
 })();
