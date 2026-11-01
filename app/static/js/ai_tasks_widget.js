@@ -183,24 +183,18 @@
     }
 
     async function post(url) {
-        try {
-            await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrfToken() } });
-        } catch { /* next poll reconciles */ }
+        await apiFetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrfToken() } }, { silent: true });
         poll();
     }
 
     async function poll() {
-        try {
-            const resp = await fetch('/ai/tasks/active', { headers: { 'Accept': 'application/json' } });
-            const contentType = resp.headers.get('Content-Type') || '';
-            if (resp.ok && contentType.includes('application/json')) {
-                const data = await resp.json();
-                if (data.poll_ms) pollMs = data.poll_ms;
-                const tasks = data.tasks || [];
-                idle = !tasks.length;
-                render(tasks);
-            }
-        } catch { /* offline etc. — try again on the next tick */ }
+        const data = await apiFetch('/ai/tasks/active', { headers: { 'Accept': 'application/json' } }, { silent: true });
+        if (data && typeof data === 'object') {
+            if (data.poll_ms) pollMs = data.poll_ms;
+            const tasks = data.tasks || [];
+            idle = !tasks.length;
+            render(tasks);
+        }
         schedule();
     }
 

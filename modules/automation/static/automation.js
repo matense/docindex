@@ -544,10 +544,13 @@
     };
 
     async function browseFetch(params) {
-        const resp = await fetch(root.dataset.browseUrl + '?' +
-                                 new URLSearchParams(params));
-        if (!resp.ok) throw new Error('browse failed');
-        return resp.json();
+        // Silent: callers translate failure into their own UI (throw caught
+        // by resolveFileInfo/list rendering), so no toast here.
+        const data = await apiFetch(root.dataset.browseUrl + '?' +
+                                    new URLSearchParams(params),
+                                    null, { silent: true });
+        if (!data) throw new Error('browse failed');
+        return data;
     }
 
     // Font Awesome icon per file extension — makes the picker scannable.
@@ -704,8 +707,7 @@
     function fetchUpstreamColumns(nodeId, cb, port) {
         const fileId = upstreamFileId(nodeId, port);
         if (fileId) {
-            fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
-                .then(r => (r.ok ? r.json() : null))
+            apiFetch(root.dataset.shapeUrl + '?file_id=' + fileId, null, { silent: true })
                 .then(shape => {
                     if (shape && shape.kind === 'table'
                             && shape.columns.length) {
@@ -716,10 +718,9 @@
             return;
         }
         if (port || !root.dataset.workflowId || !root.dataset.upstreamShapeUrl) return;
-        fetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
+        apiFetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
               encodeURIComponent(root.dataset.workflowId) +
-              '&node=' + encodeURIComponent('n' + nodeId))
-            .then(r => (r.ok ? r.json() : null))
+              '&node=' + encodeURIComponent('n' + nodeId), null, { silent: true })
             .then(shape => {
                 if (shape && shape.certain && (shape.columns || []).length) {
                     cb(shape.columns.map(String));
@@ -766,12 +767,9 @@
         const fileId = upstreamFileId(dfId);
         if (!fileId) return;
         let shape;
-        try {
-            const resp = await fetch(root.dataset.shapeUrl +
-                                     '?file_id=' + fileId);
-            if (!resp.ok) return;
-            shape = await resp.json();
-        } catch { return; }
+        shape = await apiFetch(root.dataset.shapeUrl +
+                               '?file_id=' + fileId, null, { silent: true });
+        if (!shape) return;
         const input = document.querySelector(
             `#wf-config-form [data-field="${fieldName}"]`);
         if (!input) return;
@@ -866,25 +864,22 @@
             } else if (sel.value.startsWith('persona:')) {
                 const key = sel.value.slice('persona:'.length);
                 sel.value = '';
-                fetch(root.dataset.personasUrl + '/' + encodeURIComponent(key))
-                    .then(r => (r.ok ? r.json() : null))
+                apiFetch(root.dataset.personasUrl + '/' + encodeURIComponent(key), null, { silent: true })
                     .then(p => { if (p) apply(p.content); })
                     .catch(() => {});
             } else {
                 sel.value = '';
             }
         });
-        fetch(root.dataset.behaviorsUrl)
-            .then(r => (r.ok ? r.json() : { behaviors: [] }))
+        apiFetch(root.dataset.behaviorsUrl, null, { silent: true })
             .then(data => {
-                behaviorsCache = data.behaviors || [];
+                behaviorsCache = (data && data.behaviors) || [];
                 fill(behaviorsCache);
             })
             .catch(() => {});
-        fetch(root.dataset.personasUrl)
-            .then(r => (r.ok ? r.json() : { personas: [] }))
+        apiFetch(root.dataset.personasUrl, null, { silent: true })
             .then(data => {
-                personasCache = data.personas || [];
+                personasCache = (data && data.personas) || [];
                 fillPersonas(personasCache);
             })
             .catch(() => {});
@@ -1622,10 +1617,10 @@
                 input.appendChild(blank);
                 if (!nbId) return;
                 try {
-                    const resp = await fetch(
-                        root.dataset.cellsUrl + '?notebook_id=' + nbId);
-                    if (!resp.ok) return;
-                    ((await resp.json()).cells || []).forEach(c => {
+                    const data = await apiFetch(
+                        root.dataset.cellsUrl + '?notebook_id=' + nbId, null, { silent: true });
+                    if (!data) return;
+                    (data.cells || []).forEach(c => {
                         const o = document.createElement('option');
                         o.value = c.id;
                         o.textContent = `#${c.index} · ${c.type}` +
@@ -1657,10 +1652,9 @@
                 input.appendChild(root);
                 if (!driveId) { input.value = ''; return; }
                 try {
-                    const resp = await fetch(
-                        root.dataset.foldersUrl + '?drive_id=' + driveId);
-                    if (!resp.ok) return;
-                    const data = await resp.json();
+                    const data = await apiFetch(
+                        root.dataset.foldersUrl + '?drive_id=' + driveId, null, { silent: true });
+                    if (!data) return;
                     (data.folders || []).forEach(f => {
                         const o = document.createElement('option');
                         o.value = wantId ? String(f.id) : f.path;
@@ -2261,6 +2255,8 @@
             '<i class="fas fa-circle-notch fa-spin"></i> running…</div>';
         document.getElementById('wf-preview-modal').showModal();
         try {
+            // RAW fetch: HTTP status drives the branches below (renderPreview
+            // gets resp.ok; apiFetch returns null on any HTTP error).
             const resp = await fetch(root.dataset.previewUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2384,6 +2380,8 @@
             if (scheduleProfile.fileId) body.schedule_file_id = scheduleProfile.fileId;
         }
         setSaved('A guardar…');
+        // RAW fetch: the error alert shows data.error from the HTTP-error
+        // body; apiFetch returns null on any HTTP error.
         const resp = await fetch(root.dataset.saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2618,6 +2616,8 @@
         // the notebook toolbar; persisted via the ai-flags endpoint.
         async function toggleAiFlag(btn, flag, icons) {
             const on = !btn.classList.contains('btn-active');
+            // RAW fetch: resp.ok and data.ok are checked separately; network
+            // failures currently reject (no toast) — apiFetch would conflate.
             const resp = await fetch(root.dataset.flagsUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2661,6 +2661,8 @@
             const body = {};
             if (params && Object.keys(params).length) body.params = params;
             if (triggerFileId) body.file_id = triggerFileId;
+            // RAW fetch: HTTP-error body (data.error) feeds both the console
+            // and the alert; apiFetch returns null on any HTTP error.
             const resp = await fetch(root.dataset.runUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2688,6 +2690,9 @@
             wfConsoleLog('checking…');
             let data = null;
             try {
+                // RAW fetch: the response is parsed without an ok-check, so
+                // an HTTP-error JSON body still counts as data; apiFetch
+                // returns null on any HTTP error.
                 const resp = await fetch(root.dataset.diagnoseUrl,
                                          { headers: { Accept: 'application/json' } });
                 data = await resp.json();
@@ -2714,12 +2719,10 @@
 
         document.getElementById('wf-schedule-values').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            let contract = { trigger: false, params: [] };
-            try {
-                const resp = await fetch(root.dataset.contractUrl,
-                                         { headers: { Accept: 'application/json' } });
-                if (resp.ok) contract = await resp.json();
-            } catch { /* offline - form still opens with empty contract */ }
+            let contract = await apiFetch(root.dataset.contractUrl,
+                                          { headers: { Accept: 'application/json' } },
+                                          { silent: true });
+            if (!contract || typeof contract !== 'object') contract = { trigger: false, params: [] };
             let initialParams = {};
             let fixedTrigger = null;
             try { initialParams = JSON.parse(root.dataset.scheduleParams || '{}'); } catch { initialParams = {}; }
@@ -2772,12 +2775,10 @@
 
         document.getElementById('wf-run').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            let contract = { trigger: false, params: [] };
-            try {
-                const resp = await fetch(root.dataset.contractUrl,
-                                         { headers: { Accept: 'application/json' } });
-                if (resp.ok) contract = await resp.json();
-            } catch { /* offline - run blind, the server validates */ }
+            let contract = await apiFetch(root.dataset.contractUrl,
+                                          { headers: { Accept: 'application/json' } },
+                                          { silent: true });
+            if (!contract || typeof contract !== 'object') contract = { trigger: false, params: [] };
             if (!contract.trigger && !(contract.params || []).length) {
                 startRun(null, null);
                 return;
@@ -2820,9 +2821,8 @@
                 return;
             }
             try {
-                const resp = await fetch(root.dataset.graphUrl);
-                if (!resp.ok) return;
-                const data = await resp.json();
+                const data = await apiFetch(root.dataset.graphUrl, null, { silent: true });
+                if (!data) return;
                 loadGraph(data.graph);
                 if (data.version) graphVersion = data.version;
                 lastApplyAt = Date.now();
@@ -2844,9 +2844,7 @@
             if (Date.now() - lastApplyAt < 10000) return;
             let data = null;
             try {
-                const resp = await fetch(root.dataset.graphUrl);
-                if (!resp.ok) return;
-                data = await resp.json();
+                data = await apiFetch(root.dataset.graphUrl, null, { silent: true });
             } catch { return; }  // offline - try again on the next tick
             if (!data || !data.version) return;
             if (graphVersion === null) { graphVersion = data.version; return; }

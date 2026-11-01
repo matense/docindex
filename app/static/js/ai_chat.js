@@ -531,10 +531,8 @@
                     'The transcript so far is kept. Minimize (—) instead to let it finish.',
                     { title: 'Close chat', confirmText: 'Stop & close' });
                 if (!ok) return;
-                try {
-                    await fetch('/ai/tasks/' + sess.taskId + '/stop',
-                                { method: 'POST' });
-                } catch (err) { /* already finishing; detach anyway */ }
+                await apiFetch('/ai/tasks/' + sess.taskId + '/stop',
+                               { method: 'POST' }, { silent: true });
             }
             detachWindow();
         }
@@ -562,6 +560,8 @@
             btn.disabled = true;
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
             try {
+                // RAW fetch: network vs HTTP-error toasts differ below;
+                // apiFetch returns null for both.
                 const resp = await fetch('/ai/conversations/' + sess.conversationId + '/summarize',
                                          { method: 'POST' });
                 const data = await resp.json().catch(() => ({}));

@@ -27,6 +27,7 @@
     }
 
     async function save(value) {
+    // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
         const resp = await fetch(`/file/${fileId}/caption`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
@@ -71,6 +72,7 @@
             popup.classList.remove('hidden');
             showPane(loadingEl);
             try {
+                // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
                 const resp = await fetch(`/file/${fileId}/caption/suggest`, {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken() },
@@ -123,17 +125,15 @@
     // per URL, so the server-rendered data-caption may be stale (caption set
     // by indexing, or before this page was cached).
     async function loadFresh() {
-        try {
-            const resp = await fetch(`/file/${fileId}/caption`);
-            if (resp.ok) {
-                const fresh = (await resp.json()).caption || '';
+        const data = await apiFetch(`/file/${fileId}/caption`, null, { silent: true });
+        if (data && typeof data === 'object') {
+            const fresh = data.caption || '';
                 if (fresh !== caption) {
                     caption = fresh;
                     render();
                 }
                 if (window.spaInvalidate) window.spaInvalidate();
-            }
-        } catch { /* offline etc. — keep the server-rendered caption */ }
+        }
     }
 
     try {

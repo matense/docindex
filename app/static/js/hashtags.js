@@ -46,6 +46,7 @@
     }
 
     async function save() {
+        // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
         const resp = await fetch(`/file/${fileId}/hashtags`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
@@ -97,17 +98,15 @@
     // URL, so the server-rendered data-tags may be stale (tags added via the
     // bulk job, the AI chat, or before this page was cached).
     async function loadFresh() {
-        try {
-            const resp = await fetch(`/file/${fileId}/hashtags`);
-            if (resp.ok) {
-                const fresh = (await resp.json()).tags;
-                if (JSON.stringify(fresh) !== JSON.stringify(tags)) {
-                    tags = fresh;
-                    render();
-                }
-                if (window.spaInvalidate) window.spaInvalidate();
+        const data = await apiFetch(`/file/${fileId}/hashtags`, null, { silent: true });
+        if (data && typeof data === 'object') {
+            const fresh = data.tags;
+            if (JSON.stringify(fresh) !== JSON.stringify(tags)) {
+                tags = fresh;
+                render();
             }
-        } catch { /* offline etc. — keep the server-rendered tags */ }
+            if (window.spaInvalidate) window.spaInvalidate();
+        }
     }
 
     // --- AI suggestion popup (review before saving) ---
@@ -161,6 +160,7 @@
             popup.classList.remove('hidden');
             showPane(loadingEl);
             try {
+                // RAW fetch: HTTP status or response shape drives the handling below; apiFetch returns null on any HTTP error.
                 const resp = await fetch(`/file/${fileId}/hashtags/suggest`, {
                     method: 'POST',
                     headers: { 'X-CSRFToken': csrfToken() },

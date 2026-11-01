@@ -154,6 +154,8 @@
             if (cache.has(url)) {
                 ({ html } = cache.get(url));
             } else {
+                // RAW fetch: HTML navigation (not JSON) with its own
+                // redirect/fallback handling; apiFetch is JSON-only.
                 const resp = await fetch(url, { headers: { 'Accept': 'text/html' } });
                 if (!resp.ok || token !== navToken) {
                     if (!resp.ok) window.location.href = url;
@@ -237,6 +239,8 @@
 
         showProgress();
         try {
+            // RAW fetch: form POST returning HTML (or JSON handled by the
+            // form's own flow); apiFetch is JSON-only.
             const resp = await fetch(action, {
                 method: 'POST',
                 body: new FormData(form),

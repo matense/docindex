@@ -566,9 +566,9 @@
             personaPopup.classList.add('hidden');
         }
         function loadConnections() {
-            fetch('/ai/connections')
-                .then(r => r.json())
+            apiFetch('/ai/connections', null, { silent: true })
                 .then(conns => {
+                    if (!conns) return;
                     modelSelect.classList.toggle('hidden', conns.length === 0);
                     modelSelect.innerHTML = '';
                     conns.forEach(c => {
@@ -578,14 +578,12 @@
                         opt.selected = c.is_active;
                         modelSelect.appendChild(opt);
                     });
-                })
-                .catch(() => {});
+                });
         }
         function loadDrives() {
             if (!driveListCache) {
-                driveListCache = fetch('/api/drives')
-                    .then(r => r.json())
-                    .catch(() => []);
+                driveListCache = apiFetch('/api/drives', null, { silent: true })
+                    .then(drives => drives || []);
             }
             return driveListCache;
         }
@@ -756,10 +754,9 @@
                 mentionEl.classList.remove('hidden');
                 return;
             }
-            fetch('/api/search?q=' + encodeURIComponent(q))
-                .then(r => r.json())
+            apiFetch('/api/search?q=' + encodeURIComponent(q), null, { silent: true })
                 .then(results => {
-                    if (!mentionToken) return;
+                    if (!mentionToken || !results) return;
                     mentionEl.innerHTML = '';
                     if (!results.length) {
                         mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No files found</div>';
@@ -777,8 +774,7 @@
                         });
                     }
                     mentionEl.classList.remove('hidden');
-                })
-                .catch(() => {});
+                });
         }
         function sectionHeader(text) {
             const h = document.createElement('div');
@@ -894,21 +890,22 @@
             const url = kind === 'behavior'
                 ? '/behaviors/' + id + '/favorite'
                 : '/behaviors/personas/' + encodeURIComponent(id) + '/favorite';
-            fetch(url, {
+            apiFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
                 body: JSON.stringify({ favorite: !fav }),
-            }).then(r => (r.ok ? r.json() : Promise.reject()))
-              .then(data => {
-                  const list = kind === 'behavior'
-                      ? personaCache.behaviors : personaCache.personas;
-                  const item = list.find(x => kind === 'behavior'
-                      ? x.id === id : x.key === id);
-                  if (item) item.favorite = !!data.favorite;
-                  filterPersonaList();
-              }).catch(() => {
-                  if (window.uiToast) window.uiToast('Could not update favorite.', 'error');
-              });
+            }, { silent: true }).then(data => {
+                if (!data) {
+                    if (window.uiToast) window.uiToast('Could not update favorite.', 'error');
+                    return;
+                }
+                const list = kind === 'behavior'
+                    ? personaCache.behaviors : personaCache.personas;
+                const item = list.find(x => kind === 'behavior'
+                    ? x.id === id : x.key === id);
+                if (item) item.favorite = !!data.favorite;
+                filterPersonaList();
+            });
         }
         function toggleList(forceHide) {
             const showing = !convListEl.classList.contains('hidden');
@@ -918,9 +915,9 @@
                 messagesEl.classList.remove('hidden');
                 return;
             }
-            fetch('/ai/conversations')
-                .then(r => r.json())
+            apiFetch('/ai/conversations', null, { silent: true })
                 .then(convs => {
+                    if (!convs) return;
                     convListEl.innerHTML = '';
                     // Filter bar: all conversations vs background tasks only.
                     const filterBar = document.createElement('div');
@@ -994,8 +991,9 @@
                         del.innerHTML = '<i class="fas fa-trash"></i>';
                         del.onclick = (e) => {
                             e.stopPropagation();
-                            fetch('/ai/conversations/' + c.id + '/delete', { method: 'POST' })
-                                .then(() => {
+                            apiFetch('/ai/conversations/' + c.id + '/delete', { method: 'POST' }, { silent: true })
+                                .then(data => {
+                                    if (!data) return;
                                     if (conversationId === c.id) { conversationId = null; lastConvSig = null; clearMessages(); }
                                     toggleList(); toggleList();
                                 });
@@ -1053,26 +1051,24 @@
                     return;
                 }
                 tries++;
-                try {
-                    const resp = await fetch('/file/' + fileId + '/summary',
-                                             { headers: { 'Accept': 'application/json' } });
-                    if (resp.ok) {
-                        const s = await resp.json();
-                        if (s.index && s.index.status === 'ok') {
-                            delete pendingSummaries[fileId];
-                            renderChips();
-                            addSummaryCard(s);
-                            return;
-                        }
-                        if (s.index && s.index.status === 'error') {
-                            delete pendingSummaries[fileId];
-                            renderChips();
-                            addMessage('step', '⚠️ Could not index "' + name + '": ' +
-                                (s.index.error || 'indexing failed') + ' — the AI can still read it by id.');
-                            return;
-                        }
+                const s = await apiFetch('/file/' + fileId + '/summary',
+                                         { headers: { 'Accept': 'application/json' } },
+                                         { silent: true });
+                if (s) {
+                    if (s.index && s.index.status === 'ok') {
+                        delete pendingSummaries[fileId];
+                        renderChips();
+                        addSummaryCard(s);
+                        return;
                     }
-                } catch (err) { /* offline — retry */ }
+                    if (s.index && s.index.status === 'error') {
+                        delete pendingSummaries[fileId];
+                        renderChips();
+                        addMessage('step', '⚠️ Could not index "' + name + '": ' +
+                            (s.index.error || 'indexing failed') + ' — the AI can still read it by id.');
+                        return;
+                    }
+                    }
                 if (tries >= 45) {
                     delete pendingSummaries[fileId];
                     renderChips();
@@ -1100,6 +1096,7 @@
         async function postWorkflowRun(wf, a, body) {
             let resp, data = {};
             try {
+                // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                 resp = await fetch('/m/automation/' + wf.id + '/run', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1315,13 +1312,10 @@
             return div.innerHTML.replace(/\n/g, '<br>');
         }
         async function runWorkflowWithFile(a) {
-            let data;
-            try {
-                const resp = await fetch('/m/automation/api/attachable',
-                                         { headers: { 'Accept': 'application/json' } });
-                if (!resp.ok) throw new Error('unavailable');
-                data = await resp.json();
-            } catch (err) {
+            const data = await apiFetch('/m/automation/api/attachable',
+                                            { headers: { 'Accept': 'application/json' } },
+                                            { silent: true });
+            if (!data || typeof data !== 'object') {
                 window.uiToast('Automation is not available.', 'error');
                 return;
             }
@@ -1368,12 +1362,10 @@
             // Shared run form: trigger-only workflows run immediately,
             // everything else asks in the same form as the editor.
             const params = wf.file_params || [];
-            let contract = null;
-            try {
-                const cresp = await fetch('/m/automation/' + wf.id + '/run-contract',
-                                          { headers: { Accept: 'application/json' } });
-                if (cresp.ok) contract = await cresp.json();
-            } catch { contract = null; }
+            let contract = await apiFetch('/m/automation/' + wf.id + '/run-contract',
+                                          { headers: { Accept: 'application/json' } },
+                                          { silent: true });
+            if (!contract || typeof contract !== 'object') contract = null;
             if (!contract) {
                 // Fallback to the old fast paths when the contract is
                 // unreachable (offline / module disabled mid-click).
@@ -1451,6 +1443,7 @@
             if (driveId) fd.append('drive_id', driveId);
             let resp;
             try {
+                // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                 resp = await fetch('/ai/attachments', { method: 'POST', body: fd });
             } catch (err) {
                 addMessage('assistant', '**Error:** upload failed.');
@@ -1602,7 +1595,8 @@
                 const value = input.value.trim();
                 if (save && value && value !== taskMode.title) {
                     try {
-                        const resp = await fetch('/ai/tasks/' + taskMode.id + '/rename', {
+                        // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
+                    const resp = await fetch('/ai/tasks/' + taskMode.id + '/rename', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ title: value }),
@@ -1652,8 +1646,8 @@
             if (!active) {
                 banner.querySelector('[data-action="dismiss"]')
                     .addEventListener('click', async () => {
-                        await fetch('/ai/tasks/' + taskMode.id + '/ack',
-                                    { method: 'POST' });
+                        await apiFetch('/ai/tasks/' + taskMode.id + '/ack',
+                                       { method: 'POST' }, { silent: true });
                         exitTaskMode();
                     });
                 banner.querySelector('[data-action="rerun"]')
@@ -1667,6 +1661,7 @@
                 { title: 'Re-run task', confirmText: 'Re-run' });
             if (!ok) return;
             try {
+                // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                 const resp = await fetch('/ai/tasks/' + taskMode.id + '/rerun',
                                          { method: 'POST' });
                 const data = await resp.json().catch(() => ({}));
@@ -1701,9 +1696,9 @@
         function loadConversation(id) {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             pendingConvId = id;  // rapid repeated opens focus, never clone
-            fetch('/ai/conversations/' + id)
-                .then(r => r.json())
+            apiFetch('/ai/conversations/' + id, null, { silent: true })
                 .then(conv => {
+                    if (!conv) { pendingConvId = null; return; }
                     conversationId = conv.id;
                     pendingConvId = null;
                     // Skip no-op re-renders (e.g. reconcile after Stop found
@@ -1763,8 +1758,7 @@
                     }
                     toggleList(true);
                     scrollDown(true);  // opening lands at the end
-                })
-                .catch(() => { pendingConvId = null; });
+                });
         }
         async function watchTask(task) {
             taskAbort = new AbortController();
@@ -1775,6 +1769,7 @@
             lastThinkingSpan = null;
             const state = { gotResult: true };
             try {
+                // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                 const resp = await fetch('/ai/tasks/' + task.id + '/stream',
                                          { signal: taskAbort.signal });
                 if (resp.ok && resp.body) {
@@ -1812,6 +1807,7 @@
                 if (taskMode && taskMode.id !== stopId) return;
                 let status = null;
                 try {
+                    // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                     const resp = await fetch('/ai/tasks/' + stopId);
                     if (resp.ok) status = (await resp.json()).status;
                 } catch { return; }
@@ -1914,9 +1910,7 @@
                     taskAbort = null;
                     setBusy(false);
                     if (stopId) {
-                        try {
-                            await fetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' });
-                        } catch (err) { /* the dock widget can stop it instead */ }
+                        await apiFetch('/ai/tasks/' + stopId + '/stop', { method: 'POST' }, { silent: true });
                         // The live subscription is dropped, so the run's
                         // finish won't arrive here — poll until it lands.
                         pollTaskEnd(stopId);
@@ -1959,6 +1953,7 @@
                 setBusy(true);
                 startHeartbeat();  // "Waiting for the model…" until events arrive
                 try {
+                    // RAW fetch: HTTP status drives the branches below (apiFetch returns null on any HTTP error).
                     const resp = await fetch('/ai/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2084,10 +2079,10 @@
             renderAutoScroll();
             if (modelSelect) {
                 modelSelect.addEventListener('change', () => {
-                    fetch('/ai/connections/' + modelSelect.value + '/activate', { method: 'POST' })
-                        .then(r => r.json())
-                        .then(() => loadConnections())
-                        .catch(() => loadConnections()); // revert the selection
+                    // Silent either way: success or failure, the selection
+                    // display is reverted by reloading the connections.
+                    apiFetch('/ai/connections/' + modelSelect.value + '/activate', { method: 'POST' }, { silent: true })
+                        .then(() => loadConnections());
                 });
             }
             if (attachHere) attachHere.addEventListener('click', () => {
@@ -2136,18 +2131,18 @@
                 } else {
                     if (personaList) personaList.innerHTML =
                         '<div class="text-center opacity-50 text-xs p-3">Loading personas…</div>';
-                    fetch('/ai/personas')
-                        .then(r => (r.ok ? r.json() : { personas: [], behaviors: [] }))
+                    apiFetch('/ai/personas', null, { silent: true })
                         .then(data => {
+                            if (!data) {
+                                if (personaList) personaList.innerHTML =
+                                    '<div class="text-center opacity-50 text-xs p-3">Could not load the persona library.</div>';
+                                return;
+                            }
                             personaCache = {
                                 personas: data.personas || [],
                                 behaviors: data.behaviors || [],
                             };
                             show();
-                        })
-                        .catch(() => {
-                            if (personaList) personaList.innerHTML =
-                                '<div class="text-center opacity-50 text-xs p-3">Could not load the persona library.</div>';
                         });
                 }
             });

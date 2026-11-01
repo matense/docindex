@@ -78,11 +78,8 @@ window.AutomationRunForm = (function () {
                 list.innerHTML = '<div class="text-xs opacity-40 p-2">loading…</div>';
                 let url = browseUrl + '?drive_id=' + driveSel.value;
                 if (folderId) url += '&folder_id=' + folderId;
-                let data = {};
-                try {
-                    const r = await fetch(url, { headers: { Accept: 'application/json' } });
-                    data = await r.json();
-                } catch { data = {}; }
+                let data = await apiFetch(url, { headers: { Accept: 'application/json' } }, { silent: true });
+                if (!data || typeof data !== 'object') data = {};
                 crumbs.textContent = (data.crumbs || []).map((c) => c.name).join(' / ') || '— root —';
                 list.innerHTML = '';
                 (data.folders || []).forEach((f) => {

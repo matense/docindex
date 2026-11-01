@@ -111,11 +111,9 @@
             'Stop "' + run.workflow_name + '" now?\n\nNodes already finished keep their work.',
             { title: 'Stop workflow', confirmText: 'Stop' });
         if (!ok) return;
-        try {
-            await fetch('/m/automation/runs/' + run.id + '/stop', {
-                method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
-            });
-        } catch (e) { /* next poll reconciles */ }
+        await apiFetch('/m/automation/runs/' + run.id + '/stop', {
+            method: 'POST', headers: { 'X-CSRFToken': csrfToken() },
+        }, { silent: true });
         poll();
     }
 
@@ -177,16 +175,12 @@
     }
 
     async function poll() {
-        try {
-            var resp = await fetch(ACTIVE_URL, { headers: { 'Accept': 'application/json' } });
-            var contentType = resp.headers.get('Content-Type') || '';
-            if (resp.ok && contentType.includes('application/json')) {
-                var data = await resp.json();
-                var runs = data.runs || [];
-                idle = !runs.length;
-                render(runs);
-            }
-        } catch (e) { /* offline etc. — try again on the next tick */ }
+        var data = await apiFetch(ACTIVE_URL, { headers: { 'Accept': 'application/json' } }, { silent: true });
+        if (data && typeof data === 'object') {
+            var runs = data.runs || [];
+            idle = !runs.length;
+            render(runs);
+        }
         schedule();
     }
 
