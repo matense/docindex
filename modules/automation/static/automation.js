@@ -1644,12 +1644,12 @@
                 const cfg = (nodeData(nodeId) || {}).config || {};
                 const driveId = cfg.drive_id;
                 input.innerHTML = '';
-                const root = document.createElement('option');
-                root.value = '';
-                root.textContent = driveId
+                const blank = document.createElement('option');
+                blank.value = '';
+                blank.textContent = driveId
                     ? '— drive root —'
                     : '— pick a drive first —';
-                input.appendChild(root);
+                input.appendChild(blank);
                 if (!driveId) { input.value = ''; return; }
                 try {
                     const data = await apiFetch(
@@ -1665,7 +1665,7 @@
                         const has = [...input.options].some(o => o.value === String(keep));
                         if (has) input.value = String(keep);
                     }
-                } catch { /* keep root option only */ }
+                } catch { /* keep the blank option only */ }
             };
             folderWidgetReloaders.push(() => reloadFolders(input.value));
             reloadFolders(value);
