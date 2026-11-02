@@ -119,6 +119,11 @@ def _tool_create(user, args, drive):
         folder = doc_service.notebooks_folder(user, target_drive)
     try:
         raw_cells = args.get("cells") or []
+        if isinstance(raw_cells, str):
+            # A bare string is one markdown cell, not a char list.
+            raw_cells = [raw_cells]
+        if not isinstance(raw_cells, list):
+            return {"error": "Cells must be a list like [{\"type\": \"markdown\", \"content\": \"...\"}] or a plain string."}
         cells = []
         for c in raw_cells:
             # Be liberal in what the model may send: a bare string becomes
@@ -217,7 +222,9 @@ register_tool(
              "folder_id": {"type": "integer",
                            "description": "Target folder inside its drive."},
              "cells": {"type": "array", "items": {"type": "object"},
-                       "description": "Initial cells: {type, content, meta}."}},
+                       "description": "Initial cells: {type, content, meta} "
+                                      "objects (a bare string is one "
+                                      "markdown cell)."}},
             required=["name"]),
     _tool_create, label="Created notebook", module="notebooks")
 

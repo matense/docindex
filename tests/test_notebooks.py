@@ -368,6 +368,18 @@ def test_ai_tool_create_coerces_string_cells(app, user, enabled):
         assert all(c["type"] == "markdown" for c in read["cells"])
         bad = nb_tools._tool_create(user_obj, {"name": "Bad", "cells": [123]}, None)
         assert "error" in bad
+        # A bare (non-list) string is one markdown cell, not five char cells;
+        # a dict is rejected with a clean error instead of silent garbage.
+        solo = nb_tools._tool_create(
+            user_obj, {"name": "Solo", "cells": "just this"}, None)
+        assert "created" in solo
+        read_solo = nb_tools._tool_read(
+            user_obj, {"file_id": solo["created"]["id"]}, None)
+        assert [c["content"] for c in read_solo["cells"]] == ["just this"]
+        notalist = nb_tools._tool_create(
+            user_obj, {"name": "Nope", "cells": {"type": "markdown"}},
+            None)
+        assert "error" in notalist
 
 
 def test_ai_tools_create_and_edit(app, user, enabled):

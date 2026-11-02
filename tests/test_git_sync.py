@@ -103,3 +103,19 @@ def test_tee_captures_output_and_exit_code(tmp_path):
     subprocess.run([sys.executable, "tools/tee.py", log] + cmd,
                    capture_output=True)
     assert "out-line" in open(log + ".prev", encoding="utf-8").read()
+
+
+def test_tee_forces_unbuffered_child_output(tmp_path):
+    """Install/update progress must stream live, not arrive in one burst
+    at child exit: Python block-buffers piped stdout, so tee.py exports
+    PYTHONUNBUFFERED=1 to every child it spawns."""
+    import subprocess
+    log = str(tmp_path / "unbuf.log")
+    cmd = [sys.executable, "-c",
+           "import os; print(os.environ.get('PYTHONUNBUFFERED', ''))"]
+    proc = subprocess.run(
+        [sys.executable, "tools/tee.py", log] + cmd,
+        capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert "1" in proc.stdout
+    assert "1" in open(log, encoding="utf-8").read()

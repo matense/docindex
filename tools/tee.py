@@ -31,11 +31,18 @@ def main(argv):
             pass
     print(f"[log] full output saved to {logfile} "
           f"(send this file when reporting a problem)", flush=True)
+    env = dict(os.environ)
+    # Live progress: a Python child with a piped stdout block-buffers
+    # (typically 8 KB), so without this the console would stay empty until
+    # each install/migrate step exits and only the file would grow.
+    # Unbuffered child output flushes every print straight through to
+    # console AND file.
+    env["PYTHONUNBUFFERED"] = "1"
     with open(logfile, "w", encoding="utf-8", errors="replace") as fh:
         fh.write("$ " + " ".join(cmd) + "\n\n")
         fh.flush()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT)
+                                stderr=subprocess.STDOUT, env=env)
         assert proc.stdout is not None
         while True:
             chunk = proc.stdout.read(65536)
