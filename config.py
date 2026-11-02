@@ -114,9 +114,8 @@ class Config:
     # Token-by-token streaming for chat. Set to false if your provider breaks
     # with streamed tool calls (a non-streaming fallback is tried anyway).
     AI_STREAMING = os.environ.get("AI_STREAMING", "true").lower() in ("1", "true", "yes")
-    # Long-horizon background tasks: much larger step budget than interactive
-    # chat, and the dock widget poll interval for their status.
-    AI_TASK_MAX_STEPS = _int_env("AI_TASK_MAX_STEPS", 64, 1, 256)
+    # Every chat message runs as a server-side run with the connection's
+    # step budget; the dock widget poll interval for run status.
     AI_TASK_WIDGET_POLL_MS = _int_env("AI_TASK_WIDGET_POLL_MS", 3000, 1000, 30000)
 
     # Search / indexing

@@ -1,7 +1,7 @@
 """Git drives: clone a remote repository as a read-only mirror drive."""
 
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
@@ -40,7 +40,11 @@ def index():
             total, sample = 0, []
         if total:
             lfs[drive.id] = {"total": total, "sample": sample}
-    return render_template("gitdrives/index.html", drives=drives, lfs=lfs)
+    # A clone error stashed by create() pops as a modal with the reason
+    # (flashes alone are easy to miss).
+    clone_error = session.pop("git_clone_error", None)
+    return render_template("gitdrives/index.html", drives=drives, lfs=lfs,
+                           clone_error=clone_error)
 
 
 @bp.post("/create")
@@ -57,6 +61,7 @@ def create():
         "username": username, "token": token})
     if error:
         flash(error, "error")
+        session["git_clone_error"] = error
         return redirect(url_for("gitdrives.index"))
 
     name = (request.form.get("name") or "").strip()
@@ -91,8 +96,11 @@ def create():
     # synchronous clone.
     job = sync_service.start_sync(drive)
     if job.state == "error":
-        flash(f'Git drive "{drive.name}" could not be cloned: '
-              f"{job.error or 'unknown error'}.", "error")
+        reason = job.error or "unknown error"
+        flash(f'Git drive "{drive.name}" could not be cloned: {reason}.',
+              "error")
+        session["git_clone_error"] = (
+            f'Git drive "{drive.name}" could not be cloned:\n{reason}')
         return redirect(url_for("gitdrives.index"))
     if job.state == "done":
         s = job.stats

@@ -24,6 +24,10 @@ class User(UserMixin, db.Model):
                                  server_default="false")  # purge trash older than 30 days
     static_background = db.Column(db.Boolean, nullable=False, default=False,
                                   server_default="false")  # no animated background
+    shift_enter_to_send = db.Column(db.Boolean, nullable=False, default=False,
+                                   server_default="false")  # Shift+Enter sends, Enter newline
+    perf_mode = db.Column(db.Boolean, nullable=False, default=False,
+                          server_default="false")  # Performance mode: no costly visuals/timers
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="owner", lazy="dynamic",
@@ -200,9 +204,16 @@ class FileVersion(db.Model):
 
 
 class FileIndex(db.Model):
-    """Full-text search index for a stored file."""
+    """Full-text search index for a stored file.
+
+    Lives in the attached index database (`idx` schema) — see
+    `_sqlite_listener` in ``app/__init__.py`` and the split-index
+    migration. All access is plain ORM; the schema prefix is the only
+    thing that changed, so callers are untouched.
+    """
 
     __tablename__ = "file_index"
+    __table_args__ = {"schema": "idx"}
 
     id = db.Column(db.Integer, primary_key=True)
     file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=False,
@@ -227,6 +238,8 @@ class FileEmbedding(db.Model):
     Chunk texts come from the extracted text (or image caption + name);
     ``text_hash`` skips re-embedding unchanged chunks; ``model``/``dims``
     record what produced the vector so a model change re-embeds cleanly.
+
+    Lives in the attached index database (`idx` schema) like FileIndex.
     """
 
     __tablename__ = "file_embeddings"
@@ -242,7 +255,8 @@ class FileEmbedding(db.Model):
     dims = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
 
-    __table_args__ = (db.UniqueConstraint("file_id", "chunk_index"),)
+    __table_args__ = (db.UniqueConstraint("file_id", "chunk_index"),
+                      {"schema": "idx"})
 
     def __repr__(self):
         return f"<FileEmbedding file={self.file_id} chunk={self.chunk_index}>"
@@ -289,6 +303,9 @@ class AIConnection(db.Model):
     embedding_model = db.Column(db.String(120), nullable=False, default="")
     # Per-connection agent step limit; NULL falls back to the global AI_MAX_STEPS.
     max_steps = db.Column(db.Integer, nullable=True)
+    # Per-connection long-horizon step budget (per-message "Long horizon
+    # run" toggle); NULL falls back to 64.
+    long_horizon_steps = db.Column(db.Integer, nullable=True)
     # Per-connection request limit (requests/minute); NULL falls back to the
     # global AI_RATE_LIMIT_RPM (default 30). 0 = unlimited.
     rate_limit_rpm = db.Column(db.Integer, nullable=True)
@@ -375,6 +392,40 @@ class ChatMessage(db.Model):
         return f"<ChatMessage {self.role} conv={self.conversation_id}>"
 
 
+class AIUsageEvent(db.Model):
+    """Measured token spend for one LLM call.
+
+    The provider's own ``usage`` numbers (prompt_tokens/completion_tokens)
+    are the source of truth; when a provider does not report them the row
+    is estimated (chars//4) and ``estimated`` is True.
+    ``kind`` tells which feature spent the tokens: chat (agent step),
+    summarize, hashtag, caption or automation.
+    """
+
+    __tablename__ = "ai_usage_events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    conversation_id = db.Column(db.Integer,
+                               db.ForeignKey("chat_conversations.id"),
+                               nullable=True, index=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("ai_tasks.id"),
+                        nullable=True, index=True)
+    message_id = db.Column(db.Integer, db.ForeignKey("chat_messages.id"),
+                           nullable=True, index=True)
+    kind = db.Column(db.String(20), nullable=False, default="chat")
+    model = db.Column(db.String(120), nullable=True)
+    prompt_tokens = db.Column(db.Integer, nullable=False, default=0)
+    completion_tokens = db.Column(db.Integer, nullable=False, default=0)
+    estimated = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow, index=True)
+
+    def __repr__(self):
+        return (f"<AIUsage {self.kind} u={self.prompt_tokens} "
+                f"d={self.completion_tokens} est={int(self.estimated)}>")
+
+
 class AITask(db.Model):
     """A long-horizon background AI task: an agent run decoupled from the HTTP
     request, with every event persisted as chat messages so the user can open
@@ -399,6 +450,8 @@ class AITask(db.Model):
     prompt = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False, default="queued", index=True)
     error = db.Column(db.Text, nullable=True)
+    # Resolved step budget snapshot (per-connection max_steps at launch).
+    max_steps = db.Column(db.Integer, nullable=True)
     # True once the user dismissed the finished task from the bottom dock.
     notified = db.Column(db.Boolean, nullable=False, default=False)
     # JSON snapshot of the context the task was launched with (drives, files,

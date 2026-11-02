@@ -15,6 +15,7 @@
     var container = null;
     var lastHash = null;
     var timer = null;
+    var idle = true;
 
     var reduceMotion = window.matchMedia &&
         window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -178,18 +179,23 @@
     async function poll() {
         try {
             var resp = await fetch(ACTIVE_URL, { headers: { 'Accept': 'application/json' } });
-            if (!resp.ok) return;
             var contentType = resp.headers.get('Content-Type') || '';
-            if (!contentType.includes('application/json')) return; // login page etc.
-            var data = await resp.json();
-            render(data.runs || []);
+            if (resp.ok && contentType.includes('application/json')) {
+                var data = await resp.json();
+                var runs = data.runs || [];
+                idle = !runs.length;
+                render(runs);
+            }
         } catch (e) { /* offline etc. — try again on the next tick */ }
         schedule();
     }
 
     function schedule() {
+        // Calm polling: hidden tabs and empty states check rarely; perf
+        // mode raises the floor. User actions poke an immediate poll.
         clearTimeout(timer);
-        timer = setTimeout(poll, POLL_MS);
+        var calm = window.DocIndex && window.DocIndex.pollDelay;
+        timer = setTimeout(poll, calm ? calm(POLL_MS, idle) : POLL_MS);
     }
 
     function build() {
@@ -210,6 +216,10 @@
         window.automationRunsPoll = poll; // the editor pokes this after Run
         poll();
         document.addEventListener('spa:mutated', function () { setTimeout(poll, 300); });
+        // Hidden tabs don't need 2.5s updates — re-check on return.
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) poll();
+        });
     }
 
     if (document.readyState === 'loading') {

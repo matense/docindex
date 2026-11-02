@@ -3,17 +3,23 @@
 {% block content %}
 <div class="max-w-full w-full flex flex-col gap-3" id="automation-editor-root"
      data-save-url="{{ url_for('automation.save', workflow_id=workflow.id) }}"
+     data-workflow-id="{{ workflow.id }}"
      data-run-url="{{ url_for('automation.run', workflow_id=workflow.id) }}"
      data-runs-url="{{ url_for('automation.runs', workflow_id=workflow.id) }}"
      data-list-url="{{ url_for('automation.index') }}"
      data-preview-url="{{ url_for('automation.preview', workflow_id=workflow.id) }}"
+     data-diagnose-url="{{ url_for('automation.diagnose', workflow_id=workflow.id) }}"
      data-browse-url="{{ url_for('automation.api_browse') }}"
      data-shape-url="{{ url_for('automation.api_file_shape') }}"
+     data-upstream-shape-url="{{ url_for('automation.api_upstream_shape') }}"
      data-folders-url="{{ url_for('automation.api_folders') }}"
      data-cells-url="{{ url_for('automation.api_notebook_cells') }}"
      data-behaviors-url="{{ url_for('behaviors.api_presets') }}"
      data-personas-url="{{ url_for('ai.personas') }}"
      data-graph-url="{{ url_for('automation.graph_json', workflow_id=workflow.id) }}"
+     data-contract-url="{{ url_for('automation.run_contract', workflow_id=workflow.id) }}"
+     data-schedule-params="{{ (workflow.schedule_params or '{}') | e }}"
+     data-schedule-file="{{ (schedule_file | tojson) if schedule_file else '' }}"
      data-flags-url="{{ url_for('automation.ai_flags', workflow_id=workflow.id) }}">
 
     <!-- Toolbar -->
@@ -36,6 +42,10 @@
             <input type="checkbox" id="wf-enabled" class="toggle toggle-success toggle-xs"
                    {{ 'checked' if workflow.enabled }}> schedule
         </label>
+        <button type="button" id="wf-schedule-values" class="btn btn-ghost btn-sm gap-1"
+                title="Values the schedule replays every run (nobody is there to answer the run form)">
+            <i class="fas fa-clipboard-list"></i><span class="hidden lg:inline">Schedule values</span>
+        </button>
         <a href="{{ url_for('behaviors.index') }}"
            class="btn btn-ghost btn-sm gap-1" title="Behaviors & personas library" aria-label="Behaviors and personas library">
             <i class="fas fa-masks-theater"></i><span class="hidden lg:inline">Styles</span>
@@ -49,6 +59,9 @@
                 class="btn btn-ghost btn-sm gap-1 {{ 'btn-active text-warning' if workflow.ai_hidden }}"
                 title="Hide from the AI — the assistant can't see, run or edit this workflow" aria-label="Hide from the AI">
             <i class="fas {{ 'fa-eye-slash' if workflow.ai_hidden else 'fa-eye' }}"></i><span class="hidden lg:inline">AI hide</span>
+        </button>
+        <button type="button" id="wf-check" class="btn btn-ghost btn-sm gap-1" title="Check the workflow without running it">
+            <i class="fas fa-stethoscope"></i><span class="hidden lg:inline">Check</span>
         </button>
         <button type="button" id="wf-console-toggle" class="btn btn-ghost btn-sm gap-1"
                 title="Toggle the run console" aria-label="Toggle the run console">
@@ -94,7 +107,8 @@
         <div class="glass-panel rounded-2xl flex-1 overflow-hidden relative">
             <div id="drawflow" class="w-full h-full"></div>
             <div class="absolute bottom-3 right-3 text-[10px] opacity-40 pointer-events-none">
-                double-click a node to configure it · drag from a socket to connect
+                double-click a node to configure it · drag from a socket to connect ·
+                <span class="wf-ref-legend">dashed = {{ ref }}</span>
             </div>
             <!-- Run console -->
             <div id="wf-console" class="wf-console hidden">
@@ -170,28 +184,6 @@
     <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
 
-<!-- Run parameters modal (input.param nodes with "ask at run time") -->
-<dialog id="wf-params-modal" class="modal">
-    <div class="modal-box glass-panel max-w-md">
-        <h3 class="font-bold text-lg mb-1">
-            <i class="fas fa-circle-question text-primary"></i> Run inputs
-        </h3>
-        <p class="text-xs opacity-50 mb-3">
-            This workflow asks for a few values before it starts. Leave a
-            field empty to use its default.
-        </p>
-        <div id="wf-params-form" class="flex flex-col gap-2.5 max-h-[55vh] overflow-y-auto pr-1"></div>
-        <div class="modal-action">
-            <button type="button" class="btn btn-ghost btn-sm"
-                    onclick="document.getElementById('wf-params-modal').close()">Cancel</button>
-            <button type="button" id="wf-params-go" class="btn btn-primary btn-sm gap-1">
-                <i class="fas fa-play"></i> Start run
-            </button>
-        </div>
-    </div>
-    <form method="dialog" class="modal-backdrop"><button>close</button></form>
-</dialog>
-
 <!-- File browser modal (input.file picker) -->
 <dialog id="wf-file-modal" class="modal">
     <div class="modal-box glass-panel max-w-lg">
@@ -259,13 +251,20 @@ window.automationEditorData = {
 window.currentWorkflow = { id: {{ workflow.id }},
                            name: {{ workflow.name | tojson }} };
 (function bootstrap() {
+    function ensureRunForm(next) {
+        if (window.AutomationRunForm) { next(); return; }
+        const s = document.createElement('script');
+        s.src = "{{ url_for('automation.static', filename='run_form.js') }}?v=1";
+        s.onload = next;
+        document.body.appendChild(s);
+    }
     function mount() {
         if (window.AutomationEditor) {
             window.AutomationEditor.mount(document.getElementById('automation-editor-root'));
             return;
         }
         const s = document.createElement('script');
-        s.src = "{{ url_for('automation.static', filename='automation.js') }}";
+        s.src = "{{ url_for('automation.static', filename='automation.js') }}?v=2";
         s.onload = () => window.AutomationEditor.mount(
             document.getElementById('automation-editor-root'));
         document.body.appendChild(s);
@@ -273,10 +272,10 @@ window.currentWorkflow = { id: {{ workflow.id }},
     if (!window.Drawflow) {
         const s = document.createElement('script');
         s.src = "{{ url_for('automation.static', filename='vendor/drawflow.min.js') }}";
-        s.onload = mount;
+        s.onload = () => ensureRunForm(mount);
         document.body.appendChild(s);
     } else {
-        mount();
+        ensureRunForm(mount);
     }
 })();
 </script>

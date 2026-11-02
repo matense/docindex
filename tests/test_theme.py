@@ -69,3 +69,31 @@ def test_static_background_toggle_persists(auth_client, app, user):
                      follow_redirects=True)
     with app.app_context():
         assert db.session.get(User, user).static_background is False
+
+
+def test_perf_mode_defaults_off(auth_client, app, user):
+    with app.app_context():
+        assert db.session.get(User, user).perf_mode is False
+    assert b"perf-mode" not in auth_client.get("/").data
+
+
+def test_perf_mode_toggle_persists(auth_client, app, user):
+    resp = auth_client.post("/settings/profile/perf-mode", data={"enabled": "on"},
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(User, user).perf_mode is True
+    assert b"perf-mode" in auth_client.get("/").data
+    # Toggle back off.
+    auth_client.post("/settings/profile/perf-mode", data={},
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(User, user).perf_mode is False
+
+
+def test_conn_overlay_present(auth_client):
+    # The connection-loss overlay ships in the base shell on every page.
+    html = auth_client.get("/").data
+    assert b'id="conn-overlay"' in html
+    assert b'id="conn-retry"' in html
+    assert b'id="conn-reload"' in html

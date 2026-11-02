@@ -173,7 +173,8 @@ def test_save_file_accepts_drive_ref(app, user, enabled):
         # run_param_specs exposes the drive question for the run form + AI.
         specs = nodes.run_param_specs(
             {"nodes": graph["nodes"], "edges": []})
-        assert specs == []  # ask=no → static, no question
+        assert specs == [{"param": "target", "label": "target",
+                          "kind": "drive", "required": False}]  # ask=no → optional
         graph["nodes"][0]["config"].update({"ask": "yes", "drive_id": ""})
         specs = nodes.run_param_specs(
             {"nodes": graph["nodes"], "edges": []})
@@ -384,9 +385,24 @@ def test_merge_picks_arriving_branch():
         {"from": "cond", "from_port": "true", "to": "join", "to_port": "in1"},
         {"from": "cond", "from_port": "false", "to": "join", "to_port": "in2"},
         {"from": "join", "from_port": "out", "to": "end", "to_port": "in"}]
-    _, results, _ = _execute(graph)
+    _, results, _ = _execute(graph)  # legacy in1/in2 still validates
     assert any(r["node"] == "end" and r["preview"] == "payload"
                for r in results)
+
+
+def test_merge_fan_in_many_branches():
+    graph = {"nodes": [
+        {"id": "a", "type": "input.text", "config": {"content": "A"}},
+        {"id": "b", "type": "input.text", "config": {"content": "B"}},
+        {"id": "m", "type": "logic.merge", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "a", "from_port": "out", "to": "m", "to_port": "in"},
+        {"from": "b", "from_port": "out", "to": "m", "to_port": "in"},
+        {"from": "m", "from_port": "out", "to": "end", "to_port": "in"}]}
+    _, results, _ = _execute(graph)
+    previews = [r["preview"] for r in results if r["node"] == "end"]
+    assert previews and previews[0] in ("A", "B")  # first wire wins
 
 
 def test_should_stop_aborts_between_nodes():
@@ -643,11 +659,143 @@ def test_save_file_into_existing_folder(app, user):
         assert stored.folder.name == "Reports"
 
 
+def test_save_file_zips_files_payload(app, user):
+    from app.services import indexing_service
+    drive_id = _drive(app, user)
+    _make_file(app, user, "z1.txt", "zipme one")
+    _make_file(app, user, "z2.txt", "zipme two")
+    with app.app_context():
+        for f in StoredFile.query.filter_by(user_id=user).all():
+            indexing_service.index_file(f.id, app)
+    graph = {"nodes": [
+        {"id": "s", "type": "docindex.search_files",
+         "config": {"query": "zipme", "limit": 5}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "bundle", "drive_id": str(drive_id)}},
+    ], "edges": [
+        {"from": "s", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        _, _, created = _execute(graph, app, user)
+        assert len(created) == 1
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.name == "bundle.zip"  # extension added
+        import zipfile
+
+        from app.services import file_service
+        names = sorted(zipfile.ZipFile(
+            file_service.file_path(stored)).namelist())
+        assert names == ["z1.txt", "z2.txt"]
+
+
 def test_save_file_refuses_synced_drive(app, user):
     drive_id = _drive(app, user, synced=True)
     with app.app_context():
         with pytest.raises(engine.WorkflowError, match="read-only"):
             _execute(_save_graph(drive_id), app, user)
+
+
+def _param_save_graph(drive_id, param_cfg, folder="{{ sub }}",
+                      name="report.txt", create="no"):
+    return {"nodes": [
+        {"id": "sub", "type": "input.param", "config": param_cfg},
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hello", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": name, "drive_id": str(drive_id),
+                    "folder": folder, "create_folders": create}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+
+
+def test_save_file_folder_decided_at_run_time(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        db.session.add(Folder(drive_id=drive.id, name="Q1",
+                              user_id=user))
+        db.session.commit()
+    graph = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"},
+        name="r-{{ sub }}.txt")
+    with app.app_context():
+        _, _, created = _execute(
+            graph, app, user, params={"sub": "Q1"})
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.name == "r-Q1.txt"
+        assert stored.folder is not None and stored.folder.name == "Q1"
+
+
+def test_save_file_creates_runtime_folders(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    graph = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"},
+        create="yes")
+    with app.app_context():
+        _, _, created = _execute(
+            graph, app, user, params={"sub": "2026/10"})
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert [f.name for f in stored.folder.breadcrumb()] == \
+            ["2026", "10"]
+    # Without create_folders the same run fails with a clear error.
+    graph2 = _param_save_graph(
+        drive_id, {"param": "sub", "kind": "text", "ask": "yes"})
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="does not exist"):
+            _execute(graph2, app, user, params={"sub": "nope/nada"})
+
+
+def test_save_file_drive_by_name(app, user):
+    drive_id = _drive(app, user, name="Runtime")
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hi", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "n.txt", "drive_id": "Runtime"}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        _, _, created = _execute(graph, app, user)
+        stored = db.session.get(StoredFile, created[0]["file_id"])
+        assert stored.drive_id == drive_id
+    bad = {"nodes": [
+        {"id": "n1", "type": "input.text",
+         "config": {"content": "hi", "format": "text"}},
+        {"id": "save", "type": "output.save_file",
+         "config": {"name": "n.txt", "drive_id": "No Such Drive"}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "save", "to_port": "in"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="Pick a drive"):
+            _execute(bad, app, user)
+
+
+def test_copy_file_folder_decided_at_run_time(app, user):
+    from app.services import indexing_service
+    _drive(app, user, name="Src")
+    dst_id = _drive(app, user, name="Dst")
+    _make_file(app, user, "mv.txt", "move me please")
+    with app.app_context():
+        drive = db.session.get(Drive, dst_id)
+        db.session.add(Folder(drive_id=drive.id, name="Target",
+                              user_id=user))
+        for f in StoredFile.query.filter_by(user_id=user).all():
+            indexing_service.index_file(f.id, app)
+        db.session.commit()
+    graph = {"nodes": [
+        {"id": "dst", "type": "input.param",
+         "config": {"param": "where", "kind": "text", "ask": "yes"}},
+        {"id": "s", "type": "docindex.search_files",
+         "config": {"query": "move me", "limit": 5}},
+        {"id": "m", "type": "output.copy_file",
+         "config": {"drive_id": str(dst_id), "folder_id": "{{ dst }}"}},
+    ], "edges": [
+        {"from": "s", "from_port": "out", "to": "m", "to_port": "in"}]}
+    with app.app_context():
+        outputs, _, _ = _execute(graph, app, user,
+                                 params={"where": "Target"})
+        ref = outputs["m"]["out"]["data"][0]
+        stored = db.session.get(StoredFile, int(ref["file_id"]))
+        assert stored.folder is not None and stored.folder.name == "Target"
 
 
 # ---------------------------------------------------------------------------
@@ -1132,6 +1280,19 @@ def test_save_validates_graph(auth_client, app, user, enabled):
     assert "Unknown node type" in resp.get_json()["error"]
 
 
+def test_graph_endpoint_carries_version(auth_client, app, user, enabled):
+    """The editor polls graph + version to pick up AI edits made while no
+    chat window was open to forward the ui_action event."""
+    wf_id = _workflow(app, user, _text_graph("v1"))
+    v1 = auth_client.get(f"/m/automation/{wf_id}/graph").get_json()
+    assert v1["version"], "editor needs a version to poll against"
+    auth_client.post(f"/m/automation/{wf_id}/save",
+                     json={"graph": _text_graph("v2")})
+    v2 = auth_client.get(f"/m/automation/{wf_id}/graph").get_json()
+    assert v2["version"] != v1["version"]
+    assert v2["graph"]["nodes"][0]["config"]["content"] == "v2"
+
+
 def test_save_schedule_fields(auth_client, app, user, enabled):
     wf_id = _workflow(app, user)
     resp = auth_client.post(f"/m/automation/{wf_id}/save",
@@ -1145,6 +1306,150 @@ def test_save_schedule_fields(auth_client, app, user, enabled):
                             json={"graph": _text_graph(),
                                   "interval_minutes": -5})
     assert resp.status_code == 400
+
+
+def test_schedule_profile_required_for_parameterized(auth_client, app, user,
+                                                    enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "question", "kind": "text", "ask": "yes"}))
+    graph = _param_graph({"param": "question", "kind": "text", "ask": "yes"})
+    # Enabling a schedule without answers fails loudly at configure time.
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15})
+    assert resp.status_code == 400
+    assert "question" in resp.get_json()["error"].lower()
+    # With a profile it saves; unrelated saves keep working.
+    resp = auth_client.post(
+        f"/m/automation/{wf_id}/save",
+        json={"graph": graph, "enabled": True, "interval_minutes": 15,
+              "schedule_params": {"question": "nightly"}})
+    assert resp.get_json() == {"ok": True}
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert json.loads(wf.schedule_params) == {"question": "nightly"}
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": _param_graph(
+                                {"param": "question", "kind": "text",
+                                 "ask": "yes"})})
+    assert resp.get_json() == {"ok": True}
+
+
+def test_tick_replays_schedule_profile(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "question", "kind": "text", "ask": "yes"}),
+                      enabled=True, interval_minutes=10,
+                      schedule_params=json.dumps({"question": "tick-q"}))
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        run = (models.AutomationRun.query
+               .filter_by(workflow_id=wf_id).one())
+        assert run.status == "done"
+        assert json.loads(run.params) == {"question": "tick-q"}
+
+
+def test_schedule_profile_needs_trigger_file(auth_client, app, user,
+                                             enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "t", "from_port": "out", "to": "end", "to_port": "in"}]})
+    graph = {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "end", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "t", "from_port": "out", "to": "end", "to_port": "in"}]}
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15})
+    assert resp.status_code == 400
+    assert "starting file" in resp.get_json()["error"]
+    fid = _make_file(app, user, "sched.txt", "x")
+    resp = auth_client.post(f"/m/automation/{wf_id}/save",
+                            json={"graph": graph, "enabled": True,
+                                  "interval_minutes": 15,
+                                  "schedule_file_id": fid})
+    assert resp.get_json() == {"ok": True}
+
+
+def test_tool_run_contract(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "select",
+         "options": "a | A\nb | B", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        contract = tools._tool_run_contract(
+            user_obj, {"workflow_id": wf_id}, None)
+    assert contract["params"][0]["kind"] == "select"
+    assert contract["params"][0]["options"] == [
+        {"value": "a", "label": "A"}, {"value": "b", "label": "B"}]
+    assert contract["params"][0]["required"] is True
+
+
+def test_tool_run_validates_new_kinds(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "n", "kind": "number", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        bad = tools._tool_run(user_obj, {"workflow_id": wf_id,
+                                         "params": {"n": "twelve"}}, None)
+        assert "error" in bad and "number" in bad["error"]
+        ok = tools._tool_run(user_obj, {"workflow_id": wf_id,
+                                        "params": {"n": "12,5"}}, None)
+        assert ok["status"] == "done"
+
+
+def test_tool_set_schedule_with_profile(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        missing = tools._tool_set_schedule(
+            user_obj, {"workflow_id": wf_id, "enabled": True,
+                       "interval_minutes": 10}, None)
+        assert "error" in missing \
+            and "q" in missing["error"].lower()
+        done = tools._tool_set_schedule(
+            user_obj, {"workflow_id": wf_id, "enabled": True,
+                       "interval_minutes": 10, "params": {"q": "nightly"}},
+            None)
+        assert done["ok"] is True
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        assert json.loads(wf.schedule_params) == {"q": "nightly"}
+
+
+def test_tool_validate_flags_incomplete_schedule(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}),
+                      enabled=True, interval_minutes=10)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_validate(user_obj, {"workflow_id": wf_id},
+                                      None)
+    assert result["ok"] is False
+    assert any("frozen answers" in i["message"] for i in result["issues"])
+
+
+def test_get_workflow_includes_run_contract(app, user, enabled):
+    wf_id = _workflow(app, user, _param_graph(
+        {"param": "q", "kind": "text", "ask": "yes"}))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        got = tools._tool_get_workflow(user_obj, {"workflow_id": wf_id},
+                                       None)
+    assert got["run_contract"]["params"][0]["param"] == "q"
+
+
+def test_catalog_flags_multiple_ports(app, user, enabled):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        catalog = tools._tool_node_catalog(user_obj, {}, None)["node_types"]
+    by_type = {n["type"]: n for n in catalog}
+    merge_ins = by_type["logic.merge"]["inputs"]
+    assert merge_ins == [{"name": "in", "kind": "any", "multiple": True}]
+    template_ins = by_type["transform.template"]["inputs"]
+    assert template_ins[0]["multiple"] is True
 
 
 def test_run_endpoint_executes_and_reports(auth_client, app, user, enabled):
@@ -1824,7 +2129,26 @@ def test_example_use_creates_workflow(auth_client, app, user, enabled):
         wf = (models.AutomationWorkflow.query
               .filter_by(name="Translate a file").one())
         graph = json.loads(wf.graph)
-        assert graph["nodes"][0]["type"] == "input.trigger"
+        by_type = {n["type"] for n in graph["nodes"]}
+        assert "input.trigger" in by_type
+        assert "input.drive" in by_type  # destination asked at run time
+
+
+def test_translate_example_asks_destination(auth_client, app, user, enabled):
+    resp = auth_client.post("/m/automation/examples/translate-file/use",
+                            follow_redirects=False)
+    assert resp.status_code == 302
+    with app.app_context():
+        wf = (models.AutomationWorkflow.query
+              .filter_by(name="Translate a file").one())
+        wf_id = wf.id
+    contract = auth_client.get(
+        f"/m/automation/{wf_id}/run-contract").get_json()
+    assert contract["trigger"] is True
+    assert contract["params"] == [{
+        "param": "target", "label": "Where should I save?",
+        "kind": "drive", "required": True, "default": "",
+        "options": [], "node": "nd"}]
 
 
 def test_example_use_unknown_key_404(auth_client, app, user, enabled):
@@ -2221,10 +2545,11 @@ def test_run_param_specs_marks_required_and_skips_static():
                     "default": "x"}},
     ], "edges": []}
     specs = nodes.run_param_specs(graph)
-    assert [s["param"] for s in specs] == ["q", "region"]
+    assert [s["param"] for s in specs] == ["q", "region", "mode"]
     assert specs[0] == {"param": "q", "label": "Question?", "kind": "text",
                         "required": True}
     assert specs[1]["required"] is False  # static default = fallback
+    assert specs[2]["required"] is False  # ask=no = optional
 
 
 def test_run_endpoint_requires_missing_params(auth_client, app, user,
@@ -2253,11 +2578,131 @@ def test_run_endpoint_validates_file_param(auth_client, app, user, enabled):
     assert resp.status_code == 400
     resp = auth_client.post(f"/m/automation/{wf_id}/run",
                             json={"params": {"doc": "99999"}})
-    assert resp.status_code == 404
+    assert resp.status_code == 400  # unified validator: 400 with ownership msg
+    assert "Document" in resp.get_json()["error"]
     fid = _make_file(app, user, "ok.txt", "content")
     resp = auth_client.post(f"/m/automation/{wf_id}/run",
                             json={"params": {"doc": str(fid)}})
     assert resp.status_code == 200
+
+
+def test_explicit_required_overrides_auto(app):
+    graph = {"nodes": [
+        {"id": "a", "type": "input.param",
+         "config": {"param": "q", "kind": "text", "ask": "yes",
+                    "required": "no"}},
+        {"id": "b", "type": "input.param",
+         "config": {"param": "m", "kind": "text", "ask": "no",
+                    "default": "", "required": "yes"}},
+    ], "edges": []}
+    specs = {s["param"]: s for s in nodes.run_param_specs(graph)}
+    assert specs["q"]["required"] is False  # explicit No beats ask=yes
+    assert specs["m"]["required"] is True  # explicit Yes beats empty default
+
+
+def test_select_kind_options_and_validation(app, user):
+    config = {"param": "color", "kind": "select", "ask": "yes",
+              "options": "red | Red (urgent)\nblue"}
+    graph = _param_graph(config)
+    specs = nodes.run_param_specs(graph)
+    assert specs[0]["required"] is True
+    contract = nodes.run_contract(graph)
+    assert contract["params"][0]["options"] == [
+        {"value": "red", "label": "Red (urgent)"},
+        {"value": "blue", "label": "blue"}]
+    with app.app_context():
+        clean, errors = nodes.validate_run_params(
+            graph, {"color": "red"}, user)
+        assert clean == {"color": "red"} and errors == []
+        _, errors = nodes.validate_run_params(
+            graph, {"color": "green"}, user)
+        assert errors and "color" in errors[0].lower() or "choice" in errors[0]
+
+
+def test_new_kinds_normalize_and_reject(app, user):
+    for kind, good, bad in (
+            ("number", "12,5", "twelve"),
+            ("boolean", "YES", "maybe"),
+            ("date", "2026-10-31", "31/10/2026")):
+        graph = _param_graph({"param": "v", "kind": kind, "ask": "yes"})
+        with app.app_context():
+            clean, errors = nodes.validate_run_params(
+                graph, {"v": good}, user)
+            assert clean.get("v") and errors == [], (kind, errors)
+            _, errors = nodes.validate_run_params(graph, {"v": bad}, user)
+            assert len(errors) == 1, kind
+    with app.app_context():
+        clean, _ = nodes.validate_run_params(
+            _param_graph({"param": "v", "kind": "boolean", "ask": "yes"}),
+            {"v": "YES"}, user)
+        assert clean == {"v": "true"}
+
+
+def test_run_contract_endpoint(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "p", "type": "input.param",
+         "config": {"param": "q", "label": "Question?", "kind": "text",
+                    "ask": "yes"}},
+    ], "edges": []})
+    resp = auth_client.get(f"/m/automation/{wf_id}/run-contract")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["trigger"] is True
+    assert data["params"] == [{"param": "q", "label": "Question?",
+                               "kind": "text", "required": True,
+                               "default": "", "options": [], "node": "p"}]
+
+
+def test_run_contract_no_trigger_no_params(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, _text_graph("hi"))
+    data = auth_client.get(
+        f"/m/automation/{wf_id}/run-contract").get_json()
+    assert data["trigger"] is False and data["params"] == []
+    assert data["drives"] == []
+
+
+def test_diagnose_endpoint(auth_client, app, user, enabled):
+    wf_id = _workflow(app, user, {"nodes": [
+        {"id": "p", "type": "input.param", "config": {}},
+    ], "edges": []})
+    data = auth_client.get(
+        f"/m/automation/{wf_id}/diagnose").get_json()
+    assert data["ok"] is False
+    assert any("parameter name" in i["message"] for i in data["issues"])
+    wf2 = _workflow(app, user, _text_graph("hi"))
+    assert auth_client.get(
+        f"/m/automation/{wf2}/diagnose").get_json()["ok"] is True
+
+
+def test_upstream_shape_traces_filter_chain(auth_client, app, user,
+                                             enabled):
+    _drive(app, user)
+    fid = _make_file(app, user, "s.csv", "a,b\n1,2\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "flt", "type": "transform.table_filter",
+         "config": {"conditions": [{"column": "a", "op": "gt",
+                                    "value": "0"}]}},
+        {"id": "sel", "type": "transform.table_select",
+         "config": {"picks": [{"column": "b", "alias": ""}]}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "flt", "to_port": "in"},
+        {"from": "flt", "from_port": "out", "to": "sel", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph, name="shape")
+    sel = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "sel"}).get_json()
+    assert sel == {"columns": ["b"], "certain": True}
+    flt = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "flt"}).get_json()
+    assert flt == {"columns": ["a", "b"], "certain": True}
+    nope = auth_client.get(
+        "/m/automation/api/upstream-shape",
+        query_string={"workflow_id": wf_id, "node": "nope"}).get_json()
+    assert nope == {"columns": [], "certain": False}
 
 
 # ---------------------------------------------------------------------------
@@ -2909,7 +3354,6 @@ def _chat_capture(auth_client, payload):
     with patch("app.services.ai_service.chat_completion",
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json=payload)
-        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 

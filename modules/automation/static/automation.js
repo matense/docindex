@@ -42,8 +42,135 @@
         return idx >= 0 ? idx + 1 : 1;  // drawflow ports are 1-based
     }
 
+    // Label every socket with "port: kind" (tooltips + tiny tags) so
+    // wiring mistakes are visible before validation complains.
+    function decoratePorts(dfId, spec) {
+        const el = document.getElementById(`node-${dfId}`);
+        if (!el || !spec) return;
+        (spec.inputs || []).forEach((p, i) => {
+            el.querySelectorAll(`.input_${i + 1}`).forEach(s => {
+                s.title = `${p.name}: ${p.kind || 'any'}${p.multiple ? ' (many wires)' : ''}`;
+            });
+        });
+        (spec.outputs || []).forEach((p, i) => {
+            el.querySelectorAll(`.output_${i + 1}`).forEach(s => {
+                s.title = `${p.name}: ${p.kind || 'any'}`;
+            });
+        });
+    }
+
     function typeClass(type) {
         return 'wf-node wf-type-' + type.replace(/[^a-z0-9]+/g, '-');
+    }
+
+    // ------------------------------------------------------------------
+    // {{ nX }} reference wires (dashed): template references create real
+    // execution dependencies but Drawflow draws no wire for them, so the
+    // node looks orphaned. This overlay draws dashed amber curves for
+    // every {{ ref }} between nodes on the canvas.
+    // ------------------------------------------------------------------
+    let refSvg = null;
+    let refRaf = 0;
+
+    function ensureRefLayer() {
+        if (refSvg || !editor || !editor.precanvas) return refSvg;
+        refSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        refSvg.setAttribute('class', 'wf-ref-layer');
+        refSvg.style.cssText =
+            'position:absolute;left:0;top:0;overflow:visible;' +
+            'pointer-events:none;';
+        editor.precanvas.insertBefore(refSvg, editor.precanvas.firstChild);
+        return refSvg;
+    }
+
+    function scanRefs(value, into) {
+        if (typeof value === 'string') {
+            const re = /\{\{\s*([A-Za-z0-9_]+)/g;
+            let m;
+            while ((m = re.exec(value))) into.add(m[1]);
+        } else if (Array.isArray(value)) {
+            value.forEach(v => scanRefs(v, into));
+        } else if (value && typeof value === 'object') {
+            Object.values(value).forEach(v => scanRefs(v, into));
+        }
+    }
+
+    function refDfId(graphId) {
+        // Saved-graph id -> canvas id: exact match first (custom ids like
+        // 'nd' survive round-trips now), then the 'nX' convention.
+        for (const [dfId, gid] of Object.entries(exportIds)) {
+            if (gid === graphId) return parseInt(dfId, 10);
+        }
+        const m = /^n(\d+)$/.exec(graphId);
+        return m ? parseInt(m[1], 10) : null;
+    }
+
+    function graphRefs() {
+        // dfId -> [graph ids it references], self-refs excluded.
+        const out = {};
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return out; }
+        Object.keys(data).forEach(dfId => {
+            const node = nodeData(dfId);
+            if (!node) return;
+            const refs = new Set();
+            scanRefs(node.config || {}, refs);
+            refs.delete('n' + dfId);  // self-reference
+            if (refs.size) out[dfId] = [...refs];
+        });
+        return out;
+    }
+
+    function scheduleRefRender() {
+        if (refRaf) return;
+        refRaf = requestAnimationFrame(() => {
+            refRaf = 0;
+            renderRefWires();
+        });
+    }
+
+    function renderRefWires() {
+        const svg = ensureRefLayer();
+        if (!svg) return;
+        svg.innerHTML = '';
+        const refs = graphRefs();
+        const dfIds = Object.keys(refs);
+        if (!dfIds.length) {
+            svg.setAttribute('width', 1);
+            svg.setAttribute('height', 1);
+            return;
+        }
+        const NS = 'http://www.w3.org/2000/svg';
+        let maxX = 0, maxY = 0;
+        dfIds.forEach(dfId => {
+            const dstEl = document.getElementById(`node-${dfId}`);
+            if (!dstEl) return;
+            refs[dfId].forEach(gid => {
+                const srcDf = refDfId(gid);
+                if (srcDf == null) return;
+                const srcEl = document.getElementById(`node-${srcDf}`);
+                if (!srcEl || srcEl === dstEl) return;
+                const x1 = srcEl.offsetLeft + srcEl.offsetWidth;
+                const y1 = srcEl.offsetTop + srcEl.offsetHeight / 2;
+                const x2 = dstEl.offsetLeft;
+                const y2 = dstEl.offsetTop + dstEl.offsetHeight / 2;
+                const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+                const path = document.createElementNS(NS, 'path');
+                path.setAttribute('d',
+                    `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+                path.setAttribute('class', 'wf-ref-wire');
+                const title = document.createElementNS(NS, 'title');
+                title.textContent = `{{ ${gid} }} reference — data flows here at run time`;
+                path.appendChild(title);
+                svg.appendChild(path);
+                maxX = Math.max(maxX, x1, x2);
+                maxY = Math.max(maxY, y1, y2);
+            });
+        });
+        svg.setAttribute('width', Math.max(1, maxX + 60));
+        svg.setAttribute('height', Math.max(1, maxY + 60));
     }
 
     // ------------------------------------------------------------------
@@ -234,6 +361,41 @@
         return entry ? entry.data : null;
     }
 
+    // Missing-required detection from the spec (not string-matching the
+    // summary): which required fields are still empty. Special cases
+    // mirror the backend diagnose rules.
+    function configIssues(type, config) {
+        const c = config || {};
+        const spec = specByType[type] || {};
+        const missing = [];
+        (spec.fields || []).forEach(f => {
+            if (!f.required) return;
+            const v = c[f.name];
+            const empty = (typeof v === 'string' && !v.trim()) ||
+                v === null || v === undefined || v === '' ||
+                (Array.isArray(v) && !v.length);
+            if (empty) missing.push(f.label || f.name);
+        });
+        if (type === 'notebook.output' &&
+                !(String(c.notebook_id || '').trim() || String(c.name || '').trim()) &&
+                !missing.includes('Notebook')) {
+            missing.push('Notebook or new name');
+        }
+        if (type === 'logic.condition' &&
+                !(c.conditions || []).length && !String(c.left || '').trim()) {
+            missing.push('Conditions');
+        }
+        if (type === 'input.param' && (c.kind || 'text') === 'select' &&
+                !String(c.options || '').trim()) {
+            missing.push('Dropdown options');
+        }
+        if (type === 'input.param' && (c.kind || 'text') === 'file' &&
+                !String(c.file_id || '').trim()) {
+            missing.push('Static file');
+        }
+        return missing;
+    }
+
     function refreshCard(dfId) {
         const el = document.getElementById(`node-${dfId}`);
         if (!el) return;
@@ -246,19 +408,28 @@
         }
         const card = el.querySelector('.wf-node-card');
         if (card) {
-            const needs = /not configured|no file|no query|no prompt|empty|pick a|select/i.test(text || '');
-            card.classList.toggle('is-missing', !!needs);
+            const missing = configIssues(data.type, data.config);
+            card.classList.toggle('is-missing', missing.length > 0);
+            card.title = missing.length ? 'Missing: ' + missing.join(', ') : '';
             const kind = ((specByType[data.type] || {}).outputs || [])[0];
             const kindEl = el.querySelector('.wf-node-kind');
             if (kindEl) kindEl.textContent = kind ? kind.kind || '' : '';
+            decoratePorts(dfId, specByType[data.type]);
         }
     }
 
     // ------------------------------------------------------------------
     // Graph conversion: our JSON <-> drawflow
     // ------------------------------------------------------------------
+    // Drawflow ids are session-local (1, 2, 3…): the graph's own node
+    // ids ('n3', 'filter1', …) — which {{ refs }} point at — live here so
+    // exportGraph writes them back unchanged instead of renumbering
+    // nodes and silently breaking every {{ ref }} on autosave.
+    let exportIds = {};
+
     function loadGraph(graph) {
         editor.clear();
+        exportIds = {};
         const idMap = {};  // our id -> drawflow id
         (graph.nodes || []).forEach(node => {
             const spec = specByType[node.type];
@@ -272,6 +443,7 @@
                 { type: node.type, config: Object.assign({}, node.config) },
                 nodeHtml(node.type, spec));
             idMap[node.id] = dfId;
+            exportIds[dfId] = node.id;
             refreshCard(dfId);
         });
         (graph.edges || []).forEach(edge => {
@@ -292,6 +464,7 @@
         // so a single early redraw leaves wires detached. Redraw repeatedly
         // until everything has settled.
         scheduleRedraws();
+        scheduleRefRender();
     }
 
     let _redrawTimers = [];
@@ -322,12 +495,13 @@
 
     function exportGraph() {
         const data = editor.export().drawflow.Home.data;
+        const gid = dfId => exportIds[dfId] || ('n' + dfId);
         const nodes = [], edges = [];
         Object.values(data).forEach(dfNode => {
             const type = dfNode.data.type;
             const spec = specByType[type] || {};
             nodes.push({
-                id: 'n' + dfNode.id,
+                id: gid(dfNode.id),
                 type,
                 x: Math.round(dfNode.pos_x),
                 y: Math.round(dfNode.pos_y),
@@ -344,9 +518,9 @@
                     const inPort = (tSpec.inputs || [])[inIdx];
                     if (outPort && inPort) {
                         edges.push({
-                            from: 'n' + dfNode.id,
+                            from: gid(dfNode.id),
                             from_port: outPort.name,
-                            to: 'n' + c.node,
+                            to: gid(c.node),
                             to_port: inPort.name,
                         });
                     }
@@ -521,15 +695,30 @@
     }
 
     // Fetch the connected file's real columns (CSV/Excel) — used by the
-    // Filter rows and Select columns widgets for their dropdowns.
+    // Filter rows and Select columns widgets for their dropdowns. Falls
+    // back to the server-side trace (saved graph) when no file is wired
+    // directly, e.g. filter -> select chains.
     function fetchUpstreamColumns(nodeId, cb, port) {
         const fileId = upstreamFileId(nodeId, port);
-        if (!fileId) return;
-        fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
+        if (fileId) {
+            fetch(root.dataset.shapeUrl + '?file_id=' + fileId)
+                .then(r => (r.ok ? r.json() : null))
+                .then(shape => {
+                    if (shape && shape.kind === 'table'
+                            && shape.columns.length) {
+                        cb(shape.columns.map(String));
+                    }
+                })
+                .catch(() => {});
+            return;
+        }
+        if (port || !root.dataset.workflowId || !root.dataset.upstreamShapeUrl) return;
+        fetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
+              encodeURIComponent(root.dataset.workflowId) +
+              '&node=' + encodeURIComponent('n' + nodeId))
             .then(r => (r.ok ? r.json() : null))
             .then(shape => {
-                if (shape && shape.kind === 'table'
-                        && shape.columns.length) {
+                if (shape && shape.certain && (shape.columns || []).length) {
                     cb(shape.columns.map(String));
                 }
             })
@@ -1651,6 +1840,7 @@
         data.config = data.config || {};
         data.config[field] = value;
         refreshCard(nodeId);
+        scheduleRefRender();  // a {{ ref }} may have been added/removed
         markDirty();
         if (configChangeHook) configChangeHook(nodeId, field, value);
     }
@@ -1733,6 +1923,38 @@
             ex.appendChild(document.createTextNode(spec.example));
             meta.appendChild(ex);
         }
+        // Run-contract preview for the two run-input nodes: what the run
+        // form will do with the current settings (updates while editing).
+        let refreshContractPreview = null;
+        if (type === 'input.param' || type === 'input.drive') {
+            const pv = document.createElement('div');
+            pv.className = 'wf-config-example';
+            pv.innerHTML = '<i class="fas fa-circle-question"></i> ';
+            const pvt = document.createElement('span');
+            pv.appendChild(pvt);
+            meta.appendChild(pv);
+            refreshContractPreview = () => {
+                const c = ((nodeData(dfId) || {}).config) || {};
+                const ask = String(c.ask || 'yes') !== 'no';
+                const kind = c.kind || (type === 'input.drive' ? 'drive' : 'text');
+                const hasStatic = type === 'input.drive'
+                    ? !!String(c.drive_id || '').trim()
+                    : kind === 'file'
+                        ? !!String(c.file_id || '').trim()
+                        : !!String(c.default || '').trim();
+                const req = String(c.required || 'auto');
+                const required = req === 'yes' ||
+                    (req !== 'no' && ask && !hasStatic);
+                pvt.textContent = !ask
+                    ? 'Never asked — scheduled and triggered runs use the static value.'
+                    : required
+                        ? 'The run form will ASK this every run (required).'
+                        : hasStatic
+                            ? 'The run form asks it; empty answers fall back to the static value.'
+                            : 'The run form asks it (optional).';
+            };
+            refreshContractPreview();
+        }
 
         const form = document.getElementById('wf-config-form');
         form.innerHTML = '';
@@ -1775,6 +1997,7 @@
         configChangeHook = (changedId, fieldName) => {
             if (changedId !== dfId) return;
             applyFieldVisibility(spec, dfId);
+            if (refreshContractPreview) refreshContractPreview();
             if (fieldName === 'notebook_id') {
                 cellWidgetReloaders.forEach(fn => fn());
             }
@@ -1831,7 +2054,9 @@
             type, (spec.inputs || []).length, (spec.outputs || []).length,
             x, y, typeClass(type), { type, config: {} },
             nodeHtml(type, spec));
+        exportIds[dfId] = 'n' + dfId;
         refreshCard(dfId);
+        scheduleRefRender();
         openConfig(dfId);
     }
 
@@ -1879,12 +2104,16 @@
             (copy.pos_x || 60) + 40, (copy.pos_y || 60) + 40,
             typeClass(type), { type, config: Object.assign({}, data.config) },
             nodeHtml(type, spec));
+        exportIds[newId] = 'n' + newId;
         refreshCard(newId);
+        scheduleRefRender();
     }
 
     function deleteNode(dfId) {
         delete nodeOutputs[dfId];
+        delete exportIds[dfId];
         editor.removeNodeId('node-' + dfId);
+        scheduleRefRender();
     }
 
     // Show the output the node produced in the last preview run.
@@ -2139,6 +2368,10 @@
             enabled: document.getElementById('wf-enabled').checked,
             interval_minutes: document.getElementById('wf-interval').value,
         };
+        if (scheduleProfile !== null) {
+            body.schedule_params = scheduleProfile.params || {};
+            if (scheduleProfile.fileId) body.schedule_file_id = scheduleProfile.fileId;
+        }
         setSaved('A guardar…');
         const resp = await fetch(root.dataset.saveUrl, {
             method: 'POST',
@@ -2155,14 +2388,21 @@
             return false;
         }
         setSaved('Saved ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+        lastSaveAt = Date.now();
         return true;
     }
 
     let _dirtyTimer = null;
+    // Schedule profile staging: null = untouched (never sent), otherwise
+    // {params, fileId} included in the next save.
+    let scheduleProfile = null;
     function setSaved(text) {
         const elm = document.getElementById('wf-saved');
         if (elm) elm.textContent = text;
     }
+    let lastSaveAt = 0;
+    let lastApplyAt = 0;
+    let graphVersion = null;
     function markDirty() {
         setSaved('● Por guardar');
         if (_dirtyTimer) clearTimeout(_dirtyTimer);
@@ -2195,6 +2435,16 @@
          'connectionRemoved'].forEach(ev => {
             try { editor.on(ev, () => markDirty()); } catch {}
         });
+        // Reference wires follow nodes, zoom and pan (rAF-throttled).
+        ['nodeMoved', 'zoom', 'translate', 'nodeCreated', 'nodeRemoved',
+         'connectionCreated', 'connectionRemoved'].forEach(ev => {
+            try { editor.on(ev, () => scheduleRefRender()); } catch {}
+        });
+        try {
+            editor.on('mouseMove', () => {
+                if (editor.drag) scheduleRefRender();
+            });
+        } catch {}
         ['wf-name', 'wf-description', 'wf-interval', 'wf-enabled'].forEach(id => {
             const elm = document.getElementById(id);
             if (elm) elm.addEventListener('input', () => markDirty());
@@ -2394,41 +2644,16 @@
         // input.param AND input.drive nodes with "ask at run time" — the
         // Run button opens a small form first when the workflow wants
         // answers.
-        function askedParams() {
-            return exportGraph().nodes
-                .filter(n => (n.type === 'input.param' || n.type === 'input.drive')
-                    && String((n.config || {}).ask || 'yes') !== 'no')
-                .map(n => {
-                    const c = n.config || {};
-                    if (n.type === 'input.drive') {
-                        return {
-                            param: (c.param || '').trim(),
-                            label: (c.label || '').trim() || (c.param || '').trim(),
-                            kind: 'drive',
-                            required: !c.drive_id,
-                        };
-                    }
-                    const kind = c.kind || 'text';
-                    const hasStatic = kind === 'file'
-                        ? !!c.file_id
-                        : !!String(c.default || '').trim();
-                    return {
-                        param: (c.param || '').trim(),
-                        label: (c.label || '').trim() || (c.param || '').trim(),
-                        kind,
-                        required: !hasStatic,
-                    };
-                })
-                .filter(p => p.param);
-        }
-
-        async function startRun(params) {
+        async function startRun(params, triggerFileId) {
             wfConsoleOpen();
             wfConsoleLog('starting the run…');
+            const body = {};
+            if (params && Object.keys(params).length) body.params = params;
+            if (triggerFileId) body.file_id = triggerFileId;
             const resp = await fetch(root.dataset.runUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params ? { params } : {}),
+                body: JSON.stringify(body),
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -2446,116 +2671,174 @@
             if (window.automationRunsPoll) window.automationRunsPoll();
         }
 
-        function openParamsForm(specs) {
-            const form = document.getElementById('wf-params-form');
-            form.innerHTML = '';
-            const inputs = {};
-            specs.forEach(spec => {
-                const wrap = document.createElement('div');
-                wrap.className = 'wf-field';
-                const head = document.createElement('div');
-                head.className = 'wf-field-head';
-                const lbl = document.createElement('span');
-                lbl.className = 'wf-field-label';
-                lbl.textContent = spec.label + (spec.required ? ' *' : '');
-                head.appendChild(lbl);
-                wrap.appendChild(head);
-                let input;
-                if (spec.kind === 'file') {
-                    input = document.createElement('input');
-                    input.type = 'hidden';
-                    const pick = document.createElement('button');
-                    pick.type = 'button';
-                    pick.className = 'btn btn-outline btn-sm w-full gap-2';
-                    pick.innerHTML = '<i class="fas fa-folder-open"></i> Pick a file…';
-                    pick.addEventListener('click', () => {
-                        openFileBrowser(f => {
-                            input.value = f.id;
-                            pick.innerHTML = `<i class="fas ${fileIcon(f.ext)}"></i> ${esc(f.name)}`;
-                        });
-                    });
-                    wrap.append(input, pick);
-                } else if (spec.kind === 'longtext') {
-                    input = document.createElement('textarea');
-                    input.className = 'textarea textarea-bordered textarea-sm w-full';
-                    input.rows = 3;
-                    wrap.appendChild(input);
-                } else if (spec.kind === 'drive') {
-                    input = document.createElement('select');
-                    input.className = 'select select-bordered select-sm w-full';
-                    const blank = document.createElement('option');
-                    blank.value = '';
-                    blank.textContent = '— pick a drive —';
-                    input.appendChild(blank);
-                    (window.automationEditorData.drives || []).forEach(d => {
-                        const o = document.createElement('option');
-                        o.value = d.id;
-                        o.textContent = d.name;
-                        input.appendChild(o);
-                    });
-                    wrap.appendChild(input);
-                } else {
-                    input = document.createElement('input');
-                    input.type = spec.kind === 'number' ? 'number' : 'text';
-                    input.className = 'input input-bordered input-sm w-full';
-                    wrap.appendChild(input);
-                }
-                inputs[spec.param] = input;
-                form.appendChild(wrap);
+        document.getElementById('wf-check').addEventListener('click', async () => {
+            if (!(await saveGraph())) return;
+            wfConsoleOpen();
+            wfConsoleLog('checking…');
+            let data = null;
+            try {
+                const resp = await fetch(root.dataset.diagnoseUrl,
+                                         { headers: { Accept: 'application/json' } });
+                data = await resp.json();
+            } catch { data = null; }
+            if (!data) {
+                wfConsoleLog('could not check (offline?)', 'error');
+                return;
+            }
+            const issues = data.issues || [];
+            if (!issues.length) {
+                wfConsoleLog('all clear — no problems found.');
+                window.uiToast('Workflow looks good.', 'success');
+                return;
+            }
+            issues.forEach(i => {
+                const where = i.node ? `node ${i.node}` : 'workflow';
+                wfConsoleLog(`${i.severity === 'error' ? '✕' : '!'} [${where}] ${i.message}`,
+                             i.severity === 'error' ? 'error' : undefined);
             });
-            const go = document.getElementById('wf-params-go');
-            const fresh = go.cloneNode(true);
-            go.replaceWith(fresh);
-            fresh.addEventListener('click', () => {
-                const params = {};
-                const missing = [];
-                specs.forEach(spec => {
-                    const v = (inputs[spec.param].value || '').trim();
-                    if (v) params[spec.param] = v;
-                    else if (spec.required) missing.push(spec.label);
-                });
-                if (missing.length) {
-                    window.uiAlert('Missing: ' + missing.join(', '),
-                                   { title: 'Run inputs' });
-                    return;
-                }
-                document.getElementById('wf-params-modal').close();
-                startRun(params);
+            const errs = issues.filter(i => i.severity === 'error').length;
+            window.uiToast(`${errs} error(s), ${issues.length - errs} warning(s) — see console.`,
+                           errs ? 'error' : 'info');
+        });
+
+        document.getElementById('wf-schedule-values').addEventListener('click', async () => {
+            if (!(await saveGraph())) return;
+            let contract = { trigger: false, params: [] };
+            try {
+                const resp = await fetch(root.dataset.contractUrl,
+                                         { headers: { Accept: 'application/json' } });
+                if (resp.ok) contract = await resp.json();
+            } catch { /* offline - form still opens with empty contract */ }
+            let initialParams = {};
+            let fixedTrigger = null;
+            try { initialParams = JSON.parse(root.dataset.scheduleParams || '{}'); } catch { initialParams = {}; }
+            try {
+                fixedTrigger = root.dataset.scheduleFile ? JSON.parse(root.dataset.scheduleFile) : null;
+            } catch { fixedTrigger = null; }
+            if (scheduleProfile !== null) {
+                initialParams = scheduleProfile.params || {};
+                fixedTrigger = scheduleProfile.file || null;
+            }
+            window.AutomationRunForm.open({
+                title: 'Schedule values',
+                subtitle: 'Frozen answers the schedule replays every run. Leave empty to use static defaults.',
+                contract,
+                drives: contract.drives || [],
+                initialParams,
+                fixedTrigger,
+                allowTriggerPicker: true,
+                pickFile: (cur) => new Promise((res) => {
+                    let done = false;
+                    const finish = (v) => { if (!done) { done = true; res(v); } };
+                    const modal = document.getElementById('wf-file-modal');
+                    const onClose = () => finish(null);
+                    modal.addEventListener('close', onClose, { once: true });
+                    openFileBrowser((f) => finish(f || null));
+                }),
+                submitLabel: 'Save values',
+                onSubmit: ({ params, triggerFileId }) => {
+                    scheduleProfile = { params,
+                                        file: triggerFileId ? { id: triggerFileId } : fixedTrigger,
+                                        fileId: triggerFileId || null };
+                    // Keep the data attrs in sync so reopening shows them.
+                    try {
+                        root.dataset.scheduleParams = JSON.stringify(params);
+                        if (triggerFileId) {
+                            const cur = fixedTrigger && fixedTrigger.id === triggerFileId
+                                ? fixedTrigger : { id: triggerFileId, name: 'file #' + triggerFileId };
+                            root.dataset.scheduleFile = JSON.stringify(cur);
+                            scheduleProfile.file = cur;
+                        } else {
+                            root.dataset.scheduleFile = '';
+                            scheduleProfile.file = null;
+                        }
+                    } catch { /* ignore */ }
+                    markDirty();
+                    window.uiToast('Schedule values staged — saving.', 'info');
+                },
             });
-            document.getElementById('wf-params-modal').showModal();
-        }
+        });
 
         document.getElementById('wf-run').addEventListener('click', async () => {
             if (!(await saveGraph())) return;
-            const specs = askedParams();
-            if (specs.length) openParamsForm(specs);
-            else startRun(null);
+            let contract = { trigger: false, params: [] };
+            try {
+                const resp = await fetch(root.dataset.contractUrl,
+                                         { headers: { Accept: 'application/json' } });
+                if (resp.ok) contract = await resp.json();
+            } catch { /* offline - run blind, the server validates */ }
+            if (!contract.trigger && !(contract.params || []).length) {
+                startRun(null, null);
+                return;
+            }
+            window.AutomationRunForm.open({
+                title: 'Run this workflow',
+                subtitle: 'Answer what the run needs — same questions everywhere.',
+                contract,
+                drives: contract.drives || [],
+                pickFile: (cur) => new Promise((res) => {
+                    let done = false;
+                    const finish = (v) => { if (!done) { done = true; res(v); } };
+                    const modal = document.getElementById('wf-file-modal');
+                    const onClose = () => finish(null);
+                    modal.addEventListener('close', onClose, { once: true });
+                    openFileBrowser((f) => finish(f || null));
+                }),
+                submitLabel: 'Run',
+                onSubmit: ({ params, triggerFileId }) =>
+                    startRun(params, triggerFileId),
+            });
         });
 
         // AI copilot: the chat can edit this workflow via the
         // automation.edit_workflow tool; the backend then emits a
         // ui_action event so the canvas reloads the saved graph.
+        // Fallback: a version poll catches edits made while no chat
+        // window was open to forward the event (dock runs, other tabs).
+        const applyRemote = async attempt => {
+            const configOpen = document.getElementById('wf-config-modal');
+            if (configOpen && configOpen.open) {
+                if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
+                return;  // don't clobber a config form the user is editing
+            }
+            // Don't clobber the user's own unsaved edits: autosave lands
+            // within ~2s, so a version newer than the last save by a
+            // margin must come from elsewhere (the AI).
+            if (Date.now() - lastSaveAt < 8000) {
+                if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
+                return;
+            }
+            try {
+                const resp = await fetch(root.dataset.graphUrl);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                loadGraph(data.graph);
+                if (data.version) graphVersion = data.version;
+                lastApplyAt = Date.now();
+                window.uiToast('Workflow updated by the AI.', 'info');
+            } catch { /* offline - user can reload manually */ }
+        };
         window.addEventListener('docindex-ui-action', e => {
             const detail = e.detail || {};
             if (detail.type !== 'workflow_changed') return;
             if (!window.currentWorkflow ||
                 detail.workflow_id !== window.currentWorkflow.id) return;
-            const apply = async attempt => {
-                const configOpen = document.getElementById('wf-config-modal');
-                if (configOpen && configOpen.open) {
-                    if (attempt < 5) setTimeout(() => apply(attempt + 1), 2000);
-                    return;  // don't clobber a config form the user is editing
-                }
-                try {
-                    const resp = await fetch(root.dataset.graphUrl);
-                    if (!resp.ok) return;
-                    const data = await resp.json();
-                    loadGraph(data.graph);
-                    window.uiToast('Workflow updated by the AI.', 'info');
-                } catch { /* offline — user can reload manually */ }
-            };
-            apply(0);
+            applyRemote(0);
         });
+        setInterval(async () => {
+            if (document.hidden) return;
+            if (Date.now() - lastApplyAt < 10000) return;
+            let data = null;
+            try {
+                const resp = await fetch(root.dataset.graphUrl);
+                if (!resp.ok) return;
+                data = await resp.json();
+            } catch { return; }  // offline - try again on the next tick
+            if (!data || !data.version) return;
+            if (graphVersion === null) { graphVersion = data.version; return; }
+            if (data.version === graphVersion) return;
+            applyRemote(0);
+        }, 5000);
     }
 
     window.AutomationEditor = { mount };

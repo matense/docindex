@@ -1,27 +1,141 @@
 {
   "releases": [
     {
-      "version": "0.1.7",
-      "date": "2026-10-27",
-      "title": "Git Sync: local commits and safe remote review",
+      "version": "0.1.12",
+      "date": "2026-11-02",
+      "title": "In development",
       "sections": [
         {
           "title": "New",
           "icon": "fa-sparkles",
           "entries": [
-            "Git Sync connects an existing local repository from Drive > Git Repo, indexes its files and reviews working-tree changes against the last commit or the connection baseline.",
-            "Create local commits from selected files with an explicit message. Git Sync refuses pre-staged changes and unresolved conflicts rather than including unrelated work.",
-            "Fetch upstream changes, review a merge without creating a commit, resolve conflicts per file by keeping the current or incoming version, then explicitly abort or complete the merge locally.",
-            "Push local commits to the configured upstream with an explicit action; commits are never pushed automatically.",
-            "Disconnect stale Git Sync entries and reconnect the same checkout; disconnecting preserves the local folder, Git data, and any linked drive and files."
+            "Git changes is available from synced local-folder drives (mirror or shared): inspect diffs, select individual files to commit, fetch, merge, and push.",
+            "Publish local commits to a new remote branch for a pull request, with direct Azure DevOps, GitHub, and GitLab links.",
+            "Git changes uses pure-Python dulwich; per-drive author identity and encrypted HTTPS credentials are configured in the app, with host-specific personal access token instructions.",
+            "Discard changes to an individual file with explicit confirmation; tracked files are restored from HEAD, while untracked files are removed. OneDrive online-only placeholders are hydrated before restore."
           ]
         },
         {
           "title": "Improved",
           "icon": "fa-arrow-trend-up",
           "entries": [
-            "Remote errors do not display raw Git output or credential data. The saved account is only a username hint for Git's server-side credential manager; the authenticated identity cannot be verified by the generic Git protocol.",
-            "App-created commits and merge commits do not run repository hooks or use GPG signing."
+            "The Git changes page loads its repository summary immediately and fetches the working-tree review asynchronously; diffs are restricted to changed paths for faster loading on large folders."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.11",
+      "date": "2026-10-31",
+      "title": "Automation overhaul, usage stats, split database",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Measured token usage: every AI answer now carries its real token counts (bold ↑ prompt / ↓ completion badges, reported by the provider — not estimates), and Profile → AI usage shows today / 7-day / 30-day / all-time spend with a 30-day chart.",
+            "AI Utils switches (admins, on the AI Utils reference page): enable or disable whole sections or individual tools — only the enabled tools are offered to the model.",
+            "Automation overhaul: one shared run form everywhere (editor, drive menu, chat, run page) driven by the workflow's contract; inputs can be Required, with new select / yes-no / date kinds; schedules use profiles with frozen answers validated when configured; merge nodes join any number of branches; saving several files produces one ZIP; file destinations can be decided at run time (workflow references, drive names, folder paths); example workflows ask for the destination when they run.",
+            "Automation editor: template references ({{ nX }}) render as dashed wires with port tooltips, and a Check button validates the graph (shapes, references, schedule) before running."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Chat internals unified: the dock panel and the full-page assistant now share one session engine — identical behavior with roughly half the code, and ready for a future component-based UI."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Automation run page no longer flickers while a run streams; template references survive autosave instead of breaking after the first save."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.10",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "New Whiteboards module (admin toggle): hand-drawn-style boards backed by Excalidraw, stored as files on your drives — searchable, versioned, and fully drawable/edited by the AI (shapes, text, arrows, alignment) while you watch. Coordinates are optional for the AI: elements without x/y flow into free space instead of piling at the corner."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Whiteboards: boards can be moved to the trash from the board list; the editor now loads on in-app navigation (no more forced refresh); board titles no longer show the .wboard extension."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.9",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Profile → Display & settings now offers Performance mode: same features with lite visuals (no animated background or backdrop blur, calmer animations) and calmer background polling — for slower machines."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Background widgets (AI tasks, sync, hashtags, automation runs) now pause when the tab is hidden, back off when there is nothing going on, and re-check instantly when you return — far fewer idle requests and DOM writes.",
+            "Chat transcripts skip redundant full re-renders, the drive lasso hit-tests once per frame with cached geometry, and bounded wait loops back off instead of polling at full rate."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Reopening a chat while its run is still going now shows the live progress immediately — including the thinking produced while the window was minimized — instead of an empty transcript that only fills in at the end.",
+            "Git drive clone failures are now unmissable: outright failures pop a modal with the reason, and a background clone that fails later keeps a persistent error card with the reason and a dismiss button instead of vanishing after a few seconds."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.8",
+      "date": "2026-10-29",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "The chat composer now locks while a run is in progress: the input is disabled, the send button becomes Stop, and a follow-up sent too early is put back in the composer with a notice instead of forking a second conversation (server also rejects it with a clear message).",
+            "The \"Waiting for the model…\" progress line now appears from the moment you send until the first events arrive, and stopping a run re-loads its final result — errors and late finishes are never silently lost from an open window.",
+            "A notebook tool call that sends plain strings instead of cell objects no longer kills the whole run with no message: strings become markdown cells, anything else gets a clean error the model can adapt to — and any tool crash is reported back to the model instead of ending the run silently."
+          ]
+        }
+      ]
+    },
+    {
+      "version": "0.1.7",
+      "date": "2026-10-25",
+      "title": "In development",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Chat windows can snap to the screen edges for a dual view with the drive, with a draggable divider to resize both columns — dock from the ⋯ menu, by dragging, or with Alt+←/→.",
+            "Profile → Display & settings now offers a chat send-key choice: Enter sends (Shift+Enter for a new line), or Shift+Enter sends (Enter for a new line).",
+            "Every chat message now runs as a server-side run: minimizing or closing a window only drops the live view — the run keeps going in the dock (one icon per chat — always the latest run; dismissing it clears that chat's runs), and the full reasoning stays available when you reopen. Closing a window mid-run asks for confirmation and stops it.",
+            "The per-connection max_steps is now the single step budget for all runs, with a per-message Long horizon toggle for the extended budget (configurable per connection in AI Settings, default 64).",
+            "New AI Utils module (admin toggle): 23 assistant tools — calculator, statistics, base/fraction conversion, unit conversion, constants, periodic table (H–Zr), loan/compound/percent/currency math, current date/time, date arithmetic and differences, datetime/timezone, Roman numerals, base64/URL/hex codecs and text tools — plus a reference page linked from the profile menu."
           ]
         }
       ]

@@ -1002,6 +1002,27 @@ def describe_for_chat(stored_file):
             out["columns"] = columns
             out["rows"] = rows
             return out
+        if ext == "wboard":
+            out["kind"] = "whiteboard"
+            try:
+                scene = json.loads(read_text_content(
+                    stored_file, max_chars=_SAMPLE_CHARS + 1))
+                elements = scene.get("elements", []) \
+                    if isinstance(scene, dict) else []
+                title = scene.get("title", "") \
+                    if isinstance(scene, dict) else ""
+            except (OSError, ValueError):
+                return out
+            texts = [str(e.get("text", "")) for e in elements
+                     if isinstance(e, dict) and e.get("text")]
+            digest = (f"{title} — {len(elements)} element(s)".strip(" —"))
+            if texts:
+                digest += ": " + " | ".join(t[:120] for t in texts[:12])
+            out["head"] = digest[:2000]
+            out["counts"] = {"words": len(digest.split()),
+                             "lines": digest.count("\n") + 1 if digest else 0,
+                             "chars": len(digest)}
+            return out
         if ext in _TEXT_EXTS:
             out["kind"] = "text"
             try:

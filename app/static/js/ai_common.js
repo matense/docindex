@@ -96,4 +96,24 @@
     window.DocIndex.renderMarkdown = renderMarkdown;
     window.DocIndex.enhanceCodeBlocks = enhanceCodeBlocks;
     window.DocIndex.copyText = copyText;
+
+    // Performance mode (Profile → Display & settings): the <body> carries
+    // the perf-mode class; timers and paint-heavy features calm down.
+    function perfMode() {
+        return !!(document.body
+            && document.body.classList.contains("perf-mode"));
+    }
+
+    // Calm background polling: hidden tabs check rarely, empty states back
+    // off, perf mode raises the floor. Nothing is lost: user actions poke
+    // an immediate poll and the server persists all state.
+    function pollDelay(baseMs, idle) {
+        if (document.hidden) return 30000;
+        if (idle) return 15000;
+        if (perfMode()) return Math.max(baseMs, 8000);
+        return baseMs;
+    }
+
+    window.DocIndex.perfMode = perfMode;
+    window.DocIndex.pollDelay = pollDelay;
 })();

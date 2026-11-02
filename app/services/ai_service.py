@@ -7,6 +7,7 @@ import requests
 from flask import current_app
 
 from ..models import AIConnection
+from . import ai_usage_service
 
 
 class AIError(Exception):
@@ -220,6 +221,10 @@ def chat_completion(messages, model=None, tools=None, tool_choice=None, config=N
         # Propagated so the agent loop can tell a truncated answer
         # (finish_reason="length") from a deliberate stop.
         message["finish_reason"] = data["choices"][0].get("finish_reason")
+        # The provider's own token counts — the source of truth for usage
+        # stats. Missing fields are estimated (chars//4) downstream.
+        message["usage"] = ai_usage_service.normalize_usage(
+            data.get("usage"), messages, message.get("content") or "")
         return message
     except (ValueError, KeyError, IndexError) as exc:
         raise AIError(f"Unexpected AI response format: {exc}") from exc
@@ -247,7 +252,11 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
         raise AIError("AI is not configured. Add a connection in AI Settings.")
 
     payload = {"model": model or cfg["model"], "messages": messages,
-               "stream": True}
+               "stream": True,
+               # Ask for the server-sent usage block in the final chunk
+               # (OpenAI/OpenRouter/DeepSeek/Kimi-style). Providers that
+               # ignore it simply never send usage — the estimator covers it.
+               "stream_options": {"include_usage": True}}
     if tools:
         payload["tools"] = tools
         if tool_choice:
@@ -255,17 +264,28 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
 
     _rate_slot(cfg, block=block)
 
-    try:
-        resp = requests.post(
-            f"{cfg['base_url']}/chat/completions",
-            json=payload,
-            headers=_headers(cfg),
-            timeout=cfg["timeout"],
-            allow_redirects=False,
-            stream=True,
-        )
-    except requests.RequestException as exc:
-        raise AIError(f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
+    def _post(pl):
+        try:
+            return requests.post(
+                f"{cfg['base_url']}/chat/completions",
+                json=pl,
+                headers=_headers(cfg),
+                timeout=cfg["timeout"],
+                allow_redirects=False,
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise AIError(
+                f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
+
+    resp = _post(payload)
+    if (resp.status_code == 400 and "stream_options" in resp.text[:500]
+            and "stream_options" in payload):
+        # Strict provider that rejects the usage request: retry once without
+        # it (usage then falls back to estimation).
+        resp.close()
+        del payload["stream_options"]
+        resp = _post(payload)
 
     if resp.status_code in (301, 302, 303, 307, 308):
         resp.close()
@@ -291,6 +311,7 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
     tool_calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
     got_anything = False
     finish_reason = None
+    stream_usage = None
 
     try:
         # Iterate raw bytes and decode as UTF-8 explicitly — SSE servers often
@@ -311,6 +332,11 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
                 chunk = _json.loads(data_str)
             except ValueError:
                 continue  # tolerate junk lines from proxies
+            # Usage may arrive in a final chunk with no (or empty)
+            # choices when the provider honors
+            # stream_options.include_usage — keep the last one seen.
+            if isinstance(chunk.get("usage"), dict):
+                stream_usage = chunk["usage"]
             choices = chunk.get("choices") or []
             if not choices:
                 continue
@@ -362,6 +388,9 @@ def chat_completion_stream(messages, model=None, tools=None, tool_choice=None,
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    # Provider counts win; anything missing is estimated (chars//4).
+    message["usage"] = ai_usage_service.normalize_usage(
+        stream_usage, messages, "".join(content_parts))
     yield ("done", message)
 
 
@@ -395,13 +424,15 @@ def test_connection(base_url, api_key):
     return True, "Connected."
 
 
-def caption_image(path, config=None, block=False, instruction=None):
+def caption_image(path, config=None, block=False, instruction=None,
+                  user=None):
     """Generate a searchable caption for an image via a vision model.
 
     With block=True, wait for a rate-limit slot instead of raising when the
     connection's per-minute limit is reached (user-initiated requests).
     ``instruction`` replaces the default caption prompt (automation's
     Caption-image node lets the user steer the description).
+    ``user`` (when given) attributes the token spend to usage stats.
 
     Images are downscaled to ~1024px before base64 (16MB -> ~21MB JSON
     otherwise): cheaper, faster, fewer timeouts.
@@ -446,4 +477,8 @@ def caption_image(path, config=None, block=False, instruction=None):
     ]
     message = chat_completion(messages, model=cfg["vision_model"], config=cfg,
                               block=block)
+    if user is not None:
+        ai_usage_service.record_usage(
+            user.id, message.get("usage"),
+            model=cfg.get("vision_model"), kind="caption")
     return (message.get("content") or "").strip()

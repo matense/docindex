@@ -39,7 +39,8 @@ questions about your files by searching and reading them step by step.
   DocIndex — the real folder is never touched. Note: the folder path is read
   with the permissions of the process running DocIndex.
 - **Git drives (module)** — clone a Git repository (GitHub, Azure DevOps)
-  as a read-only mirror drive; every sync pulls and re-indexes. The
+  as a read-only mirror drive; every sync pulls and re-indexes. Pure-Python
+  [dulwich](https://github.com/jelmer/dulwich), no `git` binary needed. The
   personal access token is stored encrypted. Enable it in
   *Settings → Modules*. Git LFS is not fetched (LFS files stay pointers).
 - **Git changes (module)** — when a synced local folder is a Git checkout,
@@ -97,6 +98,12 @@ questions about your files by searching and reading them step by step.
   Notebooks page groups by drive and folder and offers one-click
   **Organize** (with preview) and **Revert last organize**, plus an opt-in
   full-history mode per notebook.
+- **Whiteboards (module)** — infinite-canvas boards powered by
+  [Excalidraw](https://github.com/excalidraw/excalidraw), stored as regular
+  versioned files on your drives: draw by hand, or ask the assistant to
+  build and edit diagrams (shapes with bound text labels, auto-layout,
+  lock/hide from AI). Open boards live-update while the AI works and export
+  to PNG. Enable it in *Settings → Modules*.
 - **Automation (module)** — visual workflows on a drag & drop canvas:
   chain file inputs (text/CSV/Excel/JSON), notebooks, transforms, AI
   prompts (with custom behavior) and logic into flows that run manually,
@@ -226,8 +233,7 @@ AI can be configured in two places:
 | `AI_REQUEST_TIMEOUT`| AI request timeout in seconds                  | `300`                       |
 | `AI_HASHTAG_MAX_WORDS` | Max words per AI-generated hashtag (user tags unlimited) | `6`        |
 | `AI_STREAMING`    | Token-by-token chat streaming (`false` if the provider breaks with streamed tool calls) | `true` |
-| `AI_TASK_MAX_STEPS` | Step budget for long-horizon background tasks | `64` |
-| `AI_TASK_WIDGET_POLL_MS` | Poll interval of the background-task dock widget | `3000` |
+| `AI_TASK_WIDGET_POLL_MS` | Poll interval of the AI run dock widget | `3000` |
 | `SEARCH_FTS`      | FTS5 full-text search with BM25 ranking (automatic ILIKE fallback) | `true` |
 | `INDEX_WORKERS`   | Background threads draining the persistent index queue | `2` |
 
@@ -252,14 +258,16 @@ upgrades are applied through migrations, never by recreating the database.
 ```
 
 The script pulls the latest code, updates dependencies and applies database
-migrations. Restart the server afterwards.
+migrations. Restart the server afterwards. Everything the scripts print is
+also saved to `logs/install.log` / `logs/update.log` (previous run kept as
+`.prev`) — send that file when reporting a problem.
 
-**Manual step by step:**
+**Manual step by step (no git binary needed — updates go through dulwich):**
 
 **Local installation:**
 
 ```bash
-git pull
+venv/bin/python tools/git_sync.py pull   # Windows: venv\Scripts\python.exe
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt   # pick up new/updated dependencies
 python run.py                     # migrations are applied automatically on start
@@ -267,7 +275,7 @@ python run.py                     # migrations are applied automatically on star
 
 > Database migrations run automatically when the app starts (Alembic
 > `upgrade` is a no-op when the schema is already current), so a plain
-> `git pull` + restart is enough. `flask --app run.py db upgrade heads` is still
+> pull + restart is enough. `flask --app run.py db upgrade heads` is still
 > available if you prefer to migrate explicitly before starting.
 
 > **"Can't locate revision identified by ..." during an update?** Databases

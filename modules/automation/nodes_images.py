@@ -49,7 +49,7 @@ def _exec_caption_image(ctx, config, inputs):
     try:
         caption = ai_service.caption_image(
             file_service.file_path(stored), config=cfg, block=True,
-            instruction=instruction)
+            instruction=instruction, user=ctx["user"])
     except ai_service.AIError as exc:
         raise WorkflowError(str(exc)) from exc
     if not caption:

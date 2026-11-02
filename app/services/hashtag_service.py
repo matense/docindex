@@ -24,6 +24,7 @@ from flask import current_app
 from ..extensions import db
 from ..models import Drive, FileIndex, StoredFile, User
 from . import ai_service
+from .db_locks import serialized
 
 MAX_TAGS = 20          # sanity cap on tags per file
 MAX_SOURCE_CHARS = 6000  # text excerpt sent to the AI
@@ -65,6 +66,7 @@ def _clean_tags(tags, source):
     return clean
 
 
+@serialized
 def set_tags(stored_file, tags, source="user"):
     """Normalize, dedupe and persist the file's tags. Returns the final list.
 
@@ -136,6 +138,10 @@ def suggest_tags(stored_file, cfg):
     ]
     message = ai_service.chat_completion(messages, config=cfg, block=True)
     raw = (message.get("content") or "").strip()
+    from . import ai_usage_service
+    ai_usage_service.record_usage(
+        stored_file.user_id, message.get("usage"),
+        model=(cfg or {}).get("model"), kind="hashtag")
     return _clean_tags(re.split(r"[,\n;]+", raw), source="ai")
 
 

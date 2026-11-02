@@ -1,12 +1,13 @@
 import json
 import re
+import traceback
 
 from flask import current_app
 from sqlalchemy import func
 
 from ..extensions import db
 from ..models import Drive, FileVersion, StoredFile
-from . import ai_service, file_service, hashtag_service, search_service
+from . import ai_service, file_service, hashtag_service, log_service, search_service
 
 _SEARCH_FILTERS_SCHEMA = {
     "extensions": {
@@ -842,7 +843,7 @@ def _tool_view_image(user, file_id, question=None):
     try:
         caption = ai_service.caption_image(
             file_service.file_path(stored), config=cfg,
-            instruction=instruction)
+            instruction=instruction, user=user)
     except ai_service.AIError as exc:
         return {"error": str(exc)[:300]}
     except Exception:  # noqa: BLE001 - vision backend down etc.
@@ -1360,13 +1361,26 @@ def _active_tools():
     if testing or (now - _active_tools_cache["at"] > 5
             or _active_tools_cache["all_mods"] != mods):
         enabled = {m for m in mods if module_service.is_enabled(m)}
+        # Per-tool opt-outs (e.g. AI Utils sections/tools disabled by an
+        # admin) — expanded to full "<module>.<tool>" names, cached with
+        # the same TTL so toggles apply within seconds.
+        disabled = set()
+        for m in enabled:
+            try:
+                disabled |= module_service.disabled_tool_names(m)
+            except Exception:  # noqa: BLE001 - a bad toggle never breaks tools
+                continue
         _active_tools_cache.update(at=now, enabled=frozenset(enabled),
+                                   disabled=frozenset(disabled),
                                    all_mods=set(mods))
     else:
         enabled = _active_tools_cache["enabled"]
+        disabled = _active_tools_cache.get("disabled", frozenset())
     definitions, handlers, labels = [], {}, {}
     for full, entry in _TOOL_REGISTRY.items():
         if entry["module"] and entry["module"] not in enabled:
+            continue
+        if full in disabled:
             continue
         definitions.append(entry["definition"])
         handlers[full] = entry["handler"]
@@ -1521,6 +1535,10 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
     Yields, in order:
       ("thinking_token", text)               — live reasoning delta (streaming)
       ("answer_token", text)                 — live content delta (streaming)
+      ("usage", {...})                       — token spend of one model call
+                                      (prompt_tokens, completion_tokens,
+                                      estimated, model); emitted after every
+                                      call, including the out-of-steps final
       ("thinking", text)                       — the model's intermediate reasoning
       ("tool_start", {"label", "name", "index", "max_steps"}) — a tool is
                                      about to run; yielded BEFORE the handler
@@ -1590,10 +1608,18 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
                    "context window. Use Summarize & reset to compact the "
                    "history into a summary instead of losing it.")
         message = yield from _complete(messages, active_tools, config, block=block)
-        # finish_reason is metadata for the loop, not part of the message —
-        # strip it so it is never sent back to the provider in the history
+        # finish_reason and usage are metadata for the loop, not part of the
+        # message — strip them so they are never sent back to the provider
         # (strict APIs reject unknown message fields).
         finish_reason = message.pop("finish_reason", None)
+        usage = message.pop("usage", None)
+        if isinstance(usage, dict):
+            # One event per model call: the task runner persists these as
+            # AIUsageEvent rows (per-message badge + global stats).
+            yield ("usage", {"prompt_tokens": usage.get("prompt_tokens", 0),
+                             "completion_tokens": usage.get("completion_tokens", 0),
+                             "estimated": bool(usage.get("estimated")),
+                             "model": config.get("model")})
         messages.append(message)
 
         # Intermediate reasoning: either plain content alongside tool calls,
@@ -1657,7 +1683,16 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
                                   "max_steps": max_steps})
 
             handler = active_handlers.get(name)
-            result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
+            try:
+                result = handler(user, args, drive) if handler else {"error": f"Unknown tool '{name}'."}
+            except Exception as exc:  # noqa: BLE001 - a tool bug must not kill the run
+                log_service.log_event("error", "ai_task",
+                                      f"Tool '{name}' raised {exc!r}",
+                                      detail=traceback.format_exc(),
+                                      user_id=user.id)
+                result = {"error": f"Tool '{name}' failed: {exc}. Try a different approach."}
+            if not isinstance(result, dict):
+                result = {"error": f"Tool '{name}' returned an unusable result."}
 
             detail = args.get("query") or args.get("pattern") \
                 or (result.get("name") if isinstance(result, dict) else "") \
@@ -1692,11 +1727,18 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
         "with the information you already have. If something is still "
         "missing, say so honestly and summarize what you found.")})
     answer = ""
+    usage_tail = None
     try:
         final = yield from _complete(messages, None, config, block=block)
+        usage_tail = final.pop("usage", None)
         answer = (final.get("content") or "").strip()
     except ai_service.AIError:
         answer = ""
+    if isinstance(usage_tail, dict):
+        yield ("usage", {"prompt_tokens": usage_tail.get("prompt_tokens", 0),
+                         "completion_tokens": usage_tail.get("completion_tokens", 0),
+                         "estimated": bool(usage_tail.get("estimated")),
+                         "model": config.get("model")})
     yield ("answer",
            answer or "I reached the maximum number of search steps without a "
                       "final answer. Please try rephrasing your question.")

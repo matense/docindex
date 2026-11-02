@@ -16,6 +16,7 @@
     let prevStatus = {}; // task id -> last seen status (completion toasts)
     let pollMs = 3000;
     let timer = null;
+    let idle = true;
 
     const STATUS_BADGE = {
         done: { cls: 'dock-task-badge-done', icon: 'fa-check' },
@@ -191,19 +192,24 @@
     async function poll() {
         try {
             const resp = await fetch('/ai/tasks/active', { headers: { 'Accept': 'application/json' } });
-            if (!resp.ok) return;
             const contentType = resp.headers.get('Content-Type') || '';
-            if (!contentType.includes('application/json')) return; // login page etc.
-            const data = await resp.json();
-            if (data.poll_ms) pollMs = data.poll_ms;
-            render(data.tasks || []);
+            if (resp.ok && contentType.includes('application/json')) {
+                const data = await resp.json();
+                if (data.poll_ms) pollMs = data.poll_ms;
+                const tasks = data.tasks || [];
+                idle = !tasks.length;
+                render(tasks);
+            }
         } catch { /* offline etc. — try again on the next tick */ }
         schedule();
     }
 
     function schedule() {
+        // Calm polling: hidden tabs and empty docks check rarely; perf
+        // mode raises the floor. User actions poke an immediate poll.
         clearTimeout(timer);
-        timer = setTimeout(poll, pollMs);
+        const calm = window.DocIndex && window.DocIndex.pollDelay;
+        timer = setTimeout(poll, calm ? calm(pollMs, idle) : pollMs);
     }
 
     function start() {
@@ -211,6 +217,10 @@
         poll();
         // A form was just submitted via the SPA router — check immediately.
         document.addEventListener('spa:mutated', () => setTimeout(poll, 300));
+        // Hidden tabs don't need 3s updates — re-check on return.
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) poll();
+        });
     }
 
     if (document.readyState === 'loading') {

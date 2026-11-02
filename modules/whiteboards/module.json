@@ -1,0 +1,12 @@
+{
+  "name": "whiteboards",
+  "version": "1.0.0",
+  "description": "Hand-drawn-style whiteboards: Excalidraw scenes saved on your drives, indexed and searchable, with version history and full AI tooling — the assistant can draw and edit boards live.",
+  "capabilities": ["routes", "tools"],
+  "nav": {"label": "Whiteboards", "icon": "fa-pen-ruler", "url": "/"},
+  "help": [
+    "Whiteboards are Excalidraw scenes that live on your drives like files: they are indexed and searchable, keep a full version history with diff and restore, and can be drawn on by hand or by the AI.",
+    "When the module is first enabled a 'My Whiteboards' drive is created, but you can create boards in any drive that is not read-only.",
+    "While a board is open and the AI edits it, the changes appear live. Every AI edit is a single restorable history entry per answer."
+  ]
+}

@@ -15,7 +15,7 @@ MIGRATIONS_DIR = os.path.join(
 
 # App version — bump on every release and tag it (see CONTRIBUTING.md);
 # shown in the user menu and on the release notes page (/settings/releases).
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.11"
 
 # Aggregate module migrations (independent alembic roots under
 # modules/<name>/migrations/versions) into every flask-migrate command.
@@ -64,19 +64,61 @@ def format_duration(seconds):
     return f"{secs}{frac}s"
 
 
-def _sqlite_pragmas(dbapi_conn, _connection_record):
-    """Avoid 'database is locked' errors under concurrent requests."""
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.close()
+def _index_db_path(uri):
+    """Filesystem path (or ':memory:') of the index database for a core URI.
+
+    File cores get a sibling `<stem>_index.sqlite` next to the main file;
+    `:memory:` cores get a private in-memory index db (same lifetime and
+    isolation semantics as the core). Returns None for non-sqlite URIs.
+    """
+    from sqlalchemy.engine.url import make_url
+
+    if not uri or not uri.startswith("sqlite"):
+        return None
+    try:
+        db_path = make_url(uri).database
+    except Exception:  # noqa: BLE001 - unparseable URI: no index split
+        return None
+    if not db_path or db_path == ":memory:":
+        return ":memory:"
+    root, ext = os.path.splitext(db_path)
+    return root + "_index" + (ext or ".sqlite")
 
 
-# Engines (not apps) that already carry the pragma listener: create_app()
-# runs per test and each app builds its own engine, so guard per-engine —
-# a global one-shot flag would leave later apps without WAL/busy_timeout.
-_sqlite_pragma_engines = set()
+def _sqlite_listener(index_path):
+    """Per-engine connect listener: pragmas + ATTACH of the index db.
+
+    Attaching on every connection (NullPool opens one per checkout)
+    keeps schema-qualified tables (`idx.*`) and cross-db joins working
+    everywhere. One SQLite connection = one transaction across both
+    files, so meta + index writes stay atomic.
+
+    The listener is (re-)registered on every create_app call on purpose:
+    ATTACH is per-connection, and a fresh connection never carries `idx`,
+    so DETACH-then-ATTACH is idempotent no matter how many listeners pile
+    up. (A guard keyed by id(engine) would be wrong — CPython reuses ids
+    of garbage-collected engines, silently skipping the listener for new
+    engines, e.g. across hundreds of test apps.)
+    """
+    def _on_connect(dbapi_conn, _connection_record):
+        """Avoid 'database is locked' errors under concurrent requests."""
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        if index_path is not None:
+            try:
+                cursor.execute("DETACH DATABASE idx")
+            except Exception:  # noqa: BLE001 - not attached: the common case
+                pass
+            quoted = "'" + index_path.replace("'", "''") + "'"
+            cursor.execute(f"ATTACH DATABASE {quoted} AS idx")
+            cursor.execute("PRAGMA idx.journal_mode=WAL")
+            cursor.execute("PRAGMA idx.synchronous=NORMAL")
+            cursor.execute("PRAGMA idx.busy_timeout=30000")
+        cursor.close()
+
+    return _on_connect
 
 
 def create_app(config_class=Config):
@@ -97,9 +139,9 @@ def create_app(config_class=Config):
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
             engine = db.engine
-            if id(engine) not in _sqlite_pragma_engines:
-                event.listens_for(engine, "connect")(_sqlite_pragmas)
-                _sqlite_pragma_engines.add(id(engine))
+            listener = _sqlite_listener(_index_db_path(
+                app.config["SQLALCHEMY_DATABASE_URI"]))
+            event.listens_for(engine, "connect")(listener)
 
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every
@@ -186,6 +228,7 @@ def create_app(config_class=Config):
                     "gitdrives_enabled": module_service.is_enabled("gitdrives"),
                     "gitsync_enabled": module_service.is_enabled("gitsync"),
                     "automation_enabled": module_service.is_enabled("automation"),
+                    "aiutils_enabled": module_service.is_enabled("aiutils"),
                 }
             cached = _g._docindex_globals
             return {
@@ -198,6 +241,7 @@ def create_app(config_class=Config):
                 "gitdrives_enabled": cached["gitdrives_enabled"],
                 "gitsync_enabled": cached["gitsync_enabled"],
                 "automation_enabled": cached["automation_enabled"],
+                "aiutils_enabled": cached["aiutils_enabled"],
             }
         return {
             "ai_enabled": False,
@@ -209,6 +253,7 @@ def create_app(config_class=Config):
             "gitdrives_enabled": False,
             "gitsync_enabled": False,
             "automation_enabled": False,
+            "aiutils_enabled": False,
         }
 
     return app

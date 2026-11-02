@@ -521,26 +521,39 @@
                 rect.className = 'lasso-rect';
                 document.body.appendChild(rect);
                 lasso.rect = rect;
+                // Cache item geometry once per drag: per-event
+                // getBoundingClientRect over a big folder forces sync layout
+                // at pointer rate. Rects go stale on scroll mid-drag.
+                lasso.cache = visibleItems().map((el) => [el, el.getBoundingClientRect()]);
             }
             e.preventDefault();
-            const left = Math.min(lasso.x0, e.clientX), top = Math.min(lasso.y0, e.clientY);
-            Object.assign(lasso.rect.style, {
-                left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' });
-            const box = { left, top, right: left + w, bottom: top + h };
-            S.selected.clear();
-            lasso.base.forEach((v, k) => S.selected.set(k, v));
-            visibleItems().forEach((el) => {
-                const r = el.getBoundingClientRect();
-                if (r.left < box.right && r.right > box.left &&
-                    r.top < box.bottom && r.bottom > box.top) {
-                    S.selected.set(itemKey(el), itemEntry(el));
-                }
+            // One hit-test pass per animation frame, not per mousemove.
+            lasso.x1 = e.clientX;
+            lasso.y1 = e.clientY;
+            if (lasso.raf) return;
+            lasso.raf = requestAnimationFrame(() => {
+                lasso.raf = null;
+                if (!lasso || !lasso.rect) return;
+                const w2 = Math.abs(lasso.x1 - lasso.x0), h2 = Math.abs(lasso.y1 - lasso.y0);
+                const left = Math.min(lasso.x0, lasso.x1), top = Math.min(lasso.y0, lasso.y1);
+                Object.assign(lasso.rect.style, {
+                    left: left + 'px', top: top + 'px', width: w2 + 'px', height: h2 + 'px' });
+                const box = { left, top, right: left + w2, bottom: top + h2 };
+                S.selected.clear();
+                lasso.base.forEach((v, k) => S.selected.set(k, v));
+                (lasso.cache || []).forEach(([el, r]) => {
+                    if (r.left < box.right && r.right > box.left &&
+                        r.top < box.bottom && r.bottom > box.top) {
+                        S.selected.set(itemKey(el), itemEntry(el));
+                    }
+                });
+                paint();
             });
-            paint();
         });
 
         window.addEventListener('mouseup', () => {
             if (!lasso) return;
+            if (lasso.raf) cancelAnimationFrame(lasso.raf);
             if (lasso.rect) {
                 lasso.rect.remove();
                 suppressNextClear = true; // the trailing click must not clear
@@ -550,6 +563,13 @@
 
         ['scroll', 'resize'].forEach(evt =>
             window.addEventListener(evt, closeContextMenu, true));
+        // Scrolling mid-drag moves every card: refresh the cached geometry
+        // (no-op unless a lasso drag is in progress).
+        window.addEventListener('scroll', () => {
+            if (lasso && lasso.rect) {
+                lasso.cache = visibleItems().map((el) => [el, el.getBoundingClientRect()]);
+            }
+        }, true);
         document.addEventListener('click', (e) => {
             if (S.ctxMenu && !e.target.closest('.context-menu')) closeContextMenu();
         });
@@ -700,30 +720,70 @@ async function openRunWorkflow(fileId, fileName) {
         btn.appendChild(main);
         btn.addEventListener('click', async () => {
             btn.disabled = true;
-            try {
-                const resp = await fetch('/m/automation/' + wf.id + '/run', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file_id: parseInt(fileId, 10) }),
-                });
-                const data = await resp.json().catch(() => ({}));
-                modal.close();
-                if (!resp.ok) {
+            const directRun = async (body) => {
+                try {
+                    const resp = await fetch('/m/automation/' + wf.id + '/run', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    modal.close();
+                    if (!resp.ok) {
+                        if (window.uiAlert) {
+                            window.uiAlert(data.error || 'Could not start the run.',
+                                           { title: 'Run workflow' });
+                        }
+                        btn.disabled = false;
+                        return;
+                    }
+                    if (window.spaNavigate) window.spaNavigate(data.url);
+                    else location.href = data.url;
+                } catch {
+                    modal.close();
                     if (window.uiAlert) {
-                        window.uiAlert(data.error || 'Could not start the run.',
+                        window.uiAlert('Could not reach the server.',
                                        { title: 'Run workflow' });
                     }
-                    btn.disabled = false;
+                }
+            };
+            const runBody = { file_id: parseInt(fileId, 10) };
+            // Same run form as everywhere else: fetch the contract, run
+            // directly when nothing is asked, otherwise ask in a form.
+            try {
+                if (!window.AutomationRunForm) {
+                    await new Promise((res, rej) => {
+                        const s = document.createElement('script');
+                        s.src = '/m/automation/static/run_form.js?v=1';
+                        s.onload = res;
+                        s.onerror = rej;
+                        document.body.appendChild(s);
+                    });
+                }
+                const cresp = await fetch('/m/automation/' + wf.id + '/run-contract',
+                                          { headers: { Accept: 'application/json' } });
+                const contract = cresp.ok ? await cresp.json() : { trigger: false, params: [] };
+                if (!contract.trigger && !(contract.params || []).length) {
+                    directRun(runBody);
                     return;
                 }
-                if (window.spaNavigate) window.spaNavigate(data.url);
-                else location.href = data.url;
-            } catch {
                 modal.close();
-                if (window.uiAlert) {
-                    window.uiAlert('Could not reach the server.',
-                                   { title: 'Run workflow' });
-                }
+                window.AutomationRunForm.open({
+                    title: 'Run "' + wf.name + '"',
+                    subtitle: 'On "' + fileName + '"',
+                    contract,
+                    drives: contract.drives || [],
+                    fixedTrigger: contract.trigger
+                        ? { id: parseInt(fileId, 10), name: fileName } : null,
+                    allowTriggerPicker: false,
+                    browseUrl: '/m/automation/api/browse',
+                    onSubmit: ({ params }) => directRun(
+                        Object.assign({}, runBody, params && Object.keys(params).length
+                            ? { params } : {})),
+                });
+                btn.disabled = false;
+            } catch {
+                directRun(runBody);
             }
         });
         return btn;

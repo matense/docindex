@@ -48,7 +48,6 @@ def _chat_capture(auth_client, conv_id):
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "new question", "conversation_id": conv_id})
-        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 
@@ -259,7 +258,6 @@ def test_prompt_budget_drops_oldest_exchanges(auth_client, app, user):
     app.config["AI_MAX_PROMPT_TOKENS"] = 4000  # ~16k chars
     conv_id = _make_big_conversation(app)      # ~48k chars of history
 
-    events = []
     captured = {}
 
     def fake_completion(*args, **kwargs):
@@ -270,14 +268,15 @@ def test_prompt_budget_drops_oldest_exchanges(auth_client, app, user):
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "new question", "conversation_id": conv_id})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    assert resp.status_code == 200
     # The user is told that older messages were dropped — as a visible
     # "notice" card (a hidden "thinking" line was too easy to miss).
-    notes = [e for e in events if e["type"] == "notice"
-             and "context window" in e.get("content", "")]
-    assert notes
+    with app.app_context():
+        notes = ChatMessage.query.filter_by(
+            conversation_id=data["conversation_id"], role="notice").all()
+    assert any("context window" in (n.content or "") for n in notes)
 
     from app.services.agent_service import _estimate_tokens
     assert _estimate_tokens(captured["messages"]) <= 4000
@@ -372,7 +371,6 @@ def test_context_file_id_tells_agent_which_file_is_open(auth_client, app, user):
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "improve this file", "context_file_id": fid})
-        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     notes = [m for m in captured["messages"]
              if m["role"] == "system" and "currently has" in m["content"]]
@@ -395,7 +393,6 @@ def test_context_file_id_ignores_foreign_or_missing_files(auth_client, app, user
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "context_file_id": 999999})
-        _ = resp.data
     assert resp.status_code == 200
     assert not [m for m in captured["messages"]
                 if m["role"] == "system" and "currently has" in m["content"]]
@@ -411,7 +408,6 @@ def _chat_capture_payload(auth_client, payload):
     with patch("app.services.ai_service.chat_completion",
                side_effect=fake_completion):
         resp = auth_client.post("/ai/chat", json=payload)
-        _ = resp.data  # consume the stream inside the patch
     assert resp.status_code == 200
     return captured["messages"]
 
@@ -592,7 +588,7 @@ def test_conversation_returns_latest_context(auth_client, app, user):
                return_value={"role": "assistant", "content": "hi"}):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello", "scope_drive_ids": [drive_id]})
-        _ = resp.data
+    assert resp.status_code == 200
 
     with app.app_context():
         conv = ChatConversation.query.one()
@@ -611,7 +607,7 @@ def test_conversation_returns_latest_context(auth_client, app, user):
         resp = auth_client.post("/ai/chat", json={
             "message": "now everywhere", "conversation_id": conv_id,
             "scope_all_drives": True})
-        _ = resp.data
+    assert resp.status_code == 200
     data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
     assert data["context"]["all_drives"] is True
     assert data["context"]["drive_ids"] is None
@@ -687,10 +683,14 @@ def test_chat_persists_compaction_notice(auth_client, app, user):
         resp = auth_client.post("/ai/chat", json={
             "message": "hello " + "x" * 400,
             "conversation_id": _make_conversation(app, n_pairs=5)})
-        raw = resp.data.decode()
+        data = resp.get_json()
 
-    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    assert any(e["type"] == "notice" for e in events)
+    assert resp.status_code == 200
+    with app.app_context():
+        from app.models import ChatMessage
+        assert any(m.role == "notice"
+                   for m in ChatMessage.query.filter_by(
+                       conversation_id=data["conversation_id"]).all())
 
     with app.app_context():
         conv = ChatConversation.query.one()

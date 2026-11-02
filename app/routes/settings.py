@@ -223,6 +223,19 @@ def profile_word_stats():
     return jsonify({str(drive_id): int(words) for drive_id, words in rows})
 
 
+@bp.route("/profile/ai-usage")
+@login_required
+def profile_ai_usage():
+    """Token spend for the AI usage card as JSON: totals for today, last
+    7 / 30 days and all time, plus a 30-day per-day series for the chart.
+
+    Lazy-fetched by the profile page (same pattern as word-stats) so the
+    aggregation never blocks the initial render.
+    """
+    from ..services import ai_usage_service
+    return jsonify(ai_usage_service.get_stats(current_user.id))
+
+
 # --------------------------------------------------------------------------
 # Trash bin
 # --------------------------------------------------------------------------
@@ -444,6 +457,34 @@ def profile_background():
     return redirect(url_for("settings.profile"))
 
 
+@bp.route("/profile/send-key", methods=["POST"])
+@login_required
+def profile_send_key():
+    """Chat send key: Enter sends (default) or Shift+Enter sends."""
+    current_user.shift_enter_to_send = request.form.get("shift_enter") == "on"
+    db.session.commit()
+    flash(("Shift+Enter now sends your message — Enter inserts a new line."
+           if current_user.shift_enter_to_send else
+           "Enter now sends your message — Shift+Enter inserts a new line."),
+          "success")
+    return redirect(url_for("settings.profile"))
+
+
+@bp.route("/profile/perf-mode", methods=["POST"])
+@login_required
+def profile_perf_mode():
+    """Performance mode: lite visuals (no animated/blurred paint) and
+    calm background timers. Same features, less CPU/GPU."""
+    current_user.perf_mode = request.form.get("enabled") == "on"
+    db.session.commit()
+    flash(("Performance mode on — animations, backdrop blur and background "
+           "polling are dialed down."
+           if current_user.perf_mode else
+           "Performance mode off — full visuals are back."),
+          "success")
+    return redirect(url_for("settings.profile"))
+
+
 @bp.route("/profile/registration", methods=["POST"])
 @login_required
 def profile_registration():
@@ -497,6 +538,8 @@ def ai_edit(conn_id):
     conn.vision_model = request.form.get("vision_model", "").strip()[:120]
     conn.embedding_model = request.form.get("embedding_model", "").strip()[:120]
     conn.max_steps = _clamp_int(request.form.get("max_steps", type=int), 1, 128)
+    conn.long_horizon_steps = _clamp_int(
+        request.form.get("long_horizon_steps", type=int), 1, 256)
     # 0 = unlimited; negatives would brick the connection (never a free slot).
     raw_rpm = request.form.get("rate_limit_rpm", type=int)
     conn.rate_limit_rpm = None if raw_rpm is None else max(0, min(raw_rpm, 600))
@@ -545,6 +588,8 @@ def ai_add():
         vision_model=vision_model[:120],
         embedding_model=request.form.get("embedding_model", "").strip()[:120],
         max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
+        long_horizon_steps=_clamp_int(
+            request.form.get("long_horizon_steps", type=int), 1, 256),
         rate_limit_rpm=None if raw_rpm is None else max(0, min(raw_rpm, 600)),
         history_messages=_clamp_int(
             request.form.get("history_messages", type=int), 1, 200),
@@ -577,6 +622,7 @@ def ai_clone(conn_id):
         vision_model=conn.vision_model,
         embedding_model=conn.embedding_model,
         max_steps=conn.max_steps,
+        long_horizon_steps=conn.long_horizon_steps,
         rate_limit_rpm=conn.rate_limit_rpm,
         history_messages=conn.history_messages,
         max_prompt_tokens=conn.max_prompt_tokens,

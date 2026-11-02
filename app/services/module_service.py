@@ -28,7 +28,7 @@ import sys
 from datetime import UTC
 
 from ..extensions import db
-from ..models import ModuleState
+from ..models import ModuleState, Setting
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 VALID_CAPABILITIES = {"routes", "tools", "models"}
@@ -283,3 +283,82 @@ def set_enabled(name, enabled, user):
             except Exception:  # noqa: BLE001 - never break the toggle
                 logger.exception("Module %r on_enable hook failed", name)
     return True
+
+
+def _bust_tool_cache():
+    """Force _active_tools() to recompute on the next agent step."""
+    try:
+        from . import agent_service
+        cache = getattr(agent_service, "_active_tools_cache", None)
+        if isinstance(cache, dict):
+            cache["at"] = 0.0
+    except Exception:  # noqa: BLE001 - cache reset must never break toggle
+        pass
+
+
+def get_tool_toggles(module):
+    """Disabled tool selections for a module: {"sections": [...],
+    "tools": [...]} (short tool names, category names). Empty when the
+    module never had toggles — everything enabled (backward compatible)."""
+    try:
+        raw = Setting.get(f"{module}_disabled_tools", "") or "{}"
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {"sections": [], "tools": []}
+    if not isinstance(data, dict):
+        return {"sections": [], "tools": []}
+    sections = data.get("sections") or []
+    tools = data.get("tools") or []
+    return {"sections": [s for s in sections if isinstance(s, str)],
+            "tools": [t for t in tools if isinstance(t, str)]}
+
+
+def set_tool_toggles(module, sections, tools):
+    """Persist disabled sections/tools (validated against the module's
+    TOOL_SPECS when it exposes one) and bust the agent tool cache."""
+    sections = [s for s in (sections or []) if isinstance(s, str)]
+    tools = [t for t in (tools or []) if isinstance(t, str)]
+    try:
+        import importlib
+        specs = getattr(importlib.import_module(f"modules.{module}.tools"),
+                        "TOOL_SPECS", [])
+    except (ImportError, AttributeError):
+        specs = []
+    if specs:
+        known_sections = {s.get("category") for s in specs}
+        known_tools = {s.get("name") for s in specs}
+        sections = sorted({s for s in sections if s in known_sections})
+        tools = sorted({t for t in tools if t in known_tools})
+    else:
+        sections, tools = sorted(set(sections)), sorted(set(tools))
+    Setting.set(f"{module}_disabled_tools",
+                json.dumps({"sections": sections, "tools": tools}))
+    _bust_tool_cache()
+    return {"sections": sections, "tools": tools}
+
+
+def disabled_tool_names(module):
+    """Full ("<module>.<tool>") names currently disabled: section
+    selections expanded via the module's TOOL_SPECS categories plus
+    individually disabled tools. Empty set when nothing is disabled."""
+    toggles = get_tool_toggles(module)
+    if not toggles["sections"] and not toggles["tools"]:
+        return set()
+    try:
+        import importlib
+        specs = getattr(importlib.import_module(f"modules.{module}.tools"),
+                        "TOOL_SPECS", [])
+    except (ImportError, AttributeError):
+        specs = []
+    out = set()
+    for spec in specs:
+        short = spec.get("name") or ""
+        if not short:
+            continue
+        if spec.get("category") in toggles["sections"] \
+                or short in toggles["tools"]:
+            out.add(f"{module}.{short}")
+    # Modules without TOOL_SPECS: honor raw names (short or full).
+    for t in toggles["tools"]:
+        out.add(t if "." in t else f"{module}.{t}")
+    return out
