@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}{{ drive.name }} - Git changes{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto w-full pb-32 flex flex-col gap-4">
+    {% if pushed_branch %}
+    <div class="alert alert-success" role="status" id="gitsync-pushed-branch">
+        <i class="fas fa-code-pull-request"></i>
+        <div class="flex-1 text-sm">
+            <div>Your commits are now on the remote branch <strong class="font-mono">{{ pushed_branch }}</strong>. The tracked branch <span class="font-mono">{{ state.branch }}</span> is unchanged locally and on the remote.</div>
+            <div class="opacity-80 mt-1">Next: open a pull request from <span class="font-mono">{{ pushed_branch }}</span> into <span class="font-mono">{{ state.upstream_branch or state.branch }}</span> so the team can review and merge it there.</div>
+        </div>
+        {% if pull_request %}<a class="btn btn-sm btn-primary gap-1" href="{{ pull_request }}" target="_blank" rel="noopener noreferrer"><i class="fas fa-arrow-up-right-from-square"></i> Open pull request</a>{% endif %}
+    </div>
+    {% endif %}
+    <section class="glass-panel rounded-2xl p-4 sm:p-6">
+    <a class="link text-sm inline-flex items-center gap-2 mb-4" href="{{ url_for('settings.profile') }}#drives"><i class="fas fa-arrow-left"></i> Your drives</a>
+    <header class="flex flex-col gap-4">
+        <div class="flex flex-wrap gap-3 items-start">
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg flex-shrink-0 text-white {{ 'bg-gradient-to-br from-emerald-600 to-emerald-400' if drive.is_shared else 'bg-gradient-to-br from-sky-600 to-sky-400' }}">
+                <i class="fas fa-code-commit"></i>
+            </span>
+            <div class="flex-1 min-w-0">
+                <h1 class="text-2xl font-bold break-all">{{ drive.name }}</h1>
+                <p class="text-sm opacity-60 mt-1">Git changes for this {{ 'shared (two-way) drive' if drive.is_shared else 'mirror (read-only) drive' }}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2" id="gitsync-tree-badge">
+                {% if state.merge_in_progress %}<span class="badge badge-warning gap-1"><i class="fas fa-code-merge"></i> Merge review active</span>
+                {% else %}<span class="badge badge-ghost gap-1"><span class="loading loading-spinner loading-xs"></span> Checking working tree…</span>{% endif %}
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2" aria-label="Repository status">
+            <span class="badge badge-primary badge-outline gap-1"><i class="fas fa-code-branch"></i> {{ state.branch }}</span>
+            <span class="badge badge-ghost font-mono" title="Current commit">{{ state.head[:12] }}</span>
+            {% if state.ahead_behind %}
+            <span class="badge {{ 'badge-info' if state.ahead_behind.ahead else 'badge-ghost' }}">{{ state.ahead_behind.ahead }} ahead</span>
+            <span class="badge {{ 'badge-warning' if state.ahead_behind.behind else 'badge-ghost' }}">{{ state.ahead_behind.behind }} behind</span>
+            <span class="sr-only">ahead {{ state.ahead_behind.ahead }}, behind {{ state.ahead_behind.behind }}</span>
+            {% else %}<span class="badge badge-ghost">Upstream not compared</span>{% endif %}
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+        <a class="btn btn-sm btn-ghost" title="Refresh repository status" href="{{ url_for('gitsync.detail', drive_id=drive.id, basis=basis) }}"><i class="fas fa-arrows-rotate"></i>Refresh</a>
+        <form method="POST" action="{{ url_for('gitsync.scan', drive_id=drive.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-magnifying-glass"></i>Index local files</button>
+        </form>
+        <form method="POST" action="{{ url_for('drive.select_drive', drive_id=drive.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm" type="submit"><i class="fas fa-folder-open"></i>Open drive</button>
+        </form>
+        </div>
+    </header>
+    </section>
+    <section class="glass-panel rounded-2xl p-4 sm:p-5">
+        <h2 class="font-semibold mb-3">Repository details</h2>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 text-sm">
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Local folder</dt><dd class="break-all font-mono text-xs">{{ repository.path }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Origin</dt><dd class="break-all">{{ state.remote or 'No origin configured' }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Configured upstream</dt><dd class="break-all">{{ state.upstream or 'Not configured' }}</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2"><dt class="text-xs opacity-60 mb-1">Git execution</dt><dd>Pure-Python Git (dulwich) inside DocIndex; the git binary and its configuration are not used. Hooks and signing are skipped for app-created commits.</dd></div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <dt class="text-xs opacity-60 mb-1">Commit identity (this drive)</dt>
+                <dd>
+                    <form method="POST" action="{{ url_for('gitsync.identity', drive_id=drive.id) }}" class="flex flex-col gap-2">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input class="input input-bordered input-xs w-full" name="author_name" maxlength="120" value="{{ repository.author_name or '' }}" placeholder="Author name" aria-label="Author name" required>
+                        <input class="input input-bordered input-xs w-full" type="email" name="author_email" maxlength="254" value="{{ repository.author_email or '' }}" placeholder="author@example.com" aria-label="Author email" required>
+                        <div class="flex items-center gap-2">
+                            <button class="btn btn-xs" type="submit">Save identity</button>
+                            {% if not state.author_name or not state.author_email %}<span class="text-xs text-warning">Required before committing or merging.</span>{% endif %}
+                        </div>
+                    </form>
+                </dd>
+            </div>
+            <div class="rounded-xl border border-base-content/10 bg-base-200/40 px-3 py-2">
+                <dt class="text-xs opacity-60 mb-1">Remote credentials (HTTPS username + token, this drive)</dt>
+                <dd>
+                    <form method="POST" action="{{ url_for('gitsync.credentials', drive_id=drive.id) }}" class="flex flex-col gap-2" autocomplete="off">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input class="input input-bordered input-xs w-full" name="remote_username" maxlength="255" value="{{ repository.remote_username or '' }}" placeholder="Username (optional with a personal access token)" aria-label="Remote username" autocomplete="off">
+                        <input class="input input-bordered input-xs w-full" type="password" name="remote_token" placeholder="{{ 'Token saved — enter a new one to replace it' if state.has_remote_token else 'Personal access token (Azure DevOps / GitHub)' }}" aria-label="Remote token" autocomplete="new-password">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <button class="btn btn-xs" type="submit">Save credentials</button>
+                            {% if state.has_remote_token %}<span class="badge badge-success badge-outline badge-xs">Token saved</span>{% else %}<span class="text-xs opacity-60">No token saved</span>{% endif %}
+                        </div>
+                    </form>
+                    {% if state.has_remote_token or repository.remote_username %}
+                    <form method="POST" action="{{ url_for('gitsync.credentials', drive_id=drive.id) }}" class="mt-2" data-confirm="Remove the saved remote username and token for this drive?" data-confirm-danger>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="clear" value="yes">
+                        <button class="btn btn-xs btn-ghost text-error" type="submit">Clear credentials</button>
+                    </form>
+                    {% endif %}
+                </dd>
+            </div>
+        </dl>
+        {% set help = state.remote_help %}
+        {% set missing_token = help.needs_token and not state.has_remote_token %}
+        <div class="mt-3 rounded-xl border px-4 py-3 {{ 'border-warning/40 bg-warning/10' if missing_token else 'border-base-content/10 bg-base-200/30' }}" id="gitsync-remote-help" data-remote-kind="{{ help.kind }}">
+            <div class="flex flex-wrap items-center gap-2 mb-2">
+                <i class="fas {{ 'fa-triangle-exclamation text-warning' if missing_token else 'fa-circle-info text-info' }}"></i>
+                <span class="font-semibold text-sm">
+                    {% if missing_token %}This remote is on {{ help.label }} — a personal access token is needed before fetch or push
+                    {% elif help.needs_token %}Authentication for {{ help.label }}
+                    {% else %}{{ help.label }}{% endif %}
+                </span>
+                {% if help.scopes %}<span class="badge badge-outline badge-sm">Scope: {{ help.scopes }}</span>{% endif %}
+            </div>
+            <ol class="list-decimal ms-5 text-sm space-y-1">
+                {% for step in help.steps %}<li>{{ step }}</li>{% endfor %}
+            </ol>
+            {% if help.token_url %}
+            <a class="btn btn-xs btn-outline mt-3 gap-1" href="{{ help.token_url }}" target="_blank" rel="noopener noreferrer"><i class="fas fa-arrow-up-right-from-square"></i> Open the {{ help.label }} token page</a>
+            {% endif %}
+        </div>
+        <p class="text-xs opacity-60 mt-3">Remote operations use the credentials saved for this drive only (token stored encrypted, never displayed). The system Git Credential Manager and browser sign-in are not used. Git's generic remote protocol does not report the authenticated account identity.</p>
+    </section>
+    <div id="gitsync-changes" data-src="{{ url_for('gitsync.changes', drive_id=drive.id, basis=basis) }}" aria-live="polite" aria-busy="true">
+        <section class="glass-panel rounded-2xl p-6 flex items-center gap-3 text-sm opacity-80">
+            <span class="loading loading-spinner loading-md text-primary"></span>
+            <span>Scanning the working tree for changes… Large folders (and OneDrive/network shares) can take a few seconds.</span>
+        </section>
+    </div>
+</div>
+<script>
+(function () {
+    var box = document.getElementById("gitsync-changes");
+    if (!box) return;
+    fetch(box.dataset.src, { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" })
+        .then(function (response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.text();
+        })
+        .then(function (html) {
+            var doc = new DOMParser().parseFromString(html, "text/html");
+            var badge = doc.getElementById("gitsync-tree-badge-content");
+            var target = document.getElementById("gitsync-tree-badge");
+            if (badge && target) target.innerHTML = badge.innerHTML;
+            box.innerHTML = "";
+            Array.from(doc.body.childNodes).forEach(function (node) {
+                if (node.id === "gitsync-tree-badge-content") return;
+                if (node.tagName === "SCRIPT") {
+                    var script = document.createElement("script");
+                    script.textContent = node.textContent;
+                    box.appendChild(script);
+                } else {
+                    box.appendChild(document.importNode(node, true));
+                }
+            });
+            box.setAttribute("aria-busy", "false");
+        })
+        .catch(function () {
+            box.innerHTML = '<section class="glass-panel rounded-2xl p-6"><div class="alert alert-error" role="alert"><i class="fas fa-triangle-exclamation"></i><span>Could not load the working-tree changes. <a class="link" href="">Reload the page</a> to try again.</span></div></section>';
+            box.setAttribute("aria-busy", "false");
+        });
+})();
+</script>
+{% endblock %}

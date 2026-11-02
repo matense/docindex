@@ -14,6 +14,7 @@
 - **Entry point**: `run.py` (debug/auto-reload only when `FLASK_DEBUG=true` in `.env`)
 - **Run locally**: `python run.py`
 - **Database**: `flask --app run.py db upgrade heads` (Flask-Migrate/Alembic migrations in `migrations/` — always use migrations for schema changes)
+- **Unknown revisions**: restore the matching branch/module migration history; never automatically create tables or re-stamp heads. Verify schema compatibility and take a consistent backup before recovery.
 - **First user**: `python create_admin.py`
 - **Docker**: `docker compose up --build -d`, then `docker compose exec docindex python create_admin.py`
 

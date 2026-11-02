@@ -356,6 +356,9 @@ def create_synced_drive(user, path, captions_enabled=False, index_workers=1,
     if sync_mode not in ("mirror", "shared"):
         return None, None, "Unknown sync mode."
     clash = Drive.query.filter_by(user_id=user.id, source_path=abs_path).first()
+    if clash and clash.deleted_at is not None:
+        return None, None, (f'That folder belongs to drive "{clash.name}", which is in the '
+                            'trash. Restore it or delete it permanently from the Trash page first.')
     if clash:
         return None, None, f'That folder is already synced as drive "{clash.name}".'
 
@@ -426,7 +429,8 @@ def _index_batch(file_ids, app):
 def _count_files(root):
     """Fast pre-pass: how many files will be scanned (for the % progress)."""
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             if os.path.islink(path):
@@ -597,7 +601,8 @@ def sync_drive(drive, job=None):
     seen_files, needed_dirs = set(), set()
     adds, updates, thumbnails = [], [], []
 
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir != ".":
             needed_dirs.add(rel_dir)

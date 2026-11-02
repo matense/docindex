@@ -49,10 +49,10 @@ echo    Large upgrades ^(e.g. the search-index split^) copy data and show
 echo    progress per step - allow several minutes, do not interrupt.
 "%VENV_PY%" -m flask --app run.py db upgrade heads
 if errorlevel 1 (
-    echo -^> Standard upgrade failed ^(the database may carry a stamp from the
-    echo    first public release^) - repairing the migration stamp...
-    "%VENV_PY%" -m flask --app run.py db-repair
-    if errorlevel 1 exit /b 1
+    echo ERROR: database upgrade failed. No automatic re-stamping was attempted.
+    echo Check the error above. An unknown revision may belong to another branch or module.
+    echo Restore the matching migration history; back up the database before recovery.
+    exit /b 1
 )
 
 echo.
