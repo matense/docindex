@@ -1,0 +1,6 @@
+{
+  "name": "gitsync",
+  "version": "0.2.0",
+  "description": "Git changes for synced folders: when a local-folder drive is a Git checkout, review diffs, commit selected files and run explicit fetch/push/merge actions (pure-Python dulwich; per-drive commit identity and HTTPS credentials).",
+  "capabilities": ["routes", "models"]
+}

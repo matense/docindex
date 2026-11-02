@@ -65,6 +65,11 @@ def _table_exists(bind, name, schema="main"):
     return name in insp.get_table_names(schema=schema if schema != "main" else None)
 
 
+def _index_exists(bind, table, name, schema="main"):
+    return any(index["name"] == name
+               for index in sa.inspect(bind).get_indexes(table, schema=schema))
+
+
 def _count(bind, sql):
     return bind.execute(sa.text(sql)).scalar()
 
@@ -79,7 +84,16 @@ _COPY_CHUNK = 5000
 
 
 def _copy_table_chunked(bind, table, src="main", dst="idx", chunk=_COPY_CHUNK):
-    """Copy a plain table in id order, logging progress per chunk."""
+    """Copy a plain table in id order by column name, logging progress per chunk."""
+    source_columns = [row[1] for row in bind.execute(
+        sa.text(f"PRAGMA {src}.table_info('{table}')"))]
+    destination_columns = [row[1] for row in bind.execute(
+        sa.text(f"PRAGMA {dst}.table_info('{table}')"))]
+    if not source_columns or set(source_columns) != set(destination_columns):
+        raise RuntimeError(
+            f"index split schema mismatch for {table}: "
+            f"main={source_columns} idx={destination_columns}")
+    columns = ", ".join(f'"{column}"' for column in destination_columns)
     total = _count(bind, f"SELECT COUNT(*) FROM {src}.{table}")
     if not total:
         _log(f"{table}: empty, nothing to copy")
@@ -87,7 +101,8 @@ def _copy_table_chunked(bind, table, src="main", dst="idx", chunk=_COPY_CHUNK):
     copied, last, start = 0, 0, time.monotonic()
     while True:
         n = bind.execute(
-            sa.text(f"INSERT INTO {dst}.{table} SELECT * FROM {src}.{table} "
+            sa.text(f"INSERT INTO {dst}.{table} ({columns}) "
+                f"SELECT {columns} FROM {src}.{table} "
                     f"WHERE id > :last ORDER BY id LIMIT :chunk"),
             {"last": last, "chunk": chunk}).rowcount or 0
         copied += n
@@ -208,44 +223,49 @@ def downgrade():
 
 
 def _create_idx_tables():
-    op.create_table(
-        'file_index',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('file_id', sa.Integer(), nullable=False),
-        sa.Column('extracted_text', sa.Text(), nullable=True),
-        sa.Column('caption', sa.Text(), nullable=True),
-        sa.Column('hashtags', sa.Text(), nullable=True),
-        sa.Column('word_count', sa.Integer(), nullable=True),
-        sa.Column('line_count', sa.Integer(), nullable=True),
-        sa.Column('char_count', sa.Integer(), nullable=True),
-        sa.Column('status', sa.String(length=20), nullable=False),
-        sa.Column('error', sa.Text(), nullable=True),
-        sa.Column('indexed_at', sa.DateTime(), nullable=True),
-        sa.ForeignKeyConstraint(['file_id'], ['files.id']),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('file_id'),
-        schema='idx',
-    )
-    op.create_index('ix_file_index_file_id', 'file_index', ['file_id'],
-                    unique=True, schema='idx')
-    op.create_table(
-        'file_embeddings',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('file_id', sa.Integer(), nullable=False),
-        sa.Column('chunk_index', sa.Integer(), nullable=False),
-        sa.Column('text', sa.Text(), nullable=True),
-        sa.Column('text_hash', sa.String(length=64), nullable=True),
-        sa.Column('embedding', sa.LargeBinary(), nullable=True),
-        sa.Column('model', sa.String(length=120), nullable=True),
-        sa.Column('dims', sa.Integer(), nullable=True),
-        sa.Column('created_at', sa.DateTime(), nullable=True),
-        sa.ForeignKeyConstraint(['file_id'], ['files.id']),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('file_id', 'chunk_index'),
-        schema='idx',
-    )
-    op.create_index('ix_file_embeddings_file_id', 'file_embeddings',
-                    ['file_id'], unique=False, schema='idx')
+    bind = op.get_bind()
+    if not _table_exists(bind, "file_index", schema="idx"):
+        op.create_table(
+            'file_index',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('file_id', sa.Integer(), nullable=False),
+            sa.Column('extracted_text', sa.Text(), nullable=True),
+            sa.Column('caption', sa.Text(), nullable=True),
+            sa.Column('hashtags', sa.Text(), nullable=True),
+            sa.Column('word_count', sa.Integer(), nullable=True),
+            sa.Column('line_count', sa.Integer(), nullable=True),
+            sa.Column('char_count', sa.Integer(), nullable=True),
+            sa.Column('status', sa.String(length=20), nullable=False),
+            sa.Column('error', sa.Text(), nullable=True),
+            sa.Column('indexed_at', sa.DateTime(), nullable=True),
+            sa.ForeignKeyConstraint(['file_id'], ['files.id']),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('file_id'),
+            schema='idx',
+        )
+    if not _index_exists(bind, "file_index", "ix_file_index_file_id", schema="idx"):
+        op.create_index('ix_file_index_file_id', 'file_index', ['file_id'],
+                        unique=True, schema='idx')
+    if not _table_exists(bind, "file_embeddings", schema="idx"):
+        op.create_table(
+            'file_embeddings',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('file_id', sa.Integer(), nullable=False),
+            sa.Column('chunk_index', sa.Integer(), nullable=False),
+            sa.Column('text', sa.Text(), nullable=True),
+            sa.Column('text_hash', sa.String(length=64), nullable=True),
+            sa.Column('embedding', sa.LargeBinary(), nullable=True),
+            sa.Column('model', sa.String(length=120), nullable=True),
+            sa.Column('dims', sa.Integer(), nullable=True),
+            sa.Column('created_at', sa.DateTime(), nullable=True),
+            sa.ForeignKeyConstraint(['file_id'], ['files.id']),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('file_id', 'chunk_index'),
+            schema='idx',
+        )
+    if not _index_exists(bind, "file_embeddings", "ix_file_embeddings_file_id", schema="idx"):
+        op.create_index('ix_file_embeddings_file_id', 'file_embeddings',
+                        ['file_id'], unique=False, schema='idx')
     op.execute("CREATE VIRTUAL TABLE IF NOT EXISTS idx.file_fts "
                "USING fts5(name, text, caption, tags)")
 

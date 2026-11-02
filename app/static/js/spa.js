@@ -56,12 +56,11 @@
         if (!html) return;
         const box = document.createElement('div');
         box.className = 'toast toast-bottom toast-center z-[60] mb-24';
+        box.setAttribute('role', 'status');
+        box.setAttribute('aria-live', 'polite');
         box.innerHTML = html;
         document.body.appendChild(box);
-        setTimeout(() => {
-            box.classList.add('spa-toast-out');
-            setTimeout(() => box.remove(), 300);
-        }, 3000);
+        window.uiToastSchedule(box);
     }
 
     function updatePageState(doc, url) {

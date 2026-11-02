@@ -42,7 +42,8 @@ config.set_main_option('sqlalchemy.url', get_engine_url())
 
 # Module migrations live in modules/<name>/migrations/versions as independent
 # alembic roots (one branch per module), so removing a module from disk never
-# breaks the core migration chain. They are aggregated via version_locations
+# changes the core migration chain. A database stamped with a removed module's
+# revision still needs that module's migration files. They use version_locations
 # by `migrate.get_config` in app/__init__.py (it must be set before the
 # command's ScriptDirectory is built — doing it here would be too late).
 # Upgrade with `flask db upgrade heads`.

@@ -1,6 +1,30 @@
 {
   "releases": [
     {
+      "version": "0.1.12",
+      "date": "2026-11-02",
+      "title": "Git Sync Module - initial changes",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Git changes is available from synced local-folder drives (mirror or shared): inspect diffs, select individual files to commit, fetch, merge, and push.",
+            "Publish local commits to a new remote branch for a pull request, with direct Azure DevOps, GitHub, and GitLab links.",
+            "Git changes uses pure-Python dulwich; per-drive author identity and encrypted HTTPS credentials are configured in the app, with host-specific personal access token instructions.",
+            "Discard changes to an individual file with explicit confirmation; tracked files are restored from HEAD, while untracked files are removed. OneDrive online-only placeholders are hydrated before restore."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "The Git changes page loads its repository summary immediately and fetches the working-tree review asynchronously; diffs are restricted to changed paths for faster loading on large folders."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.11",
       "date": "2026-10-31",
       "title": "Automation overhaul, usage stats, split database",

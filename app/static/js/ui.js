@@ -113,11 +113,31 @@
         alert.textContent = message;
         box.appendChild(alert);
         document.body.appendChild(box);
-        setTimeout(() => {
-            box.classList.add('spa-toast-out');
-            setTimeout(() => box.remove(), 300);
-        }, 3000);
+        window.uiToastSchedule(box);
     };
+
+    function dismissToast(box) {
+        clearTimeout(box._toastTimer);
+        box.classList.add('spa-toast-out');
+        setTimeout(() => box.remove(), 300);
+    }
+
+    // Auto-dismiss a toast container after a delay that scales with its text
+    // (long error sentences need time to be read). Hover pauses, click closes.
+    window.uiToastSchedule = function (box) {
+        if (!box) return;
+        const length = (box.textContent || '').trim().length;
+        const important = !!box.querySelector('.alert-error, .alert-warning');
+        const duration = Math.min(15000, Math.max(4000, 2500 + length * 45) + (important ? 2000 : 0));
+        const start = (ms) => { box._toastTimer = setTimeout(() => dismissToast(box), ms); };
+        box.addEventListener('mouseenter', () => clearTimeout(box._toastTimer));
+        box.addEventListener('mouseleave', () => start(2500));
+        box.addEventListener('click', () => dismissToast(box));
+        box.title = 'Click to dismiss';
+        box.classList.add('cursor-pointer');
+        start(duration);
+    };
+    window.uiToastSchedule(document.getElementById('flash-messages-toast'));
 
     // Shared JSON fetch: checks HTTP status, parses safely, toasts on error.
     // Returns parsed JSON (or raw text when not JSON), or null on failure.

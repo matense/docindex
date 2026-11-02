@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Git changes - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto w-full pb-32 flex flex-col gap-4">
+    <div class="glass-panel rounded-2xl p-6">
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-code-commit text-white"></i>
+            </span>
+            Git changes
+        </h1>
+        <p class="opacity-60 text-sm mt-2">
+            Any drive synced from a local folder that is a Git checkout gets a Git workspace:
+            review differences, pick the files to commit and run explicit fetch, push and merge
+            actions. Nothing runs automatically. To add one, use <strong>Sync a local folder</strong>
+            in the drive menu and point it at the repository root.
+        </p>
+    </div>
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-3">Your Git drives</h2>
+        {% for drive in drives %}
+        <div class="flex flex-wrap gap-3 items-center py-3 border-b border-base-content/10 last:border-0">
+            <span class="w-9 h-9 rounded-lg flex items-center justify-center text-white flex-shrink-0 {{ 'bg-gradient-to-br from-emerald-600 to-emerald-400' if drive.is_shared else 'bg-gradient-to-br from-sky-600 to-sky-400' }}">
+                <i class="fas {{ 'fa-arrows-rotate' if drive.is_shared else 'fa-folder-tree' }}"></i>
+            </span>
+            <div class="min-w-0 flex-1">
+                <a class="link font-semibold" href="{{ url_for('gitsync.detail', drive_id=drive.id) }}">{{ drive.name }}</a>
+                <div class="text-xs opacity-60 break-all font-mono">{{ drive.source_path }}</div>
+            </div>
+            <span class="badge badge-outline badge-sm">{{ 'shared · two-way' if drive.is_shared else 'mirror · read-only' }}</span>
+            <a class="btn btn-primary btn-sm gap-1.5" href="{{ url_for('gitsync.detail', drive_id=drive.id) }}"><i class="fas fa-code-commit"></i> Open</a>
+        </div>
+        {% else %}
+        <p class="text-sm opacity-60">None of your synced folders is a Git repository root.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

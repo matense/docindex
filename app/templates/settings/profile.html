@@ -293,7 +293,7 @@
     </div>
 
     <!-- Drive summary -->
-    <div class="glass-panel rounded-2xl p-6">
+    <div class="glass-panel rounded-2xl p-6" id="drives">
         <div class="flex items-center gap-2 mb-4 flex-wrap">
             <h2 class="font-bold text-lg"><i class="fas fa-hard-drive text-primary"></i> Your drives</h2>
             {% if gitdrives_enabled %}
@@ -342,6 +342,11 @@
                         </div>
                     </div>
                     <div class="flex gap-2 flex-shrink-0">
+                        {% if gitsync_enabled and gitsync_drive_url(s.drive) %}
+                        <a href="{{ gitsync_drive_url(s.drive) }}" class="btn btn-sm gap-1.5" title="Review differences and commit selected files in this Git checkout">
+                            <i class="fas fa-code-commit text-secondary"></i> Git changes
+                        </a>
+                        {% endif %}
                         <form method="POST" action="{{ url_for('drive.sync_now', drive_id=s.drive.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="next" value="{{ url_for('settings.profile') }}">

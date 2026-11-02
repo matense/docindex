@@ -43,15 +43,13 @@ def reindex_embeddings():
 
 @app.cli.command("db-repair")
 def db_repair():
-    """Recover from "Can't locate revision identified by ..." on db upgrade.
-
-    Databases created by the first public release carry migration stamps
-    that no longer exist. This creates any missing tables (existing data is
-    untouched) and re-stamps the database at the current migration head.
-    """
+    """Explain why unknown revisions cannot be repaired automatically."""
+    from alembic.util.exc import CommandError
     from app.services import db_maintenance
-    db_maintenance.repair_unknown_revision(app)
-    click.echo("Database repaired and re-stamped at the current migration head.")
+    try:
+        db_maintenance.repair_unknown_revision(app)
+    except CommandError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 if __name__ == "__main__":

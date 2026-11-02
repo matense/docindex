@@ -1,27 +1,17 @@
-"""Database schema maintenance: startup auto-upgrade with self-healing.
+"""Database upgrades without guessing the schema behind unknown revisions."""
 
-Databases created by the very first public release carry alembic_version
-stamps that point at migration revisions which no longer exist (the
-migration history was regenerated once before the project went public).
-Alembic then fails hard with "Can't locate revision identified by ...".
-
-Since the stamp no longer tells us which schema the database actually has,
-the recovery is best-effort and safe for existing data:
-  1. db.create_all()  — creates any missing tables, a no-op for existing ones
-  2. stamp heads      — re-anchor the version table at the current head
-Column-level drift on existing tables cannot be repaired this way; a warning
-is logged so the user knows to report it if the app misbehaves.
-"""
-
+from alembic import command
 from alembic.util.exc import CommandError
-from flask_migrate import stamp as _stamp
-from flask_migrate import upgrade as _upgrade
 
-from ..extensions import db
+from ..extensions import migrate
+
+
+def _upgrade(revision):
+    command.upgrade(migrate.get_config(), revision)
 
 
 def auto_upgrade(app):
-    """Bring the DB to the migration head; self-heal unknown stamps.
+    """Bring the DB to the migration heads; reject unknown stamps.
 
     Alembic's upgrade is a no-op when the DB is already at head, so this
     runs on every startup: users who pull new code but forget
@@ -33,21 +23,19 @@ def auto_upgrade(app):
         except CommandError as exc:
             if "Can't locate revision" not in str(exc):
                 raise
-            app.logger.warning(
-                "Database is stamped with a migration revision that no "
-                "longer exists — re-anchoring to the current head. (%s)", exc)
-            repair_unknown_revision(app)
+            raise CommandError(
+                f"{exc}. Migration history is missing from this checkout. "
+                "Restore the matching branch/module migration files before "
+                "retrying. Do not stamp heads: schema compatibility has not "
+                "been verified. Back up the database before recovery."
+            ) from exc
 
 
 def repair_unknown_revision(app):
-    """Recovery for 'Can't locate revision': create any missing tables and
-    stamp the current head. db.create_all() never touches existing tables,
-    so existing data is preserved."""
-    db.create_all()
-    # purge=True drops the stale version rows first — otherwise alembic tries
-    # to resolve the unknown stamp while computing the delta and fails again.
-    _stamp(revision="heads", purge=True)
-    app.logger.warning(
-        "Database re-stamped at the current migration head. If the app "
-        "misbehaves (missing columns), back up instance/ and report the "
-        "issue.")
+    """Refuse unverified recovery, including calls from the legacy CLI."""
+    raise CommandError(
+        "Automatic migration re-stamping is disabled: an unknown revision "
+        "may belong to another branch or a missing module. Back up the "
+        "database and restore its matching migration history; schema "
+        "compatibility must be verified before any manual recovery."
+    )
