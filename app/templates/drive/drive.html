@@ -218,6 +218,11 @@
         </div>
     </div>
     <div class="flex items-center gap-2 flex-shrink-0">
+        {% if gitsync_enabled and gitsync_drive_url(drive) %}
+        <a href="{{ gitsync_drive_url(drive) }}" class="btn btn-sm w-32 whitespace-nowrap flex-nowrap gap-1.5 justify-center" title="Review differences and commit selected files">
+            <i class="fas fa-code-commit text-secondary"></i> Git changes
+        </a>
+        {% endif %}
         <form method="POST" action="{{ url_for('drive.sync_now', drive_id=drive.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="next" value="{{ request.full_path }}">

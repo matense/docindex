@@ -1,59 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Git Sync - DocIndex{% endblock %}
+{% block title %}Git changes - DocIndex{% endblock %}
 {% block content %}
-<div class="max-w-5xl mx-auto w-full pb-32">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-        <h1 class="text-2xl font-bold"><i class="fas fa-code-branch mr-2"></i>Git Sync</h1>
-        {% if gitdrives_enabled %}
-        <a class="link text-sm" href="{{ url_for('gitdrives.index') }}"><i class="fas fa-arrow-left mr-1"></i>Git Repo</a>
-        {% endif %}
+<div class="max-w-4xl mx-auto w-full pb-32 flex flex-col gap-4">
+    <div class="glass-panel rounded-2xl p-6">
+        <h1 class="text-2xl font-bold flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-code-commit text-white"></i>
+            </span>
+            Git changes
+        </h1>
+        <p class="opacity-60 text-sm mt-2">
+            Any drive synced from a local folder that is a Git checkout gets a Git workspace:
+            review differences, pick the files to commit and run explicit fetch, push and merge
+            actions. Nothing runs automatically. To add one, use <strong>Sync a local folder</strong>
+            in the drive menu and point it at the repository root.
+        </p>
     </div>
-    <div class="alert alert-warning mt-4" role="status">
-        <i class="fas fa-flask"></i>
-        <span>Local repository changes can be reviewed and committed here. Remote cloning and pull/sync are managed under Git Repo. Authentication checks, fetch, push and merge are separate actions and never run automatically.</span>
-    </div>
-    <section class="py-6 border-b border-base-content/10">
-        <h2 class="text-lg font-semibold mb-3">Connect local repository</h2>
-        <form method="POST" action="{{ url_for('gitsync.connect') }}" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <label class="form-control sm:col-span-2">
-                <span class="label-text mb-1">Repository folder on the server</span>
-                <input class="input input-bordered w-full" name="path" required placeholder="C:\Repos\project or /srv/repos/project">
-            </label>
-            <label class="form-control">
-                <span class="label-text mb-1">Name</span>
-                <input class="input input-bordered w-full" name="name" maxlength="120">
-            </label>
-            <label class="form-control">
-                <span class="label-text mb-1">Preferred Git account</span>
-                <input class="input input-bordered w-full" name="account" list="gitsync-accounts" maxlength="120" placeholder="System default">
-                <datalist id="gitsync-accounts">
-                    {% for account in accounts %}<option value="{{ account }}">{% endfor %}
-                </datalist>
-            </label>
-            <div class="text-sm opacity-70 sm:col-span-2">This is a preferred username hint, not a verified identity. Git reuses credentials configured for the server account; listed GitHub usernames come from Git Credential Manager. Azure DevOps usernames can be entered manually. A read-access check cannot prove which account the server authenticated as.</div>
-            <div class="sm:col-span-2"><button class="btn btn-primary" type="submit"><i class="fas fa-link"></i>Connect repository</button></div>
-        </form>
-    </section>
-    <section class="py-6">
-        <h2 class="text-lg font-semibold mb-3">Repositories</h2>
-        <p class="text-sm opacity-70 mb-2">Disconnecting removes only the Git Sync entry. It does not delete the local folder, Git data, or linked drive and its files.</p>
-        {% for repository in repositories %}
-        <div class="flex flex-wrap gap-3 items-center py-4 border-b border-base-content/10">
+    <div class="glass-panel rounded-2xl p-6">
+        <h2 class="font-bold text-lg mb-3">Your Git drives</h2>
+        {% for drive in drives %}
+        <div class="flex flex-wrap gap-3 items-center py-3 border-b border-base-content/10 last:border-0">
+            <span class="w-9 h-9 rounded-lg flex items-center justify-center text-white flex-shrink-0 {{ 'bg-gradient-to-br from-emerald-600 to-emerald-400' if drive.is_shared else 'bg-gradient-to-br from-sky-600 to-sky-400' }}">
+                <i class="fas {{ 'fa-arrows-rotate' if drive.is_shared else 'fa-folder-tree' }}"></i>
+            </span>
             <div class="min-w-0 flex-1">
-                <a class="link font-semibold" href="{{ url_for('gitsync.detail', repository_id=repository.id) }}">{{ repository.name }}</a>
-                <div class="text-sm opacity-60 break-all">{{ repository.path }}</div>
+                <a class="link font-semibold" href="{{ url_for('gitsync.detail', drive_id=drive.id) }}">{{ drive.name }}</a>
+                <div class="text-xs opacity-60 break-all font-mono">{{ drive.source_path }}</div>
             </div>
-            {% if not repository.drive or repository.drive.deleted_at is not none or repository.drive.user_id != current_user.id %}
-            <span class="badge badge-warning">{% if repository.drive and repository.drive.deleted_at is not none %}Drive trashed{% else %}Drive link missing{% endif %}</span>
-            {% endif %}
-            <span class="badge badge-outline">{{ repository.account or 'System default' }}</span>
-            <form method="POST" action="{{ url_for('gitsync.disconnect', repository_id=repository.id) }}" data-confirm="Disconnect {{ repository.name }} from Git Sync? This removes only the Git Sync entry. The local folder, Git data, and linked drive and files will not be deleted." data-confirm-danger>
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button class="btn btn-ghost btn-sm text-error" type="submit"><i class="fas fa-link-slash"></i>Disconnect</button>
-            </form>
+            <span class="badge badge-outline badge-sm">{{ 'shared · two-way' if drive.is_shared else 'mirror · read-only' }}</span>
+            <a class="btn btn-primary btn-sm gap-1.5" href="{{ url_for('gitsync.detail', drive_id=drive.id) }}"><i class="fas fa-code-commit"></i> Open</a>
         </div>
-        {% else %}<p class="text-sm opacity-60">No repositories connected.</p>{% endfor %}
-    </section>
+        {% else %}
+        <p class="text-sm opacity-60">None of your synced folders is a Git repository root.</p>
+        {% endfor %}
+    </div>
 </div>
 {% endblock %}

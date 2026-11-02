@@ -42,6 +42,11 @@ questions about your files by searching and reading them step by step.
   as a read-only mirror drive; every sync pulls and re-indexes. The
   personal access token is stored encrypted. Enable it in
   *Settings → Modules*. Git LFS is not fetched (LFS files stay pointers).
+- **Git changes (module)** — when a synced local folder is a Git checkout,
+  review diffs, commit selected files and run explicit fetch / push / merge
+  review actions from DocIndex. Pure Python (dulwich) — no `git` binary is
+  needed; the commit identity and the HTTPS username + token (stored
+  encrypted) are configured per drive on the Git changes page.
 - **Version history** — re-uploading a file with the same name into the same
   folder creates a new version instead of a duplicate. The file page has a
   history timeline with diffs and one-click restore for text files, and

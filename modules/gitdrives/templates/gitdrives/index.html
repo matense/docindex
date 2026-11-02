@@ -18,9 +18,11 @@
             clone cache.
         </p>
         {% if gitsync_enabled %}
-        <a href="{{ url_for('gitsync.index') }}" class="btn btn-outline btn-sm gap-2 mt-4">
-            <i class="fas fa-link"></i> Connect or manage a local repository
-        </a>
+        <p class="text-sm opacity-70 mt-4">
+            <i class="fas fa-code-commit text-secondary"></i>
+            Have a checkout on this machine already? Use <strong>Sync a local folder</strong> on its root instead;
+            the drive then offers <a href="{{ url_for('gitsync.index') }}" class="link">Git changes</a> (diffs, selective commits, fetch/push/merge).
+        </p>
         {% endif %}
     </div>
 

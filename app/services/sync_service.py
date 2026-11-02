@@ -356,6 +356,9 @@ def create_synced_drive(user, path, captions_enabled=False, index_workers=1,
     if sync_mode not in ("mirror", "shared"):
         return None, None, "Unknown sync mode."
     clash = Drive.query.filter_by(user_id=user.id, source_path=abs_path).first()
+    if clash and clash.deleted_at is not None:
+        return None, None, (f'That folder belongs to drive "{clash.name}", which is in the '
+                            'trash. Restore it or delete it permanently from the Trash page first.')
     if clash:
         return None, None, f'That folder is already synced as drive "{clash.name}".'
 

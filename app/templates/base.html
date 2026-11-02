@@ -117,6 +117,12 @@
                                     <span class="flex-1 text-left">Clone a Git repository...</span>
                                 </a>
                                 {% endif %}
+                                {% if gitsync_enabled and gitsync_drive_url(current_drive) %}
+                                <a href="{{ gitsync_drive_url(current_drive) }}" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors">
+                                    <i class="fas fa-code-commit text-secondary"></i>
+                                    <span class="flex-1 text-left truncate">Git changes in "{{ current_drive.name }}"</span>
+                                </a>
+                                {% endif %}
                                 <form method="POST" action="{{ url_for('drive.create_drive') }}" class="drive-create-row">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <input type="hidden" name="next" value="{{ request.full_path }}">
@@ -211,18 +217,13 @@
                     <div class="w-full mx-auto max-w-[95%] {% block page_container_class %}p-6 pb-64 min-h-full{% endblock %} flex flex-col" id="page-content-container">
                         {% with messages = get_flashed_messages(with_categories=true) %}
                             {% if messages %}
-                                <div class="toast toast-bottom toast-center z-[60] mb-24" id="flash-messages-toast">
+                                <div class="toast toast-bottom toast-center z-[60] mb-24" id="flash-messages-toast" role="status" aria-live="polite">
                                 {% for category, message in messages %}
                                     <div class="alert alert-{{ 'info' if category == 'message' else category }} shadow-[0_0_20px_rgba(0,0,0,0.1)] glass-panel border border-base-content/10">
                                         <span>{{ message }}</span>
                                     </div>
                                 {% endfor %}
                                 </div>
-                                <script>
-                                    setTimeout(() => {
-                                        document.querySelectorAll('.toast .alert').forEach(t => t.remove());
-                                    }, 3000);
-                                </script>
                             {% endif %}
                         {% endwith %}
 

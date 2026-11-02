@@ -1034,6 +1034,11 @@ Pjax-style navigation for authenticated pages (everything inside
   Header fragments (`#drive-dropdown`, `#edit-drive-modal`) are refreshed
   from the fetched document. Server flash messages are extracted and shown as
   toasts. A thin progress bar (`#spa-progress`) signals navigation.
+- Toast lifetime is centralised in `ui.js` (`window.uiToastSchedule(box)`),
+  used by full-page flashes (`#flash-messages-toast`), SPA-swapped flashes
+  and `window.uiToast()`: the delay scales with the text length (4–15 s,
+  errors/warnings get extra time), hovering pauses the timer and clicking
+  dismisses. Never add a fixed `setTimeout` to remove toasts.
 
 ### `main.js`
 
@@ -1281,31 +1286,113 @@ tool + table).
   never block the HTTP request; the floating sync widget shows live progress.
   LFS is not fetched — LFS-tracked files stay as pointer text (flagged
   wherever detected).
-- `gitsync` — connects an existing server-local Git checkout to a mirror
-  drive for indexing and selected-file local commits. Remote access reuses
-  credentials configured for the server account; a saved account is only a
-  command-scoped `credential.username` hint, and a read-only `ls-remote`
-  check cannot prove the identity accepted by the remote. Fetch, push and
-  merge are explicit POST actions. Disconnecting removes only the Git Sync
-  association; it does not delete the local folder, Git data, or linked drive
-  and files. A stale association can explicitly reconnect to a compatible
-  mirror drive or create one; a linked trashed mirror is restored only by that
-  action, and indexing does not fetch or modify Git state.
+- `gitsync` — "Git changes" for synced local-folder drives, implemented
+  entirely with dulwich (+ `merge3` for three-way merges): the module never
+  runs the `git` binary and never reads or writes the user's Git
+  configuration. There is no
+  separate "connect a repository" step: any drive created with *Sync a local
+  folder* (mirror **or** shared) whose folder is a Git checkout root gets a
+  Git workspace at `/m/gitsync/drive/<drive_id>`, reachable from the drive
+  card in Profile → Your drives, the drive dropdown (for the current drive)
+  and the synced-drive banner on the drive page. The Jinja global
+  `gitsync_drive_url(drive)` (registered by the module's blueprint) returns
+  that URL or `None`; `service.is_git_drive()` is the cheap `.git`-directory
+  check behind it. `service.for_drive()` lazily attaches a
+  `mod_gitsync_repository` row to the drive (commit identity, remote
+  credentials and the baseline commit live there) and re-attaches a row left
+  behind by a removed
+  drive of the same folder, so the "When connected" baseline survives
+  re-syncing. Because SQLite runs without foreign-key enforcement, removing a
+  drive never nulls `Repository.drive_id` and the id can be reused by an
+  unrelated drive: `for_drive` therefore verifies the recorded path against
+  the drive's folder (`same_path`, case-insensitive realpath) and discards a
+  mismatching record instead of trusting it; `Repository.linked_drive` does
+  the same check for callers that start from the record.
+  The commit identity (`author_name`/`author_email`) is stored per drive and
+  edited on the Git changes page; commits and merge completion are refused
+  until both are set. Remote HTTPS access uses the per-drive
+  `remote_username` + `remote_token` (Fernet-encrypted with
+  `ai_service.encrypt_api_key`, write-only in the UI, clearable). dulwich only
+  sends Basic auth when a username is present, so a saved token without a
+  username is sent as `pat:<token>` (Azure DevOps and GitHub accept any
+  username with a PAT). The system Git Credential Manager / browser sign-in
+  is never used: a 401 on an HTTPS remote with no saved token yields a
+  message explaining how to create a PAT; with a token saved the generic
+  "access denied" message is kept. `service.remote_guidance(url)` classifies
+  the origin (Azure DevOps incl. `*.visualstudio.com`, GitHub, GitLab,
+  Bitbucket, generic HTTPS, SSH, local path) and the page renders host
+  specific step-by-step instructions plus a direct link to the token page
+  (e.g. `https://dev.azure.com/<org>/_usersSettings/tokens`), highlighted as a
+  warning until a token is saved. SSH remotes rely on the
+  server's SSH client. A read-only `ls-remote` check cannot prove the identity
+  accepted by the remote. Fetch, push and merge are explicit POST actions;
+  merge start / resolve / abort re-index the drive because they rewrite
+  working-tree files.
+  **Performance / page structure**: `GET /drive/<id>` renders only
+  `inspect_summary()` (refs, config, identity, ahead/behind — no file
+  walk) and the browser then fetches `GET /drive/<id>/changes?basis=` which
+  renders `_changes.html` from `inspect_changes()` (status, diffs, conflicts,
+  commit form, remote actions, merge review) and swaps it into
+  `#gitsync-changes`, also filling the header badge. `_diff()` is restricted
+  to the paths status reports as changed (plus `tree_changes()` between the
+  baseline and HEAD for the "When connected" view); dulwich's unrestricted
+  working-tree diff reads every committed blob and stats every file, which
+  took ~8 s on a 2 000-file OneDrive checkout. The remaining cost is
+  `porcelain.status` (one lstat per file). The fragment also carries a
+  "Next step" panel that derives where the user is in the review → commit →
+  fetch → push flow (`identity`, `commit`, `no-upstream`, `fetch`, `behind`,
+  `push`, `synced`, `merge`, `conflicts`), shows summary chips (local commits
+  waiting, uncommitted files, remote commits not merged) and offers exactly
+  the next action — including the push button while files are still
+  uncommitted, since a push only sends commits. `push()` therefore only
+  refuses an open merge, conflicts, a missing upstream, nothing ahead, or a
+  branch that is behind (push would be rejected); merge review still
+  requires a clean tree because it rewrites files. When the tracked branch
+  is behind, the panel offers **Push to new branch**
+  (`push_to_new_branch()`: `HEAD:refs/heads/<name>` on the upstream remote,
+  name validated with `dulwich.refs.check_ref_format`, never forced) so the
+  commits can be shared for a pull request without merging locally; the
+  detail page then shows a success alert with a host-specific PR link
+  (`pull_request_url()` for Azure DevOps `pullrequestcreate`, GitHub
+  `compare`, GitLab `merge_requests/new`).
+  Every non-conflicted working-tree row also has an explicit per-file
+  **Discard** action with a destructive confirmation. `discard_change()`
+  validates that the path is still changed, restores tracked paths from HEAD
+  (including staged edits/deletions), and removes only selected untracked or
+  staged-added files. Before restoring a Windows Cloud Files placeholder it
+  calls `CfHydratePlaceholder` for that selected file, so an online-only
+  OneDrive entry is materialized before checkout writes it; if hydration fails,
+  the user is told to make it available on this device and retry. It refuses
+  conflict/merge state, stale/arbitrary paths,
+  symlink-parent traversal and directories; other files, commits and refs are
+  left untouched. The drive is re-indexed after discard.
+  Status codes (`M`, `A`, `D`, `??`, `UU`…) are derived
+  from `porcelain.status` plus `ConflictedIndexEntry` stages; renames are not
+  detected (they appear as a deletion plus an addition). Remote calls get an
+  `http.timeout` fallback (60 s per socket operation) layered under the
+  repository's own config.
+  The commit panel states the branch commits go to and lists local branches
+  read-only (`inspect()["branches"]`); switching branches is deliberately
+  left to the user's Git client.
   Push requires a clean working tree and
   commits ahead of the configured upstream. Merge requires a clean tree and
-  a fetched remote-tracking ref, starts with `--no-ff --no-commit`, and offers
-  explicit per-conflict ours/theirs choices, abort, and local completion after
+  a fetched remote-tracking ref, runs `porcelain.merge(no_ff, no_commit)`
+  (writing `MERGE_HEAD`/`MERGE_MSG` itself for conflict-free merges), and offers
   explicit per-conflict ours/theirs choices with escaped current/incoming blob
-  previews, abort, and local completion after review. Oversized merge diffs are
+  previews (stage 2/3 of the `ConflictedIndexEntry`), abort (`reset --hard`
+  equivalent, only without untracked/unstaged work) and local completion
+  after review. Oversized merge diffs are
   flagged and require explicit acknowledgement (plus local-client review) before
   completion; unified diffs are grouped and navigable by file, and the complete
   working-tree change list supports filtering and paging. Remote command output
   is never shown; safe actionable error categories are used and merge completion
   does not push.
   App-created commits skip repository hooks and GPG signing to avoid running
-  arbitrary hook code from a web request and to keep operations noninteractive.
-  Disconnecting removes only the Git Sync association, preserving the local
-  folder and linked drive; orphaned associations can be replaced on reconnect.
+  arbitrary hook code from a web request and to keep operations noninteractive
+  (`repo.hooks.clear()` + `no_verify=True, sign=False`).
+  Removing the drive (Profile / drive page) is the only "disconnect"; it never
+  touches the folder or its Git data. Syncing a folder that is already a drive
+  (live or trashed) is refused with a message naming that drive.
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
   (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`

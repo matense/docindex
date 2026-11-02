@@ -1,200 +1,259 @@
-"""Git Sync pages."""
+"""Git Sync pages — one workspace per Git-backed local-folder drive."""
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 
+from app.models import Drive
 from app.services import drive_service, sync_service
 
 from . import service
-from .models import Repository
 
 bp = Blueprint("gitsync", __name__, template_folder="templates")
 
 
+@bp.app_template_global()
+def gitsync_drive_url(drive):
+    """URL of the Git workspace for a drive, or None when it has no checkout."""
+    if drive is None or drive.deleted_at is not None or not service.is_git_drive(drive):
+        return None
+    return url_for("gitsync.detail", drive_id=drive.id)
+
+
 @bp.get("/")
 def index():
-    repositories = Repository.query.filter_by(user_id=current_user.id).order_by(Repository.name).all()
-    return render_template("gitsync/index.html", repositories=repositories,
-                           accounts=service.github_accounts())
+    drives = [drive for drive in drive_service.list_drives(current_user)
+              if service.is_git_drive(drive)]
+    return render_template("gitsync/index.html", drives=drives)
 
 
-def _owned(repository_id):
-    repository = Repository.query.filter_by(id=repository_id, user_id=current_user.id).first()
-    if repository is None:
+def _workspace(drive_id):
+    """(drive, repository) for an owned Git drive; redirects with a flash otherwise."""
+    drive = (Drive.query.filter_by(id=drive_id, user_id=current_user.id)
+             .filter(Drive.deleted_at.is_(None)).first())
+    if drive is None:
         abort(404)
-    return repository
-
-
-@bp.post("/connect")
-def connect():
     try:
-        repository = service.connect(
-            current_user, request.form.get("path", ""),
-            request.form.get("name", "").strip(), request.form.get("account", "").strip())
+        return drive, service.for_drive(current_user, drive)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("gitsync.index"))
-    drive_service.select_drive(current_user, repository.drive_id)
-    flash("Repository connected. Your files and Git configuration were not changed.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        abort(redirect(url_for("gitsync.index")))
 
 
-@bp.post("/<int:repository_id>/disconnect")
-def disconnect(repository_id):
-    repository = _owned(repository_id)
-    name = repository.name
-    service.disconnect(repository)
-    flash(f"Disconnected {name} from Git Sync. The local folder, Git data, and linked drive and files were not deleted.", "success")
-    return redirect(url_for("gitsync.index"))
+def _back(drive):
+    return redirect(url_for("gitsync.detail", drive_id=drive.id))
 
 
-@bp.get("/<int:repository_id>")
-def detail(repository_id):
-    repository = _owned(repository_id)
+def _reindex(drive, success):
+    job = sync_service.start_sync(drive)
+    if job.state == "error":
+        flash(f"{success} Re-indexing the drive failed; check its sync status.", "error")
+    elif job.state == "done":
+        flash(f"{success} The drive was re-indexed.", "success")
+    else:
+        flash(f"{success} The drive is being re-indexed in the background.", "success")
+
+
+@bp.get("/drive/<int:drive_id>")
+def detail(drive_id):
+    drive, repository = _workspace(drive_id)
     basis = request.args.get("basis", "head")
     if basis not in ("head", "initial"):
         abort(400)
     try:
-        state = service.inspect(repository, basis)
+        state = service.inspect_summary(repository)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
         return redirect(url_for("gitsync.index"))
-    return render_template("gitsync/detail.html", repository=repository, state=state, basis=basis)
-
-
-@bp.post("/<int:repository_id>/scan")
-def scan(repository_id):
-    repository = _owned(repository_id)
-    try:
-        service.repository_root(repository.path)
-    except service.GitSyncError as exc:
-        flash(str(exc), "error")
-        return redirect(url_for("gitsync.index"))
-    if repository.drive is None or repository.drive.deleted_at is not None:
-        flash("The DocIndex drive link is missing or trashed. Use Reconnect drive and index.", "error")
-    else:
-        job = sync_service.start_sync(repository.drive)
-        if job.state == "error":
-            flash("Indexing failed. Check the drive sync status.", "error")
-        elif job.state == "done":
-            flash("Local indexing finished. No Git fetch, pull, commit or push was performed.", "success")
+    pushed_branch = request.args.get("pushed_branch", "")
+    pull_request = None
+    if pushed_branch:
+        try:
+            pushed_branch = service.validate_branch_name(pushed_branch)
+        except service.GitSyncError:
+            pushed_branch = ""
         else:
-            flash("Local indexing started and is running in the background.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+            pull_request = service.pull_request_url(state["remote_url"], pushed_branch, state["upstream_branch"])
+    return render_template("gitsync/detail.html", drive=drive, repository=repository,
+                           state=state, basis=basis, pushed_branch=pushed_branch,
+                           pull_request=pull_request)
 
 
-@bp.post("/<int:repository_id>/reconnect")
-def reconnect(repository_id):
-    repository = _owned(repository_id)
+@bp.get("/drive/<int:drive_id>/changes")
+def changes(drive_id):
+    """HTML fragment with the working-tree walk (status, diffs, actions); loaded async."""
+    drive, repository = _workspace(drive_id)
+    basis = request.args.get("basis", "head")
+    if basis not in ("head", "initial"):
+        abort(400)
     try:
-        drive = service.reconnect_drive(current_user, repository)
+        state = {**service.inspect_summary(repository),
+                 **service.inspect_changes(repository, basis)}
+    except service.GitSyncError as exc:
+        return render_template("gitsync/_changes.html", drive=drive, repository=repository,
+                               state=None, basis=basis, error=str(exc))
+    return render_template("gitsync/_changes.html", drive=drive, repository=repository,
+                           state=state, basis=basis, error=None)
+
+
+@bp.post("/drive/<int:drive_id>/identity")
+def identity(drive_id):
+    drive, repository = _workspace(drive_id)
+    try:
+        service.set_identity(repository, request.form.get("author_name", ""),
+                             request.form.get("author_email", ""))
     except service.GitSyncError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("gitsync.detail", repository_id=repository.id))
+    else:
+        flash("Commit identity saved for this drive.", "success")
+    return _back(drive)
 
-    drive_service.select_drive(current_user, drive.id)
+
+@bp.post("/drive/<int:drive_id>/credentials")
+def credentials(drive_id):
+    drive, repository = _workspace(drive_id)
+    clear = request.form.get("clear") == "yes"
+    try:
+        service.set_credentials(repository, request.form.get("remote_username", ""),
+                                request.form.get("remote_token", ""), clear=clear)
+    except service.GitSyncError as exc:
+        flash(str(exc), "error")
+    else:
+        flash("Remote credentials cleared." if clear
+              else "Remote credentials saved. The token is stored encrypted and never displayed again.",
+              "success")
+    return _back(drive)
+
+
+@bp.post("/drive/<int:drive_id>/scan")
+def scan(drive_id):
+    drive, _repository = _workspace(drive_id)
     job = sync_service.start_sync(drive)
     if job.state == "error":
-        flash("Repository reconnected, but indexing failed. Check the drive sync status.", "error")
+        flash("Indexing failed. Check the drive sync status.", "error")
     elif job.state == "done":
-        flash("Repository reconnected and local indexing finished. No Git fetch, pull, commit or push was performed.", "success")
+        flash("Local indexing finished. No Git fetch, pull, commit or push was performed.", "success")
     else:
-        flash("Repository reconnected; local indexing started in the background. No Git fetch, pull, commit or push was performed.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        flash("Local indexing started and is running in the background.", "success")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/commit")
-def commit(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/commit")
+def commit(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         commit_id = service.commit_selected(
             repository, request.form.getlist("paths"), request.form.get("message", ""))
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
-        flash(f"Created local commit {commit_id}. No remote operation was performed.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        flash(f"Created local commit {commit_id}. It exists only on this machine: use the "
+              "\u201cPush\u201d button in the Next step panel to publish it to the remote.", "success")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/check-access")
-def check_access(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/discard")
+def discard(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
-        account_hint_used = service.check_remote_access(repository)
+        path = service.discard_change(repository, request.form.get("path", ""))
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
-        if account_hint_used:
-            flash("Remote read access succeeded. Git used its normal server-account credential sources and passed your preferred username as a hint; the authenticated identity is not verified.", "success")
+        _reindex(drive, f'Discarded local changes to "{path}".')
+    return _back(drive)
+
+
+@bp.post("/drive/<int:drive_id>/check-access")
+def check_access(drive_id):
+    drive, repository = _workspace(drive_id)
+    try:
+        credentials_used = service.check_remote_access(repository)
+    except service.GitSyncError as exc:
+        flash(str(exc), "error")
+    else:
+        if credentials_used:
+            flash("Remote read access succeeded using the saved credentials for this drive. The authenticated identity is not verified.", "success")
         else:
-            flash("Remote read access succeeded using Git's normal server-account credential sources. The authenticated identity is not verified.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+            flash("Remote read access succeeded without saved credentials (anonymous or non-HTTPS remote). The authenticated identity is not verified.", "success")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/fetch")
-def fetch(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/fetch")
+def fetch(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         service.fetch(repository)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
         flash("Fetched the configured upstream. The working tree was not changed; compare the updated history below.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/push")
-def push(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/push")
+def push(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         service.push(repository)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
         flash("Pushed the current branch to its configured upstream.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/merge")
-def start_merge(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/push-branch")
+def push_branch(drive_id):
+    drive, repository = _workspace(drive_id)
+    try:
+        name, remote = service.push_to_new_branch(repository, request.form.get("branch", ""))
+    except service.GitSyncError as exc:
+        flash(str(exc), "error")
+        return _back(drive)
+    flash(f"Pushed your local commits to the new branch {name} on {remote}. The tracked branch was not changed.", "success")
+    return redirect(url_for("gitsync.detail", drive_id=drive.id, pushed_branch=name))
+
+
+@bp.post("/drive/<int:drive_id>/merge")
+def start_merge(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         service.start_merge(repository)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
-        flash("Merge started without creating a commit. Review the staged changes and resolve each conflict below.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        _reindex(drive, "Merge started without creating a commit. Review the staged changes and resolve each conflict below.")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/merge/resolve")
-def resolve_merge(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/merge/resolve")
+def resolve_merge(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         service.resolve_conflicts(
             repository, request.form.getlist("paths"), request.form.get("choice", ""))
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
-        flash("Applied the selected version and staged that conflict resolution.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        _reindex(drive, "Applied the selected version and staged that conflict resolution.")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/merge/abort")
-def abort_merge(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/merge/abort")
+def abort_merge(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         service.abort_merge(repository)
     except service.GitSyncError as exc:
         flash(str(exc), "error")
     else:
-        flash("Merge aborted. The local branch was restored to its pre-merge state.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+        _reindex(drive, "Merge aborted. The local branch was restored to its pre-merge state.")
+    return _back(drive)
 
 
-@bp.post("/<int:repository_id>/merge/complete")
-def complete_merge(repository_id):
-    repository = _owned(repository_id)
+@bp.post("/drive/<int:drive_id>/merge/complete")
+def complete_merge(drive_id):
+    drive, repository = _workspace(drive_id)
     try:
         commit_id = service.complete_merge(
             repository, request.form.get("acknowledge_truncated") == "yes")
@@ -202,4 +261,4 @@ def complete_merge(repository_id):
         flash(str(exc), "error")
     else:
         flash(f"Created merge commit {commit_id}. No remote operation was performed.", "success")
-    return redirect(url_for("gitsync.detail", repository_id=repository.id))
+    return _back(drive)
