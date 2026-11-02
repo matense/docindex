@@ -1017,7 +1017,7 @@ def test_conflict_preview_marks_deleted_symlink_binary_and_large_versions(reposi
     assert binary["kind"] == "binary"
 
     with patch.object(service, "_unmerged_stage_entry", return_value=(0o100644, b"blob")):
-        with patch.object(service, "_blob_data", return_value="caf\u00e9\n".encode("utf-8")):
+        with patch.object(service, "_blob_data", return_value="caf\u00e9\n".encode()):
             text = service._conflict_version_preview(None, "readme.md", 2)
     assert text == {"kind": "text", "text": "caf\u00e9\n"}
 
@@ -1161,7 +1161,7 @@ def test_remote_errors_are_categorized_without_exposing_details(repository, inde
 def test_fetch_and_push_are_explicit_and_use_local_bare_remote(
         auth_client, app, repository, tmp_path, enabled):
     remote = _setup_bare_upstream(repository, tmp_path)
-    response = _connect(auth_client, repository, identity=True)
+    _connect(auth_client, repository, identity=True)
     (repository / "local.txt").write_text("local commit\n", encoding="utf-8")
     _git(repository, "add", "local.txt")
     _git(repository, "commit", "-m", "Local commit")
@@ -1202,7 +1202,7 @@ def test_fetch_and_push_are_explicit_and_use_local_bare_remote(
 def test_push_sends_commits_and_leaves_uncommitted_work_untouched(
         auth_client, app, repository, tmp_path, enabled, change_kind):
     remote = _setup_bare_upstream(repository, tmp_path)
-    response = _connect(auth_client, repository)
+    _connect(auth_client, repository)
     (repository / "ahead.txt").write_text("ahead\n", encoding="utf-8")
     _git(repository, "add", "ahead.txt")
     _git(repository, "commit", "-m", "Ahead")
@@ -1259,7 +1259,7 @@ def test_next_step_offers_push_of_earlier_commit_while_files_are_uncommitted(
 
 def test_push_refuses_an_unresolved_merge(auth_client, app, repository, tmp_path, enabled):
     remote = _setup_bare_upstream(repository, tmp_path)
-    response = _connect(auth_client, repository)
+    _connect(auth_client, repository)
     (repository / "readme.md").write_text("current\n", encoding="utf-8")
     _git(repository, "commit", "-am", "Local change")
     _push_remote_change(remote, tmp_path, "incoming\n")
@@ -1273,7 +1273,7 @@ def test_push_refuses_an_unresolved_merge(auth_client, app, repository, tmp_path
 
 def test_merge_refuses_dirty_or_staged_work(auth_client, app, repository, tmp_path, enabled):
     remote = _setup_bare_upstream(repository, tmp_path)
-    response = _connect(auth_client, repository)
+    _connect(auth_client, repository)
     _push_remote_change(remote, tmp_path, "remote change\n")
     with app.app_context():
         connected = _module().models.Repository.query.one()
@@ -1455,7 +1455,7 @@ def test_conflict_resolution_rejects_paths_not_currently_conflicted(
 
 def test_conflict_resolution_can_choose_a_deleted_side(auth_client, app, repository, tmp_path, enabled):
     remote = _setup_bare_upstream(repository, tmp_path)
-    response = _connect(auth_client, repository, identity=True)
+    _connect(auth_client, repository, identity=True)
     (repository / "readme.md").write_text("current\n", encoding="utf-8")
     _git(repository, "commit", "-am", "Local change")
     checkout = remote.parent / f"{remote.stem}-remote-delete"

@@ -8,7 +8,6 @@ configuration.
 
 import io
 import os
-import socket
 import stat
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -373,7 +372,7 @@ def _identity(repository, action):
     email = (repository.author_email or "").strip()
     if not name or not email:
         raise GitSyncError(f"Set the commit identity (name and email) in Repository details before {action}.")
-    return f"{name} <{email}>".encode("utf-8")
+    return f"{name} <{email}>".encode()
 
 
 def _auth_kwargs(repository, url):
@@ -637,7 +636,7 @@ def _remote_call(operation, failure_message, timeout_message):
         raise GitSyncError(DENIED_MESSAGE) from exc
     except porcelain.DivergedBranches as exc:
         raise GitSyncError(REJECTED_MESSAGE) from exc
-    except socket.timeout as exc:
+    except TimeoutError as exc:
         raise GitSyncError(timeout_message) from exc
     except ConnectionError as exc:
         raise GitSyncError(UNAVAILABLE_MESSAGE) from exc
@@ -822,7 +821,7 @@ def start_merge(repository):
         with open(_state_file(repo, "MERGE_HEAD"), "wb") as handle:
             handle.write(tracking["upstream_head"].encode("ascii") + b"\n")
         with open(_state_file(repo, "MERGE_MSG"), "wb") as handle:
-            handle.write(f"Merge remote-tracking branch '{tracking['upstream']}'\n".encode("utf-8"))
+            handle.write(f"Merge remote-tracking branch '{tracking['upstream']}'\n".encode())
 
 
 def _safe_conflict_path(root, path, conflict_paths):
