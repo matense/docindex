@@ -163,6 +163,14 @@ process-wide through `app/services/db_locks.py` (`@serialized` on
 writers; reentrant, reads stay lock-free under WAL). Extraction itself
 stays parallel — only the commit-sized tail takes the lock.
 
+The split migration copies plain index tables with explicit column lists
+matched by name, not `SELECT *`: older installations may have a different
+physical column order (notably `file_index.status` versus the statistics
+columns). Destination table/index creation and FTS creation are idempotent,
+so a failed startup upgrade can be retried while the original index tables
+remain in the core database. The source index is dropped only after row counts
+have been verified.
+
 ### `users`
 
 | Column | Type | Notes |

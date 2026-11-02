@@ -150,3 +150,52 @@ def test_chunked_copy_helpers_move_tables_and_fts():
         conn.execute(sa.text("DELETE FROM idx.file_index"))
         assert mig._copy_table_chunked(conn, "file_index") == 11
         assert mig._copy_fts_chunked(conn) == 11
+
+
+def test_chunked_copy_maps_file_index_columns_by_name_not_position():
+    import sqlalchemy as sa
+
+    mig = _load_split_migration()
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(sa.text("ATTACH DATABASE ':memory:' AS idx"))
+        # Existing installations can have these fields appended in an older order.
+        conn.execute(sa.text(
+            "CREATE TABLE main.file_index (id INTEGER PRIMARY KEY, file_id INTEGER, "
+            "extracted_text TEXT, caption TEXT, status VARCHAR(20) NOT NULL, "
+            "error TEXT, indexed_at DATETIME, word_count INTEGER, line_count INTEGER, "
+            "char_count INTEGER, hashtags TEXT)"))
+        conn.execute(sa.text(
+            "CREATE TABLE idx.file_index (id INTEGER PRIMARY KEY, file_id INTEGER, "
+            "extracted_text TEXT, caption TEXT, hashtags TEXT, word_count INTEGER, "
+            "line_count INTEGER, char_count INTEGER, status VARCHAR(20) NOT NULL, "
+            "error TEXT, indexed_at DATETIME)"))
+        conn.execute(sa.text(
+            "INSERT INTO main.file_index VALUES "
+            "(1, 21, 'indexed text', 'caption', 'ok', NULL, NULL, 3, 2, NULL, 'tag')"))
+
+        assert mig._copy_table_chunked(conn, "file_index") == 1
+        row = conn.execute(sa.text(
+            "SELECT status, word_count, line_count, char_count, hashtags "
+            "FROM idx.file_index WHERE id=1")).one()
+        assert tuple(row) == ("ok", 3, 2, None, "tag")
+
+
+def test_create_index_tables_is_safe_to_retry_after_partial_migration():
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    mig = _load_split_migration()
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(sa.text("ATTACH DATABASE ':memory:' AS idx"))
+        conn.execute(sa.text("CREATE TABLE main.files (id INTEGER PRIMARY KEY)"))
+        with Operations.context(MigrationContext.configure(conn)):
+            mig._create_idx_tables()
+            mig._create_idx_tables()
+        assert {"file_index", "file_embeddings", "file_fts"}.issubset(
+            {row[0] for row in conn.execute(sa.text(
+                "SELECT name FROM idx.sqlite_master WHERE type='table'"))})
+        assert conn.execute(sa.text(
+            "SELECT COUNT(*) FROM idx.file_index")).scalar_one() == 0
