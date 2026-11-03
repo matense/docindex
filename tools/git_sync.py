@@ -24,6 +24,48 @@ def _short(sha):
     return sha.decode()[:12] if isinstance(sha, bytes) else str(sha)[:12]
 
 
+def _blob_at_head(repo, head, path):
+    """Raw blob bytes for a HEAD-tracked path, or None (new/unreadable)."""
+    if isinstance(path, str):
+        path = os.fsencode(path)
+    try:
+        commit = repo[head]
+        tree = repo[commit.tree]
+        _mode, sha = tree.lookup_path(repo.object_store.__getitem__, path)
+        data = getattr(repo.object_store[sha], "data", None)
+        return data if isinstance(data, bytes) else None
+    except (KeyError, AttributeError, ValueError, TypeError):
+        return None
+
+
+def _split_line_ending_only(repo, head, root, dirty):
+    """Split dulwich-flagged paths into (phantom, real).
+
+    dulwich compares raw bytes while real git honors core.autocrlf, so on
+    Windows every CRLF checkout looks dirty to dulwich (and `git status`
+    says clean). A path is phantom when the worktree file matches its HEAD
+    blob up to CRLF — normalizing it to the blob bytes is content-neutral
+    and unblocks the fast-forward. Anything else stays abort-worthy.
+    """
+    phantom, real = [], []
+    for path in dirty:
+        try:
+            with open(os.path.join(root, os.fsdecode(path)), "rb") as fh:
+                current = fh.read()
+        except OSError:
+            real.append(path)  # deleted/unreadable: still abort
+            continue
+        blob = _blob_at_head(repo, head, path)
+        if blob is None:
+            real.append(path)  # not tracked at HEAD: still abort
+            continue
+        if current.replace(b"\r\n", b"\n") == blob.replace(b"\r\n", b"\n"):
+            phantom.append(path)
+        else:
+            real.append(path)
+    return phantom, real
+
+
 def _clean(text):
     if isinstance(text, bytes):
         text = text.decode(errors="replace")
@@ -83,10 +125,23 @@ def pull_repo(root):
     print(f"git-sync: pulling {merge_ref} from {remote} ({url})")
 
     # Dirty tree: `git pull` would refuse (or worse, silently succeed
-    # halfway) — abort with the file list instead.
+    # halfway) — abort with the file list instead. Paths that differ from
+    # HEAD only by CRLF/LF are normalized first (Windows checkouts with
+    # core.autocrlf look dirty to dulwich's raw-byte comparison while
+    # `git status` says clean); only real content differences abort.
     status = porcelain.status(repo)
     dirty = sorted(set(status.staged["add"] + status.staged["modify"]
                        + status.unstaged))
+    if dirty:
+        phantom, dirty = _split_line_ending_only(repo, head, root, dirty)
+        for path in phantom:
+            print(f"git-sync: normalized line endings in "
+                  f"{_clean(path)} (matches HEAD up to CRLF).")
+            blob = _blob_at_head(repo, head, path)
+            if blob is not None:
+                with open(os.path.join(root, os.fsdecode(path)),
+                          "wb") as fh:
+                    fh.write(blob)
     if dirty:
         shown = ", ".join(_clean(f) for f in dirty[:10])
         more = f" (+{len(dirty) - 10} more)" if len(dirty) > 10 else ""

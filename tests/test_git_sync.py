@@ -73,6 +73,42 @@ def test_pull_aborts_on_divergence(pair, capsys):
     assert "diverged" in capsys.readouterr().out
 
 
+def test_split_ignores_crlf_only_drift(pair):
+    """Windows CRLF checkouts look dirty to raw-byte comparisons while
+    `git status` says clean — only real content differences may abort."""
+    clone = pair[1]
+    repo = Repo(clone)
+    head = b"refs/heads/master"
+    with open(os.path.join(clone, "f.txt"), "wb") as fh:
+        fh.write(b"one\r\n")
+    phantom, real = git_sync._split_line_ending_only(
+        repo, head, clone, [b"f.txt"])
+    assert phantom == [b"f.txt"] and real == []
+    with open(os.path.join(clone, "f.txt"), "wb") as fh:
+        fh.write(b"one\r\nlocal dirt\r\n")
+    phantom, real = git_sync._split_line_ending_only(
+        repo, head, clone, [b"f.txt"])
+    assert phantom == [] and real == [b"f.txt"]
+    phantom, real = git_sync._split_line_ending_only(
+        repo, head, clone, [b"missing.txt"])
+    assert phantom == [] and real == [b"missing.txt"]
+
+
+def test_pull_survives_crlf_drift_on_updated_file(pair, capsys):
+    """End to end: a CRLF worktree file the remote also changed must
+    fast-forward (normalized first) instead of forcing a manual pull."""
+    origin, clone = pair
+    with open(os.path.join(clone, "f.txt"), "wb") as fh:
+        fh.write(b"one\r\n")
+    _commit(origin, "f.txt", "one\ntwo\n", b"second")
+    assert git_sync.pull_repo(clone) == 0
+    assert "fast-forwarded" in capsys.readouterr().out
+    with open(os.path.join(clone, "f.txt"), "rb") as fh:
+        # dulwich honours core.autocrlf on checkout, so accept the
+        # smudged CRLF bytes: what matters is the text content.
+        assert fh.read().replace(b"\r\n", b"\n") == b"one\ntwo\n"
+
+
 def test_pull_aborts_on_detached_head(pair, capsys):
     origin, clone = pair
     repo = Repo(clone)
@@ -119,3 +155,30 @@ def test_tee_forces_unbuffered_child_output(tmp_path):
     assert proc.returncode == 0
     assert "1" in proc.stdout
     assert "1" in open(log, encoding="utf-8").read()
+
+
+def test_tee_streams_output_before_child_exits(tmp_path):
+    """The console must show progress while the child still runs: tee.py
+    forwards every chunk as it arrives (read1) instead of blocking for a
+    full buffer. The log file gets the same bytes."""
+    import subprocess
+    log = str(tmp_path / "stream.log")
+    child = ("import sys, time; print('first', flush=True); "
+             "time.sleep(3); print('second', flush=True)")
+    proc = subprocess.Popen(
+        [sys.executable, "tools/tee.py", log,
+         sys.executable, "-c", child],
+        stdout=subprocess.PIPE, text=True, bufsize=1)
+    assert proc.stdout is not None
+    banner = proc.stdout.readline()
+    assert "full output saved to" in banner
+    first = proc.stdout.readline()
+    assert first.strip() == "first"
+    # The first line arrived while the child was still sleeping: with the
+    # old blocking read it would only arrive at child exit.
+    assert proc.poll() is None
+    rest, _ = proc.communicate(timeout=30)
+    assert proc.returncode == 0
+    assert "second" in rest
+    body = open(log, encoding="utf-8").read()
+    assert "first" in body and "second" in body

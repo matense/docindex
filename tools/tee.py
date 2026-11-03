@@ -6,8 +6,11 @@ Usage:
 The previous log (if any) is kept as <logfile>.prev. Exits with the
 command's exit code, so `set -e` / `if errorlevel` keep working.
 Binary-safe streaming: pip-style \\r progress lines are preserved.
+Progress is live (not buffered to child exit): the child runs
+unbuffered and output is forwarded chunk-by-chunk as it arrives.
 """
 
+import codecs
 import os
 import subprocess
 import sys
@@ -44,14 +47,22 @@ def main(argv):
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, env=env)
         assert proc.stdout is not None
+        # read1 (not read): BufferedReader.read(n) on a pipe blocks until
+        # the buffer is FULL or EOF, so the console would stay empty until
+        # the whole child exits. read1 returns after a single raw read,
+        # which is what streams progress live. The incremental decoder
+        # keeps multi-byte chars intact across chunk boundaries.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         while True:
-            chunk = proc.stdout.read(65536)
+            chunk = proc.stdout.read1(65536)
             if not chunk:
                 break
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
-            fh.write(chunk.decode("utf-8", errors="replace"))
+            fh.write(decoder.decode(chunk))
             fh.flush()
+        fh.write(decoder.decode(b"", final=True))
+        fh.flush()
         rc = proc.wait()
     print(f"[log] done (exit={rc}): {logfile}", flush=True)
     return rc
