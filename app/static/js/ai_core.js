@@ -405,6 +405,11 @@
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
             messagesEl.innerHTML = '';
+            // Wiping the transcript fires no scroll event: a stale paused
+            // state would glue the "New messages" pill onto the fresh
+            // (possibly short) conversation. Reset it here.
+            asPaused = false;
+            renderAutoScroll();
         }
         function closePlusMenu() {
             if (plusMenu) {
@@ -419,6 +424,11 @@
             reasoningBox = null;
             reasoningBody = null;
             lastThinkingSpan = null;
+            // Collapsing shrinks the transcript without scrolling: if that
+            // landed us back at the bottom, drop the stale paused state so
+            // the "New messages" pill doesn't stick around.
+            if (asAtBottom()) asPaused = false;
+            renderAutoScroll();
         }
         function convGroupHeader(label) {
             const div = document.createElement('div');

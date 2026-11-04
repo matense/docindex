@@ -1244,6 +1244,11 @@ minimal surface (`newConversation`, `toggleList`, `conversationId`):
   agent works and auto-collapses when the answer arrives. In the history
   view, `thinking` messages render as collapsed `ai-reasoning` blocks and
   `step` messages as check-mark lines.
+- "New messages" pill (`.acw-jump`): visible only while auto-scroll is
+  paused (scrolled >40 px up from the bottom); clicking it jumps to the
+  bottom and unpauses. The paused flag resets whenever the transcript is
+  wiped (`clearMessages`) and is re-checked when the reasoning box
+  collapses (a shrink with no scroll event must not glue the pill on).
 - Render answers with `marked`; `[name](file://ID)` citations are rewritten
   to `/file/<ID>/view` links.
 - Attachments: `@here` attaches `window.currentFile`, `#query` opens a
