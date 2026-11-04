@@ -417,7 +417,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     // editor script on demand — it stays cached in window after first load.
     if (window.NotebookEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ url_for('notebooks.static', filename='notebook.js')|tojson }};
+    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=1')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

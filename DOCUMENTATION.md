@@ -1314,7 +1314,8 @@ endpoints pass Flask-WTF validation without CSRF exemptions.
 
 ### Templates
 
-`base.html` (header, nav dock, search hero/dock markup, CDN assets) +
+`base.html` (header, nav dock, search hero/dock markup, local CSS/JS assets +
+vendored third-party libs) +
 `auth/login|register.html`, `drive/drive|view|edit.html`,
 `search/results.html` and `search/ai.html` (full-page chat),
 `settings/ai.html` (connection CRUD with provider presets, test button, model
