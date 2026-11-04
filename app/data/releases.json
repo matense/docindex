@@ -20,6 +20,15 @@
             "Much faster agent search and file counting on large drives (seconds to milliseconds) by fixing the database join order.",
             "Meaning/hybrid search falls back to keywords instantly when the embedding backend is down or has nothing indexed yet, instead of stalling on a failing connection."
           ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "The chat's \"New messages\" pill no longer gets stuck on screen: it only shows while scrolled up, and hides on jump-to-bottom, on reaching the bottom, or when starting a new chat.",
+            "Assistant answers no longer show a raw [[END]] marker or a duplicated answer when the model repeats itself after its done-signal.",
+            "Removing the drive scope when it matches the drive being browsed now jumps straight to All drives instead of swapping to an identical chip; $ mentions stack so several drives can be scoped at once."
+          ]
         }
       ]
     },
