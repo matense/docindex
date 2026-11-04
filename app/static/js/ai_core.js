@@ -234,6 +234,11 @@
                 div.innerHTML = '<i class="fas fa-arrow-turn-up fa-rotate-90"></i><span></span>';
                 div.querySelector('span').textContent = content;
             } else {
+                // Assistant bubble (live or history): drop any [[END]]
+                // remnant — the server strips the marker before persisting,
+                // but older transcripts still carry it, and the model may
+                // repeat itself after a mid-message marker.
+                content = stripFinalMarker(content);
                 div.className = 'chat chat-start';
                 div.innerHTML =
                     '<div class="chat-image avatar">' +
@@ -349,6 +354,13 @@
         function asAtBottom() {
             return messagesEl.scrollTop + messagesEl.clientHeight
                 >= messagesEl.scrollHeight - 40;
+        }
+        function stripFinalMarker(text) {
+            // The [[END]] "I'm done" marker is server business: if one
+            // slipped into a persisted transcript (or past the server
+            // strip), cut the answer there instead of showing it raw.
+            const i = (text || '').search(/\[\[\s*END\s*\]\]/i);
+            return i === -1 ? text : text.slice(0, i).replace(/\s+$/, '');
         }
         function attachCurrentFile() {
             if (window.currentFile) {
@@ -533,6 +545,7 @@
         }
         function finalizeLiveBubble(answer, meta) {
             flushTokens();
+            answer = stripFinalMarker(answer);
             if (!liveBubble) return addMessage('assistant', answer, meta);
             const div = liveBubble;
             liveBubble = null;
@@ -2085,6 +2098,19 @@
                 asPaused = !asAtBottom();
                 renderAutoScroll();
             });
+            if (messagesEl && window.MutationObserver && !messagesEl._pauseSync) {
+                // Layout settles without scrolling (late images, font
+                // swaps, collapses): if that lands us back at the bottom,
+                // drop the stale paused state so the pill can't stick.
+                // Guarded by asPaused first — zero layout reads otherwise.
+                messagesEl._pauseSync = true;
+                new MutationObserver(() => {
+                    if (asPaused && asAtBottom()) {
+                        asPaused = false;
+                        renderAutoScroll();
+                    }
+                }).observe(messagesEl, { childList: true, subtree: true });
+            }
             if (jumpPill) jumpPill.addEventListener('click', () => scrollDown(true));
             renderAutoScroll();
             if (modelSelect) {

@@ -563,11 +563,22 @@ _TRUNCATED_NUDGE = ("Your previous message was cut off by the output length "
 _MAX_NUDGES = 4
 
 # Explicit "I am done" signal requested in the system prompt: the final answer
-# ends with [[END]] on its own line. Tolerant to spacing/case and a trailing
-# punctuation mark; only matches at the very end of the message. A positive
-# signal, not a hard gate — models that never emit it fall back to the
-# heuristic checks below.
-_FINAL_MARKER_RE = re.compile(r"\[\[\s*END\s*\]\]\s*[.!]?\s*$", re.IGNORECASE)
+# ends with [[END]] on its own line. Small/local models sometimes emit the
+# marker mid-message and keep writing (a rephrased second copy of the same
+# answer) — so the FIRST occurrence ends the answer: everything from it on
+# is dropped. Tolerant to spacing/case. A positive signal, not a hard gate —
+# models that never emit it fall back to the heuristic checks below.
+_FIRST_MARKER_RE = re.compile(r"\[\[\s*END\s*\]\]", re.IGNORECASE)
+
+
+def _strip_final_marker(text):
+    """Cut text at the first [[END]] marker: the model declared itself done,
+    anything after it is a same-response repeat. Returns (text, had_marker).
+    """
+    m = _FIRST_MARKER_RE.search(text or "")
+    if not m:
+        return text, False
+    return text[:m.start()].rstrip(), True
 
 # A message citing a source file ([name](file://ID)) is a composed answer,
 # not a statement of intent.
@@ -1633,18 +1644,17 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
         if not tool_calls:
             # Layered "is it done?" check:
             # 1. finish_reason=length -> truncated output, never final.
-            # 2. [[END]] marker -> explicit final answer, never nudge.
+            # 2. [[END]] marker (first occurrence — anything after it is a
+            #    same-response repeat) -> explicit final answer, never nudge.
             # 3. otherwise fall back to the intent heuristics (tail-only
             #    regex + citation/pushback guards). Models that never emit
             #    the marker degrade to this path, not to a worse one.
             truncated = finish_reason == "length"
-            has_marker = bool(_FINAL_MARKER_RE.search(reasoning))
+            reasoning, has_marker = _strip_final_marker(reasoning)
             if has_marker:
-                # Strip the marker server-side: the UI and the persisted
-                # transcript never see it. (During token streaming a partial
-                # marker may briefly appear in the tentative bubble; the
-                # finalized answer replaces it.)
-                reasoning = _FINAL_MARKER_RE.sub("", reasoning).rstrip()
+                # The UI and the persisted transcript never see the marker
+                # (during token streaming a partial marker may briefly appear
+                # in the tentative bubble; the finalized answer replaces it).
                 message["content"] = reasoning
             if truncated and nudges < _MAX_NUDGES:
                 nudges += 1
@@ -1731,7 +1741,7 @@ def run_agent_events(user, history, drive=None, *, max_steps=None, should_stop=N
     try:
         final = yield from _complete(messages, None, config, block=block)
         usage_tail = final.pop("usage", None)
-        answer = (final.get("content") or "").strip()
+        answer, _ = _strip_final_marker((final.get("content") or "").strip())
     except ai_service.AIError:
         answer = ""
     if isinstance(usage_tail, dict):

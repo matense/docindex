@@ -1058,11 +1058,17 @@ the file..."). Three layers, in order:
    strict APIs reject unknown message fields.)
 2. **The `[[END]]` marker** — the system prompt asks the model to end its
    final answer with `[[END]]`. A response carrying it is accepted as final
-   unconditionally (the marker is stripped server-side, so the UI and the
-   transcript never see it); a response without tool calls that does NOT
+   unconditionally; a response without tool calls that does NOT
    carry it is a candidate for a nudge. This is the primary signal: the
    model can reason at length and cite files without being pushed into an
-   extra, confused round-trip.
+   extra, confused round-trip. Cutoff is at the FIRST occurrence —
+   small models sometimes emit the marker mid-message and keep writing a
+   rephrased copy of the answer; everything from the marker on is dropped,
+   server-side (`_strip_final_marker`, also applied on the forced-finalization
+   path), so the UI and the transcript never see it and the answer is not
+   duplicated. The client (`stripFinalMarker` in `ai_core.js`) applies the
+   same cut when rendering, which also heals transcripts persisted before
+   the server cut existed.
 3. **Intent heuristics (fallback)** — models that never learn the marker
    degrade to the old behaviour: `_looks_like_intent()` checks the *tail*
    of the text for Portuguese/English/Spanish intent phrases ("let me",
