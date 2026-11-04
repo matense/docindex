@@ -30,6 +30,30 @@ except ImportError:  # pure-python fallback (slower, zero new deps)
 EMBED_BATCH = 32
 # Bodies the embedding endpoint may reject outright.
 MAX_INPUT_CHARS = 8000
+# Fail-fast window after an embedding-backend failure (transport error or
+# persistent HTTP error — never rate limits). One down backend must not cost
+# ~2 s per search/indexed file: after the first failure, callers fail
+# immediately until this deadline passes, then one call probes again.
+_BACKEND_FAIL_TTL = 60.0
+_backend_down_until = 0.0  # monotonic deadline; module-global on purpose
+
+
+def _note_backend_down():
+    global _backend_down_until
+    import time as _time
+    _backend_down_until = _time.monotonic() + _BACKEND_FAIL_TTL
+
+
+def _check_backend_up():
+    import time as _time
+    if _time.monotonic() < _backend_down_until:
+        raise ai_service.AIError(
+            "AI embedding backend recently failed — failing fast.")
+
+
+def _note_backend_up():
+    global _backend_down_until
+    _backend_down_until = 0.0
 
 
 def _model_for(user):
@@ -68,6 +92,7 @@ def embed_texts(texts, user=None):
             "Semantic search is off (no embedding model on this connection).")
     if not (cfg["enabled"] and cfg["base_url"]):
         raise ai_service.AIError("AI is not configured.")
+    _check_backend_up()
     import requests
     ai_service._rate_slot(cfg, block=True)
     try:
@@ -79,15 +104,20 @@ def embed_texts(texts, user=None):
             allow_redirects=False,
         )
     except requests.RequestException as exc:
+        _note_backend_down()
         raise ai_service.AIError(
             f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
     if resp.status_code in (301, 302, 303, 307, 308):
         resp.close()
+        _note_backend_down()
         raise ai_service.AIError("AI backend redirected the request — refusing to follow (SSRF guard).")
     if resp.status_code == 429:
+        # Transient by definition: the next call may succeed, never cache.
         raise ai_service.AIError("The provider's rate limit was hit (HTTP 429).")
     if resp.status_code != 200:
+        _note_backend_down()
         raise ai_service.AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}")
+    _note_backend_up()  # backend answered: clear fail-fast state
     try:
         data = resp.json()["data"]
         vectors = [row["embedding"] for row in sorted(data, key=lambda r: r["index"])]
@@ -269,8 +299,6 @@ def semantic_search(user, query, limit=50, drive=None, file_ids=None,
     if not query:
         return []
     limit = max(1, min(int(limit or 50), 200))
-    qvec = embed_texts([query], user=user)[0]
-
     q = (FileEmbedding.query.join(
             StoredFile, FileEmbedding.file_id == StoredFile.id)
          .filter(StoredFile.user_id == user.id,
@@ -284,6 +312,11 @@ def semantic_search(user, query, limit=50, drive=None, file_ids=None,
         if not ids:
             return []
         q = q.filter(FileEmbedding.file_id.in_(ids))
+    # No vectors in scope: skip the embedding HTTP call entirely (it costs
+    # seconds against a down backend and buys nothing with zero rows).
+    if not db.session.query(q.exists()).scalar():
+        return []
+    qvec = embed_texts([query], user=user)[0]
 
     best = {}
     best_text = {}

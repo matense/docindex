@@ -140,6 +140,7 @@ def save_upload(file_storage, user, folder=None, drive=None):
 
     db.session.add(FileIndex(file_id=stored.id, status="pending"))
     db.session.commit()
+    invalidate_dupe_cache(user.id)
 
     if stored.is_image:
         _make_thumbnail(path, stored_name)
@@ -180,6 +181,7 @@ def _save_upload_to_shared(file_storage, user, drive, folder):
     db.session.add(FileIndex(file_id=stored.id, status="pending"))
     _unignore_sync_path(drive, _drive_relpath(drive, stored.source_path))
     db.session.commit()
+    invalidate_dupe_cache(user.id, drive.id)
     if stored.is_image:
         _make_thumbnail(path, stored.stored_name)
     refresh_shadow(stored)
@@ -210,11 +212,13 @@ def _purge_shared_row(stored_file, drive):
     if rel:
         _ignore_sync_path(drive, rel)
     drop_shadow(stored_file)
+    user_id, drive_id = stored_file.user_id, drive.id if drive else None
     db.session.delete(stored_file)
     db.session.flush()
     from . import search_service
     search_service.fts_delete(file_id, commit=False)
     db.session.commit()
+    invalidate_dupe_cache(user_id, drive_id)
 
 
 def _drive_relpath(drive, path):
@@ -458,8 +462,22 @@ def find_duplicates(stored_file):
             .all())
 
 
+_dupe_cache = {}  # (user_id, drive_id) -> (deadline_monotonic, set)
+_DUPE_CACHE_TTL = 60.0
+
+
 def duplicate_checksums(user_id, drive_id):
-    """Checksums that exist on more than one file within the same drive."""
+    """Checksums that exist on more than one file within the same drive.
+
+    Cached 60 s per (user, drive): the GROUP BY runs on every drive page
+    view (~35 ms on 46k files) but only changes when files are added,
+    removed or moved — a minute of staleness on the dupe badge is fine.
+    """
+    now = time.monotonic()
+    key = (user_id, drive_id)
+    hit = _dupe_cache.get(key)
+    if hit is not None and hit[0] > now:
+        return hit[1]
     from sqlalchemy import func
 
     rows = (db.session.query(StoredFile.checksum)
@@ -470,7 +488,20 @@ def duplicate_checksums(user_id, drive_id):
             .group_by(StoredFile.checksum)
             .having(func.count() > 1)
             .all())
-    return {row[0] for row in rows}
+    result = {row[0] for row in rows}
+    _dupe_cache[key] = (now + _DUPE_CACHE_TTL, result)
+    return result
+
+
+def invalidate_dupe_cache(user_id=None, drive_id=None):
+    """Drop cached dupe sets (whole cache when unscoped)."""
+    if user_id is None and drive_id is None:
+        _dupe_cache.clear()
+    else:
+        for key in [k for k in _dupe_cache
+                    if (user_id is None or k[0] == user_id)
+                    and (drive_id is None or k[1] == drive_id)]:
+            _dupe_cache.pop(key, None)
 
 
 def delete_file(stored_file):
@@ -482,6 +513,7 @@ def delete_file(stored_file):
     from . import search_service
     search_service.fts_delete(stored_file.id, commit=False)  # trashed files are not searchable
     db.session.commit()
+    invalidate_dupe_cache(stored_file.user_id, stored_file.drive_id)
 
 
 def restore_file(stored_file):
@@ -493,6 +525,7 @@ def restore_file(stored_file):
     # file_index still holds the extracted text — just re-add the FTS row.
     search_service.fts_upsert(stored_file.id, commit=False)
     db.session.commit()
+    invalidate_dupe_cache(stored_file.user_id, stored_file.drive_id)
 
 
 def unique_name(user_id, drive_id, folder_id, name, exclude_id=None):
@@ -610,6 +643,7 @@ def move_file_to_drive(user, file_id, drive_id, folder_id=None):
     stored.folder_id = folder.id if folder else None
     stored.name = new_name
     db.session.commit()
+    invalidate_dupe_cache(user.id)
     refresh_shadow(stored)
     if stored.is_image and not has_thumbnail(stored):
         _make_thumbnail(file_path(stored), stored.stored_name)
@@ -663,6 +697,7 @@ def copy_file_to_drive(user, file_id, drive_id, folder_id=None):
     db.session.flush()
     db.session.add(FileIndex(file_id=copy.id, status="pending"))
     db.session.commit()
+    invalidate_dupe_cache(user.id)
     try:
         from . import indexing_service
         indexing_service.enqueue_index([copy.id])
@@ -839,11 +874,13 @@ def purge_file(stored_file):
     # Semantic vectors have no cascade (plain FK) — remove them explicitly.
     from ..models import FileEmbedding
     FileEmbedding.query.filter_by(file_id=file_id).delete()
+    user_id, drive_id = stored_file.user_id, stored_file.drive_id
     db.session.delete(stored_file)
     db.session.flush()
     from . import search_service
     search_service.fts_delete(file_id, commit=False)
     db.session.commit()
+    invalidate_dupe_cache(user_id, drive_id)
 
 
 def trashed_files(user_id):

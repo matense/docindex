@@ -16,6 +16,7 @@ from flask import (
     url_for,
 )
 from flask_login import current_user, login_required
+from sqlalchemy.orm import selectinload
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
@@ -116,10 +117,16 @@ def index(folder_id=None):
                           drive_id=drive.id)
                .order_by(Folder.name).all())
     files = (StoredFile.query
+             .options(selectinload(StoredFile.index))
              .filter_by(user_id=current_user.id, folder_id=scope,
                         drive_id=drive.id)
              .filter(StoredFile.deleted_at.is_(None))
              .order_by(StoredFile.name).all())
+    # Tree view: roots render collapsed; has-children flags come from two
+    # grouped queries (no per-folder N+1). Deeper levels are fetched by
+    # tree_children() on expand.
+    tree_nonempty = _tree_nonempty(current_user.id, drive.id) \
+        if view_mode == "tree" else set()
     return render_template(
         "drive/drive.html",
         folder=folder,
@@ -127,6 +134,65 @@ def index(folder_id=None):
         files=files,
         drive=drive,
         view_mode=view_mode,
+        dupe_checksums=file_service.duplicate_checksums(current_user.id, drive.id),
+        editable_exts=current_app.config["EDITABLE_EXTENSIONS"],
+        tree_nonempty=tree_nonempty,
+    )
+
+
+def _tree_nonempty(user_id, drive_id, parent_ids=None):
+    """Folder ids (within a drive) that contain ≥1 subfolder or visible file.
+
+    Two indexed DISTINCT queries over the whole drive — or restricted to
+    `parent_ids` for one AJAX level. Replaces the template's old
+    `f.children`/`f.files` recursion (2 lazy queries per folder).
+    """
+    folder_q = (db.session.query(Folder.parent_id)
+                .filter(Folder.user_id == user_id,
+                        Folder.drive_id == drive_id,
+                        Folder.parent_id.isnot(None)))
+    file_q = (db.session.query(StoredFile.folder_id)
+              .filter(StoredFile.user_id == user_id,
+                      StoredFile.drive_id == drive_id,
+                      StoredFile.folder_id.isnot(None),
+                      StoredFile.deleted_at.is_(None)))
+    if parent_ids is not None:
+        folder_q = folder_q.filter(Folder.parent_id.in_(parent_ids or [-1]))
+        file_q = file_q.filter(StoredFile.folder_id.in_(parent_ids or [-1]))
+    return ({r[0] for r in folder_q.distinct().all()} |
+            {r[0] for r in file_q.distinct().all()})
+
+
+@bp.route("/tree/children/<int:folder_id>")
+@login_required
+def tree_children(folder_id):
+    """One tree level as HTML (same macros as the initial render).
+
+    The tree view renders roots collapsed; drive.js fetches each level on
+    first expand and injects it into [data-children-for]. 404 unless the
+    folder (hence its drive and children) belongs to the current user.
+    """
+    folder = _get_owned(Folder, folder_id)
+    drive = folder.drive
+    if drive is None or drive.user_id != current_user.id:
+        abort(404)
+    kids = (Folder.query
+            .filter_by(user_id=current_user.id, parent_id=folder.id,
+                       drive_id=drive.id)
+            .order_by(Folder.name).all())
+    files = (StoredFile.query
+             .filter_by(user_id=current_user.id, folder_id=folder.id,
+                        drive_id=drive.id)
+             .filter(StoredFile.deleted_at.is_(None))
+             .order_by(StoredFile.name).all())
+    nonempty = _tree_nonempty(current_user.id, drive.id,
+                              [k.id for k in kids]) if kids else set()
+    return render_template(
+        "drive/_tree_children.html",
+        drive=drive,
+        folders=kids,
+        files=files,
+        nonempty=nonempty,
         dupe_checksums=file_service.duplicate_checksums(current_user.id, drive.id),
         editable_exts=current_app.config["EDITABLE_EXTENSIONS"],
     )

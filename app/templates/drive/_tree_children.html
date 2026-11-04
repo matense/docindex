@@ -1,0 +1,5 @@
+{# AJAX fragment for one tree level (GET /tree/children/<folder_id>).
+   Same macros as the initial render, so injected nodes are identical. #}
+{% from 'drive/_tree_macros.html' import tree_folder, tree_file with context %}
+{% for f in folders %}{{ tree_folder(f, f.id in nonempty) }}{% endfor %}
+{% for f in files %}{{ tree_file(f) }}{% endfor %}

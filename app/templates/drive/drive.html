@@ -6,21 +6,7 @@
 {% endblock %}
 {% block title %}{{ folder.name if folder else (drive.name if drive else 'My Drive') }} - DocIndex{% endblock %}
 
-{% macro file_icon(f) -%}
-    {%- if f.is_image -%}fa-file-image text-pink-500
-    {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
-    {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
-    {%- elif f.extension == 'pdocnb' -%}fa-book-open text-amber-500
-    {%- elif f.extension in ['csv', 'xlsx', 'xlsm', 'xls'] -%}fa-file-excel text-green-500
-    {%- elif f.extension in editable_exts -%}fa-file-code text-violet-500
-    {%- else -%}fa-file text-gray-400{%- endif -%}
-{%- endmacro %}
-
-{% macro human_size(n) -%}
-    {%- if n < 1024 -%}{{ n }} B
-    {%- elif n < 1048576 -%}{{ (n / 1024) | round(1) }} KB
-    {%- else -%}{{ (n / 1048576) | round(1) }} MB{%- endif -%}
-{%- endmacro %}
+{% from 'drive/_tree_macros.html' import file_icon, human_size, tree_folder, tree_file with context %}
 
 {% macro index_badge(f) -%}
     {% set idx = f.index %}
@@ -94,33 +80,6 @@
               title="{{ idx.error }}">!</span>
         {%- endif -%}
     </span>
-{%- endmacro %}
-
-{% macro tree_file(f) -%}
-<div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
-     data-nav="{{ url_for('drive.view', file_id=f.id) }}"
-     draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
-     {%- if f.is_synced and drive.is_readonly %} data-is-synced="1"{% endif %}
-     {%- if not (f.is_synced and drive.is_readonly) and f.extension in editable_exts %} data-editable="1"{% endif %}>
-    <i class="fas {{ file_icon(f) }} w-4 text-center"></i>
-    <span class="truncate flex-1">{{ f.name }}</span>
-    {% if f.checksum in dupe_checksums %}<i class="fas fa-clone text-warning text-xs" title="Duplicate content"></i>{% endif %}
-    <span class="text-xs opacity-40 flex-shrink-0">{{ human_size(f.size) }}</span>
-</div>
-{%- endmacro %}
-
-{% macro tree_folder(f) -%}
-<details class="tree-node" open>
-    <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
-             data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}" draggable="true"
-             {%- if drive.is_readonly %} data-is-synced="1"{% endif %}>
-        <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
-    </summary>
-    <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col">
-        {% for child in f.children | sort(attribute='name') %}{{ tree_folder(child) }}{% endfor %}
-        {% for file in f.files | sort(attribute='name') %}{{ tree_file(file) }}{% endfor %}
-    </div>
-</details>
 {%- endmacro %}
 
 {% block content %}
@@ -327,12 +286,13 @@
 </div>
 
 {% elif view_mode == 'tree' %}
-<!-- Tree view: whole drive hierarchy -->
+<!-- Tree view: roots render collapsed; children load on expand (AJAX) so a
+     14k-folder drive costs 1 page + 1 fetch per opened folder, not ~28k queries -->
 <div class="glass-panel rounded-2xl p-4 mt-4 flex flex-col">
     <div class="flex items-center gap-2 py-1 px-2 text-sm font-bold border-b border-base-content/10 pb-2 mb-2">
         <i class="fas fa-hard-drive text-secondary"></i> {{ drive.name if drive else 'My Drive' }}
     </div>
-    {% for f in folders %}{{ tree_folder(f) }}{% endfor %}
+    {% for f in folders %}{{ tree_folder(f, f.id in tree_nonempty) }}{% endfor %}
     {% for f in files %}{{ tree_file(f) }}{% endfor %}
 </div>
 

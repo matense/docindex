@@ -4,6 +4,7 @@ from flask import current_app
 from markupsafe import Markup, escape
 from sqlalchemy import or_
 from sqlalchemy import text as sql_text
+from sqlalchemy.orm import selectinload
 
 from ..extensions import db
 from ..models import FileIndex, StoredFile
@@ -284,7 +285,8 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
         if rows is not None:
             rank_by_id = {r.file_id: r.rank for r in rows}
             ids = list(rank_by_id)
-            files = (StoredFile.query.filter(StoredFile.id.in_(ids)).all()
+            files = (StoredFile.query.options(selectinload(StoredFile.index))
+                     .filter(StoredFile.id.in_(ids)).all()
                      if ids else [])
             results = [
                 _build_result(f, terms,
@@ -465,6 +467,25 @@ def _advanced_base(user, query, filters):
     return base, params, terms, False
 
 
+def _fts_first(base):
+    """Pin an FTS-anchored base to the FTS-first join order (COUNT/GROUP BY).
+
+    For unbounded COUNT(*) SQLite picks files-first (``SEARCH files USING
+    ix_files_user_id`` then one FTS probe per file: ~5 s on 46k files).
+    Rewriting the inner join as CROSS JOIN pins ``file_fts`` as the outer
+    loop (rowid lookups per match: a few ms) with identical results.
+    No-op for bases without the FTS join (ILIKE fallback) or with an
+    unexpected shape (both replacements must match, else unchanged).
+    """
+    needle = "FROM idx.file_fts JOIN files ON files.id = file_fts.rowid"
+    anchor = "WHERE file_fts MATCH :match AND "
+    if needle in base and anchor in base:
+        base = base.replace(needle, "FROM idx.file_fts CROSS JOIN files", 1)
+        base = base.replace(
+            anchor, anchor + "files.id = file_fts.rowid AND ", 1)
+    return base
+
+
 def _plain_snippet(text, terms, radius=160):
     """One-line agent snippet around the first term hit: [bracket] markers,
     no HTML, whitespace collapsed."""
@@ -517,8 +538,10 @@ def search_advanced(user, query=None, *, sort="relevance", offset=0, limit=10,
     if order == "rank" and not used_fts:
         order = "files.name COLLATE NOCASE"  # no BM25 without FTS
 
+    # COUNT(*) over the joined set must not use the files-first plan
+    # (~5 s on 46k files): _fts_first pins the FTS-first order (ms).
     total = db.session.execute(
-        sql_text(f"SELECT COUNT(*) {base}"), params).scalar()
+        sql_text(f"SELECT COUNT(*) {_fts_first(base)}"), params).scalar()
     select = ("SELECT files.id AS fid, "
               + ("bm25(file_fts, 0.2, 1.0, 0.6, 0.4) AS rank, "
                  "snippet(file_fts, 1, '[', ']', '…', 16) AS snip "
@@ -528,7 +551,8 @@ def search_advanced(user, query=None, *, sort="relevance", offset=0, limit=10,
         sql_text(f"{select} ORDER BY {order} LIMIT :lim OFFSET :off"),
         dict(params, lim=limit, off=offset)).all()
 
-    files = {f.id: f for f in StoredFile.query.filter(
+    files = {f.id: f for f in StoredFile.query.options(
+        selectinload(StoredFile.index)).filter(
         StoredFile.id.in_([r.fid for r in rows])).all()} if rows else {}
     results = []
     for r in rows:
@@ -559,6 +583,9 @@ def count_files(user, query=None, **filters):
     {"total": n, "by_extension": {...}, "by_drive": {...}}."""
     query = (query or "").strip()
     base, params, _terms_, _used_fts = _advanced_base(user, query, filters)
+    # Same FTS-first fix as search_advanced: the three aggregations below
+    # all scan the match set, so they all need the fast join order.
+    base = _fts_first(base)
     total = db.session.execute(
         sql_text(f"SELECT COUNT(*) {base}"), params).scalar()
     # Breakdowns aggregate over the same match set (subquery in FROM — JOINs

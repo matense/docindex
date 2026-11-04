@@ -137,11 +137,21 @@ def test_view_modes(auth_client, app):
     assert b"root-file.txt" in resp.data
     assert b"<th" in resp.data  # table header
 
-    # Tree: shows the whole drive, including files inside folders
+    # Tree: roots render collapsed (lazy levels); nested content comes from
+    # the children endpoint on expand (no ~28k-query whole-drive render).
     resp = auth_client.get("/?view=tree")
     assert b"root-file.txt" in resp.data
     assert b"Docs" in resp.data
-    assert b"nested.txt" in resp.data
+    assert b"nested.txt" not in resp.data
+    assert b"data-has-children" in resp.data
+
+    # One level on expand: the Docs folder exposes nested.txt.
+    frag = auth_client.get(f"/tree/children/{folder_id}")
+    assert frag.status_code == 200
+    assert b"nested.txt" in frag.data
+
+    # Foreign folders are not expandable.
+    assert auth_client.get("/tree/children/999999").status_code == 404
 
     # Tree shows everything even when browsing inside a folder
     resp = auth_client.get(f"/folder/{folder_id}?view=tree")
