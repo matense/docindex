@@ -2666,13 +2666,17 @@ body.show-shortcuts #shortcut-help-panel {
     background: #f59e0b;
 }
 
-/* "Jump to latest" pill shown while auto-scroll is paused */
+/* "Jump to latest" pill shown while auto-scroll is paused.
+   NOTE: visibility is driven by Tailwind's .hidden (display:none). This
+   rule must NOT set display unconditionally: same specificity (0,1,0)
+   means stylesheet order would decide, and style.css loads after the
+   compiled Tailwind — the pill would never hide. Scope flex to :not(.hidden)
+   (0,2,0) so .hidden always wins, whatever loads first. */
 .ai-jump-pill {
     position: absolute;
     bottom: calc(100% + 8px);
     left: 50%;
     transform: translateX(-50%);
-    display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     font-size: 11px;
@@ -2686,6 +2690,9 @@ body.show-shortcuts #shortcut-help-panel {
     box-shadow: 0 8px 24px rgba(139, 92, 246, 0.45);
     z-index: 15;
     white-space: nowrap;
+}
+.ai-jump-pill:not(.hidden) {
+    display: inline-flex;
 }
 
 .ai-jump-pill:hover { transform: translateX(-50%) translateY(-1px); }
