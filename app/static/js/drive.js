@@ -192,40 +192,103 @@
         });
     }
 
-    document.querySelectorAll('[data-file-id]').forEach((card) => {
-        card.addEventListener('click', (e) => handleItemClick(card, e));
-        card.addEventListener('dragstart', (e) => onDragStart(card, e));
-    });
-
-    document.querySelectorAll('[data-folder-sel-id]').forEach((card) => {
-        card.addEventListener('click', (e) => handleItemClick(card, e));
-        card.addEventListener('dragstart', (e) => onDragStart(card, e));
-
-        if (S.driveReadonly) return; // read-only drive: no drop targets
-        card.addEventListener('dragover', (e) => {
-            if (!e.dataTransfer.types.includes('application/x-docindex-items')) return;
-            e.preventDefault();
-            e.stopPropagation();
-            e.dataTransfer.dropEffect = 'move';
-            card.classList.add('drop-hover');
+    // Per-element wiring (click/drag/drop/context menu). Runs once for the
+    // initial DOM and again for every AJAX-injected tree level (same scope
+    // param keeps re-runs from double-binding: fresh DOM each SPA visit,
+    // injected fragment after tree expands).
+    function wireItems(root) {
+        root.querySelectorAll('[data-file-id]').forEach((card) => {
+            card.addEventListener('click', (e) => handleItemClick(card, e));
+            card.addEventListener('dragstart', (e) => onDragStart(card, e));
         });
-        card.addEventListener('dragleave', () => card.classList.remove('drop-hover'));
-        card.addEventListener('drop', (e) => {
-            const raw = e.dataTransfer.getData('application/x-docindex-items');
-            card.classList.remove('drop-hover');
-            if (!raw) return;
-            e.preventDefault();
-            e.stopPropagation();
-            let items;
-            try { items = JSON.parse(raw); } catch (err) { return; }
-            const dest = card.dataset.folderSelId;
-            // Dropping a folder onto itself is a no-op.
-            const folders = (items.folders || []).filter(id => String(id) !== String(dest));
-            const files = items.files || [];
-            if (!files.length && !folders.length) return;
-            moveItems(files, folders, dest);
+
+        root.querySelectorAll('[data-folder-sel-id]').forEach((card) => {
+            card.addEventListener('click', (e) => handleItemClick(card, e));
+            card.addEventListener('dragstart', (e) => onDragStart(card, e));
+
+            if (S.driveReadonly) return; // read-only drive: no drop targets
+            card.addEventListener('dragover', (e) => {
+                if (!e.dataTransfer.types.includes('application/x-docindex-items')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                card.classList.add('drop-hover');
+            });
+            card.addEventListener('dragleave', () => card.classList.remove('drop-hover'));
+            card.addEventListener('drop', (e) => {
+                const raw = e.dataTransfer.getData('application/x-docindex-items');
+                card.classList.remove('drop-hover');
+                if (!raw) return;
+                e.preventDefault();
+                e.stopPropagation();
+                let items;
+                try { items = JSON.parse(raw); } catch (err) { return; }
+                const dest = card.dataset.folderSelId;
+                // Dropping a folder onto itself is a no-op.
+                const folders = (items.folders || []).filter(id => String(id) !== String(dest));
+                const files = items.files || [];
+                if (!files.length && !folders.length) return;
+                moveItems(files, folders, dest);
+            });
         });
-    });
+
+        root.querySelectorAll('[data-file-id]').forEach((el) => {
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const key = itemKey(el);
+                if (!S.selected.has(key)) {
+                    S.selected.clear();
+                    S.selected.set(key, itemEntry(el));
+                    paint();
+                }
+                openContextMenu(e.clientX, e.clientY, fileEntries(el));
+            });
+        });
+
+        root.querySelectorAll('[data-folder-sel-id]').forEach((el) => {
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openContextMenu(e.clientX, e.clientY, folderEntries(el));
+            });
+        });
+    }
+    wireItems(document);
+
+    // --- Lazy tree view ------------------------------------------------------
+    // Tree nodes render collapsed; the first expand fetches one level from
+    // /tree/children/<id> (same server macros, identical markup) and injects
+    // it. Cached per node (data-loaded), so a 14k-folder drive costs one
+    // small fetch per opened folder instead of ~28k queries up front.
+    async function loadTreeChildren(det) {
+        const box = det.querySelector(':scope > [data-children-for]');
+        if (!box) { det.dataset.loaded = '1'; return; }
+        if (det.dataset.hasChildren === '0') {
+            box.innerHTML = '<div class="text-xs opacity-40 px-2 py-1">Empty folder</div>';
+            det.dataset.loaded = '1';
+            return;
+        }
+        box.innerHTML = '<div class="text-xs opacity-40 px-2 py-1">' +
+            '<i class="fas fa-spinner fa-spin"></i> loading…</div>';
+        try {
+            const resp = await fetch('/tree/children/' + encodeURIComponent(det.dataset.folderId), {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const html = (await resp.text()).trim();
+            box.innerHTML = html || '<div class="text-xs opacity-40 px-2 py-1">Empty folder</div>';
+            wireItems(box);
+            paint();
+        } catch (err) {
+            box.innerHTML = '<div class="text-xs text-error px-2 py-1">Could not load folder.</div>';
+            return; // stay unloaded: the next open retries
+        }
+        det.dataset.loaded = '1';
+    }
+    // Per-run hook (this script re-executes every SPA navigation); the
+    // document-level toggle listener below is bound once and calls through.
+    window._driveTreeLoad = loadTreeChildren;
 
     function currentFolderId() {
         return document.querySelector('[data-folder-id]')?.dataset.folderId || '';
@@ -423,28 +486,7 @@
         return entries;
     }
 
-    document.querySelectorAll('[data-file-id]').forEach((el) => {
-        el.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const key = itemKey(el);
-            if (!S.selected.has(key)) {
-                S.selected.clear();
-                S.selected.set(key, itemEntry(el));
-                paint();
-            }
-            openContextMenu(e.clientX, e.clientY, fileEntries(el));
-        });
-    });
-
-    document.querySelectorAll('[data-folder-sel-id]').forEach((el) => {
-        el.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openContextMenu(e.clientX, e.clientY, folderEntries(el));
-        });
-    });
-
+    // Context menus are wired by wireItems() above (initial DOM + tree AJAX).
     // Empty-space menu (OS-like): New folder / Upload / Paste / Select all /
     // Refresh. Item handlers above stopPropagation, so this only fires on
     // background right-clicks.
@@ -504,6 +546,16 @@
                                   'button, a, form, dialog, input, .context-menu')) return;
             clearSelection();
         });
+
+        // Lazy tree expand (capture: `toggle` does not bubble). Bound once;
+        // the per-run loader is reached through window._driveTreeLoad.
+        document.addEventListener('toggle', (e) => {
+            const det = e.target;
+            if (!det.matches || !det.matches('details.tree-node[data-folder-id]')) return;
+            if (!onDrivePage()) return;
+            if (!det.open || det.dataset.loaded) return;
+            if (typeof window._driveTreeLoad === 'function') window._driveTreeLoad(det);
+        }, true);
 
         // --- Rubber-band (lasso) selection -----------------------------------
         // Dragging from empty background draws a rectangle; every visible item

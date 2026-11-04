@@ -234,6 +234,11 @@
                 div.innerHTML = '<i class="fas fa-arrow-turn-up fa-rotate-90"></i><span></span>';
                 div.querySelector('span').textContent = content;
             } else {
+                // Assistant bubble (live or history): drop any [[END]]
+                // remnant — the server strips the marker before persisting,
+                // but older transcripts still carry it, and the model may
+                // repeat itself after a mid-message marker.
+                content = stripFinalMarker(content);
                 div.className = 'chat chat-start';
                 div.innerHTML =
                     '<div class="chat-image avatar">' +
@@ -350,6 +355,13 @@
             return messagesEl.scrollTop + messagesEl.clientHeight
                 >= messagesEl.scrollHeight - 40;
         }
+        function stripFinalMarker(text) {
+            // The [[END]] "I'm done" marker is server business: if one
+            // slipped into a persisted transcript (or past the server
+            // strip), cut the answer there instead of showing it raw.
+            const i = (text || '').search(/\[\[\s*END\s*\]\]/i);
+            return i === -1 ? text : text.slice(0, i).replace(/\s+$/, '');
+        }
         function attachCurrentFile() {
             if (window.currentFile) {
                 attachFile(window.currentFile.id, window.currentFile.name);
@@ -405,6 +417,11 @@
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
             messagesEl.innerHTML = '';
+            // Wiping the transcript fires no scroll event: a stale paused
+            // state would glue the "New messages" pill onto the fresh
+            // (possibly short) conversation. Reset it here.
+            asPaused = false;
+            renderAutoScroll();
         }
         function closePlusMenu() {
             if (plusMenu) {
@@ -419,6 +436,11 @@
             reasoningBox = null;
             reasoningBody = null;
             lastThinkingSpan = null;
+            // Collapsing shrinks the transcript without scrolling: if that
+            // landed us back at the bottom, drop the stale paused state so
+            // the "New messages" pill doesn't stick around.
+            if (asAtBottom()) asPaused = false;
+            renderAutoScroll();
         }
         function convGroupHeader(label) {
             const div = document.createElement('div');
@@ -523,6 +545,7 @@
         }
         function finalizeLiveBubble(answer, meta) {
             flushTokens();
+            answer = stripFinalMarker(answer);
             if (!liveBubble) return addMessage('assistant', answer, meta);
             const div = liveBubble;
             liveBubble = null;
@@ -1206,11 +1229,20 @@
                      () => { cellRef = null; renderChips(); });
             }
             // Removable chips: drives picked with $ mentions (win over the
-            // drive being browsed).
+            // drive being browsed). Removing the last one falls back to the
+            // implicit current-drive chip — except when that fallback would
+            // look identical to the chip just removed (same drive): then it
+            // looks like the click did nothing, so go straight to All.
             driveRefs.forEach((r) => {
                 chip('badge-accent', 'fa-hard-drive', r.name,
                      'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing',
-                     () => { driveRefs = driveRefs.filter(x => x.id !== r.id); renderChips(); });
+                     () => {
+                         driveRefs = driveRefs.filter(x => x.id !== r.id);
+                         if (!driveRefs.length && window.currentDrive
+                                 && window.currentDrive.id === r.id)
+                             scopeAllDrives = true;
+                         renderChips();
+                     });
             });
             // Auto chips for the screen context — hidden in task mode, where
             // the captured context above is the truth.
@@ -2075,6 +2107,19 @@
                 asPaused = !asAtBottom();
                 renderAutoScroll();
             });
+            if (messagesEl && window.MutationObserver && !messagesEl._pauseSync) {
+                // Layout settles without scrolling (late images, font
+                // swaps, collapses): if that lands us back at the bottom,
+                // drop the stale paused state so the pill can't stick.
+                // Guarded by asPaused first — zero layout reads otherwise.
+                messagesEl._pauseSync = true;
+                new MutationObserver(() => {
+                    if (asPaused && asAtBottom()) {
+                        asPaused = false;
+                        renderAutoScroll();
+                    }
+                }).observe(messagesEl, { childList: true, subtree: true });
+            }
             if (jumpPill) jumpPill.addEventListener('click', () => scrollDown(true));
             renderAutoScroll();
             if (modelSelect) {

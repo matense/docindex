@@ -1293,6 +1293,31 @@ def test_agent_marker_ends_answer_despite_intent_words(app, user):
     assert "25 days" in events[-1][1]
 
 
+def test_agent_truncates_at_mid_message_end_marker(app, user):
+    """A small model may emit [[END]] mid-message and keep writing a second
+    copy of the answer: the first marker ends it — no duplication, no nudge
+    (even when the repeated tail itself reads like intent)."""
+    calls = {"n": 0}
+
+    def fake_completion(*args, **kwargs):
+        calls["n"] += 1
+        return {"role": "assistant", "content":
+                "You have 6 drives in total.\n\n[[END]]\n\n"
+                "You have 6 drives in total. Let me check the files."}
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with patch("app.services.ai_service.chat_completion", side_effect=fake_completion):
+            events = list(agent_service.run_agent_events(
+                user_obj, [{"role": "user", "content": "how many drives?"}]))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["answer"]  # marker wins over the intent-like tail
+    assert calls["n"] == 1
+    assert "[[END]]" not in events[-1][1]
+    assert events[-1][1].count("6 drives") == 1
+
+
 def test_agent_continues_when_output_is_truncated(app, user):
     """finish_reason=length means the answer was cut off by the token limit —
     never treat it as final, continue instead."""

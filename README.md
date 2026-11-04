@@ -126,7 +126,8 @@ questions about your files by searching and reading them step by step.
 ## Tech
 
 Python 3.11+ / Flask, SQLAlchemy + Flask-Migrate (SQLite by default),
-Flask-Login, Flask-WTF. Frontend: Tailwind CSS + DaisyUI via CDN, vanilla JS.
+Flask-Login, Flask-WTF. Frontend: locally compiled Tailwind CSS + DaisyUI
+and vendored JS libs (zero CDN dependencies), vanilla JS.
 AI: any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI API, ...).
 
 ## Installation (local)

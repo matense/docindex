@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
 from markupsafe import escape
+from sqlalchemy.orm import selectinload
 
 from ..models import Drive, StoredFile
 from ..services import drive_service, embedding_service, hashtag_service, search_service
@@ -29,7 +30,8 @@ def results():
             adv = search_service.search_advanced(
                 current_user, query, limit=50, mode=mode, drive=drive)
             ids = [r["file_id"] for r in adv["results"]]
-            files = {f.id: f for f in StoredFile.query.filter(
+            files = {f.id: f for f in StoredFile.query.options(
+                selectinload(StoredFile.index)).filter(
                 StoredFile.id.in_(ids)).all()} if ids else {}
             results = []
             for r in adv["results"]:

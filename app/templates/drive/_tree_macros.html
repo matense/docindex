@@ -1,0 +1,46 @@
+{# Tree-node macros shared by drive.html and the AJAX _tree_children.html
+   partial. Always import WITH context — tree_file/tree_folder read `drive`,
+   `dupe_checksums` and `editable_exts` from the template context:
+   {% from 'drive/_tree_macros.html' import tree_folder, tree_file with context %} #}
+{% macro file_icon(f) -%}
+    {%- if f.is_image -%}fa-file-image text-pink-500
+    {%- elif f.extension == 'pdf' -%}fa-file-pdf text-red-500
+    {%- elif f.extension == 'docx' -%}fa-file-word text-blue-500
+    {%- elif f.extension == 'pdocnb' -%}fa-book-open text-amber-500
+    {%- elif f.extension in ['csv', 'xlsx', 'xlsm', 'xls'] -%}fa-file-excel text-green-500
+    {%- elif f.extension in editable_exts -%}fa-file-code text-violet-500
+    {%- else -%}fa-file text-gray-400{%- endif -%}
+{%- endmacro %}
+
+{% macro human_size(n) -%}
+    {%- if n < 1024 -%}{{ n }} B
+    {%- elif n < 1048576 -%}{{ (n / 1024) | round(1) }} KB
+    {%- else -%}{{ (n / 1048576) | round(1) }} MB{%- endif -%}
+{%- endmacro %}
+
+{% macro tree_file(f) -%}
+<div class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 text-sm cursor-pointer transition-colors"
+     data-nav="{{ url_for('drive.view', file_id=f.id) }}"
+     draggable="true" data-file-id="{{ f.id }}" data-file-name="{{ f.name }}"
+     {%- if f.is_synced and drive.is_readonly %} data-is-synced="1"{% endif %}
+     {%- if not (f.is_synced and drive.is_readonly) and f.extension in editable_exts %} data-editable="1"{% endif %}>
+    <i class="fas {{ file_icon(f) }} w-4 text-center"></i>
+    <span class="truncate flex-1">{{ f.name }}</span>
+    {% if f.checksum in dupe_checksums %}<i class="fas fa-clone text-warning text-xs" title="Duplicate content"></i>{% endif %}
+    <span class="text-xs opacity-40 flex-shrink-0">{{ human_size(f.size) }}</span>
+</div>
+{%- endmacro %}
+
+{# Lazy node: children are NOT rendered here. The first expand fetches them
+   from /tree/children/<id> (drive.js) and injects them into [data-children-for].
+   `has_kids` comes from a whole-drive grouped count (2 queries, no N+1). #}
+{% macro tree_folder(f, has_kids) -%}
+<details class="tree-node" data-folder-id="{{ f.id }}" data-has-children="{{ '1' if has_kids else '0' }}">
+    <summary class="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-primary/5 cursor-pointer text-sm font-medium transition-colors"
+             data-folder-sel-id="{{ f.id }}" data-folder-name="{{ f.name }}" draggable="true"
+             {%- if drive.is_readonly %} data-is-synced="1"{% endif %}>
+        <i class="fas {{ 'fa-book-open text-primary' if f.name == 'DocIndex Notebooks' else 'fa-folder text-warning' }}"></i> {{ f.name }}
+    </summary>
+    <div class="pl-5 border-l border-base-content/10 ml-3 flex flex-col tree-children" data-children-for="{{ f.id }}"></div>
+</details>
+{%- endmacro %}

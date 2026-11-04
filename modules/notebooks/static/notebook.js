@@ -179,8 +179,9 @@
         input.focus();
     }
 
-    // Quill (Word-like WYSIWYG) loaded on demand from the CDN — only when a
-    // rich-text cell enters edit mode. Pixel sizes are registered as an
+    // Quill (Word-like WYSIWYG) loaded on demand from the vendored copy
+    // (app/static/vendor/quill/2.0.3 — same version as the old CDN) — only
+    // when a rich-text cell enters edit mode. Pixel sizes are registered as an
     // inline style attributor so any selection can get any size.
     let _quillCallbacks = null;
 
@@ -190,10 +191,10 @@
         _quillCallbacks = [cb];
         const link = document.createElement("link");
         link.rel = "stylesheet";
-        link.href = "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css";
+        link.href = "/static/vendor/quill/2.0.3/quill.snow.css";
         document.head.appendChild(link);
         const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js";
+        script.src = "/static/vendor/quill/2.0.3/quill.js";
         script.onload = () => {
             const Size = window.Quill.import("attributors/style/size");
             Size.whitelist = ["12px", "14px", "20px", "24px", "32px", "48px"];

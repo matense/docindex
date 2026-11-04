@@ -27,8 +27,12 @@ streamed to the browser as NDJSON.
   pytesseract + Pillow (image OCR), `markdown` (MD preview).
 - **AI**: any OpenAI-compatible HTTP endpoint (Ollama, LM Studio, OpenAI,
   Anthropic, Moonshot, ...) via plain `requests`.
-- **Frontend**: Jinja templates, Tailwind CSS + DaisyUI via CDN, vanilla JS
-  (no build step). FontAwesome icons, highlight.js, PDF.js, marked.
+- **Frontend**: Jinja templates, locally compiled Tailwind CSS + DaisyUI
+  (`app/static/css/tailwind.local.css`, a committed build artifact — see
+  `app/static/css/README.md` for the rebuild recipe), vanilla JS (no build
+  step). Third-party libs are vendored under `app/static/vendor/`
+  (FontAwesome, highlight.js, marked, DOMPurify, Quill): zero CDN
+  dependencies at runtime, fully offline-capable.
 
 ## Project layout
 
@@ -65,10 +69,14 @@ docindex/
 │   │   ├── ai_task_service.py    # background tasks, sync_service, module/log, ...
 │   ├── templates/          # Jinja: base.html + auth/ drive/ search/
 │   │                       #   settings/ behaviors/ components/
+│   │                       #   drive/_tree_macros.html + _tree_children.html
+│   │                       #   (lazy tree-view partials)
 │   └── static/
-│       ├── css/style.css
+│       ├── css/style.css         # hand-written CSS
+│       ├── css/tailwind.local.css  # compiled Tailwind+DaisyUI (committed)
+│       ├── vendor/<lib>/<ver>/  # third-party libs, no CDN at runtime
 │       └── js/             # spa/ui/main/drive/ai_chat/ai_page/sync+tasks/hashtag/caption widgets
-└── tests/                  # pytest suite (~540 tests)
+└── tests/                  # pytest suite (~890 tests)
 ```
 
 ## Application factory and entry points
@@ -479,7 +487,10 @@ or per division (enable/disable all) on `/behaviors`.
 - `auth.py`: `GET/POST /login`, `GET/POST /register` (blocked when the
   `registration_enabled` setting is off), `GET /logout`.
 - `drive.py` (all `login_required`): `/` and `/folder/<id>` (drive browser,
-  `view` = grid/list/tree stored in session), `/drives/create|select|edit`,
+  `view` = grid/list/tree stored in session; tree renders roots collapsed —
+  deeper levels load on expand via `GET /tree/children/<folder_id>`, an HTML
+  fragment rendered with the same macros, owned folders only),
+  `/drives/create|select|edit`,
   `/upload` (multi-file, HTML redirect or JSON when `Accept: application/json`;
   same-name same-folder upload becomes a new version),
   `/file/<id>/download|raw|thumbnail|rename|move|delete|view|edit|reindex|info`
@@ -628,10 +639,25 @@ files from the normal file routes).
    similarity (capped scan). `flask --app run.py reindex-embeddings`
    backfills the corpus (unchanged chunks skipped).
 
+   Two fail-fast guards keep a dead embedding backend from stalling
+   searches: `semantic_search` returns `[]` before any HTTP when the scoped
+   user has no vectors at all, and `embed_texts` fails fast for 60 s after
+   a backend failure (transport/persistent HTTP errors — 429 rate limits
+   are never cached, and a success clears the state). Net effect: one ~2 s
+   failure, then instant keyword fallback.
+
    The FTS table is derived data — the source of truth is `file_index`. It
    is maintained by `fts_upsert`/`fts_delete` hooks (indexing, rename,
    hashtag changes, trash/restore/purge, synced-drive removal) and can be
    rebuilt anytime with `flask --app run.py reindex-fts`.
+
+   Unbounded `COUNT(*)`/`GROUP BY` over an FTS-anchored match set
+   (`search_advanced` totals, all three `count_files` aggregations) runs
+   FTS-first: `_fts_first()` rewrites the inner join as `CROSS JOIN` so the
+   planner uses `file_fts` as the outer loop (rowid lookups, milliseconds).
+   The naive join order scans `files` first — one FTS probe per file, i.e.
+   seconds on 46k files. Page queries need no rewrite (a small `LIMIT`
+   keeps the FTS-first plan on its own).
 
 ### Hashtags
 
@@ -857,7 +883,9 @@ queued/running by a dead process as `interrupted` at startup.
 - **file_service** — physical storage: path helpers (`file_path` returns the
   real `source_path` for synced files), `save_upload`,
   thumbnails, SHA-256 checksums + per-drive duplicate detection
-  (`find_duplicates`, `duplicate_checksums`), version history
+  (`find_duplicates`, `duplicate_checksums` — 60 s TTL cache per
+  (user, drive), invalidated on upload/delete/restore/purge/move/copy),
+  version history
   (`snapshot_version`, `replace_with_upload`, `restore_version`,
   `find_by_name`), trash (`delete_file` soft-deletes, `restore_file`,
   `purge_file` removes disk + DB + thumbnail + version blobs,
@@ -865,10 +893,12 @@ queued/running by a dead process as `interrupted` at startup.
   `update_file_content` (snapshots before overwriting), `read_text_content`.
 - **indexing_service** — extraction and indexing (see flow above).
 - **search_service** — query parsing, scoring, snippet generation; FTS5
-  helpers (`fts_available`, `fts_upsert`, `fts_delete`, `fts_rebuild`) and
+  helpers (`fts_available`, `fts_upsert`, `fts_delete`, `fts_rebuild`,
+  `_fts_first` FTS-first join pin for unbounded counts) and
   the agent-oriented `search_advanced()`/`count_files()` (FTS5 syntax,
   metadata filters, sort, pagination, aggregate breakdowns — see
-  "The AI agent / Tools").
+  "The AI agent / Tools"). Result enrichment uses
+  `selectinload(StoredFile.index)` instead of per-row lazy loads.
 - **hashtag_service** — hashtags: normalization/storage (`set_tags`,
   `get_tags`), AI generation per file (`generate_tags`) and per-drive bulk
   background jobs (`start_job`, `pause_job`, `resume_job`, `cancel_job`,
@@ -1028,11 +1058,17 @@ the file..."). Three layers, in order:
    strict APIs reject unknown message fields.)
 2. **The `[[END]]` marker** — the system prompt asks the model to end its
    final answer with `[[END]]`. A response carrying it is accepted as final
-   unconditionally (the marker is stripped server-side, so the UI and the
-   transcript never see it); a response without tool calls that does NOT
+   unconditionally; a response without tool calls that does NOT
    carry it is a candidate for a nudge. This is the primary signal: the
    model can reason at length and cite files without being pushed into an
-   extra, confused round-trip.
+   extra, confused round-trip. Cutoff is at the FIRST occurrence —
+   small models sometimes emit the marker mid-message and keep writing a
+   rephrased copy of the answer; everything from the marker on is dropped,
+   server-side (`_strip_final_marker`, also applied on the forced-finalization
+   path), so the UI and the transcript never see it and the answer is not
+   duplicated. The client (`stripFinalMarker` in `ai_core.js`) applies the
+   same cut when rendering, which also heals transcripts persisted before
+   the server cut existed.
 3. **Intent heuristics (fallback)** — models that never learn the marker
    degrade to the old behaviour: `_looks_like_intent()` checks the *tail*
    of the text for Portuguese/English/Spanish intent phrases ("let me",
@@ -1063,7 +1099,8 @@ AI_MAX_STEPS`).
 
 ## Frontend architecture
 
-All JS is vanilla, loaded via CDN/`<script>` tags — no bundler.
+All JS is vanilla, loaded via local `<script>` tags (third-party libs
+vendored under `app/static/vendor/`, zero CDN) — no bundler.
 
 ### Server → client data contract (future `/api/bootstrap` spec)
 
@@ -1166,10 +1203,21 @@ modal (`/file/<id>/info`), rename, and drag & drop:
 - SPA re-run safety: the router re-executes this script on every drive-page
   navigation, so per-element listeners re-bind on the fresh cards while the
   document/container-level listeners (keyboard, click-to-clear, menu close,
-  background context menu) are bound once behind `window._driveGlobalBound`
-  and share `window._driveState` (selection, last-click anchor, open menu).
+  background context menu, lazy-tree `toggle` delegation) are bound once
+  behind `window._driveGlobalBound` and share
+  `window._driveState` (selection, last-click anchor, open menu).
   Page-level scripts must never declare top-level `let`/`const` — a
   re-executed script would die with a SyntaxError (`var`/functions only).
+- Lazy tree view: nodes render collapsed (`details.tree-node` with
+  `data-folder-id` + `data-has-children`, from the shared
+  `drive/_tree_macros.html`; `drive.html` imports them `with context` so
+  grid/list markup is unchanged). The first expand fires
+  `window._driveTreeLoad`, which fetches `GET /tree/children/<id>` (same
+  server macros — identical markup) and injects it into
+  `[data-children-for]`, then calls `wireItems(box)` (click/drag/drop/
+  context menu for the new nodes, same function used for the initial DOM)
+  and marks `data-loaded`. Empty folders short-circuit client-side; fetch
+  failures stay unloaded so the next open retries.
 
 `window.currentFile` tracks the file open in the viewer for `@here`.
 
@@ -1202,6 +1250,18 @@ minimal surface (`newConversation`, `toggleList`, `conversationId`):
   agent works and auto-collapses when the answer arrives. In the history
   view, `thinking` messages render as collapsed `ai-reasoning` blocks and
   `step` messages as check-mark lines.
+- "New messages" pill (`.acw-jump`): visible only while auto-scroll is
+  paused (scrolled >40 px up from the bottom); clicking it jumps to the
+  bottom and unpauses. The paused flag resets whenever the transcript is
+  wiped (`clearMessages`) and is re-checked when the reasoning box
+  collapses (a shrink with no scroll event must not glue the pill on). A
+  `MutationObserver` on the transcript clears a stale pause after any
+  layout shift that lands back at the bottom.
+- Drive scope chips: removing the last `$` drive falls back to the
+  current-drive chip — except when that fallback would look identical to
+  the chip just removed (same drive), in which case it jumps straight to
+  the "All drives" chip, so the click visibly does something. `$` mentions
+  stack: type `$` again to scope several drives at once.
 - Render answers with `marked`; `[name](file://ID)` citations are rewritten
   to `/file/<ID>/view` links.
 - Attachments: `@here` attaches `window.currentFile`, `#query` opens a
@@ -1254,7 +1314,8 @@ endpoints pass Flask-WTF validation without CSRF exemptions.
 
 ### Templates
 
-`base.html` (header, nav dock, search hero/dock markup, CDN assets) +
+`base.html` (header, nav dock, search hero/dock markup, local CSS/JS assets +
+vendored third-party libs) +
 `auth/login|register.html`, `drive/drive|view|edit.html`,
 `search/results.html` and `search/ai.html` (full-page chat),
 `settings/ai.html` (connection CRUD with provider presets, test button, model
