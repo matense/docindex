@@ -1254,7 +1254,14 @@ minimal surface (`newConversation`, `toggleList`, `conversationId`):
   paused (scrolled >40 px up from the bottom); clicking it jumps to the
   bottom and unpauses. The paused flag resets whenever the transcript is
   wiped (`clearMessages`) and is re-checked when the reasoning box
-  collapses (a shrink with no scroll event must not glue the pill on).
+  collapses (a shrink with no scroll event must not glue the pill on). A
+  `MutationObserver` on the transcript clears a stale pause after any
+  layout shift that lands back at the bottom.
+- Drive scope chips: removing the last `$` drive falls back to the
+  current-drive chip — except when that fallback would look identical to
+  the chip just removed (same drive), in which case it jumps straight to
+  the "All drives" chip, so the click visibly does something. `$` mentions
+  stack: type `$` again to scope several drives at once.
 - Render answers with `marked`; `[name](file://ID)` citations are rewritten
   to `/file/<ID>/view` links.
 - Attachments: `@here` attaches `window.currentFile`, `#query` opens a

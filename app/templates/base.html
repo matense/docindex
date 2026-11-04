@@ -43,7 +43,7 @@
     <!-- DOMPurify: sanitize model markdown before innerHTML (XSS guard, vendored) -->
     <script src="{{ url_for('static', filename='vendor/dompurify/3.1.6/purify.min.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=3" defer></script>
-    <script src="{{ url_for('static', filename='js/ai_core.js') }}?v=5" defer></script>
+    <script src="{{ url_for('static', filename='js/ai_core.js') }}?v=6" defer></script>
 
     {% if current_user.is_authenticated and current_drive %}
     <script>

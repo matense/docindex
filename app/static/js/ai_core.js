@@ -1229,11 +1229,20 @@
                      () => { cellRef = null; renderChips(); });
             }
             // Removable chips: drives picked with $ mentions (win over the
-            // drive being browsed).
+            // drive being browsed). Removing the last one falls back to the
+            // implicit current-drive chip — except when that fallback would
+            // look identical to the chip just removed (same drive): then it
+            // looks like the click did nothing, so go straight to All.
             driveRefs.forEach((r) => {
                 chip('badge-accent', 'fa-hard-drive', r.name,
                      'Answers are narrowed to this drive ($ mention) — remove to fall back to the drive you are browsing',
-                     () => { driveRefs = driveRefs.filter(x => x.id !== r.id); renderChips(); });
+                     () => {
+                         driveRefs = driveRefs.filter(x => x.id !== r.id);
+                         if (!driveRefs.length && window.currentDrive
+                                 && window.currentDrive.id === r.id)
+                             scopeAllDrives = true;
+                         renderChips();
+                     });
             });
             // Auto chips for the screen context — hidden in task mode, where
             // the captured context above is the truth.
