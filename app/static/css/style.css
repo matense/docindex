@@ -3684,6 +3684,253 @@ body.search-hero-mode #search-dock-container {
 .diff-meta { display: block; opacity: 0.5; }
 .diff-ctx  { display: block; opacity: 0.75; }
 
+/* Side-by-side code cells: same palette as the unified .diff-* spans, but
+   WITHOUT display:block — these live on <td>s and must stay table cells. */
+.gitsync-code-add { background: rgba(34, 197, 94, 0.14); color: #15803d; }
+.gitsync-code-del { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+.gitsync-code-hunk { color: var(--pdo-primary); font-weight: 600; }
+.gitsync-code-ctx { opacity: 0.75; }
+.gitsync-code-meta { opacity: 0.5; }
+
+/* Inline legend swatches (the .diff-* spans are display:block). */
+.gitsync-key-add {
+    display: inline-block;
+    background: rgba(34, 197, 94, 0.14);
+    color: #15803d;
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+}
+
+.gitsync-key-del {
+    display: inline-block;
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+}
+
+/* ---------- Git Sync detail: section nav, side-by-side diffs, quick-jump FAB ---------- */
+#sec-overview, #sec-next, #sec-remote, #sec-merge, #sec-working, #sec-diffs {
+    scroll-margin-top: 4.5rem;
+}
+
+.gitsync-section-nav {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+    padding: 0.55rem 0.7rem;
+    margin-bottom: 1rem;
+    border-radius: 0.9rem;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    background: rgba(255, 255, 255, 0.92);
+}
+
+[data-theme="dark"] .gitsync-section-nav {
+    background: rgba(17, 25, 40, 0.94);
+}
+
+.gitsync-section-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.83rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.6rem;
+    border: 1px solid transparent;
+    color: inherit;
+    opacity: 0.75;
+    text-decoration: none;
+}
+
+.gitsync-section-nav a:hover {
+    opacity: 1;
+    background: rgba(128, 128, 128, 0.14);
+}
+
+.gitsync-section-nav a.gitsync-nav-active {
+    opacity: 1;
+    border-color: rgba(59, 130, 246, 0.45);
+    background: rgba(59, 130, 246, 0.14);
+}
+
+.gitsync-section-nav .count {
+    border-radius: 999px;
+    font-size: 0.7rem;
+    padding: 0.05rem 0.45rem;
+    background: rgba(128, 128, 128, 0.2);
+}
+
+.gitsync-section-nav a.gitsync-nav-active .count {
+    background: #3b82f6;
+    color: #fff;
+}
+
+/* Side-by-side diff table (old | new). Cell colors reuse .diff-add/.diff-del. */
+.gitsync-sbs {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.gitsync-sbs td {
+    padding: 0.1rem 0.5rem;
+    vertical-align: top;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.gitsync-sbs td.gitsync-lno {
+    width: 2.6rem;
+    min-width: 2.6rem;
+    text-align: right;
+    opacity: 0.45;
+    user-select: none;
+}
+
+.gitsync-sbs tr.gitsync-sbs-hunk td {
+    font-size: 0.75rem;
+}
+
+.gitsync-sbs-wrap {
+    overflow: auto;
+    max-height: 60vh;
+    border-radius: 0.7rem;
+    background: rgba(128, 128, 128, 0.08);
+    padding: 0.6rem;
+}
+
+/* Per-file diff dialog (opened from the compact file lists). */
+.gitsync-diff-dialog {
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 1rem;
+    padding: 0;
+    max-width: min(72rem, 94vw);
+    width: 72rem;
+}
+
+.gitsync-diff-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.55);
+}
+
+.gitsync-dialog-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.9rem 1.1rem;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+    position: sticky;
+    top: 0;
+}
+
+.gitsync-dialog-body {
+    padding: 1rem 1.1rem;
+}
+
+.gitsync-stat-add {
+    color: #16a34a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.gitsync-stat-del {
+    color: #ef4444;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.gitsync-kind-dot {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 999px;
+    margin-right: 0.4rem;
+}
+
+.gitsync-kind-added { background: #22c55e; }
+.gitsync-kind-deleted { background: #ef4444; }
+.gitsync-kind-renamed { background: #60a5fa; }
+.gitsync-kind-modified { background: #f59e0b; }
+
+/* Floating quick-jump (same sections as the sticky nav; bottom-left to
+   avoid the sync widget docked at bottom-right). */
+.gitsync-fab {
+    position: fixed;
+    left: 1rem;
+    bottom: 1rem;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.gitsync-fab-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    border-radius: 0.8rem;
+    padding: 0.45rem;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .gitsync-fab-menu {
+    background: rgba(17, 25, 40, 0.97);
+}
+
+.gitsync-fab-menu[hidden] {
+    display: none;
+}
+
+.gitsync-fab-menu a {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.83rem;
+    padding: 0.42rem 0.7rem;
+    border-radius: 0.55rem;
+    white-space: nowrap;
+    color: inherit;
+    opacity: 0.8;
+    text-decoration: none;
+}
+
+.gitsync-fab-menu a:hover {
+    opacity: 1;
+    background: rgba(128, 128, 128, 0.16);
+}
+
+.gitsync-fab-menu a.gitsync-nav-active {
+    opacity: 1;
+    background: rgba(59, 130, 246, 0.16);
+}
+
+.gitsync-fab-btn {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 999px;
+    border: 1px solid rgba(59, 130, 246, 0.55);
+    background: #3b82f6;
+    color: #fff;
+    font-size: 1.15rem;
+    cursor: pointer;
+    box-shadow: 0 6px 24px rgba(59, 130, 246, 0.45);
+}
+
+.gitsync-fab[hidden] {
+    display: none;
+}
+
 /* ---------- UI dialogs (ui.js): styled confirm/alert modals ---------- */
 .ui-dialog::backdrop {
     background: rgba(15, 23, 42, 0.35);

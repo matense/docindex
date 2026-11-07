@@ -8,6 +8,7 @@ configuration.
 
 import io
 import os
+import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -518,7 +519,130 @@ def _group_diff(diff):
             files[-1]["diff"] += line
     if diff and not files:
         files.append({"header": "Diff", "diff": diff})
+    for entry in files:
+        entry.update(_describe_diff_file(entry["header"], entry["diff"]))
     return files
+
+
+def _diff_file_path(header):
+    """Repo-relative path from a ``diff --git a/old b/new`` header line."""
+    rest = header[len("diff --git "):].strip() if header.startswith("diff --git ") else header.strip()
+    quoted = re.findall(r'"((?:[^"\\]|\\.)*)"', rest)
+    if len(quoted) >= 2:
+        old, new = quoted[0], quoted[1]
+    else:
+        tokens = rest.split(" ")
+        first = tokens[0][2:] if tokens[0].startswith("a/") else tokens[0]
+        last = tokens[-1][2:] if tokens[-1].startswith("b/") else tokens[-1]
+        old, new = first, last
+    if new and new not in ("dev/null", "/dev/null"):
+        return new
+    return old
+
+
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
+
+# File-header metadata emitted before the first hunk: not content, skip it in
+# the side-by-side view (it stays visible in the unified view).
+_METADATA_PREFIXES = ("new file ", "deleted file ", "index ",
+                      "similarity index ", "dissimilarity index ",
+                      "rename from ", "rename to ", "old mode", "new mode")
+
+
+def _split_side_by_side(diff):
+    """Parse unified diff text into side-by-side rows (old | new columns).
+
+    Row types: ``hunk`` (text), ``ctx``/``del``/``add`` (old/new line numbers
+    plus text) and ``chg`` (one removed line paired with its added lines).
+    ``meta`` rows carry non-content markers such as ``\\ No newline``.
+    """
+    rows = []
+    old_no = new_no = None
+    for line in diff.splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            continue
+        if line.startswith(_METADATA_PREFIXES):
+            continue
+        match = _HUNK_RE.match(line)
+        if match:
+            old_no, new_no = int(match.group(1)), int(match.group(2))
+            text = match.group(3).strip() or f"lines {old_no} / {new_no}"
+            rows.append({"type": "hunk", "text": text})
+            continue
+        if line.startswith("\\"):
+            rows.append({"type": "meta", "text": line})
+            continue
+        if old_no is None:
+            rows.append({"type": "ctx", "old": None, "new": None, "text": line})
+            continue
+        if line.startswith("-"):
+            rows.append({"type": "del", "old": old_no, "new": None, "text": line[1:]})
+            old_no += 1
+        elif line.startswith("+"):
+            rows.append({"type": "add", "old": None, "new": new_no, "text": line[1:]})
+            new_no += 1
+        else:
+            text = line[1:] if line.startswith(" ") else line
+            rows.append({"type": "ctx", "old": old_no, "new": new_no, "text": text})
+            old_no += 1
+            new_no += 1
+    # Pair adjacent del/add runs one-to-one, in order: the common N-line
+    # replace block renders as N aligned rows. Leftovers stay single-sided.
+    paired = []
+    index = 0
+    while index < len(rows):
+        row = rows[index]
+        if row["type"] == "del":
+            dels = [row]
+            look = index + 1
+            while look < len(rows) and rows[look]["type"] == "del":
+                dels.append(rows[look])
+                look += 1
+            adds = []
+            while look < len(rows) and rows[look]["type"] == "add":
+                adds.append(rows[look])
+                look += 1
+            if adds:
+                for position, change in enumerate(dels):
+                    if position < len(adds):
+                        paired.append({
+                            "type": "chg", "old": change["old"], "old_text": change["text"],
+                            "new": adds[position]["new"], "new_text": adds[position]["text"],
+                        })
+                    else:
+                        paired.append({"type": "del", "old": change["old"], "text": change["text"]})
+                for extra in adds[len(dels):]:
+                    paired.append({"type": "add", "new": extra["new"], "text": extra["text"]})
+                index = look
+                continue
+            paired.extend(dels)
+            index = look
+            continue
+        paired.append(row)
+        index += 1
+    return paired
+
+
+def _describe_diff_file(header, body):
+    """List-friendly facts for one grouped file diff: path, kind, +/- counts, rows."""
+    text = "\n" + body
+    if body.startswith("new file mode") or "\nnew file mode" in text:
+        kind = "added"
+    elif body.startswith("deleted file mode") or "\ndeleted file mode" in text:
+        kind = "deleted"
+    elif "rename from" in text or "similarity index" in text:
+        kind = "renamed"
+    else:
+        kind = "modified"
+    added = removed = 0
+    for line in body.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {"path": _diff_file_path(header), "kind": kind,
+            "added": added, "removed": removed,
+            "rows": _split_side_by_side(body)}
 
 
 def inspect_summary(repository):
@@ -583,6 +707,13 @@ def inspect_changes(repository, basis="head"):
             {**change, "preview": _conflict_preview(repo, change["path"])}
             for change in changes if change["conflict"]
         ]
+        diff_files = _group_diff(visible_diff)
+        by_path = {}
+        for index, entry in enumerate(diff_files):
+            by_path.setdefault(entry["path"], index)
+        for change in changes:
+            # Working-tree "Diff" buttons open this file's dialog below (if any).
+            change["diff_idx"] = by_path.get(change["path"])
         return {
             "head": head,
             "merge_in_progress": bool(merge_head),
@@ -594,7 +725,7 @@ def inspect_changes(repository, basis="head"):
             "merge_diff_truncated": merge_diff_truncated,
             "changes": changes, "change_count": len(changes),
             "conflict_count": conflict_count, "staged_count": staged_count,
-            "diff": visible_diff, "diff_files": _group_diff(visible_diff),
+            "diff": visible_diff, "diff_files": diff_files,
             "diff_truncated": diff_truncated,
         }
 

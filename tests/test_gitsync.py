@@ -695,6 +695,31 @@ def test_status_diff_and_initial_baseline(auth_client, app, repository, enabled)
     assert b"+changed content" in _view(auth_client, response.location + "?basis=initial").data
 
 
+def test_side_by_side_pairs_changed_lines_one_to_one():
+    service = _module().service
+    diff = ("--- a/notes.txt\n+++ b/notes.txt\n"
+            "@@ -1,4 +1,4 @@\n ctx\n-old1\n-old2\n+new1\n+new2\n tail\n")
+    rows = service._split_side_by_side(diff)
+    assert [(row["type"], row.get("old"), row.get("new")) for row in rows] == [
+        ("hunk", None, None), ("ctx", 1, 1), ("chg", 2, 2),
+        ("chg", 3, 3), ("ctx", 4, 4),
+    ]
+    assert rows[2]["old_text"] == "old1" and rows[2]["new_text"] == "new1"
+    assert rows[3]["old_text"] == "old2" and rows[3]["new_text"] == "new2"
+
+    unbalanced = service._split_side_by_side("@@ -1,3 +1,2 @@\n-old1\n-old2\n+new1\n")
+    assert [(row["type"], row.get("old"), row.get("new")) for row in unbalanced] == [
+        ("hunk", None, None), ("chg", 1, 1), ("del", 2, None),
+    ]
+
+    added = service._split_side_by_side(
+        "new file mode 100644\nindex 0000000..abc1234\n"
+        "--- /dev/null\n+++ b/n.txt\n@@ -0,0 +1 @@\n+hello\n")
+    assert [(row["type"], row.get("old"), row.get("new")) for row in added] == [
+        ("hunk", None, None), ("add", None, 1),
+    ]
+
+
 def test_diffs_are_grouped_and_navigable_by_file(auth_client, app, repository, enabled):
     (repository / "second.txt").write_text("second original\n", encoding="utf-8")
     _git(repository, "add", "second.txt")
@@ -707,10 +732,19 @@ def test_diffs_are_grouped_and_navigable_by_file(auth_client, app, repository, e
     with app.app_context():
         state = _module().service.inspect(_module().models.Repository.query.one())
     assert len(state["diff_files"]) == 2
-    assert "readme.md" in " ".join(file["header"] for file in state["diff_files"])
-    assert b"data-diff-browser" in page.data
-    assert b"gitsync-diff-navigator" in page.data
-    assert b"<details class=\"gitsync-diff-file" in page.data
+    assert state["diff_files"][0]["path"] == "readme.md"
+    assert state["diff_files"][0]["added"] == 1
+    assert state["diff_files"][0]["removed"] == 1
+    assert any(row["type"] == "chg" for row in state["diff_files"][0]["rows"])
+    readme = next(change for change in state["changes"] if change["path"] == "readme.md")
+    assert readme["diff_idx"] is not None
+    html = page.data.decode()
+    assert 'id="gitsync-section-nav"' in html
+    assert 'id="gitsync-diffs-table"' in html
+    assert 'data-open-dialog="gitsync-diff-dialog-0"' in html
+    assert '<dialog id="gitsync-diff-dialog-0"' in html
+    assert "gitsync-sbs" in html
+    assert 'id="gitsync-fab"' in html
 
 
 def test_changed_files_beyond_500_are_searchable_and_selectable(auth_client, app, repository, enabled):
@@ -723,6 +757,7 @@ def test_changed_files_beyond_500_are_searchable_and_selectable(auth_client, app
     assert b"gitsync-change-search" in page.data
     assert b"gitsync-change-status" in page.data
     assert b"gitsync-select-page" in page.data
+    assert b"gitsync-select-all" in page.data
     assert b"pageSize = 100" in page.data
     with app.app_context():
         state = _module().service.inspect(_module().models.Repository.query.one())

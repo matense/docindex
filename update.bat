@@ -29,9 +29,21 @@ rem no git binary is required. Bootstrap it first if this venv lacks it.
 "%VENV_PY%" -c "import dulwich" 2>nul
 if errorlevel 1 (
     echo -^> Installing dulwich for the updater...
-    for /f "tokens=*" %%p in ('findstr /b "dulwich" requirements.txt') do set DULWICH_PIN=%%p
-    "%VENV_PY%" -m pip install "%DULWICH_PIN%"
+    set "DULWICH_PIN="
+    for /f "tokens=*" %%p in ('findstr /b "dulwich" requirements.txt') do set "DULWICH_PIN=%%p"
+    if defined DULWICH_PIN (
+        "%VENV_PY%" -m pip install "%DULWICH_PIN%"
+    ) else (
+        rem Old checkout predates the dulwich pin - install unpinned.
+        "%VENV_PY%" -m pip install dulwich
+    )
     if errorlevel 1 exit /b 1
+    "%VENV_PY%" -c "import dulwich" 2>nul
+    if errorlevel 1 (
+        echo ERROR: dulwich is still missing after install. Re-run the dependency step:
+        echo     "%VENV_PY%" -m pip install -r requirements.txt
+        exit /b 1
+    )
 )
 "%VENV_PY%" tools/git_sync.py pull
 if errorlevel 1 exit /b 1

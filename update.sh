@@ -27,8 +27,18 @@ echo "-> Pulling the latest code..."
 # no git binary is required. Bootstrap it first if this venv lacks it.
 if ! "$VENV_PY" -c "import dulwich" 2>/dev/null; then
     echo "-> Installing dulwich for the updater..."
-    DULWICH_PIN=$(grep -m1 -E "^dulwich" requirements.txt)
-    "$VENV_PY" -m pip install "$DULWICH_PIN"
+    DULWICH_PIN=$(grep -m1 -E "^dulwich" requirements.txt || true)
+    if [ -n "$DULWICH_PIN" ]; then
+        "$VENV_PY" -m pip install "$DULWICH_PIN"
+    else
+        # Old checkout predates the dulwich pin - install unpinned.
+        "$VENV_PY" -m pip install dulwich
+    fi
+    if ! "$VENV_PY" -c "import dulwich" 2>/dev/null; then
+        echo "ERROR: dulwich is still missing after install. Re-run the dependency step:"
+        echo "    $VENV_PY -m pip install -r requirements.txt"
+        exit 1
+    fi
 fi
 "$VENV_PY" tools/git_sync.py pull
 

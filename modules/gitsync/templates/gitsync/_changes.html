@@ -1,15 +1,57 @@
 {# Async fragment: working-tree walk + actions. Loaded by detail.html into #gitsync-changes. #}
-{% macro render_diff(diff) %}
-<div class="text-xs opacity-70 mb-2">
-    Lines prefixed with <span class="diff-del px-1">-</span> exist only in the old version,
-    lines with <span class="diff-add px-1">+</span> only in the new one.
-</div>
+{% macro render_unified(diff) %}
 <pre class="diff-view bg-base-200/60 rounded-xl p-4 overflow-x-auto max-h-[36rem] text-sm leading-relaxed">{% for line in diff.splitlines() %}{% if line.startswith('+++') or line.startswith('---') %}<span class="diff-meta">{{ line }}
 </span>{% elif line.startswith('@@') %}<span class="diff-hunk">{{ line }}
 </span>{% elif line.startswith('+') %}<span class="diff-add">{{ line }}
 </span>{% elif line.startswith('-') %}<span class="diff-del">{{ line }}
 </span>{% else %}<span class="diff-ctx">{{ line }}
 </span>{% endif %}{% endfor %}</pre>
+{% endmacro %}
+{% macro render_diff(diff) %}
+<div class="text-xs opacity-70 mb-2">
+    Lines prefixed with <span class="gitsync-key-del">-</span> exist only in the old version,
+    lines with <span class="gitsync-key-add">+</span> only in the new one.
+</div>
+{{ render_unified(diff) }}
+{% endmacro %}
+{% macro render_side_by_side(rows) %}
+<table class="gitsync-sbs"><tbody>
+    {% for row in rows %}
+    {% if row.type == 'hunk' %}
+    <tr class="gitsync-sbs-hunk"><td class="gitsync-lno gitsync-code-hunk">&#8942;</td><td class="gitsync-code-hunk">@@ {{ row.text }} @@</td><td class="gitsync-lno gitsync-code-hunk">&#8942;</td><td class="gitsync-code-hunk">@@ {{ row.text }} @@</td></tr>
+    {% elif row.type == 'ctx' %}
+    <tr><td class="gitsync-lno gitsync-code-ctx">{{ row.old or '' }}</td><td class="gitsync-code-ctx"> {{ row.text }}</td><td class="gitsync-lno gitsync-code-ctx">{{ row.new or '' }}</td><td class="gitsync-code-ctx"> {{ row.text }}</td></tr>
+    {% elif row.type == 'del' %}
+    <tr><td class="gitsync-lno gitsync-code-del">{{ row.old }}</td><td class="gitsync-code-del">- {{ row.text }}</td><td class="gitsync-lno"></td><td></td></tr>
+    {% elif row.type == 'add' %}
+    <tr><td class="gitsync-lno"></td><td></td><td class="gitsync-lno gitsync-code-add">{{ row.new }}</td><td class="gitsync-code-add">+ {{ row.text }}</td></tr>
+    {% elif row.type == 'chg' %}
+    <tr><td class="gitsync-lno gitsync-code-del">{{ row.old }}</td><td class="gitsync-code-del">- {{ row.old_text }}</td><td class="gitsync-lno gitsync-code-add">{{ row.new }}</td><td class="gitsync-code-add">+ {{ row.new_text }}</td></tr>
+    {% elif row.type == 'meta' %}
+    <tr><td colspan="4" class="gitsync-code-meta">{{ row.text }}</td></tr>
+    {% endif %}
+    {% endfor %}
+</tbody></table>
+{% endmacro %}
+{% macro render_diff_dialog(file, index) %}
+{% set dialog_id = "gitsync-diff-dialog-" ~ index %}
+<dialog id="{{ dialog_id }}" class="gitsync-diff-dialog" aria-labelledby="{{ dialog_id }}-title">
+    <div class="gitsync-dialog-head">
+        <i class="fas fa-code-compare text-primary"></i>
+        <strong id="{{ dialog_id }}-title" class="font-mono text-sm break-all flex-1">{{ file.path }}</strong>
+        <span><span class="gitsync-stat-add">+{{ file.added }}</span> <span class="gitsync-stat-del">-{{ file.removed }}</span></span>
+        <div class="join" role="group" aria-label="Diff view">
+            <button type="button" class="btn btn-xs join-item btn-active" data-view="side">Side-by-side</button>
+            <button type="button" class="btn btn-xs join-item" data-view="uni">Unified</button>
+        </div>
+        <button type="button" class="btn btn-sm btn-ghost" data-close-dialog><i class="fas fa-xmark"></i> Close</button>
+    </div>
+    <div class="gitsync-dialog-body">
+        <p class="text-xs opacity-60 mt-0 mb-2">Lines <span class="gitsync-key-del">-</span> exist only in the old version, lines <span class="gitsync-key-add">+</span> only in the new one.</p>
+        <div class="gitsync-sbs-wrap" data-pane="side">{{ render_side_by_side(file.rows) }}</div>
+        <div data-pane="uni" hidden>{{ render_unified(file.diff) }}</div>
+    </div>
+</dialog>
 {% endmacro %}
 {% macro render_diff_files(files, group_name) %}
 <div class="flex flex-wrap gap-2 items-center mb-3" data-diff-browser>
@@ -42,6 +84,14 @@
     {% elif state.change_count %}<span class="badge badge-info badge-outline">{{ state.change_count }} working change{{ 's' if state.change_count != 1 }}</span>
     {% else %}<span class="badge badge-success badge-outline">Working tree clean</span>{% endif %}
 </div>
+<nav class="gitsync-section-nav" aria-label="Page sections" id="gitsync-section-nav">
+    <a href="#sec-overview" data-spy="sec-overview"><i class="fas fa-circle-info"></i> Overview</a>
+    <a href="#gitsync-next-step" data-spy="gitsync-next-step"><i class="fas fa-compass"></i> Next step</a>
+    <a href="#sec-remote" data-spy="sec-remote"><i class="fas fa-cloud"></i> Remote actions</a>
+    {% if state.merge_in_progress %}<a href="#sec-merge" data-spy="sec-merge"><i class="fas fa-code-merge"></i> Merge review</a>{% endif %}
+    <a href="#sec-working" data-spy="sec-working"><i class="fas fa-pen"></i> Working tree <span class="count">{{ state.change_count }}</span></a>
+    <a href="#sec-diffs" data-spy="sec-diffs"><i class="fas fa-code-compare"></i> Tracked differences <span class="count">{{ state.diff_files|length }}</span></a>
+</nav>
 {# Where the user is in the review -> commit -> fetch/merge -> push flow, with the one action to take next. #}
 {% set ahead = state.ahead_behind.ahead if state.ahead_behind else 0 %}
 {% set behind = state.ahead_behind.behind if state.ahead_behind else 0 %}
@@ -109,7 +159,7 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn btn-sm btn-primary" type="submit" data-confirm="Start a local merge review? This can change working-tree files but will not create a commit or push."><i class="fas fa-code-merge"></i> Review upstream merge</button>
             </form>
-            {% elif step == 'identity' %}<a class="btn btn-sm btn-primary" href="#gitsync-remote-help"><i class="fas fa-user-pen"></i> Set identity</a>
+            {% elif step == 'identity' %}<a class="btn btn-sm btn-primary" href="#sec-overview"><i class="fas fa-user-pen"></i> Set identity</a>
             {% endif %}
             {% if can_push_now %}
             <form method="POST" action="{{ url_for('gitsync.push', drive_id=drive.id) }}">
@@ -133,7 +183,7 @@
         </details>
         {% endif %}
     </section>
-    <section class="glass-panel rounded-2xl p-4 sm:p-5">
+    <section class="glass-panel rounded-2xl p-4 sm:p-5" id="sec-remote">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h2 class="font-semibold">Remote actions</h2>
             <span class="text-xs opacity-60">Explicit operations; none run automatically</span>
@@ -176,7 +226,7 @@
         </div>
     </section>
     {% if state.merge_in_progress %}
-    <section class="glass-panel rounded-2xl p-4 sm:p-6 border border-warning/30 bg-warning/5">
+    <section class="glass-panel rounded-2xl p-4 sm:p-6 border border-warning/30 bg-warning/5" id="sec-merge">
         <div class="flex flex-wrap items-center gap-3 mb-3">
             <h2 class="font-semibold text-lg flex-1">Merge review</h2>
             <form method="POST" action="{{ url_for('gitsync.abort_merge', drive_id=drive.id) }}" data-confirm="Abort this merge and discard its staged merge result and conflict choices?" data-confirm-danger>
@@ -237,7 +287,7 @@
     {% if state.conflict_count and not state.merge_in_progress %}
     <div class="alert alert-error my-4" role="alert"><i class="fas fa-code-compare"></i><span>{{ state.conflict_count }} unresolved conflict(s) exist outside a Git Sync merge. Resolve or abort them in your Git client.</span></div>
     {% endif %}
-    <section class="glass-panel rounded-2xl p-4 sm:p-6">
+    <section class="glass-panel rounded-2xl p-4 sm:p-6" id="sec-working">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h2 class="font-semibold text-lg">Working tree changes</h2>
             <span class="badge {{ 'badge-warning' if state.change_count else 'badge-success badge-outline' }}">{{ state.change_count }} file{{ 's' if state.change_count != 1 }}</span>
@@ -282,12 +332,14 @@
             <label class="form-control flex-1 min-w-52"><span class="label-text text-xs">Search changed files</span><input id="gitsync-change-search" class="input input-bordered input-sm" type="search" placeholder="Filter by path"></label>
             <label class="form-control w-44"><span class="label-text text-xs">Status</span><select id="gitsync-change-status" class="select select-bordered select-sm"><option value="">All statuses</option><option value="modified">Modified</option><option value="staged">Staged</option><option value="untracked">Untracked</option><option value="deleted">Deleted</option><option value="added">Added</option><option value="renamed">Renamed or copied</option><option value="conflict">Conflicts</option></select></label>
             <button id="gitsync-select-page" class="btn btn-sm btn-outline" type="button" {% if commit_unavailable %}disabled{% endif %}>Select page</button>
+            <button id="gitsync-select-all" class="btn btn-sm btn-outline" type="button" {% if commit_unavailable %}disabled{% endif %}>Select all</button>
             <span class="text-sm" aria-live="polite"><span id="gitsync-selected-count">0</span> selected</span>
         </div>
         <div class="overflow-x-auto">
             <table class="table table-sm w-full"><thead><tr><th>Select</th><th>Status</th><th>File</th><th>Actions</th></tr></thead><tbody id="gitsync-change-rows">
             {% for change in state.changes %}<tr class="gitsync-change-row" data-search="{{ change.path }} {{ change.original or '' }}" data-status="{{ change.status }}"><td><input class="checkbox checkbox-sm gitsync-commit-path" type="checkbox" name="paths" value="{{ change.path }}" aria-label="Select {{ change.path }}" {% if commit_unavailable %}disabled{% endif %}></td><td class="font-mono whitespace-pre">{{ change.status }}{% if change.conflict %} <span class="badge badge-error">Conflict</span>{% endif %}</td><td class="break-all">{% if change.original %}{{ change.original }} &rarr; {% endif %}{{ change.path }}</td><td>
                 {% if not change.conflict %}
+                {% if change.diff_idx is not none %}<button class="btn btn-xs btn-ghost" type="button" data-open-dialog="gitsync-diff-dialog-{{ change.diff_idx }}" title="View side-by-side diff for {{ change.path }}" aria-label="View diff for {{ change.path }}"><i class="fas fa-code-compare"></i> Diff</button>{% endif %}
                 <button class="btn btn-xs btn-ghost text-error" type="submit" form="gitsync-discard-{{ loop.index }}" title="Discard changes to {{ change.path }}" aria-label="Discard changes to {{ change.path }}"><i class="fas fa-trash-can"></i> Discard</button>
                 {% else %}<span class="text-xs opacity-60">Resolve conflict above</span>{% endif %}
             </td></tr>
@@ -307,7 +359,7 @@
             </div>
         </form>
     </section>
-    <section class="glass-panel rounded-2xl p-4 sm:p-6">
+    <section class="glass-panel rounded-2xl p-4 sm:p-6" id="sec-diffs">
         <div class="flex flex-wrap items-center gap-3 mb-3">
             <h2 class="font-semibold text-lg flex-1">Tracked file differences</h2>
             <div class="tabs tabs-boxed" role="tablist">
@@ -315,10 +367,38 @@
                 {% if repository.baseline %}<a role="tab" class="tab {{ 'tab-active' if basis == 'initial' }}" href="{{ url_for('gitsync.detail', drive_id=drive.id, basis='initial') }}">When connected</a>{% endif %}
             </div>
         </div>
-        {% if state.diff_files %}{{ render_diff_files(state.diff_files, 'working') }}
+        {% if state.diff_files %}
+        <p class="text-xs opacity-60 mb-2">Against <span class="font-mono">{{ repository.baseline[:12] if basis == 'initial' and repository.baseline else state.head[:12] }}</span> — open a file to inspect its changes side by side.</p>
+        <div class="overflow-x-auto">
+            <table class="table table-sm w-full" id="gitsync-diffs-table">
+                <thead><tr><th>Status</th><th>File</th><th>Changes</th><th class="text-right">Diff</th></tr></thead>
+                <tbody>
+                {% for file in state.diff_files %}
+                <tr>
+                    <td class="whitespace-nowrap"><span class="gitsync-kind-dot gitsync-kind-{{ file.kind }}"></span><span class="font-mono text-xs">{{ file.kind|capitalize }}</span></td>
+                    <td class="break-all font-mono text-sm">{{ file.path }}</td>
+                    <td class="whitespace-nowrap"><span class="gitsync-stat-add">+{{ file.added }}</span> <span class="gitsync-stat-del">-{{ file.removed }}</span></td>
+                    <td class="text-right"><button class="btn btn-sm" type="button" data-open-dialog="gitsync-diff-dialog-{{ loop.index0 }}"><i class="fas fa-code-compare"></i> View diff</button></td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% for file in state.diff_files %}{{ render_diff_dialog(file, loop.index0) }}{% endfor %}
         {% else %}<p class="text-sm opacity-60">No tracked differences against this reference. Untracked files appear in the list above.</p>{% endif %}
         {% if state.diff_truncated %}<p class="text-warning text-sm">Diff truncated at 200,000 characters.</p>{% endif %}
     </section>
+<div class="gitsync-fab" id="gitsync-fab" hidden>
+    <div class="gitsync-fab-menu" id="gitsync-fab-menu" hidden>
+        <a href="#sec-overview" data-spy="sec-overview"><i class="fas fa-circle-info"></i> Overview</a>
+        <a href="#gitsync-next-step" data-spy="gitsync-next-step"><i class="fas fa-compass"></i> Next step</a>
+        <a href="#sec-remote" data-spy="sec-remote"><i class="fas fa-cloud"></i> Remote actions</a>
+        {% if state.merge_in_progress %}<a href="#sec-merge" data-spy="sec-merge"><i class="fas fa-code-merge"></i> Merge review</a>{% endif %}
+        <a href="#sec-working" data-spy="sec-working"><i class="fas fa-pen"></i> Working tree</a>
+        <a href="#sec-diffs" data-spy="sec-diffs"><i class="fas fa-code-compare"></i> Tracked differences</a>
+    </div>
+    <button id="gitsync-fab-btn" class="gitsync-fab-btn" type="button" aria-label="Jump to section" title="Jump to section"><i class="fas fa-compass"></i></button>
+</div>
 </div>
 {% endif %}
 <script>
@@ -353,6 +433,7 @@
     var search = document.getElementById("gitsync-change-search");
     var status = document.getElementById("gitsync-change-status");
     var selectPage = document.getElementById("gitsync-select-page");
+    var selectAll = document.getElementById("gitsync-select-all");
     var selectedCount = document.getElementById("gitsync-selected-count");
     var pageStatus = document.getElementById("gitsync-change-page-status");
     var previous = document.getElementById("gitsync-change-prev");
@@ -399,6 +480,11 @@
             return row.querySelector(".gitsync-commit-path").checked;
         });
         selectPage.textContent = allSelected ? "Clear page" : "Select page";
+        var matchingRows = filteredRows();
+        var allMatchingSelected = matchingRows.length > 0 && matchingRows.every(function (row) {
+            return row.querySelector(".gitsync-commit-path").checked;
+        });
+        selectAll.textContent = allMatchingSelected ? "Clear all" : "Select all";
     }
 
     paths.forEach(function (path) {
@@ -418,6 +504,98 @@
         });
         updateChanges();
     });
+    selectAll.addEventListener("click", function () {
+        var matchingRows = filteredRows();
+        var allMatchingSelected = matchingRows.length > 0 && matchingRows.every(function (row) {
+            return row.querySelector(".gitsync-commit-path").checked;
+        });
+        matchingRows.forEach(function (row) {
+            row.querySelector(".gitsync-commit-path").checked = !allMatchingSelected;
+        });
+        updateChanges();
+    });
     updateChanges();
+})();
+
+// Section navigation, per-file diff dialogs and the quick-jump button.
+// The fragment is injected into the page once per view, so this runs once;
+// the guard below also protects against double execution.
+(function () {
+    if (window.__gitsyncDetailNav) return;
+    window.__gitsyncDetailNav = true;
+    // The app scrolls inside #main-content-area > div (see base.html), not window.
+    var scroller = document.querySelector("#main-content-area > div") || window;
+    function scrollPos() {
+        if (scroller === window) {
+            return { y: window.scrollY || 0, max: document.body.scrollHeight - window.innerHeight };
+        }
+        return { y: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight };
+    }
+    document.addEventListener("click", function (event) {
+        var opener = event.target.closest("[data-open-dialog]");
+        if (opener) {
+            var dialog = document.getElementById(opener.getAttribute("data-open-dialog"));
+            if (dialog && dialog.showModal) dialog.showModal();
+            return;
+        }
+        if (event.target.closest("[data-close-dialog]")) {
+            var box = event.target.closest("dialog");
+            if (box) box.close();
+            return;
+        }
+        var toggle = event.target.closest("dialog [data-view]");
+        if (toggle) {
+            var dlg = event.target.closest("dialog");
+            var side = toggle.getAttribute("data-view") === "side";
+            dlg.querySelectorAll("[data-view]").forEach(function (btn) {
+                btn.classList.toggle("btn-active", btn === toggle);
+            });
+            dlg.querySelector('[data-pane="side"]').hidden = !side;
+            dlg.querySelector('[data-pane="uni"]').hidden = side;
+            return;
+        }
+        if (event.target.closest("#gitsync-fab-btn")) {
+            var menu = document.getElementById("gitsync-fab-menu");
+            if (menu) menu.hidden = !menu.hidden;
+            return;
+        }
+        if (!event.target.closest("#gitsync-fab")) {
+            var other = document.getElementById("gitsync-fab-menu");
+            if (other) other.hidden = true;
+        }
+    });
+    document.querySelectorAll("dialog.gitsync-diff-dialog").forEach(function (dlg) {
+        dlg.addEventListener("click", function (event) {
+            if (event.target === dlg) dlg.close();
+        });
+    });
+    var links = Array.from(document.querySelectorAll("#gitsync-section-nav a"));
+    var fab = document.getElementById("gitsync-fab");
+    var fabMenu = document.getElementById("gitsync-fab-menu");
+    function setActive(id) {
+        links.forEach(function (a) { a.classList.toggle("gitsync-nav-active", a.dataset.spy === id); });
+        if (fabMenu) fabMenu.querySelectorAll("a").forEach(function (a) {
+            a.classList.toggle("gitsync-nav-active", a.dataset.spy === id);
+        });
+    }
+    var spy = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) { if (en.isIntersecting) setActive(en.target.id); });
+    }, { rootMargin: "-40% 0px -55% 0px" });
+    ["gitsync-next-step", "sec-merge", "sec-remote", "sec-working", "sec-diffs"].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) spy.observe(el);
+    });
+    function onScroll() {
+        var pos = scrollPos();
+        if (fab) fab.hidden = pos.y < 400;
+        if (pos.max - pos.y < 40) setActive("sec-diffs");
+        else if (pos.y < 40) setActive("sec-overview");
+    }
+    if (scroller === window) window.addEventListener("scroll", onScroll, { passive: true });
+    else scroller.addEventListener("scroll", onScroll, { passive: true });
+    if (fabMenu) fabMenu.querySelectorAll("a").forEach(function (a) {
+        a.addEventListener("click", function () { fabMenu.hidden = true; });
+    });
+    onScroll();
 })();
 </script>

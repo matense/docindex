@@ -1,0 +1,8 @@
+$ cmd /c C:\andre\docindex\update.bat
+
+=== DocIndex update ===
+-> Pulling the latest code...
+git-sync: on branch main
+git-sync: pulling refs/heads/main from origin (https://github.com/matense/docindex.git)
+git-sync: ERROR: working tree has local changes: update.bat, update.sh. Commit or stash them first.
+git-sync: resolve it manually (or run `git pull`), then re-run the update.
