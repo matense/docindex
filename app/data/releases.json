@@ -1,6 +1,37 @@
 {
   "releases": [
     {
+      "version": "0.1.14",
+      "date": "2026-11-07",
+      "title": "Git changes: section navigation and side-by-side diffs",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Git changes detail pages now have a sticky section navigator (Overview, Next step, Remote actions, Working tree, Tracked differences) with a floating quick-jump button that appears after scrolling, so every part of a long review is one click away.",
+            "Tracked file differences are now a compact per-file list with +/- counts; View diff opens a side-by-side comparison (old version left, new version right) with a unified toggle — also available on each working-tree row.",
+            "Select all / Clear all picks every filtered file for the commit, not just the visible page."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-arrow-trend-up",
+          "entries": [
+            "Changed lines pair one-to-one in side-by-side diffs, and diff legends render inline instead of breaking the layout.",
+            "The Next step panel's Set identity button now jumps to the Repository details section where the form actually lives."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "The updater no longer silently skips installing dulwich when the version pin is missing: it falls back to an unpinned install and verifies the import (update.bat/update.sh)."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.13",
       "date": "2026-11-04",
       "title": "Offline assets, faster search, lazy tree view",
