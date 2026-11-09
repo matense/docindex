@@ -266,6 +266,26 @@ def test_extractor_flattens_all_cell_types(app, user):
     assert "A | B" in text and "1 | 2" in text
 
 
+def test_extractor_keeps_tex_source_and_admonitions(app, user):
+    """Markdown TeX source and admonition text flow through extract()
+    unchanged — regression lock while chart extraction lands in Task 8."""
+    drive_id = _drive(app, user)
+    cells = [
+        nb_doc.new_cell("markdown", "$$E=mc^2$$"),
+        nb_doc.new_cell("markdown", r"$\alpha$"),
+        nb_doc.new_cell("markdown", "costs $5"),
+        nb_doc.new_cell("markdown", "::: notice\nPay attention!"),
+    ]
+    fid = _create(app, user, drive_id, "Tex", cells=cells)
+    with app.app_context():
+        text = nb_doc.extract(db.session.get(StoredFile, fid))
+    assert "$$E=mc^2$$" in text
+    assert r"$\alpha$" in text
+    assert "costs $5" in text
+    assert "::: notice" in text
+    assert "Pay attention!" in text
+
+
 def test_legacy_title_subtitle_cells_migrate_to_heading(app):
     doc = nb_doc.validate({"cells": [
         {"type": "title", "content": "Old title"},
