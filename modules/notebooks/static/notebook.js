@@ -1121,7 +1121,9 @@
                 tbody.appendChild(tr);
             });
             table.appendChild(tbody);
-            body.appendChild(table);
+            const wrap = el("div", "nb-tablewrap");
+            wrap.appendChild(table);
+            body.appendChild(wrap);
 
             const bar = el("div", "flex gap-1 mt-1");
             const mkBar = (label, fn) => {
