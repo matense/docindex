@@ -574,6 +574,58 @@ def test_ai_create_notebook_with_math(app, user, enabled):
         assert "$$" in add_desc and "\\(" in add_desc
 
 
+def test_ai_create_notebook_with_chart(app, user, enabled):
+    """The create/add_cell tools accept chart cells and their schemas document
+    the exact JSON shape, allowed kinds and row/column caps."""
+    from app.services import agent_service
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(
+            user_obj,
+            {"name": "Chart notebook",
+             "cells": [{"type": "chart",
+                        "meta": {"chart": {"kind": "bar",
+                                           "labels": ["a", "b"],
+                                           "datasets": [{"label": "n",
+                                                         "data": [1, 2]}]}}}]},
+            None)
+        assert "created" in result
+        fid = result["created"]["id"]
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        chart = read["cells"][0]["meta"]["chart"]
+        assert chart["kind"] == "bar"
+        assert chart["labels"] == ["a", "b"]
+        assert chart["datasets"][0]["label"] == "n"
+        assert chart["datasets"][0]["data"] == [1.0, 2.0]
+
+        # Malformed chart structure (missing required chart object) returns an
+        # error and creates nothing.
+        result_bad = nb_tools._tool_create(
+            user_obj,
+            {"name": "Bad chart",
+             "cells": [{"type": "chart", "meta": {}}]},
+            None)
+        assert "error" in result_bad
+        assert "created" not in result_bad
+
+        # The tool schemas mention chart cells, the allowed kinds and caps.
+        defs, _handlers, _labels = agent_service._active_tools()
+        create_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.create")
+        add_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.add_cell")
+        assert "chart" in create_desc
+        assert "chart" in add_desc
+        for kind in ("bar", "line", "pie"):
+            assert kind in create_desc
+            assert kind in add_desc
+        assert "50" in create_desc
+        assert "500" in create_desc
+
+
 def test_ai_edits_in_a_new_run_create_a_new_block(app, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)

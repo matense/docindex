@@ -216,7 +216,12 @@ register_tool(
     _schema("notebooks.create",
             "Create a notebook in a writable (non-synced) drive, optionally "
             "with initial cells. Markdown content supports math as $$…$$ "
-            "blocks or \\(…\\) inline; leave bare $ alone for prices.",
+            "blocks or \\(…\\) inline; leave bare $ alone for prices. Cells "
+            "may be markdown, richtext, code, todo, table, heading, separator "
+            "or chart. Chart meta is "
+            "{chart: {kind: 'bar'|'line'|'pie', labels: [...], "
+            "datasets: [{label: '...', data: [...]}], title?: '...'}}; "
+            "caps are 50 labels/data points and 500 datasets.",
             {"name": {"type": "string", "description": "Notebook name."},
              "drive_id": {"type": "integer",
                           "description": "Target drive (default: current)."},
@@ -225,18 +230,27 @@ register_tool(
              "cells": {"type": "array", "items": {"type": "object"},
                        "description": "Initial cells: {type, content, meta} "
                                       "objects (a bare string is one "
-                                      "markdown cell)."}},
+                                      "markdown cell). For chart cells meta "
+                                      "must be "
+                                      "{chart: {kind: 'bar'|'line'|'pie', "
+                                      "labels: [...], datasets: [{label: "
+                                      "'...', data: [...]}], title?: '...'}}; "
+                                      "caps are 50 labels/data points and 500 "
+                                      "datasets."}},
             required=["name"]),
     _tool_create, label="Created notebook", module="notebooks")
 
 register_tool(
     "add_cell",
     _schema("notebooks.add_cell",
-            "Append or insert a cell (markdown/code/todo/table) in a "
+            "Append or insert a cell (markdown/code/todo/table/chart) in a "
             "notebook. All edits made while answering one message share a "
             "single restorable history version. Markdown content supports "
             "math as $$…$$ blocks or \\(…\\) inline; leave bare $ alone "
-            "for prices.",
+            "for prices. For chart cells use meta "
+            "{chart: {kind: 'bar'|'line'|'pie', labels: [...], "
+            "datasets: [{label: '...', data: [...]}], title?: '...'}}; "
+            "caps are 50 labels/data points and 500 datasets.",
             {"file_id": _FILE_ID,
              "cell_type": {"type": "string",
                            "enum": list(doc_service.CELL_TYPES)},
@@ -245,7 +259,12 @@ register_tool(
              "meta": {"type": "object",
                       "description": "todo: {items:[{text,done}]}; table: "
                                      "{headers:[],rows:[[]]}; code: "
-                                     "{language}."},
+                                     "{language}; chart: "
+                                     "{chart: {kind: 'bar'|'line'|'pie', "
+                                     "labels: [...], datasets: [{label: "
+                                     "'...', data: [...]}], title?: '...'}} "
+                                     "(max 50 labels/data points, 500 "
+                                     "datasets)."},
              "index": {"type": "integer",
                        "description": "Insert position (default: append)."}},
             required=["file_id", "cell_type"]),
