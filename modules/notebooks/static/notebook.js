@@ -281,16 +281,37 @@
         _markedExtensionsRegistered = true;
     }
 
+    // Keep $$…$$ and \(…\) math delimiters intact through marked parsing
+    // so KaTeX auto-render can find them in the final DOM. HTML comments are
+    // invisible to markdown and survive sanitization.
+    function protectMath(src) {
+        const map = {};
+        let n = 0;
+        const marked = src.replace(/\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)/g,
+            (m) => {
+                const k = "<!--MATH" + (n++) + "-->";
+                map[k] = m;
+                return k;
+            });
+        return { marked, map };
+    }
+
+    function restoreMath(html, map) {
+        return html.replace(/<!--MATH\d+-->/g, (k) => map[k] || k);
+    }
+
     function renderMarkdown(text) {
         if (!window.marked) return null;
         ensureMarkedExtensions();
         _markdownNestDepth = 0;
         resetFootnotes();
+        const protectedMath = protectMath(text || "");
         // [name](file://ID) citations become viewer links, like the AI chat.
-        const linked = (text || "").replace(
+        const linked = protectedMath.marked.replace(
             /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view">$1</a>');
-        return sanitizeHtml(window.marked.parse(linked, { breaks: true }));
+        const parsed = sanitizeHtml(window.marked.parse(linked, { breaks: true }));
+        return restoreMath(parsed, protectedMath.map);
     }
 
     // --- Read-mode document polish ---------------------------------------
@@ -364,6 +385,22 @@
         wrapTables(rootEl);
         wrapFigures(rootEl);
         styleFileRefs(rootEl);
+    }
+
+    // If the rendered content contains KaTeX delimiters, load KaTeX once and
+    // render them. Only $$…$$ (display) and \(…\) (inline) are recognized;
+    // bare $…$ is ignored so prices stay as plain text.
+    function maybeRenderMath(view, content) {
+        if (/\$\$|\\\(/.test(content || "")) {
+            loadKaTeX(() => {
+                window.renderMathInElement(view, {
+                    delimiters: [
+                        { left: "$$", right: "$$", display: true },
+                        { left: "\\(", right: "\\)", display: false }
+                    ]
+                });
+            });
+        }
     }
 
     // Rich-text cells store HTML authored in our own editor, but content can
@@ -496,6 +533,36 @@
     // when a rich-text cell enters edit mode. Pixel sizes are registered as an
     // inline style attributor so any selection can get any size.
     let _quillCallbacks = null;
+
+    // KaTeX (math rendering) loaded on demand from the vendored copy
+    // (app/static/vendor/katex/0.16.47) — only when a rendered cell contains
+    // $$…$$ or \(…\) delimiters. Exposes window.__nbKatexReady for the
+    // rich-text editor preview (Task 7).
+    let _katexCallbacks = null;
+    window.__nbKatexReady = window.__nbKatexReady || false;
+
+    function loadKaTeX(cb) {
+        if (window.renderMathInElement) return cb();
+        if (_katexCallbacks) { _katexCallbacks.push(cb); return; }
+        _katexCallbacks = [cb];
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "/static/vendor/katex/0.16.47/katex.min.css";
+        document.head.appendChild(link);
+        const script = document.createElement("script");
+        script.src = "/static/vendor/katex/0.16.47/katex.min.js";
+        script.onload = () => {
+            const ar = document.createElement("script");
+            ar.src = "/static/vendor/katex/0.16.47/contrib/auto-render.min.js";
+            ar.onload = () => {
+                window.__nbKatexReady = true;
+                _katexCallbacks.forEach((fn) => fn());
+                _katexCallbacks = null;
+            };
+            document.head.appendChild(ar);
+        };
+        document.head.appendChild(script);
+    }
 
     function loadQuill(cb) {
         if (window.Quill) return cb();
@@ -1075,6 +1142,7 @@
                 const view = el("div", "nb-rt");
                 view.innerHTML = sanitizeHtml(cell.content, { richText: true });
                 polishView(view);
+                maybeRenderMath(view, cell.content);
                 body.appendChild(view);
                 return;
             }
@@ -1254,6 +1322,7 @@
                     view.querySelectorAll("pre code").forEach(
                         (c) => window.hljs.highlightElement(c));
                 }
+                maybeRenderMath(view, cell.content);
             }
         }
 
