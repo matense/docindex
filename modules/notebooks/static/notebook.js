@@ -1270,6 +1270,18 @@
             });
         }
 
+        function renderMarkdownPreview(view, cell) {
+            const html = renderMarkdown(cell.content);
+            if (html === null) { view.textContent = cell.content; }
+            else { view.innerHTML = html; }
+            polishView(view);
+            if (window.hljs) {
+                view.querySelectorAll("pre code").forEach(
+                    (c) => window.hljs.highlightElement(c));
+            }
+            maybeRenderMath(view, cell.content);
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
@@ -1296,10 +1308,16 @@
                 const area = el("textarea",
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
-                area.placeholder = "Write markdown… tables, - [ ] tasks, [file](file://ID) references";
+                area.placeholder = "Write markdown… tables, - [ ] tasks, [file](file://ID) references, $$math$$";
+                const preview = el("div",
+                    "prose prose-sm max-w-none nb-md mt-2 p-2 border border-base-300 "
+                    + "rounded bg-base-100 nb-md-live-preview");
+                preview.setAttribute("aria-label", "Live preview");
+                renderMarkdownPreview(preview, cell);
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
+                    renderMarkdownPreview(preview, cell);
                 });
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
@@ -1314,20 +1332,13 @@
                     }, 0);
                 });
                 wrap.appendChild(area);
+                wrap.appendChild(preview);
                 body.appendChild(wrap);
                 if (cell._editing) area.focus();
             } else {
                 const view = el("div", "prose prose-sm max-w-none nb-md");
-                const html = renderMarkdown(cell.content);
-                if (html === null) { view.textContent = cell.content; }
-                else { view.innerHTML = html; }
-                polishView(view);
+                renderMarkdownPreview(view, cell);
                 body.appendChild(view);
-                if (window.hljs) {
-                    view.querySelectorAll("pre code").forEach(
-                        (c) => window.hljs.highlightElement(c));
-                }
-                maybeRenderMath(view, cell.content);
             }
         }
 

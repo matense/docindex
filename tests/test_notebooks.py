@@ -437,6 +437,34 @@ def test_ai_tools_create_and_edit(app, user, enabled):
         assert stored.versions[0].note == "AI edits"
 
 
+def test_ai_create_notebook_with_math(app, user, enabled):
+    """The create tool accepts math cells and the schema tells the model how
+    to write math ($$…$$ blocks and \\(…\\) inline; bare $ is not math)."""
+    from app.services import agent_service
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(
+            user_obj,
+            {"name": "Physics notes",
+             "cells": [{"type": "markdown", "content": "Energy: $$E=mc^2$$"}]},
+            None)
+        assert "created" in result
+        fid = result["created"]["id"]
+        stored = db.session.get(StoredFile, fid)
+        assert "E=mc^2" in nb_doc.extract(stored)
+
+        defs, _handlers, _labels = agent_service._active_tools()
+        create_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.create")
+        add_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.add_cell")
+        assert "$$" in create_desc and "\\(" in create_desc
+        assert "$$" in add_desc and "\\(" in add_desc
+
+
 def test_ai_edits_in_a_new_run_create_a_new_block(app, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)

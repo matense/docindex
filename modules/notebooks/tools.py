@@ -215,7 +215,8 @@ register_tool(
     "create",
     _schema("notebooks.create",
             "Create a notebook in a writable (non-synced) drive, optionally "
-            "with initial cells.",
+            "with initial cells. Markdown content supports math as $$…$$ "
+            "blocks or \\(…\\) inline; leave bare $ alone for prices.",
             {"name": {"type": "string", "description": "Notebook name."},
              "drive_id": {"type": "integer",
                           "description": "Target drive (default: current)."},
@@ -233,7 +234,9 @@ register_tool(
     _schema("notebooks.add_cell",
             "Append or insert a cell (markdown/code/todo/table) in a "
             "notebook. All edits made while answering one message share a "
-            "single restorable history version.",
+            "single restorable history version. Markdown content supports "
+            "math as $$…$$ blocks or \\(…\\) inline; leave bare $ alone "
+            "for prices.",
             {"file_id": _FILE_ID,
              "cell_type": {"type": "string",
                            "enum": list(doc_service.CELL_TYPES)},
