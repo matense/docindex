@@ -266,6 +266,13 @@ def _cell_text(cell):
         lines = [" | ".join(str(h) for h in meta.get("headers", []))]
         lines += [" | ".join(str(c) for c in r) for r in meta.get("rows", [])]
         return "\n".join(lines)
+    if ctype == "chart":
+        chart = meta.get("chart") or {}
+        title = chart.get("title") or ""
+        kind = chart.get("kind") or "bar"
+        lines = [f"Chart ({kind}){': ' + title if title else ''}"]
+        lines.append(" | ".join(str(l) for l in chart.get("labels", [])))
+        return "\n".join(lines)
     if ctype == "separator":
         return ""
     if ctype == "heading":

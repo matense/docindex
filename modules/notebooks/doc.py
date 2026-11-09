@@ -65,7 +65,7 @@ def notebooks_folder(user, drive):
     return folder
 SNAPSHOT_INTERVAL = timedelta(minutes=2)
 CELL_TYPES = ("markdown", "richtext", "code", "todo", "table",
-              "heading", "separator")
+              "chart", "heading", "separator")
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -116,6 +116,41 @@ def _validate_cell(cell):
                 if isinstance(r, list)][:500]
         cell["meta"]["headers"] = headers
         cell["meta"]["rows"] = rows
+    if cell["type"] == "chart":
+        chart = cell["meta"].get("chart")
+        if not isinstance(chart, dict):
+            raise ValueError("Chart cell must have a meta.chart object.")
+        labels = chart.get("labels")
+        if not isinstance(labels, list):
+            raise ValueError("Chart labels must be a list.")
+        labels = [str(l) for l in labels][:50]
+        datasets = chart.get("datasets") or []
+        if not isinstance(datasets, list):
+            datasets = []
+        normalized = []
+        for ds in datasets:
+            if not isinstance(ds, dict):
+                continue
+            data = ds.get("data") or []
+            if not isinstance(data, list):
+                data = []
+            coerced = []
+            for v in data[:50]:
+                try:
+                    coerced.append(float(v))
+                except (TypeError, ValueError):
+                    coerced.append(0.0)
+            normalized.append({"label": str(ds.get("label", "")),
+                               "data": coerced})
+        kind = chart.get("kind")
+        if kind not in ("bar", "line", "pie"):
+            kind = "bar"
+        title = chart.get("title")
+        if title is not None:
+            title = str(title)[:255]
+        cell["meta"]["chart"] = {"kind": kind, "labels": labels,
+                                 "datasets": normalized[:500],
+                                 "title": title}
     return cell
 
 
@@ -186,6 +221,12 @@ def extract(stored_file):
             meta = cell["meta"]
             parts.append(" | ".join(meta.get("headers", [])))
             parts.extend(" | ".join(r) for r in meta.get("rows", []))
+        elif ctype == "chart":
+            chart = cell["meta"].get("chart") or {}
+            parts.append(" | ".join(str(l) for l in chart.get("labels", [])))
+            title = chart.get("title")
+            if title:
+                parts.append(str(title))
     return "\n".join(p for p in parts if p)
 
 

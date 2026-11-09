@@ -286,6 +286,115 @@ def test_extractor_keeps_tex_source_and_admonitions(app, user):
     assert "Pay attention!" in text
 
 
+# ---------------------------------------------------------------------------
+# Chart cells (backend validation, extraction, history)
+# ---------------------------------------------------------------------------
+
+def test_chart_cell_validates_and_caps(app, user):
+    labels = [f"L{i}" for i in range(60)]
+    datasets = []
+    for i in range(600):
+        data = []
+        for j in range(60):
+            if j == 0:
+                data.append("12")
+            elif j == 1:
+                data.append("oops")
+            else:
+                data.append(float(j))
+        datasets.append({"label": f"Series {i}", "data": data})
+    chart = {"kind": "notachart", "labels": labels,
+             "datasets": datasets, "title": "Big chart"}
+    doc = {"version": 1, "title": "Chart test",
+           "cells": [{"type": "chart", "meta": {"chart": chart}}]}
+    validated = nb_doc.validate(doc)
+    chart_meta = validated["cells"][0]["meta"]["chart"]
+    assert chart_meta["kind"] == "bar"
+    assert len(chart_meta["labels"]) == 50
+    assert len(chart_meta["datasets"]) == 500
+    assert all(len(ds["data"]) == 50 for ds in chart_meta["datasets"])
+    first = chart_meta["datasets"][0]
+    assert first["data"][0] == 12.0
+    assert first["data"][1] == 0.0
+    assert isinstance(first["data"][2], float)
+    assert chart_meta["title"] == "Big chart"
+
+    valid = nb_doc.validate({"version": 1, "title": "T",
+        "cells": [{"type": "chart",
+                   "meta": {"chart": {"kind": "line",
+                                       "labels": ["a"],
+                                       "datasets": [{"label": "A",
+                                                     "data": [1]}],
+                                       "title": None}}}]})
+
+    assert valid["cells"][0]["meta"]["chart"]["kind"] == "line"
+
+
+def test_chart_cell_rejected_when_malformed(app, auth_client, user, enabled):
+    malformed = [
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart", "meta": {}}]},
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart", "meta": {"chart": "x"}}]},
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart",
+                    "meta": {"chart": {"kind": "bar",
+                                        "labels": "abc",
+                                        "datasets": []}}}]},
+    ]
+    for doc in malformed:
+        with pytest.raises(ValueError):
+            nb_doc.validate(doc)
+
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    document = {"version": 1, "title": "T",
+                "cells": [{"type": "chart", "meta": {}}]}
+    resp = auth_client.post(f"/m/notebooks/{fid}/save", json={"doc": document})
+    assert resp.status_code == 400
+
+
+def test_extractor_includes_chart_labels(app, user):
+    drive_id = _drive(app, user)
+    cells = [nb_doc.new_cell("chart", meta={
+        "chart": {"kind": "pie", "labels": ["alpha", "beta"],
+                  "datasets": [{"label": "A", "data": [1, 2]}],
+                  "title": "Pie chart"}})]
+    fid = _create(app, user, drive_id, "Charted", cells=cells)
+    with app.app_context():
+        text = nb_doc.extract(db.session.get(StoredFile, fid))
+    assert "alpha" in text
+    assert "beta" in text
+    assert "alpha | beta" in text
+    assert "Pie chart" in text
+
+
+def test_history_diff_renders_chart_cells(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    cells = [nb_doc.new_cell("chart", meta={
+        "chart": {"kind": "bar", "labels": ["alpha", "beta"],
+                  "datasets": [{"label": "A", "data": [1, 2]}],
+                  "title": "Trends"}})]
+    fid = _create(app, user, drive_id, "Hist chart", cells=cells)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        document = nb_doc.load(stored)
+        nb_doc.update_cell(
+            document, document["cells"][0]["id"],
+            meta={"chart": {"kind": "bar", "labels": ["gamma"],
+                            "datasets": [{"label": "A", "data": [3]}],
+                            "title": "Trends"}})
+        nb_doc.save_document(stored, document, force_checkpoint=True)
+        version_id = stored.versions[0].id
+    resp = auth_client.get(
+        f"/m/notebooks/{fid}/history/{version_id}/diff")
+    assert resp.status_code == 200
+    body = resp.data
+    assert b"chart" in body
+    assert b"alpha" in body
+    assert b"beta" in body
+
+
 def test_legacy_title_subtitle_cells_migrate_to_heading(app):
     doc = nb_doc.validate({"cells": [
         {"type": "title", "content": "Old title"},
