@@ -25,13 +25,272 @@
         return node;
     }
 
+    // --- Rich markdown extensions (mirror server Python-Markdown set) -----
+
+    let _markedExtensionsRegistered = false;
+
+    function escapeHtml(text) {
+        return text.replace(/[&<>"']/g, (m) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;",
+            '"': "&quot;", "'": "&#39;"
+        }[m]));
+    }
+
+    function unescapeHtml(text) {
+        return text
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&#39;/g, "'");
+    }
+
+    function escapeText(text) {
+        // Escape <, > and bare ampersands while keeping existing HTML entities
+        // (such as smarty punctuation) intact.
+        return text
+            .replace(/&(?![a-zA-Z0-9#]+;)/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function applySmarty(text) {
+        return text
+            .replace(/---/g, "&mdash;")
+            .replace(/--/g, "&ndash;")
+            .replace(/\.\.\./g, "&hellip;")
+            .replace(/"([^"]*)"/g, "&ldquo;$1&rdquo;")
+            .replace(/'([^']*)'/g, "&lsquo;$1&rsquo;")
+            .replace(/<<([^>>]*)>>/g, "&laquo;$1&raquo;");
+    }
+
+    // Footnote definitions collected during one render pass.
+    const NB_FOOTNOTE_DEFS = new Map();
+    const NB_FOOTNOTE_ORDER = [];
+    let _markdownNestDepth = 0;
+
+    function resetFootnotes() {
+        NB_FOOTNOTE_DEFS.clear();
+        NB_FOOTNOTE_ORDER.length = 0;
+    }
+
+    function addFootnoteDef(label, text) {
+        const key = label.toLowerCase();
+        if (!NB_FOOTNOTE_DEFS.has(key)) {
+            NB_FOOTNOTE_ORDER.push(label);
+            NB_FOOTNOTE_DEFS.set(key, text);
+        }
+    }
+
+    function extractFootnoteDefs(src) {
+        resetFootnotes();
+        const out = [];
+        const lines = src.split("\n");
+        let i = 0;
+        let inFence = false;
+        while (i < lines.length) {
+            const line = lines[i];
+            if (line.trim().startsWith("```")) {
+                inFence = !inFence;
+                out.push(line);
+                i++;
+                continue;
+            }
+            if (inFence) {
+                out.push(line);
+                i++;
+                continue;
+            }
+            const match = /^\[\^([^\]]+)\]:\s*(.*)$/.exec(line);
+            if (match) {
+                const label = match[1];
+                let text = match[2];
+                i++;
+                while (i < lines.length
+                        && (lines[i].startsWith(" ")
+                            || lines[i].startsWith("\t")
+                            || lines[i].trim() === "")) {
+                    if (lines[i].trim() !== "") {
+                        text += "\n" + lines[i].trim();
+                    }
+                    i++;
+                }
+                addFootnoteDef(label, text.trim());
+            } else {
+                out.push(line);
+                i++;
+            }
+        }
+        return out.join("\n");
+    }
+
+    function renderFootnotesSection() {
+        if (!NB_FOOTNOTE_ORDER.length) return "";
+        const items = NB_FOOTNOTE_ORDER.map((label) => {
+            const text = NB_FOOTNOTE_DEFS.get(label.toLowerCase()) || "";
+            const body = window.marked.parseInline(text);
+            return `<li id="fn:${escapeHtml(label)}">${body} `
+                + `<a href="#fnref:${escapeHtml(label)}" `
+                + `class="footnote-backref">↩</a></li>`;
+        }).join("\n");
+        return `<section class="footnote">\n<ol>\n${items}\n</ol>\n</section>`;
+    }
+
+    function ensureMarkedExtensions() {
+        if (_markedExtensionsRegistered || !window.marked) return;
+
+        const admonitionExtension = {
+            name: "admonition",
+            level: "block",
+            start(src) { return /^!!!\s+\w+/.test(src) || /^:::\s+\w+/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^!!!\s+(\w+)(?:\s+"([^"]*)")?\s*\n((?:(?: {4}|\t).*\n?|\s*\n)*)/)
+                    || src.match(/^:::\s+(\w+)(?:\s+"([^"]*)")?\s*\n((?:(?: {4}|\t).*\n?|\s*\n)*)/);
+                if (!match) return undefined;
+                const [raw, type, title, body] = match;
+                const content = body.replace(/^( {4}|\t)/gm, "").replace(/\n+$/, "");
+                return {
+                    type: "admonition",
+                    raw: raw,
+                    adType: type,
+                    title: title || type.charAt(0).toUpperCase() + type.slice(1),
+                    text: content
+                };
+            },
+            renderer(token) {
+                const body = window.marked.parse(token.text, { breaks: true });
+                return `<div class="admonition ${token.adType}">\n`
+                    + `<p class="admonition-title">${escapeHtml(token.title)}</p>\n`
+                    + `${body}\n</div>`;
+            }
+        };
+
+        const defListExtension = {
+            name: "defList",
+            level: "block",
+            start(src) { return /^[^\n]+\n:[ \t]+/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^([^\n]+)\n((?::[ \t]+[^\n]*(?:\n|$)(?:(?:[ \t]+[^\n]*|\s*)\n?)*)+)/);
+                if (!match) return undefined;
+                const [raw, term, body] = match;
+                const defs = [];
+                let current = "";
+                body.split("\n").forEach((line) => {
+                    if (line.startsWith(":")) {
+                        if (current) defs.push(current.trim());
+                        current = line.replace(/^:\s*/, "");
+                    } else if (/^\s/.test(line)) {
+                        current += " " + line.trim();
+                    } else if (line.trim() === "") {
+                        if (current) defs.push(current.trim());
+                        current = "";
+                    }
+                });
+                if (current) defs.push(current.trim());
+                return {
+                    type: "defList",
+                    raw: raw,
+                    term: term.trim(),
+                    defs: defs
+                };
+            },
+            renderer(token) {
+                const dds = token.defs.map((d) =>
+                    `<dd>${window.marked.parseInline(d)}</dd>`).join("\n");
+                return `<dl>\n<dt>${window.marked.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
+            }
+        };
+
+        const figureExtension = {
+            name: "nbFigure",
+            level: "block",
+            start(src) { return /^!\[/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)\s*\{\s*\.nb-figure\b[\s\.\w-]*\s*\}(?:\n|$)/);
+                if (!match) return undefined;
+                const [raw, alt, href, title] = match;
+                return {
+                    type: "nbFigure",
+                    raw: raw,
+                    alt: alt,
+                    href: href,
+                    title: title || ""
+                };
+            },
+            renderer(token) {
+                const img = `<img src="${escapeHtml(token.href)}" `
+                    + `alt="${escapeHtml(token.alt)}"`
+                    + (token.title ? ` title="${escapeHtml(token.title)}"` : "")
+                    + ">";
+                const caption = token.title
+                    ? `<figcaption>${escapeHtml(token.title)}</figcaption>`
+                    : "";
+                return `<figure class="nb-figure">${img}${caption}</figure>`;
+            }
+        };
+
+        const footnoteRefExtension = {
+            name: "footnoteRef",
+            level: "inline",
+            start(src) { return src.indexOf("[^") === 0; },
+            tokenizer(src) {
+                const match = src.match(/^\[\^([^\]]+)\]/);
+                if (!match) return undefined;
+                return {
+                    type: "footnoteRef",
+                    raw: match[0],
+                    label: match[1]
+                };
+            },
+            renderer(token) {
+                return `<sup><a href="#fn:${escapeHtml(token.label)}" `
+                    + `id="fnref:${escapeHtml(token.label)}" `
+                    + `class="footnote-ref">${escapeHtml(token.label)}</a></sup>`;
+            }
+        };
+
+        window.marked.use({
+            hooks: {
+                preprocess(src) {
+                    _markdownNestDepth++;
+                    // Only the outermost document pass collects footnote
+                    // definitions; nested parses (e.g. admonition bodies)
+                    // reuse the same definition set.
+                    if (_markdownNestDepth > 1) return src;
+                    return extractFootnoteDefs(src);
+                },
+                postprocess(html) {
+                    let result = html;
+                    if (_markdownNestDepth === 1) {
+                        result = html + renderFootnotesSection();
+                    }
+                    _markdownNestDepth = Math.max(0, _markdownNestDepth - 1);
+                    return result;
+                }
+            },
+            renderer: {
+                text(text) {
+                    // Apply smarty punctuation to prose text only; re-escape any
+                    // raw <, > or bare & introduced by the unescape step.
+                    return escapeText(applySmarty(unescapeHtml(text)));
+                }
+            },
+            extensions: [admonitionExtension, defListExtension, figureExtension, footnoteRefExtension]
+        });
+
+        _markedExtensionsRegistered = true;
+    }
+
     function renderMarkdown(text) {
         if (!window.marked) return null;
+        ensureMarkedExtensions();
+        _markdownNestDepth = 0;
+        resetFootnotes();
         // [name](file://ID) citations become viewer links, like the AI chat.
         const linked = (text || "").replace(
             /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view">$1</a>');
-        return window.marked.parse(linked, { breaks: true });
+        return sanitizeHtml(window.marked.parse(linked, { breaks: true }));
     }
 
     // --- Read-mode document polish ---------------------------------------
@@ -86,22 +345,71 @@
         });
     }
 
+    // Wrap lone captioned images in figure.nb-figure. Safe to re-run.
+    function wrapFigures(rootEl) {
+        rootEl.querySelectorAll("img[title]").forEach((img) => {
+            if (img.closest("figure")) return;
+            const title = (img.getAttribute("title") || "").trim();
+            if (!title) return;
+            const figure = el("figure", "nb-figure");
+            const caption = el("figcaption", "", title);
+            img.replaceWith(figure);
+            figure.appendChild(img);
+            figure.appendChild(caption);
+        });
+    }
+
     function polishView(rootEl) {
         wrapCodeBlocks(rootEl);
         wrapTables(rootEl);
+        wrapFigures(rootEl);
         styleFileRefs(rootEl);
     }
 
     // Rich-text cells store HTML authored in our own editor, but content can
     // also come from AI tools — strip active content before rendering.
-    function sanitizeHtml(html) {
+    function sanitizeHtml(html, opts) {
+        opts = opts || {};
+        const richText = !!opts.richText;
         const parsed = new DOMParser().parseFromString(html || "", "text/html");
+        // Active content is always stripped.
         parsed.querySelectorAll("script,style,iframe,object,embed,form,link,meta")
             .forEach((n) => n.remove());
+        // Allowlist mirrors the server bleach config (Task 3), plus a few
+        // tags needed for the Quill rich-text editor (b/i/u/s) and inline
+        // styles on spans when pasting into Quill.
+        const allowedTags = new Set([
+            "p", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
+            "ul", "ol", "li", "strong", "em", "b", "i", "u", "s", "a", "blockquote",
+            "table", "thead", "tbody", "tr", "th", "td", "hr", "br",
+            "img", "figure", "figcaption", "sup", "sub", "section",
+            "div", "span", "abbr", "dl", "dt", "dd"
+        ]);
+        const allowedAttrs = {
+            a: ["href", "title", "id", "class"],
+            img: ["src", "alt", "title"],
+            section: ["id"],
+            div: ["id", "class"],
+            li: ["id"],
+            span: richText ? ["class", "style"] : ["class"]
+        };
         parsed.querySelectorAll("*").forEach((node) => {
+            const tag = node.tagName.toLowerCase();
+            if (!allowedTags.has(tag)) {
+                // Unwrap unknown tags so their text survives; strip empty nodes.
+                while (node.firstChild) {
+                    node.parentNode.insertBefore(node.firstChild, node);
+                }
+                node.remove();
+                return;
+            }
+            const allowed = allowedAttrs[tag] || [];
             Array.from(node.attributes).forEach((attr) => {
-                if (attr.name.toLowerCase().startsWith("on")
-                        || /^\s*javascript:/i.test(attr.value)) {
+                const name = attr.name.toLowerCase();
+                const value = attr.value;
+                if (name.startsWith("on")
+                        || /^\s*javascript:/i.test(value)
+                        || !allowed.includes(name)) {
                     node.removeAttribute(attr.name);
                 }
             });
@@ -761,7 +1069,7 @@
             // View mode (and read mode): rendered HTML, no toolbar.
             if (readMode || (!cell._editing && cell.content.trim())) {
                 const view = el("div", "nb-rt");
-                view.innerHTML = sanitizeHtml(cell.content);
+                view.innerHTML = sanitizeHtml(cell.content, { richText: true });
                 polishView(view);
                 body.appendChild(view);
                 return;
@@ -870,7 +1178,7 @@
                     if (p) p.setAttribute("title", tip);
                 }
                 if (cell.content.trim()) {
-                    quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content));
+                    quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content, { richText: true }));
                 }
                 quill.on("text-change", () => {
                     cell.content = quill.root.innerHTML;
