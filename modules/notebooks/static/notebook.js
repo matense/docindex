@@ -14,6 +14,7 @@
         code: { icon: "fa-code", label: "Code" },
         todo: { icon: "fa-list-check", label: "To-do" },
         table: { icon: "fa-table", label: "Table" },
+        chart: { icon: "fa-chart-simple", label: "Chart" },
         heading: { icon: "fa-heading", label: "Heading" },
         separator: { icon: "fa-minus", label: "Separator" },
     };
@@ -589,6 +590,27 @@
         document.head.appendChild(script);
     }
 
+    // Chart.js loaded on demand from the vendored UMD bundle. Exposes
+    // window.Chart globally; cells render inside a responsive canvas.
+    let _chartCallbacks = null;
+
+    function loadChart(cb) {
+        if (window.Chart) return cb();
+        if (_chartCallbacks) { _chartCallbacks.push(cb); return; }
+        _chartCallbacks = [cb];
+        const script = document.createElement("script");
+        script.src = "/static/vendor/chart.js/4.6.1/chart.umd.min.js";
+        script.onload = () => {
+            _chartCallbacks.forEach((fn) => fn());
+            _chartCallbacks = null;
+        };
+        script.onerror = () => {
+            _chartCallbacks.forEach((fn) => fn(new Error("Chart.js failed to load")));
+            _chartCallbacks = null;
+        };
+        document.head.appendChild(script);
+    }
+
     let currentUnmount = null;
 
     function mount(root, opts) {
@@ -840,6 +862,14 @@
                 cell.meta.headers = ["Column 1", "Column 2"];
                 cell.meta.rows = [["", ""]];
             }
+            if (type === "chart") {
+                cell.meta.chart = {
+                    kind: "bar",
+                    labels: ["A", "B", "C"],
+                    datasets: [{ label: "Series 1", data: [1, 2, 3] }],
+                    title: null,
+                };
+            }
             return cell;
         }
 
@@ -910,7 +940,7 @@
 
         function insertCell(type, index) {
             const cell = newCell(type);
-            if (["markdown", "code", "richtext", "heading"]
+            if (["markdown", "code", "richtext", "heading", "chart"]
                     .includes(type)) {
                 cell._editing = true;
             }
@@ -1080,6 +1110,7 @@
             else if (cell.type === "code") renderCodeCell(body, cell);
             else if (cell.type === "todo") renderTodoCell(body, cell);
             else if (cell.type === "table") renderTableCell(body, cell);
+            else if (cell.type === "chart") renderChartCell(body, cell);
             else if (cell.type === "heading") {
                 renderHeadingCell(body, cell);
             } else if (cell.type === "separator") renderSeparatorCell(body, cell);
@@ -1139,6 +1170,216 @@
             const div = el("div", "nb-separator");
             div.innerHTML = '<i class="fas fa-ellipsis"></i>';
             body.appendChild(div);
+        }
+
+        function renderChartCell(body, cell) {
+            if (!readMode && (cell._editing || !cell.meta || !cell.meta.chart)) {
+                renderChartEditor(body, cell);
+            } else {
+                renderChartView(body, cell);
+            }
+        }
+
+        function chartColor(i) {
+            // DaisyUI semantic palette for canvas rendering.
+            const colors = [
+                "oklch(var(--p))",
+                "oklch(var(--s))",
+                "oklch(var(--a))",
+                "oklch(var(--in))",
+                "oklch(var(--su))",
+                "oklch(var(--wa))",
+            ];
+            return colors[i % colors.length];
+        }
+
+        function renderChartError(container, message) {
+            container.innerHTML = "";
+            const box = el("div", "alert alert-error alert-sm");
+            box.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>'
+                + escapeHtml(message);
+            container.appendChild(box);
+        }
+
+        function renderChartView(container, cell) {
+            const meta = cell.meta || {};
+            const chart = meta.chart || {};
+            const kind = chart.kind || "bar";
+            const labels = Array.isArray(chart.labels) ? chart.labels : [];
+            const rawDatasets = Array.isArray(chart.datasets) ? chart.datasets : [];
+
+            container.innerHTML = "";
+            const wrap = el("div", "nb-chart");
+            if (chart.title) {
+                wrap.appendChild(el("div", "nb-chart-title", chart.title));
+            }
+            const canvas = el("canvas", "nb-chart-canvas");
+            canvas.height = 260;
+            wrap.appendChild(canvas);
+            container.appendChild(wrap);
+
+            if (!labels.length || !rawDatasets.length
+                    || !rawDatasets.some((ds) => Array.isArray(ds.data) && ds.data.length)) {
+                renderChartError(container, "Invalid chart specification: missing labels or datasets.");
+                return;
+            }
+
+            loadChart((err) => {
+                if (!document.body.contains(canvas)) return;
+                if (err || !window.Chart) {
+                    renderChartError(container, "Unable to load chart library.");
+                    return;
+                }
+                try {
+                    const datasets = rawDatasets.map((ds, i) => {
+                        const label = String(ds.label || "");
+                        const data = Array.isArray(ds.data)
+                            ? ds.data.map((v) => {
+                                const n = Number(v);
+                                return Number.isFinite(n) ? n : 0;
+                            }) : [];
+                        if (kind === "pie") {
+                            return {
+                                label: label,
+                                data: data,
+                                backgroundColor: data.map((_, j) => chartColor(j)),
+                            };
+                        }
+                        const base = chartColor(i);
+                        return {
+                            label: label,
+                            data: data,
+                            backgroundColor: kind === "line"
+                                ? base + "33" : base + "99",
+                            borderColor: base,
+                            borderWidth: 2,
+                            tension: kind === "line" ? 0.3 : 0,
+                            fill: kind === "line",
+                        };
+                    });
+                    new window.Chart(canvas, {
+                        type: kind,
+                        data: { labels: labels, datasets: datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: datasets.length > 1 },
+                                title: { display: false },
+                            },
+                        },
+                    });
+                } catch (e) {
+                    renderChartError(container, "Unable to render chart.");
+                }
+            });
+        }
+
+        function parseTableToChart(raw) {
+            // CSV/TSV rows. First column becomes label, second becomes value.
+            // Supports comma, tab, and pipe separators.
+            const sep = raw.includes("\t") ? "\t"
+                : raw.includes("|") ? "|"
+                : ",";
+            return raw.split(/\r?\n/).map((line) => line.trim())
+                .filter((line) => line)
+                .map((line) => {
+                    const parts = line.split(sep).map((p) => p.trim());
+                    return [parts[0] || "", parseFloat(parts[1]) || 0];
+                })
+                .filter((row) => row[0] !== "");
+        }
+
+        function renderChartEditor(body, cell) {
+            const meta = cell.meta || (cell.meta = {});
+            if (!meta.chart || typeof meta.chart !== "object") {
+                meta.chart = {
+                    kind: "bar",
+                    labels: ["A", "B", "C"],
+                    datasets: [{ label: "Series 1", data: [1, 2, 3] }],
+                    title: null,
+                };
+            }
+
+            const wrap = el("div", "flex flex-col gap-2");
+            const toolsRow = el("div", "flex items-center gap-2 mb-1");
+            toolsRow.appendChild(el("span", "text-xs opacity-60", "Type:"));
+            const kindSel = el("select", "select select-bordered select-xs w-28");
+            ["bar", "line", "pie"].forEach((k) => {
+                const opt = el("option", "", k.charAt(0).toUpperCase() + k.slice(1));
+                opt.value = k;
+                kindSel.appendChild(opt);
+            });
+            kindSel.value = meta.chart.kind || "bar";
+            kindSel.addEventListener("change", () => {
+                meta.chart.kind = kindSel.value;
+                area.value = JSON.stringify(meta.chart, null, 2);
+                scheduleSave();
+                updatePreview();
+            });
+            toolsRow.appendChild(kindSel);
+
+            const pasteBtn = el("button", "btn btn-ghost btn-xs gap-1");
+            pasteBtn.type = "button";
+            pasteBtn.innerHTML = '<i class="fas fa-table"></i> Paste table';
+            pasteBtn.title = "Paste CSV/TSV rows (first column = label)";
+            pasteBtn.addEventListener("mousedown", (e) => e.preventDefault());
+            pasteBtn.addEventListener("click", () => {
+                const raw = window.prompt("Paste CSV/TSV rows (first column = label):");
+                if (!raw) return;
+                const rows = parseTableToChart(raw);
+                if (rows.length) {
+                    meta.chart.labels = rows.map((r) => r[0]);
+                    meta.chart.datasets = [{
+                        label: "Data",
+                        data: rows.map((r) => r[1]),
+                    }];
+                    area.value = JSON.stringify(meta.chart, null, 2);
+                    scheduleSave();
+                    updatePreview();
+                }
+            });
+            toolsRow.appendChild(pasteBtn);
+            wrap.appendChild(toolsRow);
+
+            const area = el("textarea",
+                "textarea textarea-bordered w-full font-mono text-sm min-h-[8rem]");
+            area.value = JSON.stringify(meta.chart, null, 2);
+            area.placeholder = '{"kind":"bar","labels":["A","B"],"datasets":[{"label":"Series","data":[1,2]}]}';
+            wrap.appendChild(area);
+
+            const preview = el("div",
+                "p-2 border border-base-300 rounded bg-base-100 min-h-[5rem] nb-chart-preview");
+            preview.setAttribute("aria-label", "Chart preview");
+            wrap.appendChild(preview);
+
+            function updatePreview() {
+                preview.innerHTML = "";
+                try {
+                    const parsed = JSON.parse(area.value);
+                    if (!parsed || typeof parsed !== "object") throw new Error("invalid");
+                    meta.chart = parsed;
+                    scheduleSave();
+                    renderChartView(preview, { meta: { chart: parsed } });
+                } catch (e) {
+                    renderChartError(preview, "Invalid JSON chart specification.");
+                }
+            }
+
+            area.addEventListener("input", updatePreview);
+
+            wrap.addEventListener("focusout", () => {
+                setTimeout(() => {
+                    if (!wrap.isConnected || wrap.contains(document.activeElement)) return;
+                    cell._editing = false;
+                    renderCellBody(wrap.closest(".nb-cell"), cell);
+                    save(false);
+                }, 0);
+            });
+
+            body.appendChild(wrap);
+            if (cell._editing) area.focus();
+            updatePreview();
         }
 
         function renderRichTextCell(body, cell) {

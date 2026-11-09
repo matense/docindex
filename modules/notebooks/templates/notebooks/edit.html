@@ -69,6 +69,7 @@
             <option value="code">Code</option>
             <option value="todo">To-do list</option>
             <option value="table">Table</option>
+            <option value="chart">Chart</option>
             <option value="heading">Heading</option>
             <option value="separator">Separator</option>
         </select>
@@ -375,6 +376,12 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     text-align: left; padding: .45rem .6rem; border-radius: .5rem;
     font-size: .85rem; }
 .nb-picker-item:hover { background: oklch(var(--p) / .12); }
+
+/* Chart cells */
+.nb-chart { display: flex; flex-direction: column; gap: .5rem; }
+.nb-chart-title { font-weight: 600; font-size: .95rem; }
+.nb-chart-canvas { max-height: 320px; }
+.nb-chart-preview .nb-chart-canvas { max-height: 240px; }
 
 /* Print: document only — no app chrome, no editing affordances */
 @media print {
