@@ -388,12 +388,16 @@
         const allowedAttrs = {
             a: ["href", "title", "id", "class"],
             img: ["src", "alt", "title"],
-            section: ["id"],
+            p: ["class"],
+            figure: ["class"],
+            section: ["id", "class"],
             div: ["id", "class"],
             li: ["id"],
             span: richText ? ["class", "style"] : ["class"]
         };
-        parsed.querySelectorAll("*").forEach((node) => {
+        // Scope the allowlist walk to body so we never try to unwrap
+        // <html>/<head>/<body> against the document root.
+        parsed.body.querySelectorAll("*").forEach((node) => {
             const tag = node.tagName.toLowerCase();
             if (!allowedTags.has(tag)) {
                 // Unwrap unknown tags so their text survives; strip empty nodes.
