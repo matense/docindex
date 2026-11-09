@@ -14,7 +14,7 @@
         code: { icon: "fa-code", label: "Code" },
         todo: { icon: "fa-list-check", label: "To-do" },
         table: { icon: "fa-table", label: "Table" },
-        chart: { icon: "fa-chart-simple", label: "Chart" },
+        chart: { icon: "fa-chart-column", label: "Chart" },
         heading: { icon: "fa-heading", label: "Heading" },
         separator: { icon: "fa-minus", label: "Separator" },
     };
