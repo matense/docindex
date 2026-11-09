@@ -297,7 +297,12 @@
     }
 
     function restoreMath(html, map) {
-        return html.replace(/<!--MATH\d+-->/g, (k) => map[k] || k);
+        // marked HTML-escapes comments that end up inside <pre>/<code>, so
+        // also match the escaped form and decode it for the map lookup.
+        return html.replace(/<!--MATH\d+-->|&lt;!--MATH\d+--&gt;/g, (k) => {
+            const raw = k.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+            return map[raw] || k;
+        });
     }
 
     function renderMarkdown(text) {
