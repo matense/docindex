@@ -859,7 +859,10 @@ def view(file_id):
     if stored.extension == "md":
         import markdown
         content = file_service.read_text_content(stored)
-        html = markdown.markdown(content, extensions=["fenced_code", "tables"])
+        html = markdown.markdown(
+            content,
+            extensions=["fenced_code", "tables", "footnotes", "admonition",
+                        "attr_list", "def_list", "smarty", "md_in_html"])
         try:
             import bleach
             rendered = bleach.clean(
@@ -867,9 +870,14 @@ def view(file_id):
                 tags=["p", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
                       "ul", "ol", "li", "strong", "em", "a", "blockquote",
                       "table", "thead", "tbody", "tr", "th", "td", "hr", "br",
-                      "img"],
-                attributes={"a": ["href", "title"],
-                            "img": ["src", "alt", "title"]},
+                      "img", "figure", "figcaption", "sup", "sub", "section",
+                      "div", "span", "abbr", "dl", "dt", "dd"],
+                attributes={"a": ["href", "title", "id", "class"],
+                            "img": ["src", "alt", "title"],
+                            "section": ["id"],
+                            "div": ["id", "class"],
+                            "li": ["id"],
+                            "span": ["class"]},
                 protocols=["http", "https", "mailto"],
                 strip=True)
         except Exception:

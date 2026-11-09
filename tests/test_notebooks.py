@@ -2,6 +2,7 @@
 
 
 import importlib.util
+import io
 import os
 import sys
 
@@ -670,3 +671,57 @@ def test_lock_state_visible_in_read_and_list(app, user, enabled):
             user_obj, {"file_id": fid, "cell_type": "markdown",
                        "content": "nope"}, None)
         assert "Do not generate" in added["error"]
+
+
+# ---------------------------------------------------------------------------
+# Markdown viewer: rich server-side rendering + sanitization
+# ---------------------------------------------------------------------------
+
+def _upload(client, name, content, folder_id=""):
+    return client.post("/upload", data={
+        "folder_id": folder_id,
+        "files": (io.BytesIO(content), name),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+
+def test_md_view_renders_footnotes_and_admonitions(auth_client, app):
+    md = (b"Doc body[^1].\n\n"
+          b"!!! note\n"
+          b"    A notice block.\n\n"
+          b"[^1]: The footnote text.\n")
+    _upload(auth_client, "notebook.md", md)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="notebook.md").one().id
+    resp = auth_client.get(f"/file/{fid}/view")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "admonition" in body
+    # Python-Markdown footnotes emit a footnote container plus an anchor back
+    # to the definition; the exact wrapper element varies by version.
+    assert 'class="footnote"' in body
+    assert 'href="#fn:' in body
+
+
+def test_md_view_bleach_still_strips_scripts(auth_client, app):
+    md = (b"<script>alert(1)</script>\n"
+          b"<iframe src=\"evil\"></iframe>\n"
+          b"<img src=\"x\" onerror=\"alert(2)\">\n"
+          b"[js](javascript:alert(3))\n"
+          b"<figure><figcaption>Caption</figcaption></figure>\n"
+          b"H<sub>2</sub>O and E=mc<sup>2</sup>\n")
+    _upload(auth_client, "danger.md", md)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="danger.md").one().id
+    resp = auth_client.get(f"/file/{fid}/view")
+    body = resp.data.decode()
+    lowered = body.lower()
+    # The surrounding page contains its own <script> tag; check the malicious
+    # payload specifically rather than the substring "script".
+    assert "<script>alert" not in lowered
+    assert "<iframe" not in lowered
+    assert "onerror=" not in lowered
+    assert "javascript:" not in lowered
+    assert "<figure>" in body
+    assert "<figcaption>" in body
+    assert "<sup>" in body
+    assert "<sub>" in body
