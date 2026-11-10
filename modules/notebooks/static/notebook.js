@@ -1622,7 +1622,8 @@
                     let spec = {
                         kind: "bar", title: "Demo",
                         labels: ["Q1", "Q2", "Q3"],
-                        datasets: [{ label: "Series A", data: [10, 20, 15] }],
+                        datasets: [{ label: "Series A", data: [10, 20, 15] },
+                                   { label: "Series B", data: [7, 14, 9] }],
                     };
                     const draw = () =>
                         renderChartView(out, { content: "", meta: { chart: spec } });
