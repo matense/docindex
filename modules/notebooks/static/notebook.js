@@ -1368,6 +1368,7 @@
                 } catch (e) {
                     renderChartError(preview, "Invalid JSON chart specification.");
                 }
+                fitTextarea(area);
             }
 
             area.addEventListener("input", updatePreview);
@@ -1515,6 +1516,18 @@
             });
         }
 
+        // Textareas grow with their content up to a cap, then scroll
+        // internally — editing long cells never means squinting at a few
+        // cramped lines. Skipped while hidden (offsetParent null), where
+        // scrollHeight reads 0 and CSS min-height applies instead.
+        function fitTextarea(area, maxPx) {
+            if (!area || !area.isConnected || area.offsetParent === null) return;
+            area.style.height = "auto";
+            const cap = maxPx || Math.round(window.innerHeight * 0.6);
+            area.style.height = Math.min(area.scrollHeight + 2, cap) + "px";
+            area.style.overflowY = area.scrollHeight + 2 > cap ? "auto" : "hidden";
+        }
+
         function renderMarkdownPreview(view, cell) {
             const html = renderMarkdown(cell.content);
             if (html === null) { view.textContent = cell.content; }
@@ -1541,10 +1554,21 @@
                 area.rows = 5;
                 area.value = value;
                 area.setAttribute("aria-label", "Try it (not saved)");
-                area.addEventListener("input", () => onInput(area.value));
+                area.addEventListener("input", () => {
+                    onInput(area.value);
+                    fitTextarea(area);
+                });
                 host.appendChild(area);
+                fitTextarea(area);
                 return area;
             }
+            // Demos are wired while the dialog is closed (zero height), so
+            // fit them again on open — the guard inside fitTextarea skips
+            // hidden fields, never collapsing them to 2px.
+            modal.addEventListener("toggle", () => {
+                if (!modal.open) return;
+                modal.querySelectorAll("textarea").forEach((ta) => fitTextarea(ta));
+            });
             function demoError(host, message) {
                 host.innerHTML = "";
                 const box = el("div", "alert alert-error alert-sm");
@@ -1767,10 +1791,12 @@
                     + "rounded bg-base-100 nb-md-live-preview");
                 preview.setAttribute("aria-label", "Live preview");
                 renderMarkdownPreview(preview, cell);
+                fitTextarea(area);
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
                     renderMarkdownPreview(preview, cell);
+                    fitTextarea(area);
                 });
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
@@ -1787,6 +1813,7 @@
                 wrap.appendChild(area);
                 wrap.appendChild(preview);
                 body.appendChild(wrap);
+                fitTextarea(area);
                 if (cell._editing) area.focus();
             } else {
                 const view = el("div", "prose prose-sm max-w-none nb-md");
@@ -1821,9 +1848,11 @@
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
                 area.placeholder = "Code…";
+                fitTextarea(area);
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
+                    fitTextarea(area);
                 });
                 // Exit edit mode only when focus leaves the cell controls
                 // entirely. Clicking the language select opens a native
@@ -1842,6 +1871,7 @@
                     }, 0);
                 });
                 body.appendChild(wrap);
+                fitTextarea(area);
                 if (cell._editing) area.focus();
             } else {
                 const pre = el("pre");
