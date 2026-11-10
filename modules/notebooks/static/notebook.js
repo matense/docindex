@@ -1940,6 +1940,14 @@
                 preview.setAttribute("aria-label", "Live preview");
                 renderMarkdownPreview(preview, cell);
                 fitTextarea(area);
+                const mdShortcutKinds = { b: "bold", i: "italic", k: "link", e: "code", q: "quote" };
+                area.addEventListener("keydown", (e) => {
+                    if (e.isComposing || !(e.ctrlKey || e.metaKey)) return;
+                    const kind = mdShortcutKinds[(e.key || "").toLowerCase()];
+                    if (!kind) return;
+                    e.preventDefault();
+                    insertMarkdownSnippet(area, kind);
+                });
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
