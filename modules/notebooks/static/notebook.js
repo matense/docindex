@@ -1823,10 +1823,13 @@
                     anchor = hasSelection ? null : start + level + 1;
                     break;
                 }
-                case "ul": insert = prefixLines(selected || "- ", "- "); anchor = hasSelection ? null : start + 2; break;
-                case "ol": insert = prefixLines(selected || "1. ", "1. "); anchor = hasSelection ? null : start + 3; break;
-                case "task": insert = prefixLines(selected || "- [ ] ", "- [ ] "); anchor = hasSelection ? null : start + 6; break;
-                case "quote": insert = prefixLines(selected || "> ", "> "); anchor = hasSelection ? null : start + 2; break;
+                case "ul": case "ol": case "task": case "quote": {
+                    const pres = { ul: "- ", ol: "1. ", task: "- [ ] ", quote: "> " };
+                    const pre = pres[kind];
+                    if (hasSelection) { insert = prefixLines(selected, pre); anchor = null; }
+                    else { insert = pre; anchor = start + pre.length; }
+                    break;
+                }
                 case "codeblock": insert = longestFence + "\n" + selected + (selected && !selected.endsWith("\n") ? "\n" : "") + longestFence; anchor = hasSelection ? null : start + longestFence.length + 1; break;
                 case "link":
                     if (hasSelection) { insert = "[" + selected + "](url)"; anchor = null; }
@@ -1836,7 +1839,8 @@
                     const table = "|  |  |\n|---|---|\n|  |  |";
                     const before = (start > 0 && value[start - 1] !== "\n") ? "\n" : "";
                     const after = (value[start] && value[start] !== "\n") ? "\n" : "";
-                    insert = before + table + after;
+                    // Never drop a selection: keep the selected text after the template.
+                    insert = before + table + after + (hasSelection ? selected : "");
                     anchor = start + before.length + 2;
                     break;
                 }
@@ -1848,7 +1852,9 @@
                     n += 1;
                     insert = "[^" + n + "]";
                     const stub = "\n[^" + n + "]: ";
-                    area.value = value.slice(0, start) + insert + value.slice(end) + (value.endsWith("\n") ? "" : "\n") + stub.slice(1);
+                    // Never drop a selection: keep the selected text after the marker.
+                    const kept = hasSelection ? selected : "";
+                    area.value = value.slice(0, start) + insert + kept + value.slice(end) + (value.endsWith("\n") ? "" : "\n") + stub.slice(1);
                     area.focus();
                     area.setSelectionRange(start + insert.length, start + insert.length);
                     area.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1943,6 +1949,8 @@
                 const mdShortcutKinds = { b: "bold", i: "italic", k: "link", e: "code", q: "quote" };
                 area.addEventListener("keydown", (e) => {
                     if (e.isComposing || !(e.ctrlKey || e.metaKey)) return;
+                    // Leave shifted/alt combos (browser menus, devtools) alone.
+                    if (e.shiftKey || e.altKey) return;
                     const kind = mdShortcutKinds[(e.key || "").toLowerCase()];
                     if (!kind) return;
                     e.preventDefault();
