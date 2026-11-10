@@ -1787,10 +1787,94 @@
             });
         }
 
+        // Insert Markdown syntax into a textarea following one rule set:
+        // selection gets wrapped, empty selection gets a marker pair with
+        // the cursor placed inside, multiline selections prefix non-empty
+        // lines only. The caller sets .value and dispatches 'input' so the
+        // existing preview/autosave path runs unchanged.
+        function insertMarkdownSnippet(area, kind) {
+            const value = area.value;
+            const start = area.selectionStart == null ? value.length : area.selectionStart;
+            const end = area.selectionEnd == null ? start : area.selectionEnd;
+            const selected = value.slice(start, end);
+            const hasSelection = selected.length > 0;
+            let insert = selected;
+            // [anchor, focus] selection after the insert, relative to the
+            // insert start. Defaults to a collapsed cursor at the end.
+            let anchor = null;
+            const prefixLines = (text, pre) => text.split("\n")
+                .map((l) => (l.trim() === "" ? l : pre + l)).join("\n");
+            const longestFence = (() => {
+                let longest = 0, run = 0;
+                for (const ch of selected) {
+                    if (ch === "`") { run += 1; longest = Math.max(longest, run); }
+                    else run = 0;
+                }
+                return "`".repeat(Math.max(3, longest + 1));
+            })();
+            switch (kind) {
+                case "bold": insert = "**" + selected + "**"; anchor = hasSelection ? null : start + 2; break;
+                case "italic": insert = "*" + selected + "*"; anchor = hasSelection ? null : start + 1; break;
+                case "strike": insert = "~~" + selected + "~~"; anchor = hasSelection ? null : start + 2; break;
+                case "code": insert = "`" + selected + "`"; anchor = hasSelection ? null : start + 1; break;
+                case "h1": case "h2": case "h3": case "h4": {
+                    const level = Number(kind.slice(1));
+                    insert = prefixLines(selected || "Heading", "#".repeat(level) + " ");
+                    anchor = hasSelection ? null : start + level + 1;
+                    break;
+                }
+                case "ul": insert = prefixLines(selected || "- ", "- "); anchor = hasSelection ? null : start + 2; break;
+                case "ol": insert = prefixLines(selected || "1. ", "1. "); anchor = hasSelection ? null : start + 3; break;
+                case "task": insert = prefixLines(selected || "- [ ] ", "- [ ] "); anchor = hasSelection ? null : start + 6; break;
+                case "quote": insert = prefixLines(selected || "> ", "> "); anchor = hasSelection ? null : start + 2; break;
+                case "codeblock": insert = longestFence + "\n" + selected + (selected && !selected.endsWith("\n") ? "\n" : "") + longestFence; anchor = hasSelection ? null : start + longestFence.length + 1; break;
+                case "link":
+                    if (hasSelection) { insert = "[" + selected + "](url)"; anchor = null; }
+                    else { insert = "[text](url)"; anchor = [start + 1, start + 5]; }
+                    break;
+                case "table": {
+                    const table = "|  |  |\n|---|---|\n|  |  |";
+                    const before = (start > 0 && value[start - 1] !== "\n") ? "\n" : "";
+                    const after = (value[start] && value[start] !== "\n") ? "\n" : "";
+                    insert = before + table + after;
+                    anchor = start + before.length + 2;
+                    break;
+                }
+                case "footnote": {
+                    let n = 0;
+                    const re = /\[\^(\d+)\]/g;
+                    let m;
+                    while ((m = re.exec(value)) !== null) n = Math.max(n, parseInt(m[1], 10));
+                    n += 1;
+                    insert = "[^" + n + "]";
+                    const stub = "\n[^" + n + "]: ";
+                    area.value = value.slice(0, start) + insert + value.slice(end) + (value.endsWith("\n") ? "" : "\n") + stub.slice(1);
+                    area.focus();
+                    area.setSelectionRange(start + insert.length, start + insert.length);
+                    area.dispatchEvent(new Event("input", { bubbles: true }));
+                    return;
+                }
+                case "math-inline": insert = "\\(" + selected + "\\)"; anchor = hasSelection ? null : start + 2; break;
+                case "math-block": {
+                    const before = (start > 0 && value[start - 1] !== "\n") ? "\n" : "";
+                    const after = (value[end] && value[end] !== "\n") ? "\n" : "";
+                    insert = before + "$$\n" + (selected ? selected + "\n" : "\n") + "$$" + after;
+                    anchor = start + before.length + 3;
+                    break;
+                }
+                default: return;
+            }
+            area.value = value.slice(0, start) + insert + value.slice(end);
+            area.focus();
+            if (Array.isArray(anchor)) area.setSelectionRange(anchor[0], anchor[1]);
+            else area.setSelectionRange(anchor == null ? start + insert.length : anchor, anchor == null ? start + insert.length : anchor);
+            area.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
-                const toolsRow = el("div", "flex items-center gap-1 mb-1");
+                const toolsRow = el("div", "flex items-center gap-1 mb-1 flex-wrap");
                 const refBtn = el("button", "btn btn-ghost btn-xs gap-1");
                 refBtn.type = "button";
                 refBtn.innerHTML = '<i class="fas fa-file-arrow-down"></i> File ref';
@@ -1809,6 +1893,42 @@
                     });
                 });
                 toolsRow.appendChild(refBtn);
+                // Markdown formatting toolbar: inserts syntax around the
+                // selection (or a starter snippet with the cursor placed
+                // inside). Setting .value + dispatching 'input' reuses the
+                // existing preview/autosave path untouched.
+                const MD_BUTTONS = [
+                    { kind: "bold", label: "B", cls: "font-bold", title: "Bold" },
+                    { kind: "italic", label: "I", cls: "italic", title: "Italic" },
+                    { kind: "strike", label: "S", cls: "line-through", title: "Strikethrough" },
+                    { kind: "h1", label: "H1", cls: "", title: "Heading 1" },
+                    { kind: "h2", label: "H2", cls: "", title: "Heading 2" },
+                    { kind: "h3", label: "H3", cls: "", title: "Heading 3" },
+                    { kind: "h4", label: "H4", cls: "", title: "Heading 4" },
+                    { kind: "ul", icon: "fa-list-ul", title: "Bulleted list" },
+                    { kind: "ol", icon: "fa-list-ol", title: "Numbered list" },
+                    { kind: "task", icon: "fa-list-check", title: "Task list" },
+                    { kind: "quote", icon: "fa-quote-left", title: "Quote" },
+                    { kind: "code", icon: "fa-code", title: "Inline code" },
+                    { kind: "codeblock", icon: "fa-file-code", title: "Code block" },
+                    { kind: "link", icon: "fa-link", title: "Link" },
+                    { kind: "table", icon: "fa-table", title: "Table (2 columns)" },
+                    { kind: "footnote", label: "fn", cls: "", title: "Footnote" },
+                    { kind: "math-inline", label: "\\(\\)", cls: "font-mono", title: "Inline math" },
+                    { kind: "math-block", label: "$$", cls: "font-mono", title: "Math block" },
+                ];
+                MD_BUTTONS.forEach((def) => {
+                    const b = el("button", "btn btn-ghost btn-xs " + (def.cls || ""));
+                    b.type = "button";
+                    if (def.label) b.textContent = def.label;
+                    else b.innerHTML = '<i class="fas ' + def.icon + '"></i>';
+                    b.title = def.title;
+                    b.setAttribute("data-md-format", def.kind);
+                    // Keep textarea focus/selection like the File ref button.
+                    b.addEventListener("mousedown", (e) => e.preventDefault());
+                    b.addEventListener("click", () => insertMarkdownSnippet(area, def.kind));
+                    toolsRow.appendChild(b);
+                });
                 wrap.appendChild(toolsRow);
                 const area = el("textarea",
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
