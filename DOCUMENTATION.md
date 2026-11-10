@@ -1599,8 +1599,9 @@ tool + table).
   as real, indexed files next to the notebook), and rich-text/markdown
   cells can reference drive files. **Chart cells** store a JSON spec
   (`kind: bar|line|pie`, `labels`, `datasets[]`, optional `title`) under
-  `meta.chart`, validated and capped server-side to 50 labels and 500
-  datasets on save. **Math** in markdown/rich-text uses `$$…$$` for
+  `meta.chart`, validated and capped server-side to 50 labels, 500
+  datasets and 50 data points per dataset on save. **Math** in
+  markdown/rich-text uses `$$…$$` for
   display equations and `\(…\)` for inline math; bare `$` is intentionally
   ignored so prices stay plain text. KaTeX (vendored 0.16.47) and
   Chart.js (vendored 4.6.1) are loaded on demand, so the editor stays

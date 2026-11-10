@@ -300,9 +300,13 @@
     function restoreMath(html, map) {
         // marked HTML-escapes comments that end up inside <pre>/<code>, so
         // also match the escaped form and decode it for the map lookup.
+        // The raw TeX source is then HTML-escaped before splicing back, so
+        // markup inside math (e.g. $$<img src=x onerror=alert(1)>$$) stays
+        // literal text until KaTeX reads it from textContent. KaTeX's
+        // auto-render already skips <pre>/<code>, so code samples stay literal.
         return html.replace(/<!--MATH\d+-->|&lt;!--MATH\d+--&gt;/g, (k) => {
             const raw = k.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
-            return map[raw] || k;
+            return raw in map ? escapeHtml(map[raw]) : k;
         });
     }
 

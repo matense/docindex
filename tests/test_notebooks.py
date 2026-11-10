@@ -372,7 +372,7 @@ def test_extractor_includes_chart_labels(app, user):
 def test_history_diff_renders_chart_cells(app, auth_client, user, enabled):
     drive_id = _drive(app, user)
     cells = [nb_doc.new_cell("chart", meta={
-        "chart": {"kind": "bar", "labels": ["alpha", "beta"],
+        "chart": {"kind": "bar", "labels": ["alpha", "<img src=x>"],
                   "datasets": [{"label": "A", "data": [1, 2]}],
                   "title": "Trends"}})]
     fid = _create(app, user, drive_id, "Hist chart", cells=cells)
@@ -392,7 +392,8 @@ def test_history_diff_renders_chart_cells(app, auth_client, user, enabled):
     body = resp.data
     assert b"chart" in body
     assert b"alpha" in body
-    assert b"beta" in body
+    assert b"&lt;img src=x&gt;" in body
+    assert b"<img" not in body
 
 
 def test_legacy_title_subtitle_cells_migrate_to_heading(app):
