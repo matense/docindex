@@ -91,71 +91,55 @@
 <dialog id="nb-help-modal" class="modal">
     <div class="modal-box max-w-3xl">
         <h3 class="font-bold text-lg mb-1"><i class="fas fa-circle-question text-primary mr-2"></i>Notebook cells</h3>
-        <p class="text-sm opacity-60 mb-4">Eight cell types. Add them with the <b>+</b> button between cells or the bar at the bottom. Everything saves automatically.</p>
+        <p class="text-sm opacity-60 mb-4">Eight cell types. Add them with the <b>+</b> button between cells or the bar at the bottom. Everything saves automatically. Each type below has a <b>live dummy demo</b> — try it here, nothing is saved.</p>
 
         <div class="flex flex-col gap-4 text-sm">
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-align-left text-primary mr-2"></i>Markdown</h4>
                 <p class="opacity-80">Formatted text: headings, <b>bold</b>, lists, tables, footnotes, callouts, math (<span class="font-mono text-xs">$$E=mc^2$$</span>, <span class="font-mono text-xs">\(x\)</span>) and links to files with <span class="font-mono text-xs">[name](file://ID)</span>. The editor shows a live preview below the text.</p>
-                <pre class="bg-base-200 rounded-lg p-3 mt-2 text-xs overflow-x-auto whitespace-pre-wrap">## Results
-- [x] indexed **46 files**
-- [ ] write the summary
-
-| Model | Score |
-|---|---|
-| qwen | 0.91 |
-
-A footnote[^1] and a callout:
-
-::: notice Heads up
-Review the flagged files.
-:::
-
-[^1]: footnotes render at the bottom.</pre>
+                <div class="nb-demo" data-demo="markdown"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-font text-primary mr-2"></i>Rich text</h4>
-                <p class="opacity-80">Word-style editing without markup: toolbar with sizes, bold/italic/lists/quotes/links and tables. Paste images (or use the image button) and they are saved as files on the drive next to the notebook, so they stay indexed and reusable.</p>
+                <p class="opacity-80">Word-style editing without markup: toolbar with sizes, bold/italic/lists/quotes/links and tables. Paste images (or use the image button) and they are saved as files on the drive next to the notebook, so they stay indexed and reusable. Try it:</p>
+                <div class="nb-demo" data-demo="richtext"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-code text-primary mr-2"></i>Code</h4>
                 <p class="opacity-80">Source code with the language shown in the header, syntax highlighting and a copy button. Pick the language from the dropdown when editing.</p>
-                <pre class="bg-base-200 rounded-lg p-3 mt-2 text-xs overflow-x-auto whitespace-pre-wrap">from docindex import search
-
-hits = search.query("quarterly report", limit=10)
-print(f"found {len(hits)} files")</pre>
+                <div class="nb-demo" data-demo="code"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-list-check text-primary mr-2"></i>To-do list</h4>
-                <p class="opacity-80">Checklists. Click a box in the cell to toggle it; add lines with the + Row button while editing.</p>
-                <pre class="bg-base-200 rounded-lg p-3 mt-2 text-xs overflow-x-auto whitespace-pre-wrap">- [x] Sync the drive
-- [ ] Tag the new files
-- [ ] Ask the AI for a summary</pre>
+                <p class="opacity-80">Checklists. Click a box in the cell to toggle it; add lines with the + Row button while editing. Try the boxes:</p>
+                <div class="nb-demo" data-demo="todo"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-table text-primary mr-2"></i>Table</h4>
-                <p class="opacity-80">Structured rows and columns with a styled card, sticky header and row/column buttons while editing. Best for small reference data; the contents are fully searchable.</p>
+                <p class="opacity-80">Structured rows and columns with a styled card, sticky header and row/column buttons while editing. Best for small reference data; the contents are fully searchable. Try pipe syntax:</p>
+                <div class="nb-demo" data-demo="table"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-chart-column text-primary mr-2"></i>Chart</h4>
-                <p class="opacity-80">Bar, line or pie charts rendered from your data. Paste a CSV/TSV table into the editor to fill labels and datasets automatically — or ask the AI to build one from files on the drive.</p>
-                <pre class="bg-base-200 rounded-lg p-3 mt-2 text-xs overflow-x-auto whitespace-pre-wrap">labels:  Q1, Q2, Q3
-series A: 10, 20, 15</pre>
+                <p class="opacity-80">Bar, line or pie charts rendered from your data. Paste a CSV/TSV table into the editor to fill labels and datasets automatically — or ask the AI to build one from files on the drive. Edit the JSON and watch it update:</p>
+                <div class="nb-demo" data-demo="chart"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-heading text-primary mr-2"></i>Heading</h4>
                 <p class="opacity-80">Section titles (level 1 = title, level 2 = subtitle). Headings feed the Index panel, so long notebooks stay navigable.</p>
+                <div class="nb-demo" data-demo="heading"></div>
             </section>
 
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-minus text-primary mr-2"></i>Separator</h4>
-                <p class="opacity-80">A plain visual divider between sections. No content, no settings.</p>
+                <p class="opacity-80">A plain visual divider between sections. No content, no settings — it looks exactly like this:</p>
+                <div class="nb-demo" data-demo="separator"></div>
             </section>
         </div>
 
@@ -453,6 +437,14 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
 #nb-hide-btn.nb-on { color: oklch(var(--in)); }
 #nb-fullhist-btn.nb-on { color: oklch(var(--wa)); }
 
+/* Help modal demos: dummy cells to try things out (nothing is saved) */
+.nb-demo { margin-top: .5rem; border: 1px solid oklch(var(--bc) / .12);
+    border-radius: 12px; padding: 12px; background: oklch(var(--b1)); }
+.nb-demo .nb-demo-out { margin-top: .5rem; }
+.nb-demo-rt { min-height: 3rem; border: 1px dashed oklch(var(--bc) / .25);
+    border-radius: 8px; padding: 8px 10px; outline: none; }
+.nb-demo-rt:focus { border-color: oklch(var(--p) / .5); }
+
 /* File reference picker modal (created by notebook.js) */
 .nb-picker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5);
     display: flex; align-items: flex-start; justify-content: center;
@@ -510,7 +502,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     // editor script on demand — it stays cached in window after first load.
     if (window.NotebookEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=2')|tojson }};
+    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=3')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

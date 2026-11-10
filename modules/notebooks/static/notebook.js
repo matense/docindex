@@ -1527,6 +1527,214 @@
             maybeRenderMath(view, cell.content);
         }
 
+        // Help modal (? icon): dummy cells to try things out. Nothing here
+        // is saved — controls render through the same pipeline as real
+        // cells (renderMarkdownPreview / renderChartView). The modal markup
+        // is static server HTML, so wire once even across SPA re-mounts.
+        function wireHelpDemos() {
+            const modal = document.getElementById("nb-help-modal");
+            if (!modal || modal.dataset.nbWired) return;
+            modal.dataset.nbWired = "1";
+            function demoTextarea(host, value, onInput) {
+                const area = el("textarea",
+                    "textarea textarea-bordered w-full font-mono text-xs mt-2");
+                area.rows = 5;
+                area.value = value;
+                area.setAttribute("aria-label", "Try it (not saved)");
+                area.addEventListener("input", () => onInput(area.value));
+                host.appendChild(area);
+                return area;
+            }
+            function demoError(host, message) {
+                host.innerHTML = "";
+                const box = el("div", "alert alert-error alert-sm");
+                box.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>';
+                box.appendChild(document.createTextNode(message));
+                host.appendChild(box);
+            }
+            modal.querySelectorAll("[data-demo]").forEach((box) => {
+                const kind = box.dataset.demo;
+                if (kind === "markdown") {
+                    const out = el("div", "nb-md mt-2 p-2 border border-base-300 rounded bg-base-100");
+                    box.appendChild(out);
+                    const src = "## Results\n- [x] indexed **46 files**\n\n"
+                        + "A footnote[^1] and math $$E=mc^2$$\n\n"
+                        + "[^1]: footnotes render at the bottom.";
+                    demoTextarea(box, src, (v) =>
+                        renderMarkdownPreview(out, { content: v }));
+                    renderMarkdownPreview(out, { content: src });
+                } else if (kind === "chart") {
+                    const bar = el("div", "flex gap-1 mt-2");
+                    const out = el("div", "mt-2");
+                    box.appendChild(bar);
+                    box.appendChild(out);
+                    let spec = {
+                        kind: "bar", title: "Demo",
+                        labels: ["Q1", "Q2", "Q3"],
+                        datasets: [{ label: "Series A", data: [10, 20, 15] }],
+                    };
+                    const draw = () =>
+                        renderChartView(out, { content: "", meta: { chart: spec } });
+                    const area = demoTextarea(box,
+                        JSON.stringify(spec, null, 1), (v) => {
+                            try {
+                                spec = JSON.parse(v);
+                                draw();
+                            } catch (e) {
+                                demoError(out, "Invalid JSON: " + e.message);
+                            }
+                        });
+                    ["bar", "line", "pie"].forEach((k) => {
+                        const b = el("button", "btn btn-ghost btn-xs");
+                        b.type = "button";
+                        b.textContent = k[0].toUpperCase() + k.slice(1);
+                        b.title = "Chart type: " + k + " (dummy)";
+                        b.addEventListener("click", () => {
+                            try {
+                                const parsed = JSON.parse(area.value);
+                                if (parsed && typeof parsed === "object") {
+                                    parsed.kind = k;
+                                    spec = parsed;
+                                    area.value = JSON.stringify(spec, null, 1);
+                                    draw();
+                                } else {
+                                    demoError(out, "Invalid chart spec: need an object.");
+                                }
+                            } catch (e) {
+                                demoError(out, "Invalid JSON: " + e.message);
+                            }
+                        });
+                        bar.appendChild(b);
+                    });
+                    draw();
+                } else if (kind === "code") {
+                    const langs = ["python", "javascript", "bash", "html"];
+                    const bar = el("div", "flex gap-1 mt-2 items-center");
+                    const sel = el("select", "select select-bordered select-xs");
+                    langs.forEach((l) => {
+                        const o = el("option", "", l);
+                        sel.appendChild(o);
+                    });
+                    bar.appendChild(sel);
+                    box.appendChild(bar);
+                    const out = el("div", "nb-md mt-2");
+                    box.appendChild(out);
+                    const src = 'hits = search.query("quarterly report", limit=10)\n'
+                        + 'print("found", len(hits))';
+                    const draw = () => renderMarkdownPreview(out, {
+                        content: "```" + sel.value + "\n" + area.value + "\n```",
+                    });
+                    const area = demoTextarea(box, src, draw);
+                    sel.addEventListener("change", draw);
+                    draw();
+                } else if (kind === "todo") {
+                    const items = [
+                        { text: "Sync the drive", done: true },
+                        { text: "Tag the new files", done: false },
+                    ];
+                    const list = el("ul", "nb-todo mt-2");
+                    box.appendChild(list);
+                    const paint = () => {
+                        list.innerHTML = "";
+                        items.forEach((it) => {
+                            const li = el("li", it.done ? "done" : "");
+                            const b2 = el("span", "box");
+                            if (it.done) b2.innerHTML = '<i class="fas fa-check"></i>';
+                            li.appendChild(b2);
+                            li.appendChild(el("span", "", it.text));
+                            li.style.cursor = "pointer";
+                            li.title = "Toggle (dummy — nothing is saved)";
+                            li.addEventListener("click", () => {
+                                it.done = !it.done;
+                                paint();
+                            });
+                            list.appendChild(li);
+                        });
+                    };
+                    paint();
+                    const row = el("div", "flex gap-1 mt-2");
+                    const inp = el("input", "input input-bordered input-xs flex-1");
+                    inp.placeholder = "New task… (dummy)";
+                    const add = el("button", "btn btn-ghost btn-xs gap-1");
+                    add.type = "button";
+                    add.innerHTML = '<i class="fas fa-plus"></i> Add';
+                    add.addEventListener("click", () => {
+                        if (!inp.value.trim()) return;
+                        items.push({ text: inp.value.trim(), done: false });
+                        inp.value = "";
+                        paint();
+                    });
+                    row.appendChild(inp);
+                    row.appendChild(add);
+                    box.appendChild(row);
+                } else if (kind === "table") {
+                    const out = el("div", "nb-md mt-2");
+                    box.appendChild(out);
+                    const src = "| Model | Score |\n|---|---|\n| qwen | 0.91 |";
+                    demoTextarea(box, src, (v) =>
+                        renderMarkdownPreview(out, { content: v }));
+                    renderMarkdownPreview(out, { content: src });
+                } else if (kind === "heading") {
+                    const bar = el("div", "flex gap-1 mt-2 items-center");
+                    const inp = el("input",
+                        "input input-bordered input-sm flex-1");
+                    inp.value = "Quarterly review";
+                    inp.setAttribute("aria-label", "Heading text (dummy)");
+                    const out = el("div", "mt-2");
+                    const draw = (level) => {
+                        out.innerHTML = "";
+                        out.appendChild(el(level === 2 ? "h2" : "h1",
+                            level === 2 ? "nb-cell-subtitle" : "nb-cell-title",
+                            inp.value || "Heading"));
+                    };
+                    [["Title", 1], ["Subtitle", 2]].forEach(([label, level]) => {
+                        const b = el("button", "btn btn-ghost btn-xs");
+                        b.type = "button";
+                        b.textContent = label;
+                        b.addEventListener("click", () => draw(level));
+                        bar.appendChild(b);
+                    });
+                    box.appendChild(bar);
+                    box.appendChild(inp);
+                    box.appendChild(out);
+                    inp.addEventListener("input", () => draw(
+                        out.firstChild && out.firstChild.tagName === "H2" ? 2 : 1));
+                    draw(1);
+                } else if (kind === "richtext") {
+                    const bar = el("div", "flex gap-1 mt-2");
+                    const out = el("div",
+                        "nb-demo-rt mt-2 prose prose-sm max-w-none");
+                    out.setAttribute("contenteditable", "true");
+                    out.innerHTML = "Select some text and make it "
+                        + "<b>bold</b>.";
+                    [["B", "bold", "Bold"], ["I", "italic", "Italic"],
+                     ["U", "underline", "Underline"]].forEach(([t, cmd, title]) => {
+                        const b = el("button", "btn btn-ghost btn-xs font-bold");
+                        b.type = "button";
+                        b.textContent = t;
+                        b.title = title;
+                        b.addEventListener("mousedown", (e) => e.preventDefault());
+                        b.addEventListener("click", () => {
+                            out.focus();
+                            try { document.execCommand(cmd, false, null); }
+                            catch (e) { /* older engines */ }
+                        });
+                        bar.appendChild(b);
+                    });
+                    box.appendChild(bar);
+                    box.appendChild(out);
+                    const note = el("p", "text-xs opacity-60 mt-2");
+                    note.textContent = "Pasted images in real cells are saved "
+                        + "as files on the drive. Nothing typed here is saved.";
+                    box.appendChild(note);
+                } else if (kind === "separator") {
+                    const d = el("div", "nb-separator mt-2");
+                    d.innerHTML = '<i class="fas fa-ellipsis"></i>';
+                    box.appendChild(d);
+                }
+            });
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
@@ -1801,6 +2009,7 @@
         }
 
         render();
+        wireHelpDemos();
 
         // Teardown for SPA navigation (no beforeunload fires): flush a
         // debounce-pending save first so edits are never lost, then drop
