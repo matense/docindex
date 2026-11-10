@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "0.1.14",
+      "date": "2026-11-10",
+      "title": "Academic notebooks: reading view, math and charts",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Notebooks gained an academic reading view: comfortable measure, headings, tables with sticky headers, captioned figures, and a clean print stylesheet.",
+            "Math typesetting with KaTeX: write $$…$$ blocks and \\(…\\) inline in any markdown cell, rendered offline with bundled fonts.",
+            "New chart cell type: bar, line and pie charts from a simple labels-and-datasets spec, rendered offline with bundled Chart.js.",
+            "The AI assistant can now create notebooks with math and charts, and add chart cells to existing notebooks.",
+            "Richer markdown everywhere: footnotes, callout boxes, tables, definition lists and smart quotes, in notebooks and Markdown file view."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.13",
       "date": "2026-11-04",
       "title": "Offline assets, faster search, lazy tree view",
