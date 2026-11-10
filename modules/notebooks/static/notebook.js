@@ -1184,17 +1184,45 @@
             }
         }
 
-        function chartColor(i) {
-            // DaisyUI semantic palette for canvas rendering.
-            const colors = [
-                "oklch(var(--p))",
-                "oklch(var(--s))",
-                "oklch(var(--a))",
-                "oklch(var(--in))",
-                "oklch(var(--su))",
-                "oklch(var(--wa))",
-            ];
-            return colors[i % colors.length];
+        // DaisyUI semantic palette, resolved to real rgb() triplets: the
+        // canvas 2D context cannot parse oklch()/var() references, so an
+        // unresolved string would silently paint black. Resolution happens
+        // once per render (cached per data-theme) through a hidden probe,
+        // so light/dark themes are honoured; static fallbacks cover the
+        // case where resolution fails (ancient engine, missing vars).
+        var _nbChartPalette = null;
+        var _nbChartPaletteTheme = null;
+        function chartPalette() {
+            const theme = document.documentElement.getAttribute("data-theme") || "";
+            if (_nbChartPalette && _nbChartPaletteTheme === theme) return _nbChartPalette;
+            const names = ["--p", "--s", "--a", "--in", "--su", "--wa"];
+            const fallbacks = ["99,102,241", "34,211,238", "244,114,182",
+                               "56,189,248", "163,230,53", "251,191,36"];
+            _nbChartPalette = names.map((name, i) => {
+                try {
+                    const probe = document.createElement("span");
+                    probe.setAttribute("aria-hidden", "true");
+                    probe.style.cssText =
+                        "position:absolute;visibility:hidden;pointer-events:none;";
+                    probe.style.color = "var(" + name + ")";
+                    document.body.appendChild(probe);
+                    const computed = getComputedStyle(probe).color || "";
+                    probe.remove();
+                    const m = computed.match(
+                        /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                    if (m) return m[1] + "," + m[2] + "," + m[3];
+                } catch (e) { /* fall through to static fallback */ }
+                return fallbacks[i];
+            });
+            _nbChartPaletteTheme = theme;
+            return _nbChartPalette;
+        }
+        function chartColor(i, alpha) {
+            const pal = chartPalette();
+            const rgb = pal[((i % pal.length) + pal.length) % pal.length];
+            return alpha === undefined
+                ? "rgb(" + rgb + ")"
+                : "rgba(" + rgb + "," + alpha + ")";
         }
 
         function renderChartError(container, message) {
@@ -1246,16 +1274,15 @@
                             return {
                                 label: label,
                                 data: data,
-                                backgroundColor: data.map((_, j) => chartColor(j)),
+                                backgroundColor: data.map((_, j) => chartColor(j, 0.85)),
                             };
                         }
-                        const base = chartColor(i);
                         return {
                             label: label,
                             data: data,
                             backgroundColor: kind === "line"
-                                ? base + "33" : base + "99",
-                            borderColor: base,
+                                ? chartColor(i, 0.25) : chartColor(i, 0.7),
+                            borderColor: chartColor(i),
                             borderWidth: 2,
                             tension: kind === "line" ? 0.3 : 0,
                             fill: kind === "line",
