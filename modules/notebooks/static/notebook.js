@@ -298,19 +298,33 @@
     function codeRanges(src) {
         const lines = src.split("\n");
         const ranges = [];
-        let pos = 0, fenced = false, fenceStart = 0;
+        let pos = 0;
+        const fence = { "```": null, "~~~": null };
         const blanked = [];
         for (const line of lines) {
-            const isFence = /^\s{0,3}```/.test(line);
-            if (isFence && !fenced) { fenced = true; fenceStart = pos; }
-            else if (isFence) {
-                fenced = false;
-                ranges.push([fenceStart, pos + line.length]);
+            const m = line.match(/^\s{0,3}(```|~~~)/);
+            let fenceLine = false;
+            if (m) {
+                const mark = m[1];
+                const other = mark === "```" ? "~~~" : "```";
+                // A fence line inside the other fence type is literal
+                // content, not a toggle.
+                if (fence[other] === null) {
+                    fenceLine = true;
+                    if (fence[mark] === null) fence[mark] = pos;
+                    else {
+                        ranges.push([fence[mark], pos + line.length]);
+                        fence[mark] = null;
+                    }
+                }
             }
-            blanked.push((fenced || isFence) ? " ".repeat(line.length) : line);
+            const inCode = fence["```"] !== null || fence["~~~"] !== null;
+            blanked.push((inCode || fenceLine) ? " ".repeat(line.length) : line);
             pos += line.length + 1;
         }
-        if (fenced) ranges.push([fenceStart, src.length]);
+        for (const mark of ["```", "~~~"]) {
+            if (fence[mark] !== null) ranges.push([fence[mark], src.length]);
+        }
         const flat = blanked.join("\n");
         const re = /(`+)[^`\n]*?\1/g;
         let m;
