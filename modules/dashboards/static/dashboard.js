@@ -43,7 +43,7 @@
             desc: "Um ou dois números grandes com delta — ex. abertos, MTTR."
         },
         table: {
-            icon: "fa-table", label: "Tabela", title: "Nova tabela", defW: 5, defH: 2,
+            icon: "fa-table", label: "Tabela", title: "Nova tabela", defW: 4, defH: 2,
             prompt: "Lista os 5 mais recentes com as colunas que fizerem sentido",
             ph: "Ex.: Lista os 5 mais recentes com as colunas que fizerem sentido…",
             desc: "Tabela com cabeçalho fixo — ex. últimos incidentes."
