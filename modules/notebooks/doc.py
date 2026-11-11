@@ -123,7 +123,7 @@ def _validate_cell(cell):
         labels = chart.get("labels")
         if not isinstance(labels, list):
             raise ValueError("Chart labels must be a list.")
-        labels = [str(l) for l in labels][:50]
+        labels = [str(label) for label in labels][:50]
         datasets = chart.get("datasets") or []
         if not isinstance(datasets, list):
             datasets = []
@@ -223,7 +223,7 @@ def extract(stored_file):
             parts.extend(" | ".join(r) for r in meta.get("rows", []))
         elif ctype == "chart":
             chart = cell["meta"].get("chart") or {}
-            parts.append(" | ".join(str(l) for l in chart.get("labels", [])))
+            parts.append(" | ".join(str(label) for label in chart.get("labels", [])))
             title = chart.get("title")
             if title:
                 parts.append(str(title))

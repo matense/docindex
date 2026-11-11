@@ -271,7 +271,7 @@ def _cell_text(cell):
         title = chart.get("title") or ""
         kind = chart.get("kind") or "bar"
         lines = [f"Chart ({kind}){': ' + title if title else ''}"]
-        lines.append(" | ".join(str(l) for l in chart.get("labels", [])))
+        lines.append(" | ".join(str(label) for label in chart.get("labels", [])))
         return "\n".join(lines)
     if ctype == "separator":
         return ""
