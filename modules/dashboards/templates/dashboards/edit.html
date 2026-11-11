@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Dashboards{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=1">
+{% endblock %}
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="dash-root">
 
@@ -42,6 +45,7 @@
         runUrl: {{ ('/m/dashboards/%s/run' % file.id)|tojson }},
         statusUrl: {{ ('/m/dashboards/%s/status' % file.id)|tojson }},
         runStatusUrlTemplate: {{ '/m/dashboards/runs/RUN_ID/status'|tojson }},
+        indexUrl: {{ url_for('dashboards.index')|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
         doc: {{ doc|tojson }}
     };
@@ -52,7 +56,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=1')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=2')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();
