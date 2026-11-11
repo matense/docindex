@@ -216,7 +216,8 @@ register_tool(
     _schema("notebooks.create",
             "Create a notebook in a writable (non-synced) drive, optionally "
             "with initial cells. Markdown content supports math as $$…$$ "
-            "blocks or \\(…\\) inline; leave bare $ alone for prices. Cells "
+            "blocks or $…$/\\(…\\) inline; a bare $ without a same-line "
+            "closing $ stays literal. Cells "
             "may be markdown, richtext, code, todo, table, heading, separator "
             "or chart. Chart meta is "
             "{chart: {kind: 'bar'|'line'|'pie', labels: [...], "
@@ -246,8 +247,8 @@ register_tool(
             "Append or insert a cell (markdown/code/todo/table/chart) in a "
             "notebook. All edits made while answering one message share a "
             "single restorable history version. Markdown content supports "
-            "math as $$…$$ blocks or \\(…\\) inline; leave bare $ alone "
-            "for prices. For chart cells use meta "
+            "math as $$…$$ blocks or $…$/\\(…\\) inline; a bare $ without "
+            "a same-line closing $ stays literal. For chart cells use meta "
             "{chart: {kind: 'bar'|'line'|'pie', labels: [...], "
             "datasets: [{label: '...', data: [...]}], title?: '...'}}; "
             "caps are 50 labels/data points and 500 datasets.",

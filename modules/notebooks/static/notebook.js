@@ -282,14 +282,60 @@
         _markedExtensionsRegistered = true;
     }
 
-    // Keep $$…$$ and \(…\) math delimiters intact through marked parsing
-    // so KaTeX auto-render can find them in the final DOM. HTML comments are
-    // invisible to markdown and survive sanitization.
+    // Keep $$…$$, \(…\) and $…$ math delimiters intact through marked
+    // parsing so KaTeX auto-render can find them in the final DOM. HTML
+    // comments are invisible to markdown and survive sanitization.
+    // Matches inside code spans/fences are left alone (returned raw) so
+    // code still renders byte-identical (`` `$x$` `` stays `$x$`), and a
+    // match may not span across code either (``$$aberto. `x` $$`` stays
+    // literal instead of swallowing the span).
+    // Single-$ pairs use the standard boundary rule (open follows $ with
+    // non-space, close precedes $ with non-space) so "$5 e $10" never
+    // pairs; the $$ alternative comes first so display math wins at "$$".
+    // Singles are restored as \(…\) — the only inline form KaTeX is asked
+    // to split — so naive $-pairing can never shadow \(…\). A single-$
+    // pair touching another $ (``$$x$``) is left alone and stays literal.
+    function codeRanges(src) {
+        const lines = src.split("\n");
+        const ranges = [];
+        let pos = 0, fenced = false, fenceStart = 0;
+        const blanked = [];
+        for (const line of lines) {
+            const isFence = /^\s{0,3}```/.test(line);
+            if (isFence && !fenced) { fenced = true; fenceStart = pos; }
+            else if (isFence) {
+                fenced = false;
+                ranges.push([fenceStart, pos + line.length]);
+            }
+            blanked.push((fenced || isFence) ? " ".repeat(line.length) : line);
+            pos += line.length + 1;
+        }
+        if (fenced) ranges.push([fenceStart, src.length]);
+        const flat = blanked.join("\n");
+        const re = /(`+)[^`\n]*?\1/g;
+        let m;
+        while ((m = re.exec(flat)) !== null) {
+            ranges.push([m.index, m.index + m[0].length]);
+        }
+        return ranges;
+    }
+    function mathOverlapsCode(ranges, start, end) {
+        return ranges.some(([a, b]) => start < b && a < end);
+    }
     function protectMath(src) {
         const map = {};
         let n = 0;
-        const marked = src.replace(/\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)/g,
-            (m) => {
+        const ranges = codeRanges(src);
+        const marked = src.replace(/\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?=\S)[^$\n]*[^$\s\n]\$/g,
+            (m, offset, string) => {
+                if (mathOverlapsCode(ranges, offset, offset + m.length)) return m;
+                if (m.charAt(0) === "$" && !m.startsWith("$$")) {
+                    if (string[offset - 1] === "$"
+                        || string[offset + m.length] === "$") return m;
+                    const k = "<!--MATH" + (n++) + "-->";
+                    map[k] = "\\(" + m.slice(1, -1) + "\\)";
+                    return k;
+                }
                 const k = "<!--MATH" + (n++) + "-->";
                 map[k] = m;
                 return k;
@@ -398,16 +444,20 @@
     }
 
     // If the rendered content contains KaTeX delimiters, load KaTeX once and
-    // render them. Only $$…$$ (display) and \(…\) (inline) are recognized;
-    // bare $…$ is ignored so prices stay as plain text.
+    // render them. $$…$$ (display), \(…\) and valid $…$ pairs (inline)
+    // are recognized: singles are rewritten to \(…\) up in protectMath,
+    // so KaTeX only ever splits $$ and \(. A bare $ without a valid
+    // same-line pair stays literal, so prices stay as plain text.
+    // Parse errors fall back to raw text silently (no console noise).
     function maybeRenderMath(view, content) {
-        if (/\$\$|\\\(/.test(content || "")) {
+        if (/\$\$|\\\(|\$(?=\S)[^$\n]*[^$\s\n]\$/.test(content || "")) {
             loadKaTeX(() => {
                 window.renderMathInElement(view, {
                     delimiters: [
                         { left: "$$", right: "$$", display: true },
                         { left: "\\(", right: "\\)", display: false }
-                    ]
+                    ],
+                    errorCallback: () => {}
                 });
             });
         }

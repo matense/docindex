@@ -96,7 +96,7 @@
         <div class="flex flex-col gap-4 text-sm">
             <section>
                 <h4 class="font-bold mb-1"><i class="fas fa-align-left text-primary mr-2"></i>Markdown</h4>
-                <p class="opacity-80">Formatted text: headings, <b>bold</b>, lists, tables, footnotes, callouts, math (<span class="font-mono text-xs">$$E=mc^2$$</span>, <span class="font-mono text-xs">\(x\)</span>) and links to files with <span class="font-mono text-xs">[name](file://ID)</span>. The editor shows a live preview below the text.</p>
+                <p class="opacity-80">Formatted text: headings, <b>bold</b>, lists, tables, footnotes, callouts, math (<span class="font-mono text-xs">$x^2$</span>, <span class="font-mono text-xs">$$E=mc^2$$</span>, <span class="font-mono text-xs">\(x\)</span>) and links to files with <span class="font-mono text-xs">[name](file://ID)</span>. The editor shows a live preview below the text.</p>
                 <div class="nb-demo" data-demo="markdown"></div>
             </section>
 
@@ -502,7 +502,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     // editor script on demand — it stays cached in window after first load.
     if (window.NotebookEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=8')|tojson }};
+    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=9')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();
