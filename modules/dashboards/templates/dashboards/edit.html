@@ -41,6 +41,7 @@
         docUrl: {{ url_for('dashboards.document_json', file_id=file.id)|tojson }},
         runUrl: {{ ('/m/dashboards/%s/run' % file.id)|tojson }},
         statusUrl: {{ ('/m/dashboards/%s/status' % file.id)|tojson }},
+        runStatusUrlTemplate: {{ '/m/dashboards/runs/RUN_ID/status'|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
         doc: {{ doc|tojson }}
     };

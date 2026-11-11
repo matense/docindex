@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 import os
 import sys
 
@@ -9,8 +10,8 @@ import pytest
 from werkzeug.datastructures import FileStorage
 
 from app.extensions import db
-from app.models import Drive, ModuleState, StoredFile, User
-from app.services import indexing_service
+from app.models import AIUsageEvent, Drive, ModuleState, StoredFile, User
+from app.services import file_service, indexing_service
 
 # Load the module package directly (it lives outside the app package).
 _DASH_DIR = os.path.join(os.path.join(os.path.dirname(os.path.dirname(
@@ -452,3 +453,310 @@ def test_new_rejects_malformed_location(app, auth_client, user, enabled):
     with app.app_context():
         assert StoredFile.query.filter_by(
             user_id=user, extension="pdash").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 4: execution engine (queue, run_card/run_all, cleanup)
+# ---------------------------------------------------------------------------
+
+def _engine():
+    """The execution engine module (Tasks 4+) — ImportError until implemented."""
+    return importlib.import_module("docindex_module_dashboards.engine")
+
+
+def _automation_models():
+    name = "docindex_module_automation"
+    if sys.modules.get(name) is None:
+        auto_dir = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "modules", "automation")
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(auto_dir, "__init__.py"),
+            submodule_search_locations=[auto_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return importlib.import_module(f"{name}.models")
+
+
+@pytest.fixture()
+def fake_ai(monkeypatch):
+    """Stub the engine's AI seams: no real backend calls in tests."""
+    dash_engine = _engine()
+    calls = {}
+
+    def fake_agent(user, prompt, drive=None):
+        calls["agent_prompt"] = prompt
+        return ("3 open incidents",
+                [{"prompt_tokens": 10, "completion_tokens": 5,
+                  "estimated": True, "model": "fake"}])
+
+    def fake_complete(user, messages):
+        calls["messages"] = messages
+        return ("formatted summary",
+                {"prompt_tokens": 8, "completion_tokens": 4,
+                 "estimated": True, "model": "fake"})
+
+    monkeypatch.setattr(dash_engine, "run_agent_answer", fake_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", fake_complete)
+    return calls
+
+
+def _add_card(app, fid, type="kpi", title="Card", prompt="Say hi", tools=True,
+              attachments=(), workflow=None):
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = dash_doc.new_card(type, title=title, prompt=prompt)
+        card["tools"] = tools
+        card["inputs"]["attachments"] = list(attachments)
+        if workflow is not None:
+            card["inputs"]["workflow"] = workflow
+        doc["cards"].append(card)
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        return card["id"]
+
+
+def _attach_file(app, fid, name="data.csv", content=b"a,b\n1,2\n"):
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        return dash_doc.attach_upload(stored, _upload(name, content))
+
+
+def _set_running(app, fid, card_id):
+    """Mark a card running directly (simulates an in-flight run)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        for card in doc["cards"]:
+            if card["id"] == card_id:
+                card["status"] = "running"
+                card["runId"] = f"{fid}:deadbeef"
+        dash_doc.save_document(stored, doc)
+
+
+def _card(app, fid, card_id):
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+        return next(c for c in doc["cards"] if c["id"] == card_id)
+
+
+def test_run_card_snapshots_result(app, auth_client, user, enabled, fake_ai):
+    dash_engine = _engine()
+    assert dash_engine  # bound (fails before the engine exists)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Open",
+                    prompt="Count open", attachments=[att["id"]])
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    assert "Count open" in fake_ai["agent_prompt"]
+
+    st = auth_client.get(f"/m/dashboards/runs/{run_id}/status")
+    assert st.status_code == 200
+    body = st.get_json()
+    assert body["status"] == "done"
+    assert body["result"]["text"] == "3 open incidents"
+
+    card = _card(app, fid, cid)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "3 open incidents"}
+    assert card["ranAt"]
+    with app.app_context():
+        assert (db.session.query(AIUsageEvent)
+                .filter_by(user_id=user, kind="dashboard").count() >= 1)
+
+
+def test_run_all_runs_every_card(app, auth_client, user, enabled, fake_ai):
+    _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _add_card(app, fid, title="One")
+    second = _add_card(app, fid, title="Two")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run", json={"all": True})
+    assert resp.status_code == 200
+    assert len(resp.get_json()["accepted"]) == 2
+    assert _card(app, fid, first)["status"] == "done"
+    assert _card(app, fid, second)["status"] == "done"
+
+
+def test_refresh_while_running_rejected(app, auth_client, user, enabled,
+                                        fake_ai):
+    _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid)
+    _set_running(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert cid in body["already_running"]
+    assert body["error"]  # human-readable notice
+    # Single active run: nothing executed, state untouched.
+    assert "agent_prompt" not in fake_ai
+    card = _card(app, fid, cid)
+    assert card["status"] == "running" and card["result"] is None
+
+
+def test_missing_input_fails_visibly(app, auth_client, user, enabled,
+                                     fake_ai):
+    _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid, name="gone.csv")
+    cid = _add_card(app, fid, prompt="Count rows",
+                    attachments=[att["id"]])
+    with app.app_context():
+        file_service.delete_file(db.session.get(StoredFile, att["fileId"]))
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    body = auth_client.get(
+        f"/m/dashboards/runs/{run_id}/status").get_json()
+    assert body["status"] == "error"
+    assert "gone.csv" in body["error"]
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert "gone.csv" in card["result"]["error"]
+
+
+def test_tools_off_truncates_huge_file(app, auth_client, user, enabled,
+                                        fake_ai):
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    big = ("0123456789\n" * 6000).encode()
+    att = _attach_file(app, fid, name="big.csv", content=big)
+    cid = _add_card(app, fid, tools=False, prompt="Summarize",
+                    attachments=[att["id"]])
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    body = auth_client.get(
+        f"/m/dashboards/runs/{run_id}/status").get_json()
+    assert body["status"] == "done"
+    assert body["result"]["truncated"] is True
+    injected = fake_ai["messages"][0]["content"]
+    assert len(big) > dash_engine.TOOLS_OFF_MAX_CHARS
+    assert (len(injected) <= dash_engine.TOOLS_OFF_MAX_CHARS
+            + len("Summarize") + 2000)
+
+
+def test_interrupted_on_load(app, auth_client, user, enabled):
+    _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid)
+    _set_running(app, fid, cid)
+    doc = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    card = next(c for c in doc["cards"] if c["id"] == cid)
+    assert card["status"] == "interrupted"
+    assert "interrupt" in card["result"]["error"].lower()
+
+
+def test_clear_artifacts_keeps_dashboard_and_attachments(
+        app, auth_client, user, enabled):
+    dash_engine = _engine()
+    assert dash_engine
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        owner = db.session.get(User, user)
+        art = file_service.save_upload(_upload("artifact.csv"), owner,
+                                       drive=drive)
+        art_id = art.id
+        orig = file_service.save_upload(_upload("orig.csv"), owner,
+                                        drive=drive)
+        orig_id = orig.id
+        stored = db.session.get(StoredFile, fid)
+        dash_doc.register_artifact(stored, art_id)
+        dash_doc.attach_link(stored, orig_id)
+    uploaded = _attach_file(app, fid, name="owned.csv")
+
+    resp = auth_client.post(f"/m/dashboards/{fid}/artifacts/clear")
+    assert resp.status_code == 200
+    assert resp.get_json()["cleared"] == [art_id]
+    with app.app_context():
+        assert db.session.get(StoredFile, art_id).deleted_at is not None
+        assert db.session.get(StoredFile, uploaded["fileId"]
+                              ).deleted_at is None
+        assert db.session.get(StoredFile, orig_id).deleted_at is None
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+        assert doc["createdFileIds"] == []
+        assert len(doc["attachments"]) == 2
+
+
+def test_delete_removes_dashboard_owned_uploads_and_artifacts_but_keeps_linked_originals(
+        app, auth_client, user, enabled):
+    dash_engine = _engine()
+    assert dash_engine
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        owner = db.session.get(User, user)
+        art = file_service.save_upload(_upload("artifact.csv"), owner,
+                                       drive=drive)
+        art_id = art.id
+        orig = file_service.save_upload(_upload("orig.csv"), owner,
+                                        drive=drive)
+        orig_id = orig.id
+        stored = db.session.get(StoredFile, fid)
+        dash_doc.register_artifact(stored, art_id)
+        dash_doc.attach_link(stored, orig_id)
+    uploaded = _attach_file(app, fid, name="owned.csv")
+
+    info = auth_client.get(f"/m/dashboards/{fid}/delete-info").get_json()
+    assert info["dashboard"]["id"] == fid
+    assert uploaded["fileId"] in [a["id"] for a in info["ownedUploads"]]
+    assert art_id in [a["id"] for a in info["artifacts"]]
+    assert orig_id in [a["id"] for a in info["linkedKept"]]
+
+    resp = auth_client.post(f"/m/dashboards/{fid}/delete")
+    assert resp.status_code == 200
+    assert auth_client.get(f"/m/dashboards/{fid}/doc").status_code == 404
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).deleted_at is not None
+        assert (db.session.get(StoredFile, uploaded["fileId"])
+                .deleted_at is not None)
+        assert db.session.get(StoredFile, art_id).deleted_at is not None
+        assert db.session.get(StoredFile, orig_id).deleted_at is None
+
+
+def test_run_workflow_card_uses_runtime(app, auth_client, user, enabled,
+                                        fake_ai):
+    _engine()
+    auto_models = _automation_models()
+    graph = {"nodes": [
+        {"id": "n1", "type": "input.text", "x": 0, "y": 0,
+         "config": {"content": "hello world", "format": "text"}},
+        {"id": "n2", "type": "output.result", "x": 0, "y": 0, "config": {}},
+    ], "edges": [
+        {"from": "n1", "from_port": "out", "to": "n2", "to_port": "in"}]}
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        wf = auto_models.AutomationWorkflow(
+            user_id=user, name="Flow", graph=json.dumps(graph))
+        db.session.add(wf)
+        db.session.commit()
+        wid = wf.id
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    body = auth_client.get(
+        f"/m/dashboards/runs/{run_id}/status").get_json()
+    assert body["status"] == "done"
+    previews = [r["preview"]
+                for r in body["result"]["workflow"]["results"]]
+    assert any("hello world" in p for p in previews)
+    assert body["result"]["text"] == "formatted summary"

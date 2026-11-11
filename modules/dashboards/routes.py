@@ -1,16 +1,18 @@
 """Dashboard module routes: list, editor, save, attachments, history."""
 
 import difflib
+import uuid
 
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, url_for)
 from flask_login import current_user
 
 from app.extensions import db
-from app.models import Drive, Folder
+from app.models import Drive, Folder, utcnow
 from app.services import file_service, indexing_service
 
 from . import doc as doc_service
+from . import engine as engine_service
 
 bp = Blueprint("dashboards", __name__,
                template_folder="templates", static_folder="static")
@@ -139,6 +141,7 @@ def new():
 @bp.get("/<int:file_id>")
 def editor(file_id):
     stored = _get_dashboard(file_id)
+    doc_service.recover_interrupted(stored)
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
@@ -151,6 +154,7 @@ def document_json(file_id):
     """JSON document + timestamp — used by the editor to pick up external
     (e.g. AI tool) changes while the dashboard is open."""
     stored = _get_dashboard(file_id)
+    doc_service.recover_interrupted(stored)
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
@@ -351,3 +355,195 @@ def history_restore(file_id, version_id):
     indexing_service.enqueue_index([stored.id])
     flash("Dashboard restored.", "success")
     return redirect(url_for("dashboards.editor", file_id=stored.id))
+
+
+# ---------------------------------------------------------------------------
+# Execution: run cards, poll status
+# ---------------------------------------------------------------------------
+
+def _busy(already_running):
+    return jsonify({"ok": False,
+                    "error": "Another run is already in progress on this "
+                             "dashboard — wait for it to finish, then try "
+                             "again.",
+                    "already_running": already_running}), 409
+
+
+def _fresh_card(stored, card_id):
+    doc = doc_service.load(stored)
+    card = next((c for c in doc.get("cards", [])
+                 if c.get("id") == card_id), None)
+    if card is None:
+        raise ValueError(f"Unknown card '{card_id}'.")
+    return card
+
+
+@bp.post("/<int:file_id>/run")
+def run_cards(file_id):
+    """Run one card (``{"card_id": ...}``) or the whole dashboard
+    (``{"all": true}``). Cards execute sequentially through the dashboard's
+    concurrency cap; returns ``{"accepted": [run_ids]}``. A run targeting a
+    card that is already running (or exceeding the cap) is rejected with
+    409 + ``already_running`` instead of queueing."""
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    payload = request.get_json(silent=True) or {}
+    try:
+        doc = doc_service.load(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if payload.get("all"):
+        targets = [c.get("id") for c in doc.get("cards", [])]
+    elif payload.get("card_id"):
+        targets = [payload["card_id"]]
+    else:
+        return jsonify({"ok": False,
+                        "error": "Pass card_id or all: true."}), 400
+    known = {c.get("id") for c in doc.get("cards", [])}
+    unknown = [t for t in targets if t not in known]
+    if unknown:
+        return jsonify({"ok": False,
+                        "error": f"Unknown card(s): "
+                                 f"{', '.join(unknown)}."}), 404
+
+    with engine_service.dashboard_lock(stored.id):
+        doc = doc_service.load(stored)
+        cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
+        running = [c.get("id") for c in doc.get("cards", [])
+                   if c.get("status") == "running"]
+        targeted = [t for t in targets if t in running]
+        if targeted:
+            return _busy(targeted)
+        if targets and len(running) >= cap:
+            return _busy(running)
+        accepted = []
+        for target in targets:
+            run_id = f"{stored.id}:{uuid.uuid4().hex[:12]}"
+            card = next(c for c in doc["cards"]
+                        if c.get("id") == target)
+            card["status"] = "running"
+            card["runId"] = run_id
+            accepted.append(run_id)
+        doc_service.save_document(stored, doc)
+
+        for target, run_id in zip(targets, accepted):
+            try:
+                card = _fresh_card(stored, target)
+                result, artifact_ids = engine_service.run_card(
+                    stored, card, current_user.id)
+                status = "done"
+            except engine_service.MissingInputError as exc:
+                result, artifact_ids, status = (
+                    {"error": str(exc)}, [], "error")
+            except Exception as exc:  # noqa: BLE001 - errors surface on card
+                db.session.rollback()
+                result, artifact_ids, status = (
+                    {"error": (str(exc) or "The run failed.")[:500]},
+                    [], "error")
+            fresh = doc_service.load(stored)
+            card = next(c for c in fresh["cards"]
+                        if c.get("id") == target)
+            card["status"] = status
+            card["result"] = result
+            card["ranAt"] = utcnow().isoformat()
+            registry = fresh.setdefault("createdFileIds", [])
+            for new_id in artifact_ids:
+                if new_id not in registry:
+                    registry.append(new_id)
+            doc_service.save_document(stored, fresh)
+    return jsonify({"ok": True, "accepted": accepted})
+
+
+def _run_card_payload(stored, run_id):
+    try:
+        doc = doc_service.load(stored)
+    except ValueError:
+        return None, None
+    card = next((c for c in doc.get("cards", [])
+                 if c.get("runId") == run_id), None)
+    return doc, card
+
+
+@bp.get("/runs/<run_id>/status")
+def run_status(run_id):
+    """Poll one card run — ``{status, result?, error?}``, mirroring the
+    automation run-status shape (plus run/card/dashboard ids)."""
+    try:
+        file_part, _ = run_id.split(":", 1)
+        file_id = int(file_part)
+    except (ValueError, AttributeError):
+        abort(404)
+    stored = _get_dashboard(file_id)
+    _doc, card = _run_card_payload(stored, run_id)
+    if card is None:
+        abort(404)
+    error = None
+    if card.get("status") in ("error", "interrupted"):
+        result = card.get("result") or {}
+        error = (result.get("error") if isinstance(result, dict)
+                 else str(result))
+    return jsonify({"run_id": run_id, "card_id": card.get("id"),
+                    "dashboard_id": stored.id,
+                    "status": card.get("status"),
+                    "result": card.get("result"), "error": error,
+                    "ranAt": card.get("ranAt")})
+
+
+@bp.get("/<int:file_id>/status")
+def dashboard_status(file_id):
+    """Aggregate card states for the whole dashboard (polled by View)."""
+    stored = _get_dashboard(file_id)
+    try:
+        doc = doc_service.load(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    cards = {c.get("id"): {"status": c.get("status"),
+                           "ranAt": c.get("ranAt"),
+                           "runId": c.get("runId")}
+             for c in doc.get("cards", [])}
+    running = [cid for cid, state in cards.items()
+               if state["status"] == "running"]
+    return jsonify({"ok": True, "dashboard_id": stored.id,
+                    "running": running, "cards": cards})
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: artifacts and dashboard delete
+# ---------------------------------------------------------------------------
+
+@bp.post("/<int:file_id>/artifacts/clear")
+def artifacts_clear(file_id):
+    """Trash run-created artifacts; keep the dashboard and its attachments."""
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    try:
+        result = doc_service.clear_artifacts(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@bp.get("/<int:file_id>/delete-info")
+def delete_info(file_id):
+    """Inventory for the delete confirm modal: what removal deletes
+    (dashboard + owned uploads + artifacts) and what it keeps (linked
+    originals)."""
+    stored = _get_dashboard(file_id)
+    try:
+        info = doc_service.delete_info(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **info})
+
+
+@bp.post("/<int:file_id>/delete")
+def delete_dashboard(file_id):
+    """Remove the dashboard plus owned uploads and run-created artifacts
+    after explicit confirmation. Linked originals are never touched."""
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    try:
+        result = doc_service.delete_dashboard(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **result})

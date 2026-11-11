@@ -66,8 +66,14 @@ DEFAULT_SIZE = {
 
 TITLE_MAX_CHARS = 255
 PROMPT_MAX_CHARS = 20000
-CARD_STATUSES = ("idle", "running", "done", "error")
+CARD_STATUSES = ("idle", "running", "done", "error", "interrupted")
 ATTACHMENT_ORIGINS = ("upload", "link")
+
+# Per-dashboard run queue depth: how many cards may run at once. Stored on
+# the doc so it is configurable upward; the engine holds a per-dashboard
+# lock so concurrent POSTs serialize through the cap.
+DEFAULT_CONCURRENCY = 1
+MAX_CONCURRENCY = 8
 
 # Card keys that change on every run without changing the dashboard's shape.
 # save_document() writes these through without snapshotting a FileVersion.
@@ -208,6 +214,13 @@ def validate(doc):
     doc["title"] = str(doc.get("title") or "Untitled dashboard"
                        )[:TITLE_MAX_CHARS]
     doc["version"] = 1
+    concurrency = doc.get("concurrency", DEFAULT_CONCURRENCY)
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int):
+        raise ValueError("concurrency must be an integer.")
+    if not DEFAULT_CONCURRENCY <= concurrency <= MAX_CONCURRENCY:
+        raise ValueError(f"concurrency must stay between "
+                         f"{DEFAULT_CONCURRENCY} and {MAX_CONCURRENCY}.")
+    doc["concurrency"] = concurrency
     return doc
 
 
@@ -441,12 +454,161 @@ def detach_attachment(stored, att_id):
     return {"removed_file": removed_file}
 
 
+# ---------------------------------------------------------------------------
+# Artifact registry and cleanup
+# ---------------------------------------------------------------------------
+
+def register_artifact(stored, file_id):
+    """Track a run-created file so cleanup stays scoped.
+
+    Returns True when the id was recorded; False for garbage (non-integer,
+    missing, trashed or foreign files are never registered).
+    """
+    try:
+        fid = int(file_id)
+    except (TypeError, ValueError):
+        return False
+    target = (StoredFile.query
+              .filter_by(id=fid, user_id=stored.user_id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if target is None:
+        return False
+    doc = load(stored)
+    if fid not in doc.get("createdFileIds", []):
+        doc["createdFileIds"].append(fid)
+        save_document(stored, doc)
+    return True
+
+
+def _resolve_files(stored, file_ids):
+    """Split file ids into existing vs gone (trashed, moved or deleted).
+
+    Returns ([{"id", "name"}], [{"id", "name"|None, "missing": True}]).
+    Only same-user files are ever listed; foreign ids read as missing.
+    """
+    found, missing = [], []
+    for fid in file_ids:
+        target = db.session.get(StoredFile, fid)
+        if (target is not None and target.user_id == stored.user_id
+                and target.deleted_at is None):
+            found.append({"id": target.id, "name": target.name})
+        else:
+            name = (target.name if target is not None
+                    and target.user_id == stored.user_id else None)
+            missing.append({"id": fid, "name": name, "missing": True})
+    return found, missing
+
+
+def _attachment_files(doc, origin):
+    return [a.get("fileId") for a in doc.get("attachments", [])
+            if a.get("origin") == origin and isinstance(a.get("fileId"), int)]
+
+
+def delete_info(stored):
+    """Inventory for the delete confirm modal: what removing the dashboard
+    deletes (dashboard + owned uploads + run-created artifacts) and what it
+    keeps (linked originals, listed so the user sees they are untouched)."""
+    doc = load(stored)
+    uploads, _ = _resolve_files(
+        stored, _attachment_files(doc, "upload"))
+    artifacts, _ = _resolve_files(stored, doc.get("createdFileIds", []))
+    linked, _ = _resolve_files(stored, _attachment_files(doc, "link"))
+    return {"dashboard": {"id": stored.id, "name": stored.name},
+            "ownedUploads": uploads,
+            "artifacts": artifacts,
+            "linkedKept": linked}
+
+
+def clear_artifacts(stored):
+    """Trash run-created artifacts; keep the dashboard and its attachments.
+
+    Returns {"cleared": [ids], "missing": [ids]} — missing covers files that
+    were already gone (trashed, moved or deleted outside the dashboard).
+    """
+    _guard_writable(stored)
+    doc = load(stored)
+    cleared, missing = [], []
+    for fid in list(doc.get("createdFileIds", [])):
+        target = (StoredFile.query
+                  .filter_by(id=fid, user_id=stored.user_id)
+                  .filter(StoredFile.deleted_at.is_(None))
+                  .first())
+        if target is None:
+            missing.append(fid)
+            continue
+        file_service.delete_file(target)
+        cleared.append(fid)
+    doc["createdFileIds"] = []
+    save_document(stored, doc)
+    return {"cleared": cleared, "missing": missing}
+
+
+def delete_dashboard(stored):
+    """Remove the dashboard plus owned uploads and run-created artifacts.
+
+    Linked originals are never touched. Everything is trashed (blobs kept),
+    mirroring the notebooks precedent. Returns the inventory of what was
+    removed and what was kept.
+    """
+    _guard_writable(stored)
+    info = delete_info(stored)
+    removed_uploads, removed_artifacts = [], []
+    for entry in info["ownedUploads"]:
+        target = db.session.get(StoredFile, entry["id"])
+        if target is not None and target.deleted_at is None:
+            file_service.delete_file(target)
+            removed_uploads.append(entry["id"])
+    for entry in info["artifacts"]:
+        target = db.session.get(StoredFile, entry["id"])
+        if target is not None and target.deleted_at is None:
+            file_service.delete_file(target)
+            removed_artifacts.append(entry["id"])
+    file_service.delete_file(stored)
+    return {"dashboard": info["dashboard"],
+            "removedUploads": removed_uploads,
+            "removedArtifacts": removed_artifacts,
+            "linkedKept": info["linkedKept"]}
+
+
+# ---------------------------------------------------------------------------
+# Run recovery
+# ---------------------------------------------------------------------------
+
+def recover_interrupted(stored):
+    """Mark cards stuck in `running` as interrupted (automation
+    `recover_interrupted` precedent).
+
+    Runs on dashboard load: a `running` card with no live worker behind it
+    belongs to a dead process (e.g. a server restart mid-run). The rewrite
+    only touches volatile keys, so it writes through without snapshotting.
+    Returns the number of cards recovered.
+    """
+    try:
+        doc = load(stored)
+    except (ValueError, OSError):
+        return 0
+    fixed = 0
+    for card in doc.get("cards", []):
+        if card.get("status") == "running":
+            card["status"] = "interrupted"
+            card["result"] = {
+                "error": "This run was interrupted (the dashboard was "
+                         "reloaded while the run was active). "
+                         "Run the card again."}
+            fixed += 1
+    if fixed:
+        save_document(stored, doc)
+    return fixed
+
+
 def _structural_shape(doc):
     """The dashboard minus per-run volatile card keys — structural edits
     change this shape, result writes do not."""
     shape = {"title": doc.get("title"),
              "attachments": doc.get("attachments", []),
-             "createdFileIds": doc.get("createdFileIds", [])}
+             "createdFileIds": doc.get("createdFileIds", []),
+             "concurrency": doc.get("concurrency", DEFAULT_CONCURRENCY)}
     cards = []
     for card in doc.get("cards", []):
         cards.append({k: v for k, v in card.items()
