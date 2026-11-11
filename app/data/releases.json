@@ -1,19 +1,30 @@
 {
   "releases": [
     {
-      "version": "0.1.14",
-      "date": "2026-11-10",
-      "title": "Academic notebooks: reading view, math and charts",
+      "version": "0.1.15",
+      "date": "2026-11-11",
+      "title": "Academic notebooks: reading view, math, charts and editing tools",
       "sections": [
         {
           "title": "New",
           "icon": "fa-sparkles",
           "entries": [
             "Notebooks gained an academic reading view: comfortable measure, headings, tables with sticky headers, captioned figures, and a clean print stylesheet.",
-            "Math typesetting with KaTeX: write $$…$$ blocks and \\(…\\) inline in any markdown cell, rendered offline with bundled fonts.",
+            "Math typesetting with KaTeX: write $$…$$ blocks, $…$ or \\(…\\) inline in any markdown cell — including inside markdown tables — rendered offline with bundled fonts. Bare prices like $5 stay literal text.",
             "New chart cell type: bar, line and pie charts from a simple labels-and-datasets spec, rendered offline with bundled Chart.js.",
             "The AI assistant can now create notebooks with math and charts, and add chart cells to existing notebooks.",
-            "Richer markdown everywhere: footnotes, callout boxes, tables, definition lists and smart quotes, in notebooks and Markdown file view."
+            "Richer markdown everywhere: footnotes, callout boxes, tables, definition lists and smart quotes, in notebooks and Markdown file view.",
+            "Markdown formatting toolbar in cell edit mode: bold, italic, lists, headings, links, tables, footnotes and math, with Ctrl/Cmd+B, I, K, E and Q shortcuts; edit-mode textareas grow to fit their content.",
+            "In-app cell-types help with live dummy demos for every cell type, so each syntax can be tried before using it."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Charts no longer stay blank until refresh when a notebook is opened through in-app navigation.",
+            "Toolbar edge cases: empty list buttons no longer double their marker, footnote/table buttons keep the selected text, and shortcuts leave Shift/Alt combinations (browser menus, devtools) alone.",
+            "Code samples stay byte-identical: math pairing skips inline code and fenced blocks, including ~~~ fences."
           ]
         }
       ]
