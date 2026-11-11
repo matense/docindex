@@ -80,11 +80,11 @@ SNAPSHOT_INTERVAL = timedelta(minutes=2)
 # Document model
 # ---------------------------------------------------------------------------
 
-def new_card(card_type="kpi", title="", prompt=""):
-    if card_type not in CARD_TYPES:
-        raise ValueError(f"Unknown card type '{card_type}'.")
-    w, h = DEFAULT_SIZE[card_type]
-    card = {"id": uuid.uuid4().hex[:12], "type": card_type,
+def new_card(type="kpi", title="", prompt=""):
+    if type not in CARD_TYPES:
+        raise ValueError(f"Unknown card type '{type}'.")
+    w, h = DEFAULT_SIZE[type]
+    card = {"id": uuid.uuid4().hex[:12], "type": type,
             "title": title or "", "w": w, "h": h,
             "prompt": prompt or "", "tools": True,
             "inputs": {"attachments": []},
@@ -151,6 +151,7 @@ def _validate_card(card, attachment_ids=None):
     workflow = card["inputs"].get("workflow")
     if workflow is not None and not isinstance(workflow, dict):
         raise ValueError("Card inputs.workflow must be an object.")
+    card.setdefault("status", "idle")
     if card.get("status") not in CARD_STATUSES:
         raise ValueError(f"Unknown card status '{card.get('status')}'.")
     result = card.get("result")
@@ -369,7 +370,8 @@ def attach_upload(stored, file_storage):
     and registered as an ``origin: "upload"`` attachment.
     """
     asset = file_service.save_upload(file_storage, _owner(stored.user_id),
-                                     folder=stored.folder)
+                                     folder=stored.folder,
+                                     drive=stored.drive)
     asset.drive_id = stored.drive_id
     db.session.commit()
     indexing_service.enqueue_index([asset.id])

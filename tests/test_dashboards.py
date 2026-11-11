@@ -63,9 +63,15 @@ def test_card_validation_rejects_unknown_type():
     with pytest.raises(ValueError):
         dash_doc.new_card("nope")
     with pytest.raises(ValueError):
+        dash_doc.new_card(type="nope")
+    with pytest.raises(ValueError):
         dash_doc.validate({"version": 1, "title": "T",
                            "cards": [{"type": "nope"}],
                            "attachments": [], "createdFileIds": []})
+
+
+def test_new_card_accepts_type_keyword():
+    assert dash_doc.new_card(type="kpi")["type"] == "kpi"
 
 
 def test_validate_snaps_sizes_to_grid():
@@ -89,6 +95,14 @@ def test_validate_rejects_overlong_prompt():
     doc["cards"] = [card]
     with pytest.raises(ValueError):
         dash_doc.validate(doc)
+
+
+def test_validate_defaults_missing_status_to_idle():
+    validated = dash_doc.validate({"version": 1, "title": "T",
+                                   "cards": [{"type": "kpi"}],
+                                   "attachments": [],
+                                   "createdFileIds": []})
+    assert validated["cards"][0]["status"] == "idle"
 
 
 def test_validate_rejects_card_ref_to_unattached_file():
