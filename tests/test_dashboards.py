@@ -265,3 +265,157 @@ def test_dashboard_routes_require_enabled_module(app, auth_client, user):
         db.session.add(ModuleState(name="dashboards", enabled=True))
         db.session.commit()
     assert auth_client.get("/m/dashboards/").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Routes: CRUD, save, history, attachments (Task 3)
+# ---------------------------------------------------------------------------
+
+def _create_via_route(auth_client, name="Morning view"):
+    resp = auth_client.post("/m/dashboards/new", data={"name": name},
+                            follow_redirects=False)
+    assert resp.status_code == 302
+    return int(resp.headers["Location"].rstrip("/").rsplit("/", 1)[-1])
+
+
+def test_save_roundtrip(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create_via_route(auth_client)
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).drive_id == drive_id
+
+    resp = auth_client.get(f"/m/dashboards/{fid}/doc")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True and data["checksum"]
+
+    doc = data["doc"]
+    doc["cards"].append(dash_doc.new_card(
+        "kpi", title="Open incidents", prompt="Count open incidents"))
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": doc})
+    assert save.status_code == 200
+    payload = save.get_json()
+    assert payload["ok"] is True
+    assert payload["saved_at"] and payload["checksum"]
+
+    again = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()
+    assert again["doc"]["cards"][0]["title"] == "Open incidents"
+    assert again["checksum"] == payload["checksum"]
+
+
+def test_hostile_layout_rejected(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    before = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+
+    # Unknown card type.
+    bad_type = dict(before, cards=[{"type": "nope"}])
+    # Off-grid width: not a grid number at all -> validate() raises.
+    # (Plain out-of-range numbers are snapped to the grid by design —
+    # see test_validate_snaps_sizes_to_grid — so hostility here means
+    # a non-numeric width.)
+    bad_width = dict(before, cards=[{**dash_doc.new_card("kpi"),
+                                    "w": "huge"}])
+    # Card referencing an attachment that is not on the dashboard.
+    bad_ref = dict(before, cards=[{**dash_doc.new_card("table"),
+                                  "inputs": {"attachments": ["deadbeef"]}}])
+    for bad in (bad_type, bad_width, bad_ref):
+        resp = auth_client.post(f"/m/dashboards/{fid}/save",
+                               json={"doc": bad})
+        assert resp.status_code == 400
+
+    # Foreign file id: linking a file that does not exist / is not owned.
+    resp = auth_client.post(f"/m/dashboards/{fid}/attachments",
+                           json={"file_id": 999999999})
+    assert resp.status_code == 400
+
+    # Nothing persisted: doc identical, no versions snapshotted.
+    after = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert after == before
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).versions == []
+
+
+def test_history_versions_on_structural_save(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["cards"].append(dash_doc.new_card("kpi", title="One"))
+        assert dash_doc.save_document(
+            stored, doc, force_checkpoint=True) is True
+        version_id = stored.versions[0].id
+
+    resp = auth_client.get(f"/m/dashboards/{fid}/history")
+    assert resp.status_code == 200
+    diff = auth_client.get(
+        f"/m/dashboards/{fid}/history/{version_id}/diff")
+    assert diff.status_code == 200
+    assert b"One" in diff.data
+
+    # A structural save through the route snapshots a new version.
+    doc2 = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    doc2["cards"].append(dash_doc.new_card("table", title="Two"))
+    save = auth_client.post(f"/m/dashboards/{fid}/save",
+                           json={"doc": doc2, "force_checkpoint": True})
+    assert save.status_code == 200
+    with app.app_context():
+        assert len(db.session.get(StoredFile, fid).versions) == 2
+
+    # Restore brings back the snapshotted (empty-cards) content.
+    back = auth_client.post(
+        f"/m/dashboards/{fid}/history/{version_id}/restore",
+        follow_redirects=True)
+    assert back.status_code == 200
+    with app.app_context():
+        assert dash_doc.load(
+            db.session.get(StoredFile, fid))["cards"] == []
+
+
+def test_attachments_upload_link_and_detach(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+
+    # Upload: stored in the dashboard's drive/folder, dashboard-owned.
+    resp = auth_client.post(
+        f"/m/dashboards/{fid}/attachments",
+        data={"file": (io.BytesIO(b"a,b\n1,2\n"), "data.csv")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    uploaded = resp.get_json()["attachment"]
+    assert uploaded["origin"] == "upload"
+
+    # Link: reference to another owned file (dedupes on repeat).
+    target_id = _create(app, user, drive_id, "Source")
+    first = auth_client.post(f"/m/dashboards/{fid}/attachments",
+                            json={"file_id": target_id}).get_json()
+    second = auth_client.post(f"/m/dashboards/{fid}/attachments",
+                             json={"file_id": target_id}).get_json()
+    assert first["attachment"]["id"] == second["attachment"]["id"]
+
+    doc = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert len(doc["attachments"]) == 2
+
+    # Detach the upload: the owned file is trashed, the entry is gone.
+    gone = auth_client.delete(
+        f"/m/dashboards/{fid}/attachments/{uploaded['id']}")
+    assert gone.status_code == 200
+    assert gone.get_json()["removed_file"] is True
+    with app.app_context():
+        asset = db.session.get(StoredFile, uploaded["fileId"])
+        assert asset.deleted_at is not None
+        assert len(dash_doc.load(
+            db.session.get(StoredFile, fid))["attachments"]) == 1
+
+
+def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    resp = auth_client.get(f"/m/dashboards/{fid}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "DashboardEditor" in body
+    for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
+        assert key in body
+    assert "?v=1" in body
