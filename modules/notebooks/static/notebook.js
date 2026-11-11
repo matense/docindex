@@ -1679,7 +1679,7 @@
                     const out = el("div", "nb-md mt-2 p-2 border border-base-300 rounded bg-base-100");
                     box.appendChild(out);
                     const src = "## Results\n- [x] indexed **46 files**\n\n"
-                        + "A footnote[^1] and math $$E=mc^2$$\n\n"
+                        + "A footnote[^1], inline math $x^2 + y^2 = r^2$ and display math $$E=mc^2$$\n\n"
                         + "[^1]: footnotes render at the bottom.";
                     demoTextarea(box, src, (v) =>
                         renderMarkdownPreview(out, { content: v }));
