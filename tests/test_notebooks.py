@@ -2,6 +2,7 @@
 
 
 import importlib.util
+import io
 import os
 import sys
 
@@ -265,6 +266,136 @@ def test_extractor_flattens_all_cell_types(app, user):
     assert "A | B" in text and "1 | 2" in text
 
 
+def test_extractor_keeps_tex_source_and_admonitions(app, user):
+    """Markdown TeX source and admonition text flow through extract()
+    unchanged — regression lock while chart extraction lands in Task 8."""
+    drive_id = _drive(app, user)
+    cells = [
+        nb_doc.new_cell("markdown", "$$E=mc^2$$"),
+        nb_doc.new_cell("markdown", r"$\alpha$"),
+        nb_doc.new_cell("markdown", "costs $5"),
+        nb_doc.new_cell("markdown", "::: notice\nPay attention!"),
+    ]
+    fid = _create(app, user, drive_id, "Tex", cells=cells)
+    with app.app_context():
+        text = nb_doc.extract(db.session.get(StoredFile, fid))
+    assert "$$E=mc^2$$" in text
+    assert r"$\alpha$" in text
+    assert "costs $5" in text
+    assert "::: notice" in text
+    assert "Pay attention!" in text
+
+
+# ---------------------------------------------------------------------------
+# Chart cells (backend validation, extraction, history)
+# ---------------------------------------------------------------------------
+
+def test_chart_cell_validates_and_caps(app, user):
+    labels = [f"L{i}" for i in range(60)]
+    datasets = []
+    for i in range(600):
+        data = []
+        for j in range(60):
+            if j == 0:
+                data.append("12")
+            elif j == 1:
+                data.append("oops")
+            else:
+                data.append(float(j))
+        datasets.append({"label": f"Series {i}", "data": data})
+    chart = {"kind": "notachart", "labels": labels,
+             "datasets": datasets, "title": "Big chart"}
+    doc = {"version": 1, "title": "Chart test",
+           "cells": [{"type": "chart", "meta": {"chart": chart}}]}
+    validated = nb_doc.validate(doc)
+    chart_meta = validated["cells"][0]["meta"]["chart"]
+    assert chart_meta["kind"] == "bar"
+    assert len(chart_meta["labels"]) == 50
+    assert len(chart_meta["datasets"]) == 500
+    assert all(len(ds["data"]) == 50 for ds in chart_meta["datasets"])
+    first = chart_meta["datasets"][0]
+    assert first["data"][0] == 12.0
+    assert first["data"][1] == 0.0
+    assert isinstance(first["data"][2], float)
+    assert chart_meta["title"] == "Big chart"
+
+    valid = nb_doc.validate({"version": 1, "title": "T",
+        "cells": [{"type": "chart",
+                   "meta": {"chart": {"kind": "line",
+                                       "labels": ["a"],
+                                       "datasets": [{"label": "A",
+                                                     "data": [1]}],
+                                       "title": None}}}]})
+
+    assert valid["cells"][0]["meta"]["chart"]["kind"] == "line"
+
+
+def test_chart_cell_rejected_when_malformed(app, auth_client, user, enabled):
+    malformed = [
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart", "meta": {}}]},
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart", "meta": {"chart": "x"}}]},
+        {"version": 1, "title": "T",
+         "cells": [{"type": "chart",
+                    "meta": {"chart": {"kind": "bar",
+                                        "labels": "abc",
+                                        "datasets": []}}}]},
+    ]
+    for doc in malformed:
+        with pytest.raises(ValueError):
+            nb_doc.validate(doc)
+
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    document = {"version": 1, "title": "T",
+                "cells": [{"type": "chart", "meta": {}}]}
+    resp = auth_client.post(f"/m/notebooks/{fid}/save", json={"doc": document})
+    assert resp.status_code == 400
+
+
+def test_extractor_includes_chart_labels(app, user):
+    drive_id = _drive(app, user)
+    cells = [nb_doc.new_cell("chart", meta={
+        "chart": {"kind": "pie", "labels": ["alpha", "beta"],
+                  "datasets": [{"label": "A", "data": [1, 2]}],
+                  "title": "Pie chart"}})]
+    fid = _create(app, user, drive_id, "Charted", cells=cells)
+    with app.app_context():
+        text = nb_doc.extract(db.session.get(StoredFile, fid))
+    assert "alpha" in text
+    assert "beta" in text
+    assert "alpha | beta" in text
+    assert "Pie chart" in text
+
+
+def test_history_diff_renders_chart_cells(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    cells = [nb_doc.new_cell("chart", meta={
+        "chart": {"kind": "bar", "labels": ["alpha", "<img src=x>"],
+                  "datasets": [{"label": "A", "data": [1, 2]}],
+                  "title": "Trends"}})]
+    fid = _create(app, user, drive_id, "Hist chart", cells=cells)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        document = nb_doc.load(stored)
+        nb_doc.update_cell(
+            document, document["cells"][0]["id"],
+            meta={"chart": {"kind": "bar", "labels": ["gamma"],
+                            "datasets": [{"label": "A", "data": [3]}],
+                            "title": "Trends"}})
+        nb_doc.save_document(stored, document, force_checkpoint=True)
+        version_id = stored.versions[0].id
+    resp = auth_client.get(
+        f"/m/notebooks/{fid}/history/{version_id}/diff")
+    assert resp.status_code == 200
+    body = resp.data
+    assert b"chart" in body
+    assert b"alpha" in body
+    assert b"&lt;img src=x&gt;" in body
+    assert b"<img" not in body
+
+
 def test_legacy_title_subtitle_cells_migrate_to_heading(app):
     doc = nb_doc.validate({"cells": [
         {"type": "title", "content": "Old title"},
@@ -414,6 +545,86 @@ def test_ai_tools_create_and_edit(app, user, enabled):
         assert len(stored.versions) == 1
         assert stored.versions[0].source == "ai"
         assert stored.versions[0].note == "AI edits"
+
+
+def test_ai_create_notebook_with_math(app, user, enabled):
+    """The create tool accepts math cells and the schema tells the model how
+    to write math ($$…$$ blocks and \\(…\\) inline; bare $ is not math)."""
+    from app.services import agent_service
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(
+            user_obj,
+            {"name": "Physics notes",
+             "cells": [{"type": "markdown", "content": "Energy: $$E=mc^2$$"}]},
+            None)
+        assert "created" in result
+        fid = result["created"]["id"]
+        stored = db.session.get(StoredFile, fid)
+        assert "E=mc^2" in nb_doc.extract(stored)
+
+        defs, _handlers, _labels = agent_service._active_tools()
+        create_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.create")
+        add_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.add_cell")
+        assert "$$" in create_desc and "\\(" in create_desc
+        assert "$$" in add_desc and "\\(" in add_desc
+
+
+def test_ai_create_notebook_with_chart(app, user, enabled):
+    """The create/add_cell tools accept chart cells and their schemas document
+    the exact JSON shape, allowed kinds and row/column caps."""
+    from app.services import agent_service
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(
+            user_obj,
+            {"name": "Chart notebook",
+             "cells": [{"type": "chart",
+                        "meta": {"chart": {"kind": "bar",
+                                           "labels": ["a", "b"],
+                                           "datasets": [{"label": "n",
+                                                         "data": [1, 2]}]}}}]},
+            None)
+        assert "created" in result
+        fid = result["created"]["id"]
+        read = nb_tools._tool_read(user_obj, {"file_id": fid}, None)
+        chart = read["cells"][0]["meta"]["chart"]
+        assert chart["kind"] == "bar"
+        assert chart["labels"] == ["a", "b"]
+        assert chart["datasets"][0]["label"] == "n"
+        assert chart["datasets"][0]["data"] == [1.0, 2.0]
+
+        # Malformed chart structure (missing required chart object) returns an
+        # error and creates nothing.
+        result_bad = nb_tools._tool_create(
+            user_obj,
+            {"name": "Bad chart",
+             "cells": [{"type": "chart", "meta": {}}]},
+            None)
+        assert "error" in result_bad
+        assert "created" not in result_bad
+
+        # The tool schemas mention chart cells, the allowed kinds and caps.
+        defs, _handlers, _labels = agent_service._active_tools()
+        create_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.create")
+        add_desc = next(
+            d["function"]["description"] for d in defs
+            if d["function"]["name"] == "notebooks.add_cell")
+        assert "chart" in create_desc
+        assert "chart" in add_desc
+        for kind in ("bar", "line", "pie"):
+            assert kind in create_desc
+            assert kind in add_desc
+        assert "50" in create_desc
+        assert "500" in create_desc
 
 
 def test_ai_edits_in_a_new_run_create_a_new_block(app, user, enabled):
@@ -670,3 +881,57 @@ def test_lock_state_visible_in_read_and_list(app, user, enabled):
             user_obj, {"file_id": fid, "cell_type": "markdown",
                        "content": "nope"}, None)
         assert "Do not generate" in added["error"]
+
+
+# ---------------------------------------------------------------------------
+# Markdown viewer: rich server-side rendering + sanitization
+# ---------------------------------------------------------------------------
+
+def _upload(client, name, content, folder_id=""):
+    return client.post("/upload", data={
+        "folder_id": folder_id,
+        "files": (io.BytesIO(content), name),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+
+def test_md_view_renders_footnotes_and_admonitions(auth_client, app):
+    md = (b"Doc body[^1].\n\n"
+          b"!!! note\n"
+          b"    A notice block.\n\n"
+          b"[^1]: The footnote text.\n")
+    _upload(auth_client, "notebook.md", md)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="notebook.md").one().id
+    resp = auth_client.get(f"/file/{fid}/view")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "admonition" in body
+    # Python-Markdown footnotes emit a footnote container plus an anchor back
+    # to the definition; the exact wrapper element varies by version.
+    assert 'class="footnote"' in body
+    assert 'href="#fn:' in body
+
+
+def test_md_view_bleach_still_strips_scripts(auth_client, app):
+    md = (b"<script>alert(1)</script>\n"
+          b"<iframe src=\"evil\"></iframe>\n"
+          b"<img src=\"x\" onerror=\"alert(2)\">\n"
+          b"[js](javascript:alert(3))\n"
+          b"<figure><figcaption>Caption</figcaption></figure>\n"
+          b"H<sub>2</sub>O and E=mc<sup>2</sup>\n")
+    _upload(auth_client, "danger.md", md)
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="danger.md").one().id
+    resp = auth_client.get(f"/file/{fid}/view")
+    body = resp.data.decode()
+    lowered = body.lower()
+    # The surrounding page contains its own <script> tag; check the malicious
+    # payload specifically rather than the substring "script".
+    assert "<script>alert" not in lowered
+    assert "<iframe" not in lowered
+    assert "onerror=" not in lowered
+    assert "javascript:" not in lowered
+    assert "<figure>" in body
+    assert "<figcaption>" in body
+    assert "<sup>" in body
+    assert "<sub>" in body

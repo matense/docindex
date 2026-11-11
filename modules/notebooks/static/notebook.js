@@ -14,6 +14,7 @@
         code: { icon: "fa-code", label: "Code" },
         todo: { icon: "fa-list-check", label: "To-do" },
         table: { icon: "fa-table", label: "Table" },
+        chart: { icon: "fa-chart-column", label: "Chart" },
         heading: { icon: "fa-heading", label: "Heading" },
         separator: { icon: "fa-minus", label: "Separator" },
     };
@@ -25,13 +26,362 @@
         return node;
     }
 
+    // --- Rich markdown extensions (mirror server Python-Markdown set) -----
+
+    let _markedExtensionsRegistered = false;
+
+    function escapeHtml(text) {
+        return text.replace(/[&<>"']/g, (m) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;",
+            '"': "&quot;", "'": "&#39;"
+        }[m]));
+    }
+
+    function unescapeHtml(text) {
+        return text
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&#39;/g, "'");
+    }
+
+    function escapeText(text) {
+        // Escape <, > and bare ampersands while keeping existing HTML entities
+        // (such as smarty punctuation) intact.
+        return text
+            .replace(/&(?![a-zA-Z0-9#]+;)/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function applySmarty(text) {
+        return text
+            .replace(/---/g, "&mdash;")
+            .replace(/--/g, "&ndash;")
+            .replace(/\.\.\./g, "&hellip;")
+            .replace(/"([^"]*)"/g, "&ldquo;$1&rdquo;")
+            .replace(/'([^']*)'/g, "&lsquo;$1&rsquo;")
+            .replace(/<<([^>>]*)>>/g, "&laquo;$1&raquo;");
+    }
+
+    // Footnote definitions collected during one render pass.
+    const NB_FOOTNOTE_DEFS = new Map();
+    const NB_FOOTNOTE_ORDER = [];
+    let _markdownNestDepth = 0;
+
+    function resetFootnotes() {
+        NB_FOOTNOTE_DEFS.clear();
+        NB_FOOTNOTE_ORDER.length = 0;
+    }
+
+    function addFootnoteDef(label, text) {
+        const key = label.toLowerCase();
+        if (!NB_FOOTNOTE_DEFS.has(key)) {
+            NB_FOOTNOTE_ORDER.push(label);
+            NB_FOOTNOTE_DEFS.set(key, text);
+        }
+    }
+
+    function extractFootnoteDefs(src) {
+        resetFootnotes();
+        const out = [];
+        const lines = src.split("\n");
+        let i = 0;
+        let inFence = false;
+        while (i < lines.length) {
+            const line = lines[i];
+            if (line.trim().startsWith("```")) {
+                inFence = !inFence;
+                out.push(line);
+                i++;
+                continue;
+            }
+            if (inFence) {
+                out.push(line);
+                i++;
+                continue;
+            }
+            const match = /^\[\^([^\]]+)\]:\s*(.*)$/.exec(line);
+            if (match) {
+                const label = match[1];
+                let text = match[2];
+                i++;
+                while (i < lines.length
+                        && (lines[i].startsWith(" ")
+                            || lines[i].startsWith("\t")
+                            || lines[i].trim() === "")) {
+                    if (lines[i].trim() !== "") {
+                        text += "\n" + lines[i].trim();
+                    }
+                    i++;
+                }
+                addFootnoteDef(label, text.trim());
+            } else {
+                out.push(line);
+                i++;
+            }
+        }
+        return out.join("\n");
+    }
+
+    function renderFootnotesSection() {
+        if (!NB_FOOTNOTE_ORDER.length) return "";
+        const items = NB_FOOTNOTE_ORDER.map((label) => {
+            const text = NB_FOOTNOTE_DEFS.get(label.toLowerCase()) || "";
+            const body = window.marked.parseInline(text);
+            return `<li id="fn:${escapeHtml(label)}">${body} `
+                + `<a href="#fnref:${escapeHtml(label)}" `
+                + `class="footnote-backref">↩</a></li>`;
+        }).join("\n");
+        return `<section class="footnote">\n<ol>\n${items}\n</ol>\n</section>`;
+    }
+
+    function ensureMarkedExtensions() {
+        if (_markedExtensionsRegistered || !window.marked) return;
+
+        const admonitionExtension = {
+            name: "admonition",
+            level: "block",
+            start(src) { return /^!!!\s+\w+/.test(src) || /^:::\s+\w+/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^!!!\s+(\w+)(?:\s+"([^"]*)")?\s*\n((?:(?: {4}|\t).*\n?|\s*\n)*)/)
+                    || src.match(/^:::\s+(\w+)(?:\s+"([^"]*)")?\s*\n((?:(?: {4}|\t).*\n?|\s*\n)*)/);
+                if (!match) return undefined;
+                const [raw, type, title, body] = match;
+                const content = body.replace(/^( {4}|\t)/gm, "").replace(/\n+$/, "");
+                return {
+                    type: "admonition",
+                    raw: raw,
+                    adType: type,
+                    title: title || type.charAt(0).toUpperCase() + type.slice(1),
+                    text: content
+                };
+            },
+            renderer(token) {
+                const body = window.marked.parse(token.text, { breaks: true });
+                return `<div class="admonition ${token.adType}">\n`
+                    + `<p class="admonition-title">${escapeHtml(token.title)}</p>\n`
+                    + `${body}\n</div>`;
+            }
+        };
+
+        const defListExtension = {
+            name: "defList",
+            level: "block",
+            start(src) { return /^[^\n]+\n:[ \t]+/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^([^\n]+)\n((?::[ \t]+[^\n]*(?:\n|$)(?:(?:[ \t]+[^\n]*|\s*)\n?)*)+)/);
+                if (!match) return undefined;
+                const [raw, term, body] = match;
+                const defs = [];
+                let current = "";
+                body.split("\n").forEach((line) => {
+                    if (line.startsWith(":")) {
+                        if (current) defs.push(current.trim());
+                        current = line.replace(/^:\s*/, "");
+                    } else if (/^\s/.test(line)) {
+                        current += " " + line.trim();
+                    } else if (line.trim() === "") {
+                        if (current) defs.push(current.trim());
+                        current = "";
+                    }
+                });
+                if (current) defs.push(current.trim());
+                return {
+                    type: "defList",
+                    raw: raw,
+                    term: term.trim(),
+                    defs: defs
+                };
+            },
+            renderer(token) {
+                const dds = token.defs.map((d) =>
+                    `<dd>${window.marked.parseInline(d)}</dd>`).join("\n");
+                return `<dl>\n<dt>${window.marked.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
+            }
+        };
+
+        const figureExtension = {
+            name: "nbFigure",
+            level: "block",
+            start(src) { return /^!\[/.test(src); },
+            tokenizer(src) {
+                const match = src.match(/^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)\s*\{\s*\.nb-figure\b[\s\.\w-]*\s*\}(?:\n|$)/);
+                if (!match) return undefined;
+                const [raw, alt, href, title] = match;
+                return {
+                    type: "nbFigure",
+                    raw: raw,
+                    alt: alt,
+                    href: href,
+                    title: title || ""
+                };
+            },
+            renderer(token) {
+                const img = `<img src="${escapeHtml(token.href)}" `
+                    + `alt="${escapeHtml(token.alt)}"`
+                    + (token.title ? ` title="${escapeHtml(token.title)}"` : "")
+                    + ">";
+                const caption = token.title
+                    ? `<figcaption>${escapeHtml(token.title)}</figcaption>`
+                    : "";
+                return `<figure class="nb-figure">${img}${caption}</figure>`;
+            }
+        };
+
+        const footnoteRefExtension = {
+            name: "footnoteRef",
+            level: "inline",
+            start(src) { return src.indexOf("[^") === 0; },
+            tokenizer(src) {
+                const match = src.match(/^\[\^([^\]]+)\]/);
+                if (!match) return undefined;
+                return {
+                    type: "footnoteRef",
+                    raw: match[0],
+                    label: match[1]
+                };
+            },
+            renderer(token) {
+                return `<sup><a href="#fn:${escapeHtml(token.label)}" `
+                    + `id="fnref:${escapeHtml(token.label)}" `
+                    + `class="footnote-ref">${escapeHtml(token.label)}</a></sup>`;
+            }
+        };
+
+        window.marked.use({
+            hooks: {
+                preprocess(src) {
+                    _markdownNestDepth++;
+                    // Only the outermost document pass collects footnote
+                    // definitions; nested parses (e.g. admonition bodies)
+                    // reuse the same definition set.
+                    if (_markdownNestDepth > 1) return src;
+                    return extractFootnoteDefs(src);
+                },
+                postprocess(html) {
+                    let result = html;
+                    if (_markdownNestDepth === 1) {
+                        result = html + renderFootnotesSection();
+                    }
+                    _markdownNestDepth = Math.max(0, _markdownNestDepth - 1);
+                    return result;
+                }
+            },
+            renderer: {
+                text(text) {
+                    // Apply smarty punctuation to prose text only; re-escape any
+                    // raw <, > or bare & introduced by the unescape step.
+                    return escapeText(applySmarty(unescapeHtml(text)));
+                }
+            },
+            extensions: [admonitionExtension, defListExtension, figureExtension, footnoteRefExtension]
+        });
+
+        _markedExtensionsRegistered = true;
+    }
+
+    // Keep $$…$$, \(…\) and $…$ math delimiters intact through marked
+    // parsing so KaTeX auto-render can find them in the final DOM. HTML
+    // comments are invisible to markdown and survive sanitization.
+    // Matches inside code spans/fences are left alone (returned raw) so
+    // code still renders byte-identical (`` `$x$` `` stays `$x$`), and a
+    // match may not span across code either (``$$aberto. `x` $$`` stays
+    // literal instead of swallowing the span).
+    // Single-$ pairs use the standard boundary rule (open follows $ with
+    // non-space, close precedes $ with non-space) so "$5 e $10" never
+    // pairs; the $$ alternative comes first so display math wins at "$$".
+    // Singles are restored as \(…\) — the only inline form KaTeX is asked
+    // to split — so naive $-pairing can never shadow \(…\). A single-$
+    // pair touching another $ (``$$x$``) is left alone and stays literal.
+    function codeRanges(src) {
+        const lines = src.split("\n");
+        const ranges = [];
+        let pos = 0;
+        const fence = { "```": null, "~~~": null };
+        const blanked = [];
+        for (const line of lines) {
+            const m = line.match(/^\s{0,3}(```|~~~)/);
+            let fenceLine = false;
+            if (m) {
+                const mark = m[1];
+                const other = mark === "```" ? "~~~" : "```";
+                // A fence line inside the other fence type is literal
+                // content, not a toggle.
+                if (fence[other] === null) {
+                    fenceLine = true;
+                    if (fence[mark] === null) fence[mark] = pos;
+                    else {
+                        ranges.push([fence[mark], pos + line.length]);
+                        fence[mark] = null;
+                    }
+                }
+            }
+            const inCode = fence["```"] !== null || fence["~~~"] !== null;
+            blanked.push((inCode || fenceLine) ? " ".repeat(line.length) : line);
+            pos += line.length + 1;
+        }
+        for (const mark of ["```", "~~~"]) {
+            if (fence[mark] !== null) ranges.push([fence[mark], src.length]);
+        }
+        const flat = blanked.join("\n");
+        const re = /(`+)[^`\n]*?\1/g;
+        let m;
+        while ((m = re.exec(flat)) !== null) {
+            ranges.push([m.index, m.index + m[0].length]);
+        }
+        return ranges;
+    }
+    function mathOverlapsCode(ranges, start, end) {
+        return ranges.some(([a, b]) => start < b && a < end);
+    }
+    function protectMath(src) {
+        const map = {};
+        let n = 0;
+        const ranges = codeRanges(src);
+        const marked = src.replace(/\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?=\S)[^$\n]*[^$\s\n]\$/g,
+            (m, offset, string) => {
+                if (mathOverlapsCode(ranges, offset, offset + m.length)) return m;
+                if (m.charAt(0) === "$" && !m.startsWith("$$")) {
+                    if (string[offset - 1] === "$"
+                        || string[offset + m.length] === "$") return m;
+                    const k = "<!--MATH" + (n++) + "-->";
+                    map[k] = "\\(" + m.slice(1, -1) + "\\)";
+                    return k;
+                }
+                const k = "<!--MATH" + (n++) + "-->";
+                map[k] = m;
+                return k;
+            });
+        return { marked, map };
+    }
+
+    function restoreMath(html, map) {
+        // marked HTML-escapes comments that end up inside <pre>/<code>, so
+        // also match the escaped form and decode it for the map lookup.
+        // The raw TeX source is then HTML-escaped before splicing back, so
+        // markup inside math (e.g. $$<img src=x onerror=alert(1)>$$) stays
+        // literal text until KaTeX reads it from textContent. KaTeX's
+        // auto-render already skips <pre>/<code>, so code samples stay literal.
+        return html.replace(/<!--MATH\d+-->|&lt;!--MATH\d+--&gt;/g, (k) => {
+            const raw = k.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+            return raw in map ? escapeHtml(map[raw]) : k;
+        });
+    }
+
     function renderMarkdown(text) {
         if (!window.marked) return null;
+        ensureMarkedExtensions();
+        _markdownNestDepth = 0;
+        resetFootnotes();
+        const protectedMath = protectMath(text || "");
         // [name](file://ID) citations become viewer links, like the AI chat.
-        const linked = (text || "").replace(
+        const linked = protectedMath.marked.replace(
             /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view">$1</a>');
-        return window.marked.parse(linked, { breaks: true });
+        const parsed = sanitizeHtml(window.marked.parse(linked, { breaks: true }));
+        return restoreMath(parsed, protectedMath.map);
     }
 
     // --- Read-mode document polish ---------------------------------------
@@ -86,22 +436,95 @@
         });
     }
 
+    // Wrap lone captioned images in figure.nb-figure. Safe to re-run.
+    function wrapFigures(rootEl) {
+        rootEl.querySelectorAll("img[title]").forEach((img) => {
+            if (img.closest("figure")) return;
+            const title = (img.getAttribute("title") || "").trim();
+            if (!title) return;
+            const figure = el("figure", "nb-figure");
+            const caption = el("figcaption", "", title);
+            img.replaceWith(figure);
+            figure.appendChild(img);
+            figure.appendChild(caption);
+        });
+    }
+
     function polishView(rootEl) {
         wrapCodeBlocks(rootEl);
         wrapTables(rootEl);
+        wrapFigures(rootEl);
         styleFileRefs(rootEl);
+    }
+
+    // If the rendered content contains KaTeX delimiters, load KaTeX once and
+    // render them. $$…$$ (display), \(…\) and valid $…$ pairs (inline)
+    // are recognized: singles are rewritten to \(…\) up in protectMath,
+    // so KaTeX only ever splits $$ and \(. A bare $ without a valid
+    // same-line pair stays literal, so prices stay as plain text.
+    // Parse errors fall back to raw text silently (no console noise).
+    function maybeRenderMath(view, content) {
+        if (/\$\$|\\\(|\$(?=\S)[^$\n]*[^$\s\n]\$/.test(content || "")) {
+            loadKaTeX(() => {
+                window.renderMathInElement(view, {
+                    delimiters: [
+                        { left: "$$", right: "$$", display: true },
+                        { left: "\\(", right: "\\)", display: false }
+                    ],
+                    errorCallback: () => {}
+                });
+            });
+        }
     }
 
     // Rich-text cells store HTML authored in our own editor, but content can
     // also come from AI tools — strip active content before rendering.
-    function sanitizeHtml(html) {
+    function sanitizeHtml(html, opts) {
+        opts = opts || {};
+        const richText = !!opts.richText;
         const parsed = new DOMParser().parseFromString(html || "", "text/html");
+        // Active content is always stripped.
         parsed.querySelectorAll("script,style,iframe,object,embed,form,link,meta")
             .forEach((n) => n.remove());
-        parsed.querySelectorAll("*").forEach((node) => {
+        // Allowlist mirrors the server bleach config (Task 3), plus a few
+        // tags needed for the Quill rich-text editor (b/i/u/s) and inline
+        // styles on spans when pasting into Quill.
+        const allowedTags = new Set([
+            "p", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
+            "ul", "ol", "li", "strong", "em", "b", "i", "u", "s", "a", "blockquote",
+            "table", "thead", "tbody", "tr", "th", "td", "hr", "br",
+            "img", "figure", "figcaption", "sup", "sub", "section",
+            "div", "span", "abbr", "dl", "dt", "dd"
+        ]);
+        const allowedAttrs = {
+            a: ["href", "title", "id", "class"],
+            img: ["src", "alt", "title"],
+            p: ["class"],
+            figure: ["class"],
+            section: ["id", "class"],
+            div: ["id", "class"],
+            li: ["id"],
+            span: richText ? ["class", "style"] : ["class"]
+        };
+        // Scope the allowlist walk to body so we never try to unwrap
+        // <html>/<head>/<body> against the document root.
+        parsed.body.querySelectorAll("*").forEach((node) => {
+            const tag = node.tagName.toLowerCase();
+            if (!allowedTags.has(tag)) {
+                // Unwrap unknown tags so their text survives; strip empty nodes.
+                while (node.firstChild) {
+                    node.parentNode.insertBefore(node.firstChild, node);
+                }
+                node.remove();
+                return;
+            }
+            const allowed = allowedAttrs[tag] || [];
             Array.from(node.attributes).forEach((attr) => {
-                if (attr.name.toLowerCase().startsWith("on")
-                        || /^\s*javascript:/i.test(attr.value)) {
+                const name = attr.name.toLowerCase();
+                const value = attr.value;
+                if (name.startsWith("on")
+                        || /^\s*javascript:/i.test(value)
+                        || !allowed.includes(name)) {
                     node.removeAttribute(attr.name);
                 }
             });
@@ -185,6 +608,36 @@
     // inline style attributor so any selection can get any size.
     let _quillCallbacks = null;
 
+    // KaTeX (math rendering) loaded on demand from the vendored copy
+    // (app/static/vendor/katex/0.16.47) — only when a rendered cell contains
+    // $$…$$ or \(…\) delimiters. Exposes window.__nbKatexReady for the
+    // rich-text editor preview (Task 7).
+    let _katexCallbacks = null;
+    window.__nbKatexReady = window.__nbKatexReady || false;
+
+    function loadKaTeX(cb) {
+        if (window.renderMathInElement) return cb();
+        if (_katexCallbacks) { _katexCallbacks.push(cb); return; }
+        _katexCallbacks = [cb];
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "/static/vendor/katex/0.16.47/katex.min.css";
+        document.head.appendChild(link);
+        const script = document.createElement("script");
+        script.src = "/static/vendor/katex/0.16.47/katex.min.js";
+        script.onload = () => {
+            const ar = document.createElement("script");
+            ar.src = "/static/vendor/katex/0.16.47/contrib/auto-render.min.js";
+            ar.onload = () => {
+                window.__nbKatexReady = true;
+                _katexCallbacks.forEach((fn) => fn());
+                _katexCallbacks = null;
+            };
+            document.head.appendChild(ar);
+        };
+        document.head.appendChild(script);
+    }
+
     function loadQuill(cb) {
         if (window.Quill) return cb();
         if (_quillCallbacks) { _quillCallbacks.push(cb); return; }
@@ -201,6 +654,33 @@
             window.Quill.register(Size, true);
             _quillCallbacks.forEach((fn) => fn());
             _quillCallbacks = null;
+        };
+        document.head.appendChild(script);
+    }
+
+    // Chart.js loaded on demand from the vendored UMD bundle. Exposes
+    // window.Chart globally; cells render inside a responsive canvas.
+    let _chartCallbacks = null;
+
+    function loadChart(cb) {
+        // Always async, even when Chart.js is already loaded: cell
+        // subtrees are built detached (render() appends them afterwards),
+        // so a synchronous callback would hit the contains-guard below
+        // and silently drop the chart on SPA revisits. Deferring one
+        // task guarantees the canvas is attached (genuine unmounts are
+        // still filtered by the guard in renderChartView).
+        if (window.Chart) { setTimeout(cb, 0); return; }
+        if (_chartCallbacks) { _chartCallbacks.push(cb); return; }
+        _chartCallbacks = [cb];
+        const script = document.createElement("script");
+        script.src = "/static/vendor/chart.js/4.6.1/chart.umd.min.js";
+        script.onload = () => {
+            _chartCallbacks.forEach((fn) => fn());
+            _chartCallbacks = null;
+        };
+        script.onerror = () => {
+            _chartCallbacks.forEach((fn) => fn(new Error("Chart.js failed to load")));
+            _chartCallbacks = null;
         };
         document.head.appendChild(script);
     }
@@ -456,6 +936,14 @@
                 cell.meta.headers = ["Column 1", "Column 2"];
                 cell.meta.rows = [["", ""]];
             }
+            if (type === "chart") {
+                cell.meta.chart = {
+                    kind: "bar",
+                    labels: ["A", "B", "C"],
+                    datasets: [{ label: "Series 1", data: [1, 2, 3] }],
+                    title: null,
+                };
+            }
             return cell;
         }
 
@@ -526,7 +1014,7 @@
 
         function insertCell(type, index) {
             const cell = newCell(type);
-            if (["markdown", "code", "richtext", "heading"]
+            if (["markdown", "code", "richtext", "heading", "chart"]
                     .includes(type)) {
                 cell._editing = true;
             }
@@ -696,6 +1184,7 @@
             else if (cell.type === "code") renderCodeCell(body, cell);
             else if (cell.type === "todo") renderTodoCell(body, cell);
             else if (cell.type === "table") renderTableCell(body, cell);
+            else if (cell.type === "chart") renderChartCell(body, cell);
             else if (cell.type === "heading") {
                 renderHeadingCell(body, cell);
             } else if (cell.type === "separator") renderSeparatorCell(body, cell);
@@ -757,12 +1246,251 @@
             body.appendChild(div);
         }
 
+        function renderChartCell(body, cell) {
+            if (!readMode && (cell._editing || !cell.meta || !cell.meta.chart)) {
+                renderChartEditor(body, cell);
+            } else {
+                renderChartView(body, cell);
+            }
+        }
+
+        // DaisyUI semantic palette, resolved to real rgb() triplets: the
+        // canvas 2D context cannot parse oklch()/var() references, so an
+        // unresolved string would silently paint black. Resolution happens
+        // once per render (cached per data-theme) through a hidden probe,
+        // so light/dark themes are honoured; static fallbacks cover the
+        // case where resolution fails (ancient engine, missing vars).
+        var _nbChartPalette = null;
+        var _nbChartPaletteTheme = null;
+        function chartPalette() {
+            const theme = document.documentElement.getAttribute("data-theme") || "";
+            if (_nbChartPalette && _nbChartPaletteTheme === theme) return _nbChartPalette;
+            const names = ["--p", "--s", "--a", "--in", "--su", "--wa"];
+            const fallbacks = ["99,102,241", "34,211,238", "244,114,182",
+                               "56,189,248", "163,230,53", "251,191,36"];
+            _nbChartPalette = names.map((name, i) => {
+                try {
+                    const probe = document.createElement("span");
+                    probe.setAttribute("aria-hidden", "true");
+                    probe.style.cssText =
+                        "position:absolute;visibility:hidden;pointer-events:none;";
+                    probe.style.color = "var(" + name + ")";
+                    document.body.appendChild(probe);
+                    const computed = getComputedStyle(probe).color || "";
+                    probe.remove();
+                    const m = computed.match(
+                        /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                    if (m) return m[1] + "," + m[2] + "," + m[3];
+                } catch (e) { /* fall through to static fallback */ }
+                return fallbacks[i];
+            });
+            _nbChartPaletteTheme = theme;
+            return _nbChartPalette;
+        }
+        function chartColor(i, alpha) {
+            const pal = chartPalette();
+            const rgb = pal[((i % pal.length) + pal.length) % pal.length];
+            return alpha === undefined
+                ? "rgb(" + rgb + ")"
+                : "rgba(" + rgb + "," + alpha + ")";
+        }
+
+        function renderChartError(container, message) {
+            container.innerHTML = "";
+            const box = el("div", "alert alert-error alert-sm");
+            box.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>'
+                + escapeHtml(message);
+            container.appendChild(box);
+        }
+
+        function renderChartView(container, cell) {
+            const meta = cell.meta || {};
+            const chart = meta.chart || {};
+            const kind = chart.kind || "bar";
+            const labels = Array.isArray(chart.labels) ? chart.labels : [];
+            const rawDatasets = Array.isArray(chart.datasets) ? chart.datasets : [];
+
+            container.innerHTML = "";
+            const wrap = el("div", "nb-chart");
+            if (chart.title) {
+                wrap.appendChild(el("div", "nb-chart-title", chart.title));
+            }
+            const canvas = el("canvas", "nb-chart-canvas");
+            canvas.height = 260;
+            wrap.appendChild(canvas);
+            container.appendChild(wrap);
+
+            if (!labels.length || !rawDatasets.length
+                    || !rawDatasets.some((ds) => Array.isArray(ds.data) && ds.data.length)) {
+                renderChartError(container, "Invalid chart specification: missing labels or datasets.");
+                return;
+            }
+
+            loadChart((err) => {
+                if (!document.body.contains(canvas)) return;
+                if (err || !window.Chart) {
+                    renderChartError(container, "Unable to load chart library.");
+                    return;
+                }
+                try {
+                    const datasets = rawDatasets.map((ds, i) => {
+                        const label = String(ds.label || "");
+                        const data = Array.isArray(ds.data)
+                            ? ds.data.map((v) => {
+                                const n = Number(v);
+                                return Number.isFinite(n) ? n : 0;
+                            }) : [];
+                        if (kind === "pie") {
+                            return {
+                                label: label,
+                                data: data,
+                                backgroundColor: data.map((_, j) => chartColor(j, 0.85)),
+                            };
+                        }
+                        return {
+                            label: label,
+                            data: data,
+                            backgroundColor: kind === "line"
+                                ? chartColor(i, 0.25) : chartColor(i, 0.7),
+                            borderColor: chartColor(i),
+                            borderWidth: 2,
+                            tension: kind === "line" ? 0.3 : 0,
+                            fill: kind === "line",
+                        };
+                    });
+                    new window.Chart(canvas, {
+                        type: kind,
+                        data: { labels: labels, datasets: datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: datasets.length > 1 },
+                                title: { display: false },
+                            },
+                        },
+                    });
+                } catch (e) {
+                    renderChartError(container, "Unable to render chart.");
+                }
+            });
+        }
+
+        function parseTableToChart(raw) {
+            // CSV/TSV rows. First column becomes label, second becomes value.
+            // Supports comma, tab, and pipe separators.
+            const sep = raw.includes("\t") ? "\t"
+                : raw.includes("|") ? "|"
+                : ",";
+            return raw.split(/\r?\n/).map((line) => line.trim())
+                .filter((line) => line)
+                .map((line) => {
+                    const parts = line.split(sep).map((p) => p.trim());
+                    return [parts[0] || "", parseFloat(parts[1]) || 0];
+                })
+                .filter((row) => row[0] !== "");
+        }
+
+        function renderChartEditor(body, cell) {
+            const meta = cell.meta || (cell.meta = {});
+            if (!meta.chart || typeof meta.chart !== "object") {
+                meta.chart = {
+                    kind: "bar",
+                    labels: ["A", "B", "C"],
+                    datasets: [{ label: "Series 1", data: [1, 2, 3] }],
+                    title: null,
+                };
+            }
+
+            const wrap = el("div", "flex flex-col gap-2");
+            const toolsRow = el("div", "flex items-center gap-2 mb-1");
+            toolsRow.appendChild(el("span", "text-xs opacity-60", "Type:"));
+            const kindSel = el("select", "select select-bordered select-xs w-28");
+            ["bar", "line", "pie"].forEach((k) => {
+                const opt = el("option", "", k.charAt(0).toUpperCase() + k.slice(1));
+                opt.value = k;
+                kindSel.appendChild(opt);
+            });
+            kindSel.value = meta.chart.kind || "bar";
+            kindSel.addEventListener("change", () => {
+                meta.chart.kind = kindSel.value;
+                area.value = JSON.stringify(meta.chart, null, 2);
+                scheduleSave();
+                updatePreview();
+            });
+            toolsRow.appendChild(kindSel);
+
+            const pasteBtn = el("button", "btn btn-ghost btn-xs gap-1");
+            pasteBtn.type = "button";
+            pasteBtn.innerHTML = '<i class="fas fa-table"></i> Paste table';
+            pasteBtn.title = "Paste CSV/TSV rows (first column = label)";
+            pasteBtn.addEventListener("mousedown", (e) => e.preventDefault());
+            pasteBtn.addEventListener("click", () => {
+                const raw = window.prompt("Paste CSV/TSV rows (first column = label):");
+                if (!raw) return;
+                const rows = parseTableToChart(raw);
+                if (rows.length) {
+                    meta.chart.labels = rows.map((r) => r[0]);
+                    meta.chart.datasets = [{
+                        label: "Data",
+                        data: rows.map((r) => r[1]),
+                    }];
+                    area.value = JSON.stringify(meta.chart, null, 2);
+                    scheduleSave();
+                    updatePreview();
+                }
+            });
+            toolsRow.appendChild(pasteBtn);
+            wrap.appendChild(toolsRow);
+
+            const area = el("textarea",
+                "textarea textarea-bordered w-full font-mono text-sm min-h-[8rem]");
+            area.value = JSON.stringify(meta.chart, null, 2);
+            area.placeholder = '{"kind":"bar","labels":["A","B"],"datasets":[{"label":"Series","data":[1,2]}]}';
+            wrap.appendChild(area);
+
+            const preview = el("div",
+                "p-2 border border-base-300 rounded bg-base-100 min-h-[5rem] nb-chart-preview");
+            preview.setAttribute("aria-label", "Chart preview");
+            wrap.appendChild(preview);
+
+            function updatePreview() {
+                preview.innerHTML = "";
+                try {
+                    const parsed = JSON.parse(area.value);
+                    if (!parsed || typeof parsed !== "object") throw new Error("invalid");
+                    meta.chart = parsed;
+                    scheduleSave();
+                    renderChartView(preview, { meta: { chart: parsed } });
+                } catch (e) {
+                    renderChartError(preview, "Invalid JSON chart specification.");
+                }
+                fitTextarea(area);
+            }
+
+            area.addEventListener("input", updatePreview);
+
+            wrap.addEventListener("focusout", () => {
+                setTimeout(() => {
+                    if (!wrap.isConnected || wrap.contains(document.activeElement)) return;
+                    cell._editing = false;
+                    renderCellBody(wrap.closest(".nb-cell"), cell);
+                    save(false);
+                }, 0);
+            });
+
+            body.appendChild(wrap);
+            if (cell._editing) area.focus();
+            updatePreview();
+        }
+
         function renderRichTextCell(body, cell) {
             // View mode (and read mode): rendered HTML, no toolbar.
             if (readMode || (!cell._editing && cell.content.trim())) {
                 const view = el("div", "nb-rt");
-                view.innerHTML = sanitizeHtml(cell.content);
+                view.innerHTML = sanitizeHtml(cell.content, { richText: true });
                 polishView(view);
+                maybeRenderMath(view, cell.content);
                 body.appendChild(view);
                 return;
             }
@@ -870,7 +1598,7 @@
                     if (p) p.setAttribute("title", tip);
                 }
                 if (cell.content.trim()) {
-                    quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content));
+                    quill.clipboard.dangerouslyPasteHTML(sanitizeHtml(cell.content, { richText: true }));
                 }
                 quill.on("text-change", () => {
                     cell.content = quill.root.innerHTML;
@@ -885,10 +1613,344 @@
             });
         }
 
+        // Textareas grow with their content up to a cap, then scroll
+        // internally — editing long cells never means squinting at a few
+        // cramped lines. Skipped while hidden (offsetParent null), where
+        // scrollHeight reads 0 and CSS min-height applies instead.
+        function fitTextarea(area, maxPx) {
+            if (!area || !area.isConnected || area.offsetParent === null) return;
+            area.style.height = "auto";
+            const cap = maxPx || Math.round(window.innerHeight * 0.6);
+            area.style.height = Math.min(area.scrollHeight + 2, cap) + "px";
+            area.style.overflowY = area.scrollHeight + 2 > cap ? "auto" : "hidden";
+        }
+
+        function renderMarkdownPreview(view, cell) {
+            const html = renderMarkdown(cell.content);
+            if (html === null) { view.textContent = cell.content; }
+            else { view.innerHTML = html; }
+            polishView(view);
+            if (window.hljs) {
+                view.querySelectorAll("pre code").forEach(
+                    (c) => window.hljs.highlightElement(c));
+            }
+            maybeRenderMath(view, cell.content);
+        }
+
+        // Help modal (? icon): dummy cells to try things out. Nothing here
+        // is saved — controls render through the same pipeline as real
+        // cells (renderMarkdownPreview / renderChartView). The modal markup
+        // is static server HTML, so wire once even across SPA re-mounts.
+        function wireHelpDemos() {
+            const modal = document.getElementById("nb-help-modal");
+            if (!modal || modal.dataset.nbWired) return;
+            modal.dataset.nbWired = "1";
+            function demoTextarea(host, value, onInput) {
+                const area = el("textarea",
+                    "textarea textarea-bordered w-full font-mono text-xs mt-2");
+                area.rows = 5;
+                area.value = value;
+                area.setAttribute("aria-label", "Try it (not saved)");
+                area.addEventListener("input", () => {
+                    onInput(area.value);
+                    fitTextarea(area);
+                });
+                host.appendChild(area);
+                fitTextarea(area);
+                return area;
+            }
+            // Demos are wired while the dialog is closed (zero height), so
+            // fit them again on open — the guard inside fitTextarea skips
+            // hidden fields, never collapsing them to 2px.
+            modal.addEventListener("toggle", () => {
+                if (!modal.open) return;
+                modal.querySelectorAll("textarea").forEach((ta) => fitTextarea(ta));
+            });
+            function demoError(host, message) {
+                host.innerHTML = "";
+                const box = el("div", "alert alert-error alert-sm");
+                box.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>';
+                box.appendChild(document.createTextNode(message));
+                host.appendChild(box);
+            }
+            modal.querySelectorAll("[data-demo]").forEach((box) => {
+                const kind = box.dataset.demo;
+                if (kind === "markdown") {
+                    const out = el("div", "nb-md mt-2 p-2 border border-base-300 rounded bg-base-100");
+                    box.appendChild(out);
+                    const src = "## Results\n- [x] indexed **46 files**\n\n"
+                        + "A footnote[^1], inline math $x^2 + y^2 = r^2$ and display math $$E=mc^2$$\n\n"
+                        + "[^1]: footnotes render at the bottom.";
+                    demoTextarea(box, src, (v) =>
+                        renderMarkdownPreview(out, { content: v }));
+                    renderMarkdownPreview(out, { content: src });
+                } else if (kind === "chart") {
+                    const bar = el("div", "flex gap-1 mt-2");
+                    const out = el("div", "mt-2");
+                    box.appendChild(bar);
+                    box.appendChild(out);
+                    let spec = {
+                        kind: "bar", title: "Demo",
+                        labels: ["Q1", "Q2", "Q3"],
+                        datasets: [{ label: "Series A", data: [10, 20, 15] },
+                                   { label: "Series B", data: [7, 14, 9] }],
+                    };
+                    const draw = () =>
+                        renderChartView(out, { content: "", meta: { chart: spec } });
+                    const area = demoTextarea(box,
+                        JSON.stringify(spec, null, 1), (v) => {
+                            try {
+                                spec = JSON.parse(v);
+                                draw();
+                            } catch (e) {
+                                demoError(out, "Invalid JSON: " + e.message);
+                            }
+                        });
+                    ["bar", "line", "pie"].forEach((k) => {
+                        const b = el("button", "btn btn-ghost btn-xs");
+                        b.type = "button";
+                        b.textContent = k[0].toUpperCase() + k.slice(1);
+                        b.title = "Chart type: " + k + " (dummy)";
+                        b.addEventListener("click", () => {
+                            try {
+                                const parsed = JSON.parse(area.value);
+                                if (parsed && typeof parsed === "object") {
+                                    parsed.kind = k;
+                                    spec = parsed;
+                                    area.value = JSON.stringify(spec, null, 1);
+                                    draw();
+                                } else {
+                                    demoError(out, "Invalid chart spec: need an object.");
+                                }
+                            } catch (e) {
+                                demoError(out, "Invalid JSON: " + e.message);
+                            }
+                        });
+                        bar.appendChild(b);
+                    });
+                    draw();
+                } else if (kind === "code") {
+                    const langs = ["python", "javascript", "bash", "html"];
+                    const bar = el("div", "flex gap-1 mt-2 items-center");
+                    const sel = el("select", "select select-bordered select-xs");
+                    langs.forEach((l) => {
+                        const o = el("option", "", l);
+                        sel.appendChild(o);
+                    });
+                    bar.appendChild(sel);
+                    box.appendChild(bar);
+                    const out = el("div", "nb-md mt-2");
+                    box.appendChild(out);
+                    const src = 'hits = search.query("quarterly report", limit=10)\n'
+                        + 'print("found", len(hits))';
+                    const draw = () => renderMarkdownPreview(out, {
+                        content: "```" + sel.value + "\n" + area.value + "\n```",
+                    });
+                    const area = demoTextarea(box, src, draw);
+                    sel.addEventListener("change", draw);
+                    draw();
+                } else if (kind === "todo") {
+                    const items = [
+                        { text: "Sync the drive", done: true },
+                        { text: "Tag the new files", done: false },
+                    ];
+                    const list = el("ul", "nb-todo mt-2");
+                    box.appendChild(list);
+                    const paint = () => {
+                        list.innerHTML = "";
+                        items.forEach((it) => {
+                            const li = el("li", it.done ? "done" : "");
+                            const b2 = el("span", "box");
+                            if (it.done) b2.innerHTML = '<i class="fas fa-check"></i>';
+                            li.appendChild(b2);
+                            li.appendChild(el("span", "", it.text));
+                            li.style.cursor = "pointer";
+                            li.title = "Toggle (dummy — nothing is saved)";
+                            li.addEventListener("click", () => {
+                                it.done = !it.done;
+                                paint();
+                            });
+                            list.appendChild(li);
+                        });
+                    };
+                    paint();
+                    const row = el("div", "flex gap-1 mt-2");
+                    const inp = el("input", "input input-bordered input-xs flex-1");
+                    inp.placeholder = "New task… (dummy)";
+                    const add = el("button", "btn btn-ghost btn-xs gap-1");
+                    add.type = "button";
+                    add.innerHTML = '<i class="fas fa-plus"></i> Add';
+                    add.addEventListener("click", () => {
+                        if (!inp.value.trim()) return;
+                        items.push({ text: inp.value.trim(), done: false });
+                        inp.value = "";
+                        paint();
+                    });
+                    row.appendChild(inp);
+                    row.appendChild(add);
+                    box.appendChild(row);
+                } else if (kind === "table") {
+                    const out = el("div", "nb-md mt-2");
+                    box.appendChild(out);
+                    const src = "| Model | Score |\n|---|---|\n| qwen | 0.91 |";
+                    demoTextarea(box, src, (v) =>
+                        renderMarkdownPreview(out, { content: v }));
+                    renderMarkdownPreview(out, { content: src });
+                } else if (kind === "heading") {
+                    const bar = el("div", "flex gap-1 mt-2 items-center");
+                    const inp = el("input",
+                        "input input-bordered input-sm flex-1");
+                    inp.value = "Quarterly review";
+                    inp.setAttribute("aria-label", "Heading text (dummy)");
+                    const out = el("div", "mt-2");
+                    const draw = (level) => {
+                        out.innerHTML = "";
+                        out.appendChild(el(level === 2 ? "h2" : "h1",
+                            level === 2 ? "nb-cell-subtitle" : "nb-cell-title",
+                            inp.value || "Heading"));
+                    };
+                    [["Title", 1], ["Subtitle", 2]].forEach(([label, level]) => {
+                        const b = el("button", "btn btn-ghost btn-xs");
+                        b.type = "button";
+                        b.textContent = label;
+                        b.addEventListener("click", () => draw(level));
+                        bar.appendChild(b);
+                    });
+                    box.appendChild(bar);
+                    box.appendChild(inp);
+                    box.appendChild(out);
+                    inp.addEventListener("input", () => draw(
+                        out.firstChild && out.firstChild.tagName === "H2" ? 2 : 1));
+                    draw(1);
+                } else if (kind === "richtext") {
+                    const bar = el("div", "flex gap-1 mt-2");
+                    const out = el("div",
+                        "nb-demo-rt mt-2 prose prose-sm max-w-none");
+                    out.setAttribute("contenteditable", "true");
+                    out.innerHTML = "Select some text and make it "
+                        + "<b>bold</b>.";
+                    [["B", "bold", "Bold"], ["I", "italic", "Italic"],
+                     ["U", "underline", "Underline"]].forEach(([t, cmd, title]) => {
+                        const b = el("button", "btn btn-ghost btn-xs font-bold");
+                        b.type = "button";
+                        b.textContent = t;
+                        b.title = title;
+                        b.addEventListener("mousedown", (e) => e.preventDefault());
+                        b.addEventListener("click", () => {
+                            out.focus();
+                            try { document.execCommand(cmd, false, null); }
+                            catch (e) { /* older engines */ }
+                        });
+                        bar.appendChild(b);
+                    });
+                    box.appendChild(bar);
+                    box.appendChild(out);
+                    const note = el("p", "text-xs opacity-60 mt-2");
+                    note.textContent = "Pasted images in real cells are saved "
+                        + "as files on the drive. Nothing typed here is saved.";
+                    box.appendChild(note);
+                } else if (kind === "separator") {
+                    const d = el("div", "nb-separator mt-2");
+                    d.innerHTML = '<i class="fas fa-ellipsis"></i>';
+                    box.appendChild(d);
+                }
+            });
+        }
+
+        // Insert Markdown syntax into a textarea following one rule set:
+        // selection gets wrapped, empty selection gets a marker pair with
+        // the cursor placed inside, multiline selections prefix non-empty
+        // lines only. The caller sets .value and dispatches 'input' so the
+        // existing preview/autosave path runs unchanged.
+        function insertMarkdownSnippet(area, kind) {
+            const value = area.value;
+            const start = area.selectionStart == null ? value.length : area.selectionStart;
+            const end = area.selectionEnd == null ? start : area.selectionEnd;
+            const selected = value.slice(start, end);
+            const hasSelection = selected.length > 0;
+            let insert = selected;
+            // [anchor, focus] selection after the insert, relative to the
+            // insert start. Defaults to a collapsed cursor at the end.
+            let anchor = null;
+            const prefixLines = (text, pre) => text.split("\n")
+                .map((l) => (l.trim() === "" ? l : pre + l)).join("\n");
+            const longestFence = (() => {
+                let longest = 0, run = 0;
+                for (const ch of selected) {
+                    if (ch === "`") { run += 1; longest = Math.max(longest, run); }
+                    else run = 0;
+                }
+                return "`".repeat(Math.max(3, longest + 1));
+            })();
+            switch (kind) {
+                case "bold": insert = "**" + selected + "**"; anchor = hasSelection ? null : start + 2; break;
+                case "italic": insert = "*" + selected + "*"; anchor = hasSelection ? null : start + 1; break;
+                case "strike": insert = "~~" + selected + "~~"; anchor = hasSelection ? null : start + 2; break;
+                case "code": insert = "`" + selected + "`"; anchor = hasSelection ? null : start + 1; break;
+                case "h1": case "h2": case "h3": case "h4": {
+                    const level = Number(kind.slice(1));
+                    insert = prefixLines(selected || "Heading", "#".repeat(level) + " ");
+                    anchor = hasSelection ? null : start + level + 1;
+                    break;
+                }
+                case "ul": case "ol": case "task": case "quote": {
+                    const pres = { ul: "- ", ol: "1. ", task: "- [ ] ", quote: "> " };
+                    const pre = pres[kind];
+                    if (hasSelection) { insert = prefixLines(selected, pre); anchor = null; }
+                    else { insert = pre; anchor = start + pre.length; }
+                    break;
+                }
+                case "codeblock": insert = longestFence + "\n" + selected + (selected && !selected.endsWith("\n") ? "\n" : "") + longestFence; anchor = hasSelection ? null : start + longestFence.length + 1; break;
+                case "link":
+                    if (hasSelection) { insert = "[" + selected + "](url)"; anchor = null; }
+                    else { insert = "[text](url)"; anchor = [start + 1, start + 5]; }
+                    break;
+                case "table": {
+                    const table = "|  |  |\n|---|---|\n|  |  |";
+                    const before = (start > 0 && value[start - 1] !== "\n") ? "\n" : "";
+                    const after = (value[start] && value[start] !== "\n") ? "\n" : "";
+                    // Never drop a selection: keep the selected text after the template.
+                    insert = before + table + after + (hasSelection ? selected : "");
+                    anchor = start + before.length + 2;
+                    break;
+                }
+                case "footnote": {
+                    let n = 0;
+                    const re = /\[\^(\d+)\]/g;
+                    let m;
+                    while ((m = re.exec(value)) !== null) n = Math.max(n, parseInt(m[1], 10));
+                    n += 1;
+                    insert = "[^" + n + "]";
+                    const stub = "\n[^" + n + "]: ";
+                    // Never drop a selection: keep the selected text after the marker.
+                    const kept = hasSelection ? selected : "";
+                    area.value = value.slice(0, start) + insert + kept + value.slice(end) + (value.endsWith("\n") ? "" : "\n") + stub.slice(1);
+                    area.focus();
+                    area.setSelectionRange(start + insert.length, start + insert.length);
+                    area.dispatchEvent(new Event("input", { bubbles: true }));
+                    return;
+                }
+                case "math-inline": insert = "\\(" + selected + "\\)"; anchor = hasSelection ? null : start + 2; break;
+                case "math-block": {
+                    const before = (start > 0 && value[start - 1] !== "\n") ? "\n" : "";
+                    const after = (value[end] && value[end] !== "\n") ? "\n" : "";
+                    insert = before + "$$\n" + (selected ? selected + "\n" : "\n") + "$$" + after;
+                    anchor = start + before.length + 3;
+                    break;
+                }
+                default: return;
+            }
+            area.value = value.slice(0, start) + insert + value.slice(end);
+            area.focus();
+            if (Array.isArray(anchor)) area.setSelectionRange(anchor[0], anchor[1]);
+            else area.setSelectionRange(anchor == null ? start + insert.length : anchor, anchor == null ? start + insert.length : anchor);
+            area.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
-                const toolsRow = el("div", "flex items-center gap-1 mb-1");
+                const toolsRow = el("div", "flex items-center gap-1 mb-1 flex-wrap");
                 const refBtn = el("button", "btn btn-ghost btn-xs gap-1");
                 refBtn.type = "button";
                 refBtn.innerHTML = '<i class="fas fa-file-arrow-down"></i> File ref';
@@ -907,14 +1969,68 @@
                     });
                 });
                 toolsRow.appendChild(refBtn);
+                // Markdown formatting toolbar: inserts syntax around the
+                // selection (or a starter snippet with the cursor placed
+                // inside). Setting .value + dispatching 'input' reuses the
+                // existing preview/autosave path untouched.
+                const MD_BUTTONS = [
+                    { kind: "bold", label: "B", cls: "font-bold", title: "Bold" },
+                    { kind: "italic", label: "I", cls: "italic", title: "Italic" },
+                    { kind: "strike", label: "S", cls: "line-through", title: "Strikethrough" },
+                    { kind: "h1", label: "H1", cls: "", title: "Heading 1" },
+                    { kind: "h2", label: "H2", cls: "", title: "Heading 2" },
+                    { kind: "h3", label: "H3", cls: "", title: "Heading 3" },
+                    { kind: "h4", label: "H4", cls: "", title: "Heading 4" },
+                    { kind: "ul", icon: "fa-list-ul", title: "Bulleted list" },
+                    { kind: "ol", icon: "fa-list-ol", title: "Numbered list" },
+                    { kind: "task", icon: "fa-list-check", title: "Task list" },
+                    { kind: "quote", icon: "fa-quote-left", title: "Quote" },
+                    { kind: "code", icon: "fa-code", title: "Inline code" },
+                    { kind: "codeblock", icon: "fa-file-code", title: "Code block" },
+                    { kind: "link", icon: "fa-link", title: "Link" },
+                    { kind: "table", icon: "fa-table", title: "Table (2 columns)" },
+                    { kind: "footnote", label: "fn", cls: "", title: "Footnote" },
+                    { kind: "math-inline", label: "\\(\\)", cls: "font-mono", title: "Inline math" },
+                    { kind: "math-block", label: "$$", cls: "font-mono", title: "Math block" },
+                ];
+                MD_BUTTONS.forEach((def) => {
+                    const b = el("button", "btn btn-ghost btn-xs " + (def.cls || ""));
+                    b.type = "button";
+                    if (def.label) b.textContent = def.label;
+                    else b.innerHTML = '<i class="fas ' + def.icon + '"></i>';
+                    b.title = def.title;
+                    b.setAttribute("data-md-format", def.kind);
+                    // Keep textarea focus/selection like the File ref button.
+                    b.addEventListener("mousedown", (e) => e.preventDefault());
+                    b.addEventListener("click", () => insertMarkdownSnippet(area, def.kind));
+                    toolsRow.appendChild(b);
+                });
                 wrap.appendChild(toolsRow);
                 const area = el("textarea",
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
-                area.placeholder = "Write markdown… tables, - [ ] tasks, [file](file://ID) references";
+                area.placeholder = "Write markdown… tables, - [ ] tasks, [file](file://ID) references, $$math$$";
+                const preview = el("div",
+                    "prose prose-sm max-w-none nb-md mt-2 p-2 border border-base-300 "
+                    + "rounded bg-base-100 nb-md-live-preview");
+                preview.setAttribute("aria-label", "Live preview");
+                renderMarkdownPreview(preview, cell);
+                fitTextarea(area);
+                const mdShortcutKinds = { b: "bold", i: "italic", k: "link", e: "code", q: "quote" };
+                area.addEventListener("keydown", (e) => {
+                    if (e.isComposing || !(e.ctrlKey || e.metaKey)) return;
+                    // Leave shifted/alt combos (browser menus, devtools) alone.
+                    if (e.shiftKey || e.altKey) return;
+                    const kind = mdShortcutKinds[(e.key || "").toLowerCase()];
+                    if (!kind) return;
+                    e.preventDefault();
+                    insertMarkdownSnippet(area, kind);
+                });
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
+                    renderMarkdownPreview(preview, cell);
+                    fitTextarea(area);
                 });
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
@@ -929,19 +2045,14 @@
                     }, 0);
                 });
                 wrap.appendChild(area);
+                wrap.appendChild(preview);
                 body.appendChild(wrap);
+                fitTextarea(area);
                 if (cell._editing) area.focus();
             } else {
                 const view = el("div", "prose prose-sm max-w-none nb-md");
-                const html = renderMarkdown(cell.content);
-                if (html === null) { view.textContent = cell.content; }
-                else { view.innerHTML = html; }
-                polishView(view);
+                renderMarkdownPreview(view, cell);
                 body.appendChild(view);
-                if (window.hljs) {
-                    view.querySelectorAll("pre code").forEach(
-                        (c) => window.hljs.highlightElement(c));
-                }
             }
         }
 
@@ -971,9 +2082,11 @@
                     "textarea textarea-bordered w-full font-mono text-sm min-h-[6rem]");
                 area.value = cell.content;
                 area.placeholder = "Code…";
+                fitTextarea(area);
                 area.addEventListener("input", () => {
                     cell.content = area.value;
                     scheduleSave();
+                    fitTextarea(area);
                 });
                 // Exit edit mode only when focus leaves the cell controls
                 // entirely. Clicking the language select opens a native
@@ -992,6 +2105,7 @@
                     }, 0);
                 });
                 body.appendChild(wrap);
+                fitTextarea(area);
                 if (cell._editing) area.focus();
             } else {
                 const pre = el("pre");
@@ -1121,7 +2235,9 @@
                 tbody.appendChild(tr);
             });
             table.appendChild(tbody);
-            body.appendChild(table);
+            const wrap = el("div", "nb-tablewrap");
+            wrap.appendChild(table);
+            body.appendChild(wrap);
 
             const bar = el("div", "flex gap-1 mt-1");
             const mkBar = (label, fn) => {
@@ -1157,6 +2273,7 @@
         }
 
         render();
+        wireHelpDemos();
 
         // Teardown for SPA navigation (no beforeunload fires): flush a
         // debounce-pending save first so edits are never lost, then drop

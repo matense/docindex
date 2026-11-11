@@ -1574,7 +1574,7 @@ tool + table).
   (live or trashed) is refused with a message naming that drive.
 - `notebooks` — Jupyter-style notebooks. A notebook is a regular
   `StoredFile` with extension `.pdocnb` whose blob is a JSON cell document
-  (`markdown`/`richtext`/`code`/`todo`/`table`/`heading`/`separator`
+  (`markdown`/`richtext`/`code`/`todo`/`table`/`chart`/`heading`/`separator`
   cells), so it gets drives, trash, `FileVersion` history and FTS search
   for free. Autosave writes through with an 800 ms debounce +
   `beforeunload` flush (no data loss) and snapshots a `FileVersion` at
@@ -1597,7 +1597,19 @@ tool + table).
   the organized drive/folder location. Rich-text
   cells embed images uploaded through `/m/notebooks/<id>/assets` (stored
   as real, indexed files next to the notebook), and rich-text/markdown
-  cells can reference drive files. Cells can be dragged into the AI chat
+  cells can reference drive files. **Chart cells** store a JSON spec
+  (`kind: bar|line|pie`, `labels`, `datasets[]`, optional `title`) under
+  `meta.chart`, validated and capped server-side to 50 labels, 500
+  datasets and 50 data points per dataset on save. **Math** in
+  markdown/rich-text uses `$$…$$` for
+  display equations and `\(…\)` for inline math; bare `$` is intentionally
+  ignored so prices stay plain text. KaTeX (vendored 0.16.47) and
+  Chart.js (vendored 4.6.1) are loaded on demand, so the editor stays
+  offline-capable. Markdown rendering mirrors the server Python-Markdown
+  extensions on the client (`marked` with admonitions, definition lists,
+  footnotes, tables, fenced code, `attr_list`-style figures, smarty
+  punctuation and file-reference links), then sanitized with the same
+  allowlist as the server bleach pass. Cells can be dragged into the AI chat
   as a context chip (`context_cell` on `/ai/chat` → system note naming
   the notebook and cell id). Notebooks carry an invisible global `uuid`
   (backfilled on next access) and an opt-in sticky `full_history` mode
