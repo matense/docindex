@@ -599,7 +599,13 @@
     let _chartCallbacks = null;
 
     function loadChart(cb) {
-        if (window.Chart) return cb();
+        // Always async, even when Chart.js is already loaded: cell
+        // subtrees are built detached (render() appends them afterwards),
+        // so a synchronous callback would hit the contains-guard below
+        // and silently drop the chart on SPA revisits. Deferring one
+        // task guarantees the canvas is attached (genuine unmounts are
+        // still filtered by the guard in renderChartView).
+        if (window.Chart) { setTimeout(cb, 0); return; }
         if (_chartCallbacks) { _chartCallbacks.push(cb); return; }
         _chartCallbacks = [cb];
         const script = document.createElement("script");
