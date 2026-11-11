@@ -71,26 +71,53 @@ def _readable(stored):
         return False
 
 
+def _lookup(model, raw):
+    """Fetch a Drive/Folder by id string: malformed ids abort 400, unknown
+    ids return None (the caller turns an explicit miss into a 404)."""
+    try:
+        key = int(raw)
+    except (TypeError, ValueError):
+        abort(400, "Invalid location.")
+    return db.session.get(model, key)
+
+
 @bp.post("/new")
 def new():
     name = (request.form.get("name")
             or request.form.get("title")
             or "Untitled dashboard").strip()
     drive, folder = None, None
+    explicit = False
+    missing = False
     location = (request.form.get("location") or "").strip()
     if location.startswith("drive:"):
-        drive = db.session.get(Drive, int(location[6:]))
+        explicit = True
+        drive = _lookup(Drive, location[6:])
+        missing = drive is None
     elif location.startswith("folder:"):
-        folder = db.session.get(Folder, int(location[7:]))
-        drive = folder.drive if folder else None
+        explicit = True
+        folder = _lookup(Folder, location[7:])
+        missing = folder is None
+        drive = folder.drive if folder is not None else None
+    elif location:
+        abort(400, "Invalid location.")
     else:
         raw_drive = (request.form.get("drive_id") or "").strip()
         raw_folder = (request.form.get("folder_id") or "").strip()
         if raw_drive:
-            drive = db.session.get(Drive, int(raw_drive))
+            explicit = True
+            drive = _lookup(Drive, raw_drive)
+            missing = missing or drive is None
         if raw_folder:
-            folder = db.session.get(Folder, int(raw_folder))
-            drive = folder.drive if folder else drive
+            explicit = True
+            folder = _lookup(Folder, raw_folder)
+            missing = missing or folder is None
+            if folder is not None:
+                drive = folder.drive
+    if explicit and (missing or drive is None):
+        # An explicit target that does not exist (or a folder outside any
+        # drive) — never fall through to the default drive.
+        abort(404)
     if drive is None:
         # No explicit target: first writable drive owned by the user.
         drive = (Drive.query

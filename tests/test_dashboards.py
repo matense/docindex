@@ -419,3 +419,36 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=1" in body
+
+
+def test_new_rejects_unknown_location(app, auth_client, user, enabled):
+    # Explicit drive:/folder: ids that do not exist -> 404, nothing created
+    # (must NOT fall through to the default-drive fallback).
+    drive_id = _drive(app, user)
+    with app.app_context():
+        before = StoredFile.query.filter_by(
+            user_id=user, extension="pdash").count()
+    for data in ({"name": "Lost", "location": "drive:999999"},
+                 {"name": "Lost", "location": "folder:999999"},
+                 {"name": "Lost", "drive_id": str(drive_id),
+                  "folder_id": "999999"}):
+        assert auth_client.post("/m/dashboards/new",
+                               data=data).status_code == 404
+    with app.app_context():
+        assert StoredFile.query.filter_by(
+            user_id=user, extension="pdash").count() == before
+
+
+def test_new_rejects_malformed_location(app, auth_client, user, enabled):
+    # Malformed ids / schemes -> 400 (never a 500), nothing created.
+    _drive(app, user)
+    for data in ({"name": "X", "location": "drive:abc"},
+                 {"name": "X", "location": "folder:abc"},
+                 {"name": "X", "location": "bogus"},
+                 {"name": "X", "drive_id": "abc"},
+                 {"name": "X", "folder_id": "1.5x"}):
+        assert auth_client.post("/m/dashboards/new",
+                               data=data).status_code == 400
+    with app.app_context():
+        assert StoredFile.query.filter_by(
+            user_id=user, extension="pdash").count() == 0
