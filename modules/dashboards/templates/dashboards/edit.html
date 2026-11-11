@@ -19,6 +19,18 @@
         <span id="dash-save-status" class="text-xs opacity-50 whitespace-nowrap">
             <i class="fas fa-check mr-1"></i>Saved
         </span>
+        {% set dash_mode = request.args.get('mode', 'builder') %}
+        {% if dash_mode == 'view' %}
+        <a href="{{ url_for('dashboards.editor', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Back to Builder">
+            <i class="fas fa-pen"></i> Builder
+        </a>
+        {% else %}
+        <a href="{{ url_for('dashboards.editor', file_id=file.id, mode='view') }}"
+           class="btn btn-ghost btn-sm gap-1" title="View snapshots">
+            <i class="fas fa-eye"></i> View
+        </a>
+        {% endif %}
         <a href="{{ url_for('dashboards.history', file_id=file.id) }}"
            class="btn btn-ghost btn-sm gap-1" title="Version history">
             <i class="fas fa-clock-rotate-left"></i> History
@@ -47,6 +59,7 @@
         runStatusUrlTemplate: {{ '/m/dashboards/runs/RUN_ID/status'|tojson }},
         indexUrl: {{ url_for('dashboards.index')|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
+        mode: {{ (request.args.get('mode', 'builder'))|tojson }},
         doc: {{ doc|tojson }}
     };
     // Lets the AI chat's @here attach this dashboard (mirrors drive/view.html).
@@ -56,7 +69,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=2')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=3')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

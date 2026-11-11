@@ -167,6 +167,7 @@
     function mount(root, opts) {
         if (root && root._dashTeardown) root._dashTeardown();
         opts = opts || {};
+        if (opts.mode === "view") return mountView(root, opts);
         var ac = new AbortController();
         var base = String(opts.saveUrl || "").replace(/\/save$/, "");
         var S = {
@@ -1332,6 +1333,818 @@
             endPtrOp(S);
             renderGrid(S);
         };
+    }
+
+    // -- View mode (Task 6): read-only snapshots, refresh, run-all --------
+    //
+    // Read-only grid reusing the Builder card anatomy (title row > content >
+    // footer) and the root._dash seam. Snapshots render instantly from the
+    // doc; per-card ⟳ refresh POSTs <base>/run and polls
+    // /m/dashboards/runs/<id>/status (notebooks pollRemote pattern) until the
+    // card settles, then swaps in the new result. Run-all streams per-card
+    // runs through a bounded-parallel queue honoring the dashboard's
+    // concurrency cap (selector 1-3, persisted on the doc). No Builder
+    // controls leak here: no prompt editor, add/delete, tools toggles.
+
+    var VIEW_RUN_POLL_MS = 1000;
+    var VIEW_STATUS_MS = 5000;
+    var VIEW_RUN_TIMEOUT_MS = 120000;
+    var VIEW_CONC_MIN = 1;
+    var VIEW_CONC_MAX = 3;
+    // Static canvas-safe palette (plain rgb strings — canvas 2D cannot parse
+    // oklch()/var(), same reason the notebooks renderer resolves its theme
+    // palette before painting).
+    var VIEW_CHART_COLORS = [
+        "99,102,241", "34,211,238", "244,114,182",
+        "56,189,248", "163,230,53", "251,191,36"
+    ];
+
+    function viewColor(i, alpha) {
+        var rgb = VIEW_CHART_COLORS[((i % VIEW_CHART_COLORS.length)
+            + VIEW_CHART_COLORS.length) % VIEW_CHART_COLORS.length];
+        return alpha === undefined ? "rgb(" + rgb + ")" : "rgba(" + rgb + "," + alpha + ")";
+    }
+
+    function viewCap(doc) {
+        var c = doc && doc.concurrency;
+        if (typeof c !== "number" || isNaN(c)) return 1;
+        return Math.min(VIEW_CONC_MAX, Math.max(VIEW_CONC_MIN, Math.round(c)));
+    }
+
+    function viewStatusOf(card) {
+        var st = card.status || "idle";
+        var res = card.result;
+        if (st === "error" && res && typeof res === "object" && !Array.isArray(res)) {
+            var msg = String(res.error || "");
+            if (/missing input/i.test(msg)) return "missing";
+        }
+        if (st === "running" || st === "done" || st === "error" || st === "interrupted") return st;
+        return "idle";
+    }
+
+    function viewStatusLabel(st) {
+        return { idle: "em espera", running: "a correr", done: "pronto",
+            error: "erro", missing: "missing-input",
+            interrupted: "interrompido" }[st] || st;
+    }
+
+    function viewChipHTML(card) {
+        var st = viewStatusOf(card);
+        return '<span class="dash-chip st-' + st + '" data-vf="chip">' +
+            '<span class="dash-dot"></span>' + esc(viewStatusLabel(st)) + "</span>";
+    }
+
+    function mountView(root, opts) {
+        var ac = new AbortController();
+        var base = String(opts.saveUrl || "").replace(/\/save$/, "");
+        var V = {
+            root: root, opts: opts, base: base, mode: "view",
+            doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
+            charts: {}, observers: [], timers: [],
+            inFlight: {}, runAllActive: false, runAllStop: false, els: {}
+        };
+        if (!Array.isArray(V.doc.cards)) V.doc.cards = [];
+        if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
+
+        buildViewSkeleton(V);
+        renderViewGrid(V);
+        startViewStatusPoll(V);
+
+        document.addEventListener("keydown", function (e) {
+            if (!document.body.contains(V.root)) return;
+            if (e.key === "Escape" && V.runAllActive) {
+                V.runAllStop = true;
+                viewToast(V, "run-all interrompido após os cards em curso");
+            }
+        }, { capture: true, signal: ac.signal });
+
+        root._dashTeardown = function () {
+            ac.abort();
+            stopViewTimers(V);
+            destroyViewCharts(V);
+            root._dashTeardown = null;
+            root._dash = null;
+        };
+        root._dash = V;
+        return V;
+    }
+
+    function stopViewTimers(V) {
+        V.timers.forEach(function (t) { clearInterval(t); });
+        V.timers = [];
+        V.observers.forEach(function (o) { try { o.disconnect(); } catch (e) { /* noop */ } });
+        V.observers = [];
+    }
+
+    function destroyViewCharts(V) {
+        Object.keys(V.charts).forEach(function (id) {
+            try { V.charts[id].destroy(); } catch (e) { /* noop */ }
+        });
+        V.charts = {};
+    }
+
+    function viewToast(V, msg, isErr) {
+        var t = V.els.toast;
+        if (!t) return;
+        t.textContent = msg;
+        t.classList.toggle("dash-toast-err", !!isErr);
+        t.classList.add("show");
+        clearTimeout(t._h);
+        t._h = setTimeout(function () { t.classList.remove("show"); }, isErr ? 5000 : 2600);
+    }
+
+    function buildViewSkeleton(V) {
+        var root = V.root;
+        var holder = root.querySelector("#dash-mount") || root;
+        var cap = viewCap(V.doc);
+        holder.innerHTML =
+            '<div class="dash-scope dash-view flex flex-col gap-3">' +
+            '<div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">' +
+            '<span class="dash-label">Vista · snapshots</span>' +
+            '<button type="button" class="btn btn-primary btn-sm gap-1" data-vact="runall">' +
+            '<i class="fas fa-rotate"></i> <span data-vzone="runall-label">Correr tudo</span></button>' +
+            '<label class="dash-cap" title="quantos cards correm em simultâneo (guardado no dashboard)">' +
+            "concorrência " +
+            '<select class="select select-bordered select-xs w-16" data-vact="cap">' +
+            [1, 2, 3].map(function (n) {
+                return '<option value="' + n + '"' + (n === cap ? " selected" : "") +
+                    ">" + n + "</option>";
+            }).join("") + "</select></label>" +
+            '<span class="dash-hint" data-vzone="runall-state"></span>' +
+            "</div>" +
+            '<div class="dash-grid" data-vzone="grid"></div>' +
+            '<div class="dash-toast glass-panel" data-vzone="toast" role="status"></div>' +
+            "</div>";
+        var q = function (sel) { return holder.querySelector('[data-vzone="' + sel + '"]'); };
+        V.els = {
+            holder: holder, grid: q("grid"), toast: q("toast"),
+            runAllBtn: holder.querySelector('[data-vact="runall"]'),
+            runAllLabel: q("runall-label"), runAllState: q("runall-state"),
+            capSel: holder.querySelector('[data-vact="cap"]')
+        };
+        V.els.runAllBtn.addEventListener("click", function () { runAll(V); });
+        V.els.capSel.addEventListener("change", function () { setViewCap(V); });
+    }
+
+    function setViewCap(V) {
+        var n = Math.min(VIEW_CONC_MAX, Math.max(VIEW_CONC_MIN,
+            parseInt(V.els.capSel.value, 10) || VIEW_CONC_MIN));
+        V.doc.concurrency = n;
+        V.els.capSel.value = String(n);
+        fetch(V.opts.saveUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ doc: V.doc })
+        }).then(function (resp) {
+            return resp.json().then(function (data) { return { resp: resp, data: data }; });
+        }).then(function (out) {
+            if (out.resp.ok && out.data && out.data.ok) {
+                if (window.spaInvalidate) window.spaInvalidate();
+                viewToast(V, "concorrência " + n + " guardada");
+            } else {
+                viewToast(V, "Guardar concorrência falhou: " +
+                    ((out.data && out.data.error) || out.resp.status), true);
+            }
+        }).catch(function () {
+            viewToast(V, "Guardar concorrência falhou: erro de rede.", true);
+        });
+    }
+
+    function renderViewGrid(V) {
+        destroyViewCharts(V);
+        V.observers.forEach(function (o) { try { o.disconnect(); } catch (e) { /* noop */ } });
+        V.observers = [];
+        var g = V.els.grid;
+        g.innerHTML = "";
+        if (!V.doc.cards.length) {
+            g.innerHTML = '<div class="glass-panel rounded-2xl px-6 py-12 text-center">' +
+                '<p class="text-sm opacity-50">Sem cards — abra o Builder para compor o dashboard.</p></div>';
+            return;
+        }
+        V.doc.cards.forEach(function (card) {
+            g.appendChild(buildViewCard(V, card));
+        });
+    }
+
+    function viewCardNode(V, id) {
+        return V.els.grid.querySelector('[data-vcard="' + id + '"]');
+    }
+
+    function buildViewCard(V, card) {
+        var m = TYPE_META[card.type] || TYPE_META.markdown;
+        var d = document.createElement("div");
+        d.className = "dash-card glass-panel t-" + card.type;
+        d.setAttribute("data-vcard", card.id);
+        d.style.gridColumn = "span " + card.w;
+        d.style.minHeight = (120 + card.h * 32) + "px";
+        d.innerHTML =
+            '<div class="dash-title-row">' +
+            '<span class="dash-icon-chip"><i class="fas ' + m.icon + '"></i></span>' +
+            '<span class="dash-vtitle">' + esc(card.title || m.label) + "</span>" +
+            '<span class="dash-typepill">' + esc(m.label) + "</span>" +
+            viewChipHTML(card) + "</div>" +
+            '<div class="dash-vbody" data-vf="body"></div>' +
+            '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i>' +
+            '<span class="dash-ran" data-vf="ran">' + esc(ranText(card)) + "</span>" +
+            '<span class="dash-vtools' + (card.tools ? "" : " off") + '" data-vf="tools" ' +
+            'title="' + (card.tools ? "agent completo" : "1 chamada LLM") + '">' +
+            (card.tools ? "tools on" : "tools off") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto" data-vf="refresh" ' +
+            'title="recorrer este card" aria-label="Recorrer ' + esc(card.title || card.type) + '">' +
+            '<i class="fas fa-rotate"></i></button></div>';
+        renderViewBody(V, card, d.querySelector('[data-vf="body"]'));
+        d.querySelector('[data-vf="refresh"]').addEventListener("click", function () {
+            refreshCard(V, card.id);
+        });
+        syncViewRunning(V, card, d);
+        return d;
+    }
+
+    function refreshViewCard(V, card) {
+        var node = viewCardNode(V, card.id);
+        if (!node) return;
+        node.replaceWith(buildViewCard(V, card));
+    }
+
+    function syncViewRunning(V, card, node) {
+        node = node || viewCardNode(V, card.id);
+        if (!node) return;
+        var btn = node.querySelector('[data-vf="refresh"]');
+        var running = !!V.inFlight[card.id] || card.status === "running";
+        if (btn) {
+            btn.disabled = running;
+            btn.classList.toggle("dash-spinning", running);
+            btn.title = running ? "a correr…" : "recorrer este card";
+        }
+    }
+
+    function updateViewChrome(V, card) {
+        var node = viewCardNode(V, card.id);
+        if (!node) return;
+        var chip = node.querySelector('[data-vf="chip"]');
+        if (chip) {
+            var tmp = document.createElement("span");
+            tmp.innerHTML = viewChipHTML(card);
+            chip.replaceWith(tmp.firstChild);
+        }
+        var ran = node.querySelector('[data-vf="ran"]');
+        if (ran) ran.textContent = ranText(card);
+        syncViewRunning(V, card, node);
+    }
+
+    // -- snapshot rendering: result JSON -> HTML, per card type ----------
+
+    function viewTextHTML(text) {
+        var parts = String(text === undefined || text === null ? "" : text).split(/\n{2,}/);
+        if (!parts.length || (parts.length === 1 && parts[0].trim() === "")) {
+            return '<div class="dash-empty">sem conteúdo.</div>';
+        }
+        return parts.map(function (p) {
+            return "<p>" + esc(p).replace(/\n/g, "<br>") + "</p>";
+        }).join("");
+    }
+
+    function viewErrorHTML(card) {
+        var res = (card.result && typeof card.result === "object") ? card.result : {};
+        var msg = String(res.error || "The run failed.");
+        if (/missing input/i.test(msg)) {
+            return '<div class="dash-missing-box" role="alert"><b>⚠ missing-input</b>' +
+                "<p>" + esc(msg) + "</p>" +
+                "<p class=\"dash-hint\">Um anexo ou workflow referenciado desapareceu — " +
+                "volte a anexar o ficheiro no Builder.</p></div>";
+        }
+        return '<div class="dash-err-box" role="alert"><b><i class="fas fa-triangle-exclamation"></i> erro</b>' +
+            "<p>" + esc(msg) + "</p></div>";
+    }
+
+    function viewTableHTML(headers, rows) {
+        var h = "<thead><tr>" + headers.map(function (c) {
+            return "<th>" + esc(c) + "</th>";
+        }).join("") + "</tr></thead>";
+        var b = "<tbody>" + rows.map(function (r) {
+            return "<tr>" + r.map(function (c) {
+                return "<td>" + esc(c === null || c === undefined ? "" : c) + "</td>";
+            }).join("") + "</tr>";
+        }).join("") + "</tbody>";
+        return '<div class="dash-vtable-wrap"><table class="dash-vtable">' + h + b + "</table></div>";
+    }
+
+    function objectsToTable(rows) {
+        var objs = rows.filter(function (r) { return r && typeof r === "object" && !Array.isArray(r); });
+        if (!objs.length) return null;
+        var keys = [];
+        objs.forEach(function (o) {
+            Object.keys(o).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
+        });
+        keys = keys.slice(0, 8);
+        var data = objs.slice(0, 25).map(function (o) {
+            return keys.map(function (k) {
+                var v = o[k];
+                return (v && typeof v === "object") ? JSON.stringify(v) : v;
+            });
+        });
+        return viewTableHTML(keys, data);
+    }
+
+    function renderViewBody(V, card, bodyEl) {
+        var res = card.result;
+        if (res === null || res === undefined) {
+            if (card.status === "running") {
+                bodyEl.innerHTML = '<div class="dash-vskeleton"><i class="fas fa-circle-notch fa-spin"></i> a correr…</div>';
+            } else {
+                bodyEl.innerHTML = '<div class="dash-vskeleton">nunca correu — ' +
+                    "prime ⟳ para gerar o snapshot.</div>";
+            }
+            return;
+        }
+        if (typeof res === "string") {
+            bodyEl.innerHTML = '<div class="dash-vtext">' + viewTextHTML(res) + "</div>";
+            return;
+        }
+        if (Array.isArray(res)) {
+            var t = objectsToTable(res);
+            bodyEl.innerHTML = t
+                ? t
+                : '<div class="dash-vtext">' + viewTextHTML(res.map(function (v) {
+                    return (v && typeof v === "object") ? JSON.stringify(v) : String(v);
+                }).join("\n")) + "</div>";
+            return;
+        }
+        if (typeof res !== "object") {
+            bodyEl.innerHTML = '<div class="dash-vtext">' + viewTextHTML(res) + "</div>";
+            return;
+        }
+        if (res.error) {
+            bodyEl.innerHTML = viewErrorHTML(card);
+            return;
+        }
+        var trunc = res.truncated
+            ? '<p class="dash-hint">contexto truncado — o modelo viu só parte dos anexos.</p>' : "";
+        var text = typeof res.text === "string" && res.text.trim() ? res.text : "";
+        if (card.type === "kpi") {
+            bodyEl.innerHTML = viewKpiHTML(res, text) + trunc;
+        } else if (card.type === "table") {
+            bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
+        } else if (card.type === "list") {
+            bodyEl.innerHTML = viewListHTML(res, text) + trunc;
+        } else if (card.type === "chart") {
+            renderViewChart(V, card, bodyEl, res, trunc);
+        } else if (card.type === "workflow") {
+            bodyEl.innerHTML = viewWorkflowHTML(res, text) + trunc;
+        } else {
+            bodyEl.innerHTML = text
+                ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" + trunc
+                : '<div class="dash-empty">sem conteúdo.</div>';
+        }
+    }
+
+    function viewKpiHTML(res, text) {
+        var k = (res.kpi && typeof res.kpi === "object") ? res.kpi : res;
+        var hasValue = k.value !== undefined && k.value !== null && k.value !== "";
+        if (!hasValue && !text) return '<div class="dash-empty">sem conteúdo.</div>';
+        var h = '<div class="dash-kpis">';
+        if (hasValue) {
+            h += '<div class="dash-kpi"><span class="dash-kpi-v">' + esc(k.value) + "</span>";
+            if (k.label) h += '<span class="dash-kpi-l">' + esc(k.label) + "</span>";
+            if (k.delta) h += '<span class="dash-kpi-d">' + esc(k.delta) + "</span>";
+            h += "</div>";
+        }
+        var extra = Array.isArray(k.cells) ? k.cells.slice(0, 4) : [];
+        extra.forEach(function (c) {
+            if (!c || typeof c !== "object") return;
+            h += '<div class="dash-kpi"><span class="dash-kpi-v">' +
+                esc(c.value === undefined ? "" : c.value) + "</span>";
+            if (c.label) h += '<span class="dash-kpi-l">' + esc(c.label) + "</span>";
+            if (c.delta) h += '<span class="dash-kpi-d">' + esc(c.delta) + "</span>";
+            h += "</div>";
+        });
+        h += "</div>";
+        if (!hasValue && !extra.length) {
+            return '<div class="dash-vtext">' + viewTextHTML(text) + "</div>";
+        }
+        if (text) h += '<div class="dash-vtext">' + viewTextHTML(text) + "</div>";
+        return h;
+    }
+
+    function viewTableResultHTML(res, text) {
+        if (res.table && typeof res.table === "object") {
+            var headers = res.table.headers || res.table.columns || [];
+            var rows = res.table.rows || [];
+            if (Array.isArray(headers) && Array.isArray(rows) && headers.length) {
+                return viewTableHTML(headers.map(String), rows);
+            }
+        }
+        if (res.workflow && Array.isArray(res.workflow.results)) {
+            var t = objectsToTable(res.workflow.results);
+            if (t) return t + (text ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" : "");
+        }
+        if (Array.isArray(res.rows)) {
+            var cols = Array.isArray(res.columns) && res.columns.length
+                ? res.columns.map(String)
+                : res.rows.length && typeof res.rows[0] === "object" && !Array.isArray(res.rows[0])
+                    ? Object.keys(res.rows[0]).slice(0, 8) : [];
+            if (cols.length) {
+                return viewTableHTML(cols, res.rows.slice(0, 25).map(function (r) {
+                    return Array.isArray(r) ? r : cols.map(function (k) { return r[k]; });
+                }));
+            }
+        }
+        return text
+            ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>"
+            : '<div class="dash-empty">sem conteúdo.</div>';
+    }
+
+    function viewListHTML(res, text) {
+        var items = Array.isArray(res.items) ? res.items : (Array.isArray(res.list) ? res.list : null);
+        if (!items && text) {
+            items = text.split("\n").map(function (l) { return l.replace(/^[-*•\d.)\s]+/, "").trim(); })
+                .filter(function (l) { return l; });
+        }
+        if (!items || !items.length) return '<div class="dash-empty">sem conteúdo.</div>';
+        return '<ul class="dash-vlist">' + items.slice(0, 50).map(function (it) {
+            if (it && typeof it === "object") {
+                var label = it.text || it.title || it.name || JSON.stringify(it);
+                var dot = it.state || it.status || it.severity || null;
+                return '<li><span class="dash-li-dot"></span><span>' + esc(label) + "</span>" +
+                    (dot ? ' <span class="dash-li-tag">' + esc(dot) + "</span>" : "") + "</li>";
+            }
+            return '<li><span class="dash-li-dot"></span><span>' + esc(it) + "</span></li>";
+        }).join("") + "</ul>";
+    }
+
+    function viewWorkflowHTML(res, text) {
+        var h = "";
+        var wf = res.workflow || {};
+        if (Array.isArray(wf.results) && wf.results.length) {
+            var t = objectsToTable(wf.results);
+            h += t ? t : '<div class="dash-vtext">' + viewTextHTML(JSON.stringify(wf.results)) + "</div>";
+        }
+        if (Array.isArray(wf.files) && wf.files.length) {
+            h += '<ul class="dash-vfiles">' + wf.files.slice(0, 20).map(function (f) {
+                var name = (f && (f.name || f.path)) || ("ficheiro #" + (f && f.file_id));
+                return '<li><i class="fas fa-file-lines opacity-50"></i> ' + esc(name) + "</li>";
+            }).join("") + "</ul>";
+        }
+        if (text) h += '<div class="dash-vtext">' + viewTextHTML(text) + "</div>";
+        return h || '<div class="dash-empty">sem conteúdo.</div>';
+    }
+
+    // Chart: vendored Chart.js, fluid canvas. Mirrors the notebooks
+    // renderChartView pattern (async load, contains-guard, dataset colors,
+    // responsive + maintainAspectRatio false) plus a container
+    // ResizeObserver so the chart reflows when the card/grid width changes.
+    function renderViewChart(V, card, bodyEl, res, trunc) {
+        var spec = (res.chart && typeof res.chart === "object") ? res.chart
+            : (res.spec && typeof res.spec === "object" ? res.spec : null);
+        var text = typeof res.text === "string" && res.text.trim() ? res.text : "";
+        if (!spec) {
+            bodyEl.innerHTML = text
+                ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" + trunc
+                : '<div class="dash-vskeleton">sem dados de gráfico — recorra o card.</div>';
+            return;
+        }
+        var kind = spec.kind || "bar";
+        var labels = Array.isArray(spec.labels) ? spec.labels : [];
+        var rawDs = Array.isArray(spec.datasets) ? spec.datasets : [];
+        if (!labels.length || !rawDs.length ||
+                !rawDs.some(function (ds) { return ds && Array.isArray(ds.data) && ds.data.length; })) {
+            bodyEl.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico inválido</b>' +
+                "<p>labels ou datasets em falta no snapshot.</p></div>";
+            return;
+        }
+        bodyEl.innerHTML = '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
+        var wrap = bodyEl.querySelector(".dash-chart-wrap");
+        var canvas = bodyEl.querySelector("canvas");
+        loadChartLib(function (err) {
+            if (!document.body.contains(canvas)) return;
+            if (err || !window.Chart) {
+                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico indisponível</b>' +
+                    "<p>A biblioteca de gráficos não carregou.</p></div>";
+                return;
+            }
+            try {
+                var datasets = rawDs.map(function (ds, i) {
+                    var label = String((ds && ds.label) || "");
+                    var data = (ds && Array.isArray(ds.data) ? ds.data : []).map(function (v) {
+                        var n = Number(v);
+                        return isFinite(n) ? n : 0;
+                    });
+                    if (kind === "pie") {
+                        return {
+                            label: label, data: data,
+                            backgroundColor: data.map(function (_, j) { return viewColor(j, 0.85); })
+                        };
+                    }
+                    return {
+                        label: label, data: data,
+                        backgroundColor: kind === "line" ? viewColor(i, 0.25) : viewColor(i, 0.7),
+                        borderColor: viewColor(i),
+                        borderWidth: 2,
+                        tension: kind === "line" ? 0.3 : 0,
+                        fill: kind === "line"
+                    };
+                });
+                if (V.charts[card.id]) {
+                    try { V.charts[card.id].destroy(); } catch (e) { /* noop */ }
+                }
+                var chart = new window.Chart(canvas, {
+                    type: kind,
+                    data: { labels: labels, datasets: datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: datasets.length > 1 },
+                            title: { display: false }
+                        }
+                    }
+                });
+                V.charts[card.id] = chart;
+                if (window.ResizeObserver) {
+                    var ro = new window.ResizeObserver(function () {
+                        if (!document.body.contains(canvas)) {
+                            try { ro.disconnect(); } catch (e) { /* noop */ }
+                            return;
+                        }
+                        try { chart.resize(); } catch (e) { /* noop */ }
+                    });
+                    ro.observe(wrap);
+                    V.observers.push(ro);
+                }
+            } catch (e) {
+                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico inválido</b>' +
+                    "<p>Não foi possível desenhar o gráfico.</p></div>";
+            }
+        });
+    }
+
+    var _viewChartCallbacks = null;
+
+    function loadChartLib(cb) {
+        // Always async, even when Chart.js is already loaded: the card body
+        // is built detached and appended afterwards, so a synchronous
+        // callback could run before the canvas is attached. Genuine unmounts
+        // are filtered by the contains-guard at the call site.
+        if (window.Chart) { setTimeout(function () { cb(null); }, 0); return; }
+        if (_viewChartCallbacks) { _viewChartCallbacks.push(cb); return; }
+        _viewChartCallbacks = [cb];
+        var script = document.createElement("script");
+        script.src = "/static/vendor/chart.js/4.6.1/chart.umd.min.js";
+        script.onload = function () {
+            var cbs = _viewChartCallbacks;
+            _viewChartCallbacks = null;
+            cbs.forEach(function (fn) { fn(null); });
+        };
+        script.onerror = function () {
+            var cbs = _viewChartCallbacks;
+            _viewChartCallbacks = null;
+            cbs.forEach(function (fn) { fn(new Error("Chart.js failed to load")); });
+        };
+        document.head.appendChild(script);
+    }
+
+    // -- runs: refresh one card, run-all through the queue ----------------
+
+    function viewPostRun(V, payload) {
+        return fetch(V.base + "/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).then(function (resp) {
+            return resp.json().then(function (data) { return { resp: resp, data: data }; });
+        });
+    }
+
+    function pollViewRun(V, runId, cardId, done) {
+        var url = "/m/dashboards/runs/" + encodeURIComponent(runId) + "/status";
+        var deadline = Date.now() + VIEW_RUN_TIMEOUT_MS;
+        var timer = setInterval(function () {
+            if (!document.body.contains(V.root)) { clearInterval(timer); return; }
+            if (Date.now() > deadline) {
+                clearInterval(timer);
+                finishViewRun(V, cardId, done);
+                return;
+            }
+            fetch(url, { headers: { "Accept": "application/json" } })
+                .then(function (resp) { return resp.json(); })
+                .then(function (data) {
+                    var st = data && data.status;
+                    if (st && st !== "running" && st !== "queued") {
+                        clearInterval(timer);
+                        finishViewRun(V, cardId, done);
+                    }
+                })
+                .catch(function () { /* keep polling until the deadline */ });
+        }, VIEW_RUN_POLL_MS);
+        V.timers.push(timer);
+    }
+
+    function finishViewRun(V, cardId, done) {
+        fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                if (data && data.ok && data.doc) {
+                    V.doc = data.doc;
+                    var card = cardById(V.doc, cardId);
+                    if (card) refreshViewCard(V, card);
+                }
+            })
+            .catch(function () {
+                viewToast(V, "Recarregar o card falhou — recarregue a página.", true);
+            })
+            .then(function () {
+                delete V.inFlight[cardId];
+                var card = cardById(V.doc, cardId);
+                if (card) updateViewChrome(V, card);
+                if (done) done(card);
+            });
+    }
+
+    function refreshCard(V, cardId) {
+        var card = cardById(V.doc, cardId);
+        if (!card) return;
+        if (V.inFlight[cardId] || card.status === "running") {
+            viewToast(V, "Este card já está a correr — aguarde.");
+            return;
+        }
+        V.inFlight[cardId] = true;
+        card.status = "running";
+        refreshViewCard(V, card);
+        viewPostRun(V, { card_id: cardId }).then(function (out) {
+            if (out.resp.status === 409) {
+                viewToast(V, "Já há uma execução em curso — aguarde e tente de novo.");
+                finishViewRun(V, cardId);
+                return;
+            }
+            if (!out.resp.ok || !out.data || !out.data.ok) {
+                viewToast(V, "Correr o card falhou: " +
+                    ((out.data && out.data.error) || ("HTTP " + out.resp.status)), true);
+                finishViewRun(V, cardId);
+                return;
+            }
+            var runId = (out.data.accepted || [])[0];
+            if (!runId) {
+                finishViewRun(V, cardId);
+                return;
+            }
+            pollViewRun(V, runId, cardId);
+        }).catch(function () {
+            viewToast(V, "Correr o card falhou: erro de rede.", true);
+            finishViewRun(V, cardId);
+        });
+    }
+
+    function runAll(V) {
+        if (V.runAllActive) return;
+        var ids = (V.doc.cards || []).map(function (c) { return c.id; });
+        if (!ids.length) {
+            viewToast(V, "Sem cards para correr.");
+            return;
+        }
+        var cap = viewCap(V.doc);
+        var sel = V.els.capSel;
+        if (sel) sel.value = String(cap);
+        V.runAllActive = true;
+        V.runAllStop = false;
+        V.els.runAllBtn.disabled = true;
+        var queue = ids.slice();
+        var total = ids.length;
+        var finished = 0;
+        var active = 0;
+
+        var paint = function () {
+            V.els.runAllLabel.textContent = "A correr " + Math.min(finished + active, total) + "/" + total + "…";
+            V.els.runAllState.textContent = "concorrência " + cap +
+                (V.runAllStop ? " · a parar…" : "");
+        };
+
+        var settle = function () {
+            finished++;
+            active--;
+            if (V.runAllStop && active === 0) return abortRunAll(V, finished, total);
+            if (finished >= total && active === 0) return endRunAll(V, total);
+            paint();
+            pump();
+        };
+
+        var pump = function () {
+            while (!V.runAllStop && active < cap && queue.length) {
+                (function (id) {
+                    active++;
+                    paint();
+                    var card = cardById(V.doc, id);
+                    if (!card || V.inFlight[id] || card.status === "running") {
+                        settle();
+                        return;
+                    }
+                    V.inFlight[id] = true;
+                    card.status = "running";
+                    refreshViewCard(V, card);
+                    viewPostRun(V, { card_id: id }).then(function (out) {
+                        if (!out.resp.ok || !out.data || !out.data.ok) {
+                            if (out.resp.status !== 409) {
+                                viewToast(V, "Correr falhou num card: " +
+                                    ((out.data && out.data.error) || ("HTTP " + out.resp.status)), true);
+                            }
+                            // Reload server truth for the card, then continue
+                            // the queue (a 409 means it is running elsewhere).
+                            finishViewRun(V, id, settle);
+                            return;
+                        }
+                        var runId = (out.data.accepted || [])[0];
+                        if (!runId) {
+                            finishViewRun(V, id, settle);
+                            return;
+                        }
+                        pollViewRun(V, runId, id, settle);
+                    }).catch(function () {
+                        viewToast(V, "Correr falhou num card: erro de rede.", true);
+                        finishViewRun(V, id, settle);
+                    });
+                })(queue.shift());
+            }
+            if (!queue.length && active === 0 && finished >= total) endRunAll(V, total);
+        };
+
+        paint();
+        pump();
+    }
+
+    function endRunAll(V, total) {
+        V.runAllActive = false;
+        V.runAllStop = false;
+        V.els.runAllBtn.disabled = false;
+        V.els.runAllLabel.textContent = "Correr tudo";
+        V.els.runAllState.textContent = "";
+        viewToast(V, total + (total === 1 ? " card atualizado." : " cards atualizados."));
+        if (window.spaInvalidate) window.spaInvalidate();
+    }
+
+    function abortRunAll(V, finished, total) {
+        V.runAllActive = false;
+        V.runAllStop = false;
+        V.els.runAllBtn.disabled = false;
+        V.els.runAllLabel.textContent = "Correr tudo";
+        V.els.runAllState.textContent = "";
+        viewToast(V, "run-all parado (" + finished + "/" + total + " concluídos).");
+    }
+
+    // Aggregate status poll (notebooks pollRemote pattern): every 5 s the
+    // dashboard status endpoint is re-read and chips + ran-at are updated in
+    // place, so external (AI tool, other tab) runs show up without a reload.
+    // Cards with a local run in flight are left alone.
+    function startViewStatusPoll(V) {
+        if (!V.opts.statusUrl) return;
+        var timer = setInterval(function () {
+            if (!document.body.contains(V.root)) {
+                clearInterval(timer);
+                return;
+            }
+            if (V.runAllActive) return;
+            fetch(V.opts.statusUrl, { headers: { "Accept": "application/json" } })
+                .then(function (resp) { return resp.json(); })
+                .then(function (data) {
+                    if (!data || !data.ok || !data.cards) return;
+                    var changed = false;
+                    Object.keys(data.cards).forEach(function (id) {
+                        if (V.inFlight[id]) return;
+                        var card = cardById(V.doc, id);
+                        var remote = data.cards[id];
+                        if (!card || !remote) return;
+                        if (card.status !== remote.status || card.ranAt !== remote.ranAt) {
+                            card.status = remote.status;
+                            card.ranAt = remote.ranAt;
+                            if (remote.status !== "running") {
+                                changed = true;
+                            }
+                            updateViewChrome(V, card);
+                        }
+                    });
+                    if (changed) {
+                        fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
+                            .then(function (resp) { return resp.json(); })
+                            .then(function (doc) {
+                                if (doc && doc.ok && doc.doc) {
+                                    V.doc.concurrency = doc.doc.concurrency;
+                                    (doc.doc.cards || []).forEach(function (rc) {
+                                        if (V.inFlight[rc.id]) return;
+                                        var local = cardById(V.doc, rc.id);
+                                        if (local && local.status !== "running") {
+                                            local.result = rc.result;
+                                            local.status = rc.status;
+                                            local.ranAt = rc.ranAt;
+                                            local.runId = rc.runId;
+                                            refreshViewCard(V, local);
+                                        }
+                                    });
+                                }
+                            })
+                            .catch(function () { /* next tick */ });
+                    }
+                })
+                .catch(function () { /* next tick */ });
+        }, VIEW_STATUS_MS);
+        V.timers.push(timer);
     }
 
     window.DashboardEditor = {

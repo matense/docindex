@@ -254,3 +254,118 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
 }
 .dash-toast.show { display: block; }
 .dash-toast-err { border: 1px solid var(--derr); }
+
+/* ---------- View mode (Task 6): snapshots, chips, refresh ---------- */
+.dash-vtitle {
+    flex: 1; min-width: 0; font-size: 16.5px; font-weight: 700;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-vbody {
+    display: flex; flex-direction: column; gap: 8px; min-width: 0;
+    font-size: 13.5px; line-height: 1.55;
+}
+.dash-vbody .dash-vtext p { margin: 0 0 6px; }
+.dash-vbody .dash-vtext p:last-child { margin-bottom: 0; }
+
+/* status chips: dot + pulsing running state */
+.dash-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: .07em; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid transparent; white-space: nowrap;
+}
+.dash-chip .dash-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.dash-chip.st-idle { color: var(--dt-idle); background: var(--dbg-idle); }
+.dash-chip.st-running { color: var(--dwf); background: var(--dbg-link); }
+.dash-chip.st-running .dash-dot { animation: dash-pulse 1.1s ease-in-out infinite; }
+.dash-chip.st-done { color: var(--dok); background: rgba(34, 197, 94, .13); }
+.dash-chip.st-error { color: var(--derr); background: rgba(239, 68, 68, .13); }
+.dash-chip.st-interrupted { color: var(--derr); background: rgba(239, 68, 68, .13); }
+.dash-chip.st-missing {
+    color: var(--dmissing-tx); background: var(--dmissing-bg);
+    border-style: dashed; border-color: var(--dmissing-bd);
+}
+@keyframes dash-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) {
+    .dash-chip.st-running .dash-dot { animation: none; }
+}
+
+/* per-card refresh: spins during run */
+.dash-spinning i { animation: dash-spin 1s linear infinite; }
+@keyframes dash-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .dash-spinning i { animation: none; }
+}
+.dash-foot .btn[disabled] { opacity: .55; cursor: wait; }
+
+/* tools indicator (read-only badge in View) */
+.dash-vtools {
+    font-size: 10.5px; font-weight: 700; opacity: .5;
+    border: 1px solid rgba(127, 127, 127, .3); border-radius: 999px;
+    padding: 1px 8px; white-space: nowrap;
+}
+.dash-vtools.off { border-style: dashed; }
+
+/* concurrency selector row */
+.dash-cap { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; }
+
+/* KPI cells */
+.dash-kpis { display: flex; gap: 18px; flex-wrap: wrap; }
+.dash-kpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dash-kpi-v { font-size: 30px; font-weight: 800; line-height: 1.1; }
+.dash-kpi-l { font-size: 12px; opacity: .65; }
+.dash-kpi-d { font-size: 12.5px; font-weight: 700; color: var(--dok); }
+
+/* View tables: sticky header, zebra, compact */
+.dash-vtable-wrap { overflow: auto; border-radius: 10px; max-width: 100%; }
+.dash-vtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dash-vtable thead th {
+    position: sticky; top: 0; text-align: left; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 7px 10px; background: rgba(127, 127, 127, .16);
+}
+.dash-vtable td { padding: 7px 10px; border-top: 1px solid rgba(127, 127, 127, .14); }
+.dash-vtable tbody tr:nth-child(even) td { background: rgba(127, 127, 127, .06); }
+
+/* View lists */
+.dash-vlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.dash-vlist li { display: flex; align-items: center; gap: 9px; }
+.dash-li-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dlist); flex-shrink: 0; }
+.dash-li-tag {
+    font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+    background: rgba(127, 127, 127, .14); border: 1px solid rgba(127, 127, 127, .25);
+    white-space: nowrap;
+}
+
+/* workflow artifacts */
+.dash-vfiles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+
+/* chart: fluid container, canvas fills card width */
+.dash-chart-wrap { position: relative; width: 100%; height: 100%; min-height: 220px; }
+.dash-chart-wrap canvas { width: 100% !important; }
+
+/* states: error / missing-input / never-run skeleton */
+.dash-err-box, .dash-missing-box {
+    border-radius: 10px; padding: 10px 12px; font-size: 13px;
+    display: flex; flex-direction: column; gap: 4px;
+}
+.dash-err-box p, .dash-missing-box p { margin: 0; }
+.dash-err-box { background: rgba(239, 68, 68, .1); border: 1px solid rgba(239, 68, 68, .45); }
+.dash-err-box b { color: var(--derr); }
+.dash-missing-box {
+    background: var(--dmissing-bg); border: 1px dashed var(--dmissing-bd);
+}
+.dash-missing-box b { color: var(--dmissing-tx); }
+.dash-vskeleton {
+    border-radius: 10px; padding: 18px 12px; text-align: center;
+    border: 1px dashed var(--ddashed); font-size: 13px; opacity: .65;
+}
+
+/* light theme: reuse the app shell data-theme, never a local toggle */
+[data-theme="light"] .dash-chip.st-done { background: rgba(34, 197, 94, .14); }
+[data-theme="light"] .dash-chip.st-error,
+[data-theme="light"] .dash-chip.st-interrupted { background: rgba(239, 68, 68, .1); }
+[data-theme="light"] .dash-chip.st-running { background: rgba(6, 182, 212, .12); }
+[data-theme="light"] .dash-vtable thead th { background: rgba(15, 23, 42, .07); }
+[data-theme="light"] .dash-vtable td { border-top-color: rgba(15, 23, 42, .1); }
+[data-theme="light"] .dash-vtable tbody tr:nth-child(even) td { background: rgba(15, 23, 42, .035); }
