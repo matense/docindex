@@ -1080,6 +1080,23 @@
 
     // -- attachments: upload / link / detach ---------------------------
 
+    // Single-writer invariant: the server is the source of truth for
+    // attachments (POST/DELETE persist them). The client's in-memory S.doc
+    // predates the mutation, so merge the authoritative entry into S.doc
+    // BEFORE save() — otherwise save() persists the stale doc and wipes
+    // (attach) or resurrects (detach) the server-side change.
+    function mergeAttached(S, att) {
+        if (!att || !att.id) return;
+        if (!Array.isArray(S.doc.attachments)) S.doc.attachments = [];
+        var exists = S.doc.attachments.some(function (a) { return a.id === att.id; });
+        if (!exists) S.doc.attachments.push(att);
+    }
+
+    function dropAttached(S, attId) {
+        if (!Array.isArray(S.doc.attachments)) return;
+        S.doc.attachments = S.doc.attachments.filter(function (a) { return a.id !== attId; });
+    }
+
     function uploadFiles(S, files) {
         var chain = Promise.resolve(true);
         files.forEach(function (f) {
@@ -1090,6 +1107,7 @@
                     .then(function (resp) { return resp.json().then(function (data) { return { resp: resp, data: data }; }); })
                     .then(function (out) {
                         if (out.resp.ok && out.data && out.data.ok) {
+                            mergeAttached(S, out.data.attachment);
                             toast(S, '"' + f.name + '" carregado para o dashboard');
                             return true;
                         }
@@ -1180,6 +1198,7 @@
             .then(function (resp) { return resp.json().then(function (data) { return { resp: resp, data: data }; }); })
             .then(function (out) {
                 if (out.resp.ok && out.data && out.data.ok) {
+                    mergeAttached(S, out.data.attachment);
                     toast(S, '"' + (name || "ficheiro") + '" ligado como original');
                     save(S, false).then(function () { return reloadDoc(S); }).then(function () {
                         markBrowseAttached(S);
@@ -1353,6 +1372,7 @@
                 .then(function (resp) { return resp.json().then(function (data) { return { resp: resp, data: data }; }); })
                 .then(function (out) {
                     if (out.resp.ok && out.data && out.data.ok) {
+                        dropAttached(S, attId);
                         var extra = out.data.removed_file ? " (ficheiro carregado apagado)" : "";
                         toast(S, '"' + entry.name + '" desanexado' + extra + " — cards que o referenciam mostram missing input");
                         save(S, false).then(function () { reloadDoc(S); });
@@ -1422,6 +1442,7 @@
                 .then(function (resp) { return resp.json().then(function (data) { return { resp: resp, data: data }; }); })
                 .then(function (out) {
                     if (out.resp.ok && out.data && out.data.ok) {
+                        S.doc.createdFileIds = [];
                         var cleared = (out.data.cleared || []).length;
                         var missing = (out.data.missing || []).length;
                         var msg = cleared + " artefacto" + (cleared === 1 ? "" : "s") + " removido" +

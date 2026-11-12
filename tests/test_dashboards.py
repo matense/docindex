@@ -1122,6 +1122,54 @@ def test_browse_js_calls_module_root_urls():
         assert ('moduleBase + "%s' % path) in src
 
 
+def test_attach_merges_server_attachment_before_save():
+    """Regression (controller-verified in the browser): after POST
+    /attachments succeeded, the client called ``save(S, false)`` with the
+    STALE ``S.doc`` — wiping the just-added attachment server-side, so the
+    doc showed ``attachments: []`` despite POST returning ok:true. The
+    client must merge the returned entry into ``S.doc`` (dedupe by id)
+    before saving, so concurrent local edits (e.g. an unsaved prompt
+    change) survive too; detach must drop the entry locally for the same
+    reason (else save resurrects it)."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    merge = re.search(r"function mergeAttached\(S, att\) \{(.*?)\n    \}",
+                      src, re.S)
+    drop = re.search(r"function dropAttached\(S, attId\) \{(.*?)\n    \}",
+                     src, re.S)
+    assert merge, "mergeAttached helper missing"
+    assert drop, "dropAttached helper missing"
+    # Both attach flows (multipart upload + browse-link) merge before save;
+    # detach drops before save.
+    assert src.count("mergeAttached(S, out.data.attachment)") >= 2
+    assert "dropAttached(S, attId)" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (merge.group(0) + "\n" + drop.group(0) + """
+var S = {doc: {cards: [{id: "c1", prompt: "local edit"}],
+    attachments: [{id: "a1"}]}};
+mergeAttached(S, {id: "a2", name: "novo.csv"});
+var keptEdit = S.doc.cards[0].prompt === "local edit";
+var merged = S.doc.attachments.length === 2;
+mergeAttached(S, {id: "a2", name: "novo.csv"});
+var deduped = S.doc.attachments.length === 2;
+mergeAttached(S, null);
+var nullSafe = S.doc.attachments.length === 2;
+dropAttached(S, "a1");
+var dropped = S.doc.attachments.length === 1 &&
+    S.doc.attachments[0].id === "a2";
+console.log(JSON.stringify([keptEdit, merged, deduped, nullSafe, dropped]));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 5
+
+
 def test_browse_rows_indent_by_shared_depth_and_truncate():
     """Regression (screenshot-verified): tree file rows rendered at root
     indent while folders nested, and long names forced a horizontal
