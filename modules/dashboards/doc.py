@@ -30,6 +30,7 @@ import uuid
 from datetime import UTC, timedelta
 from io import BytesIO
 
+from flask import g, has_app_context
 from werkzeug.datastructures import FileStorage
 
 from app.extensions import db
@@ -683,3 +684,23 @@ def save_document(stored, doc, force_checkpoint=False, note="",
         snapshotted = True
     _write_blob(stored, doc)
     return snapshotted
+
+
+def save_document_ai(stored, doc, note="AI edits"):
+    """Save from an AI agent run, transactionally: the first mutation of a
+    dashboard within the current request snapshots the pre-edit state, and
+    every later mutation in the same run just writes through. One AI answer
+    therefore leaves a single restorable history block instead of one
+    version per tool call (notebooks ``save_document_ai`` precedent)."""
+    first_in_run = True
+    if has_app_context():
+        # g is request/app-context scoped: one chat message = one run.
+        snapped = getattr(g, "_dash_ai_snapshotted", None)
+        if snapped is None:
+            snapped = set()
+            g._dash_ai_snapshotted = snapped
+        first_in_run = stored.id not in snapped
+        snapped.add(stored.id)
+    return save_document(stored, doc, force_checkpoint=True,
+                         skip_snapshot=not first_in_run,
+                         note=note, source="ai")

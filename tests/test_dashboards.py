@@ -760,3 +760,140 @@ def test_run_workflow_card_uses_runtime(app, auth_client, user, enabled,
                 for r in body["result"]["workflow"]["results"]]
     assert any("hello world" in p for p in previews)
     assert body["result"]["text"] == "formatted summary"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: AI tools (dashboards.*)
+# ---------------------------------------------------------------------------
+
+def _dash_tools():
+    """The AI tools module (Task 7+) — ImportError until implemented."""
+    return importlib.import_module("docindex_module_dashboards.tools")
+
+
+def _workflow_id(app, user):
+    auto_models = _automation_models()
+    with app.app_context():
+        graph = {"nodes": [
+            {"id": "n1", "type": "input.text", "x": 0, "y": 0,
+             "config": {"content": "hello world", "format": "text"}},
+            {"id": "n2", "type": "output.result", "x": 0, "y": 0,
+             "config": {}},
+        ], "edges": [
+            {"from": "n1", "from_port": "out", "to": "n2",
+             "to_port": "in"}]}
+        wf = auto_models.AutomationWorkflow(
+            user_id=user, name="Flow", graph=json.dumps(graph))
+        db.session.add(wf)
+        db.session.commit()
+        return wf.id
+
+
+def test_ai_create_builds_dashboard(app, user, enabled):
+    tools = _dash_tools()
+    wid = _workflow_id(app, user)
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_create(
+            user_obj,
+            {"name": "Morning view",
+             "cards": [
+                 {"type": "kpi", "title": "Open",
+                  "prompt": "Count open incidents"},
+                 {"type": "workflow", "title": "Flow",
+                  "prompt": "Summarize the flow output",
+                  "workflow": {"workflow_id": wid, "params": {}}}]},
+            None)
+        assert "created" in result, result
+        stored = db.session.get(StoredFile, result["created"]["id"])
+        doc = dash_doc.load(stored)
+        assert [c["type"] for c in doc["cards"]] == ["kpi", "workflow"]
+        assert (doc["cards"][1]["inputs"]["workflow"]["workflow_id"]
+                == wid)
+        # Unknown card types are rejected and create nothing.
+        bad = tools._tool_create(
+            user_obj, {"name": "Bad", "cards": [{"type": "nope"}]},
+            None)
+        assert "error" in bad and "created" not in bad
+
+
+def test_ai_attach_and_card_ref(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        target = tools._tool_create(
+            user_obj, {"name": "Source"}, None)["created"]["id"]
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "target_file_id": target}, None)
+        assert "attached" in attached, attached
+        att_id = attached["attached"]["id"]
+        ok = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "table",
+                       "title": "Rows", "prompt": "List rows",
+                       "attachments": [att_id]}, None)
+        assert ok["ok"] is True, ok
+        # A file id that is not attached to the dashboard is rejected...
+        foreign = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "table",
+                       "attachments": [str(target)]}, None)
+        assert "error" in foreign
+        # ... as is a made-up attachment id.
+        ghost = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "table",
+                       "attachments": ["deadbeefcafe"]}, None)
+        assert "error" in ghost
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+        assert len(doc["cards"]) == 1
+        assert doc["cards"][0]["inputs"]["attachments"] == [att_id]
+
+
+def test_ai_run_card_single_history_block(app, user, enabled, fake_ai):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Live",
+                       "cards": [{"type": "kpi", "title": "Open",
+                                  "prompt": "Count open"}]},
+            None)["created"]["id"]
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "data.csv",
+                       "content": "a,b\n1,2\n"}, None)
+        assert "attached" in attached, attached
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "table", "title": "Rows",
+                       "prompt": "List rows",
+                       "attachments": [attached["attached"]["id"]]},
+            None)
+        assert added["ok"] is True, added
+        ran = tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": added["card"]["id"]},
+            None)
+        assert ran["status"] == "done", ran
+        assert ran["result"]["text"] == "3 open incidents"
+        stored = db.session.get(StoredFile, fid)
+        assert dash_doc.load(stored)["cards"][1]["status"] == "done"
+        # One AI answer = one restorable history block.
+        assert len(stored.versions) == 1
+        assert stored.versions[0].source == "ai"
+
+
+def test_ai_recommend_proposes_card_edits(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Empty"}, None)["created"]["id"]
+        recs = tools._tool_recommend(user_obj, {"file_id": fid}, None)
+        assert recs["recommendations"], recs
+        assert any("proposed_card" in r for r in recs["recommendations"])
+        tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi"}, None)
+        recs2 = tools._tool_recommend(user_obj, {"file_id": fid}, None)
+        assert any(r.get("card_id") for r in recs2["recommendations"])
