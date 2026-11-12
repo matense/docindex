@@ -966,3 +966,144 @@ def test_ai_recommend_proposes_card_edits(app, user, enabled):
             user_obj, {"file_id": fid, "type": "kpi"}, None)
         recs2 = tools._tool_recommend(user_obj, {"file_id": fid}, None)
         assert any(r.get("card_id") for r in recs2["recommendations"])
+
+
+# ---------------------------------------------------------------------------
+# Task 8: attach-via-tree browser modal (JSON browse endpoints)
+# ---------------------------------------------------------------------------
+
+def _seed_browse_tree(app, user, drive_id):
+    """Drive root: folder 'Proj' > subfolder 'Sub' + root file; nested file in
+    'Sub'; one trashed file at root (must stay invisible). Returns ids."""
+    from app.models import Folder
+    with app.app_context():
+        owner = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        proj = Folder(name="Proj", user_id=user, drive_id=drive_id)
+        db.session.add(proj)
+        db.session.commit()
+        sub = Folder(name="Sub", user_id=user, drive_id=drive_id,
+                     parent_id=proj.id)
+        db.session.add(sub)
+        db.session.commit()
+        root_file = file_service.save_upload(
+            _upload("root.csv"), owner, None, drive=drive)
+        nested = file_service.save_upload(
+            _upload("nested.csv"), owner, sub, drive=drive)
+        gone = file_service.save_upload(
+            _upload("gone.csv"), owner, None, drive=drive)
+        # save_upload leaves drive_id unset (the drive upload route assigns
+        # it afterwards) — mirror that so the seed matches real rows.
+        root_file.drive_id = drive_id
+        nested.drive_id = drive_id
+        gone.drive_id = drive_id
+        db.session.commit()
+        gone_id, root_id, nested_id = gone.id, root_file.id, nested.id
+        proj_id, sub_id = proj.id, sub.id
+        file_service.delete_file(gone)
+        return {"proj": proj_id, "sub": sub_id, "root": root_id,
+                "nested": nested_id, "gone": gone_id}
+
+
+def test_browse_requires_own_drive(app, auth_client, user, enabled):
+    from app.models import Drive, Folder
+    drive_id = _drive(app, user)
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        bob_drive = Drive(name="Bob drive", user_id=bob.id)
+        db.session.add(bob_drive)
+        db.session.commit()
+        foreign_drive = bob_drive.id
+        foreign_folder = Folder(name="Bob folder", user_id=bob.id,
+                                drive_id=foreign_drive)
+        db.session.add(foreign_folder)
+        db.session.commit()
+        foreign_folder_id = foreign_folder.id
+
+    # Own drives only.
+    drives = auth_client.get("/m/dashboards/browse/drives")
+    assert drives.status_code == 200
+    own_ids = [d["id"] for d in drives.get_json()]
+    assert drive_id in own_ids
+    assert foreign_drive not in own_ids
+
+    # Foreign drive id -> 404.
+    assert auth_client.get(
+        f"/m/dashboards/browse/children?drive_id={foreign_drive}"
+    ).status_code == 404
+    # parent_id from another drive (even with a valid own drive_id) -> 404.
+    assert auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={foreign_folder_id}"
+    ).status_code == 404
+
+
+def test_browse_lists_folders_and_files(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    ids = _seed_browse_tree(app, user, drive_id)
+
+    root = auth_client.get(
+        f"/m/dashboards/browse/children?drive_id={drive_id}")
+    assert root.status_code == 200
+    body = root.get_json()
+    assert [f["name"] for f in body["folders"]] == ["Proj"]
+    proj = body["folders"][0]
+    assert proj["id"] == ids["proj"] and proj["hasKids"] is True
+    assert [f["name"] for f in body["files"]] == ["root.csv"]
+    entry = body["files"][0]
+    assert entry["id"] == ids["root"]
+    assert entry["mime"] and entry["size"] > 0
+    assert "gone.csv" not in [f["name"] for f in body["files"]]
+
+    mid = auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={ids['proj']}")
+    assert mid.status_code == 200
+    mid_body = mid.get_json()
+    assert [f["name"] for f in mid_body["folders"]] == ["Sub"]
+    assert mid_body["folders"][0]["hasKids"] is True
+    assert mid_body["files"] == []
+
+    leaf = auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={ids['sub']}")
+    assert leaf.status_code == 200
+    leaf_body = leaf.get_json()
+    assert leaf_body["folders"] == []
+    assert [f["name"] for f in leaf_body["files"]] == ["nested.csv"]
+
+
+def test_browse_search_matches_names(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    with app.app_context():
+        owner = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        file_service.save_upload(
+            _upload("quarterly-report.csv"), owner, None, drive=drive)
+        file_service.save_upload(
+            _upload("unrelated.txt"), owner, None, drive=drive)
+        for i in range(25):
+            file_service.save_upload(
+                _upload(f"cap-{i:02d}.txt"), owner, None, drive=drive)
+        db.session.commit()
+
+    hit = auth_client.get("/m/dashboards/browse/search?q=quarterly")
+    assert hit.status_code == 200
+    names = [f["name"] for f in hit.get_json()["files"]]
+    assert "quarterly-report.csv" in names
+    assert "unrelated.txt" not in names
+
+    miss = auth_client.get("/m/dashboards/browse/search?q=zzz-no-such-file")
+    assert miss.status_code == 200
+    assert miss.get_json()["files"] == []
+
+    capped = auth_client.get("/m/dashboards/browse/search?q=cap-")
+    assert capped.status_code == 200
+    assert len(capped.get_json()["files"]) == 20
+
+    assert auth_client.get(
+        "/m/dashboards/browse/search?q=").status_code == 400
+    assert auth_client.get("/m/dashboards/browse/search").status_code == 400

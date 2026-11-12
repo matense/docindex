@@ -8,7 +8,7 @@ from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
 from flask_login import current_user
 
 from app.extensions import db
-from app.models import Drive, Folder, utcnow
+from app.models import Drive, Folder, StoredFile, utcnow
 from app.services import file_service, indexing_service
 
 from . import doc as doc_service
@@ -221,6 +221,119 @@ def detach_attachment(file_id, att_id):
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, **result})
+
+
+# ---------------------------------------------------------------------------
+# Browse: drive/folder tree + quick search for the attach picker (Task 8)
+# ---------------------------------------------------------------------------
+# JSON versions of the Drive tree lazy-expansion pattern
+# (app/routes/drive.py:tree_children): one level per request, ownership
+# checks via the current user, 404 on foreign drives/folders.
+
+BROWSE_SEARCH_CAP = 20
+
+
+def _browse_drive(raw_drive_id):
+    """Own, non-trashed drive or abort: malformed ids 400, foreign/missing
+    drives 404 (same standard as the attach_link ownership rule)."""
+    try:
+        drive_id = int(raw_drive_id)
+    except (TypeError, ValueError):
+        abort(400, "Invalid drive.")
+    drive = db.session.get(Drive, drive_id)
+    if (drive is None or drive.user_id != current_user.id
+            or drive.deleted_at is not None):
+        abort(404)
+    return drive
+
+
+def _browse_file_entry(stored):
+    return {"id": stored.id, "name": stored.name,
+            "mime": stored.mime_type, "size": stored.size}
+
+
+@bp.get("/browse/drives")
+def browse_drives():
+    """Drives the picker may browse: own, non-trashed, by name."""
+    drives = (Drive.query
+              .filter_by(user_id=current_user.id)
+              .filter(Drive.deleted_at.is_(None))
+              .order_by(Drive.name).all())
+    return jsonify([{"id": drive.id, "name": drive.name}
+                    for drive in drives])
+
+
+@bp.get("/browse/children")
+def browse_children():
+    """One tree level: ``?drive_id=`` plus ``parent_id=`` (root when absent
+    or ``null``). Folders carry ``hasKids`` for the lazy expand arrows;
+    trashed files are excluded. 404 on foreign/unowned drive or folder."""
+    drive = _browse_drive(request.args.get("drive_id"))
+    raw_parent = request.args.get("parent_id")
+    parent = None
+    if raw_parent not in (None, "", "null", "None"):
+        try:
+            parent_id = int(raw_parent)
+        except (TypeError, ValueError):
+            abort(400, "Invalid folder.")
+        parent = db.session.get(Folder, parent_id)
+        if (parent is None or parent.user_id != current_user.id
+                or parent.drive_id != drive.id):
+            abort(404)
+    parent_id = parent.id if parent is not None else None
+    folders = (Folder.query
+               .filter_by(user_id=current_user.id, drive_id=drive.id,
+                          parent_id=parent_id)
+               .order_by(Folder.name).all())
+    files = (StoredFile.query
+             .filter_by(user_id=current_user.id, drive_id=drive.id,
+                        folder_id=parent_id)
+             .filter(StoredFile.deleted_at.is_(None))
+             .order_by(StoredFile.name).all())
+    # hasKids without N+1: folders below any listed folder, or a visible
+    # file directly inside it (same grouped-query shape as _tree_nonempty).
+    folder_ids = [folder.id for folder in folders]
+    nonempty = set()
+    if folder_ids:
+        nonempty |= {row[0] for row in db.session.query(Folder.parent_id)
+                     .filter(Folder.user_id == current_user.id,
+                             Folder.drive_id == drive.id,
+                             Folder.parent_id.in_(folder_ids))
+                     .distinct().all()}
+        nonempty |= {row[0] for row in db.session.query(StoredFile.folder_id)
+                     .filter(StoredFile.user_id == current_user.id,
+                             StoredFile.drive_id == drive.id,
+                             StoredFile.folder_id.in_(folder_ids),
+                             StoredFile.deleted_at.is_(None))
+                     .distinct().all()}
+    return jsonify({
+        "folders": [{"id": folder.id, "name": folder.name,
+                     "hasKids": folder.id in nonempty}
+                    for folder in folders],
+        "files": [_browse_file_entry(stored) for stored in files],
+    })
+
+
+@bp.get("/browse/search")
+def browse_search():
+    """Name match over the user's visible files for the picker's quick
+    search. Same file shape as children, capped at 20, 400 on empty query."""
+    query = (request.args.get("q") or "").strip()
+    if not query:
+        return jsonify({"ok": False, "error": "Missing query."}), 400
+    escaped = (query.replace("\\", "\\\\")
+               .replace("%", "\\%").replace("_", "\\_"))
+    files = (StoredFile.query
+             .filter_by(user_id=current_user.id)
+             .filter(StoredFile.deleted_at.is_(None),
+                     StoredFile.name.ilike(f"%{escaped}%", escape="\\"))
+             .outerjoin(Drive, StoredFile.drive_id == Drive.id)
+             .filter((Drive.id.is_(None))
+                     | (Drive.deleted_at.is_(None)))
+             .order_by(StoredFile.name)
+             .limit(BROWSE_SEARCH_CAP).all())
+    return jsonify({"files": [_browse_file_entry(stored)
+                               for stored in files]})
 
 
 @bp.get("/<int:file_id>/history")

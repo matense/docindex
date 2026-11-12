@@ -366,10 +366,11 @@
             "</div></dialog>" +
             '<dialog class="modal" data-dlg="link"><div class="modal-box glass-panel">' +
             '<h3 class="font-bold text-lg mb-1">Ligar ficheiro existente</h3>' +
-            '<p class="dash-hint mb-3">Pesquisa os seus ficheiros — só ficheiros seus podem ser ligados (validação no servidor).</p>' +
-            '<input type="text" class="input input-bordered input-sm w-full" data-zone="link-q" placeholder="Pesquisar ficheiros…">' +
-            '<div class="flex flex-col max-h-64 overflow-y-auto mt-2" data-zone="link-results">' +
-            '<div class="dash-empty px-2 py-1">Escreva para pesquisar…</div></div>' +
+            '<p class="dash-hint mb-3">Percorra as suas drives ou pesquise por nome — só ficheiros seus podem ser ligados (validação no servidor).</p>' +
+            '<input type="text" class="input input-bordered input-sm w-full" data-zone="link-q" ' +
+            'placeholder="Pesquisa rápida por nome…" aria-label="Pesquisa rápida por nome">' +
+            '<div class="flex flex-col max-h-40 overflow-y-auto mt-2 hidden" data-zone="link-results"></div>' +
+            '<div class="dash-browse-tree max-h-64 overflow-y-auto mt-2" data-zone="link-tree"></div>' +
             '<div class="modal-action"><button type="button" class="btn" data-close>Cancelar</button></div>' +
             "</div></dialog>" +
             '<dialog class="modal" data-dlg="confirm"><div class="modal-box glass-panel">' +
@@ -402,6 +403,7 @@
             holder: holder, grid: q("grid"), attachList: q("attach-list"),
             fileInput: q("file-input"), toast: q("toast"), refpick: q("refpick"),
             typeGrid: q("type-grid"), linkQ: q("link-q"), linkResults: q("link-results"),
+            linkTree: q("link-tree"),
             dlgAdd: dg("add"), dlgLink: dg("link"), dlgConfirm: dg("confirm"),
             dlgCleanup: dg("cleanup"), dlgDelete: dg("delete"),
             cfTitle: q("cf-title"), cfBody: q("cf-body"), cfOk: q("cf-ok"),
@@ -450,6 +452,12 @@
             dlg.addEventListener("mousedown", function (e) {
                 if (e.target === dlg) dlg.close();
             });
+        });
+        // Esc (native) or backdrop/dismiss closes the browse modal — return
+        // focus to the button that opened it.
+        S.els.dlgLink.addEventListener("close", function () {
+            if (S._linkOpener && document.body.contains(S._linkOpener)) S._linkOpener.focus();
+            S._linkOpener = null;
         });
     }
 
@@ -1096,61 +1104,61 @@
         });
     }
 
+    // -- attach-via-tree browser modal (Task 8) ---------------------------
+    // Replaces the old link search box: drive list with a lazy per-level
+    // folder tree (hasKids arrows; files list under their folder with a
+    // per-file attach button) plus a top quick-search box. Already-attached
+    // files are disabled with "já anexado" in both views. Attach/detach
+    // semantics and validation are unchanged (POST <base>/attachments).
+
     function openLinkPicker(S) {
+        S._linkOpener = document.activeElement;
         S.els.linkQ.value = "";
-        S.els.linkResults.innerHTML = '<div class="dash-empty px-2 py-1">Escreva para pesquisar…</div>';
+        S.els.linkQ.oninput = null;
+        S.els.linkResults.innerHTML = "";
+        S.els.linkResults.classList.add("hidden");
+        S.els.linkTree.classList.remove("hidden");
+        renderBrowseTree(S);
         openDialog(S.els.dlgLink);
         var debounce = null;
-        var onInput = function () {
+        S.els.linkQ.oninput = function () {
             clearTimeout(debounce);
             var q = S.els.linkQ.value.trim();
-            debounce = setTimeout(function () { searchFiles(S, q); }, 200);
+            debounce = setTimeout(function () { searchBrowse(S, q); }, 200);
         };
-        S.els.linkQ.oninput = onInput;
         setTimeout(function () { S.els.linkQ.focus(); }, 50);
     }
 
-    function searchFiles(S, q) {
-        var box = S.els.linkResults;
-        if (!q) {
-            box.innerHTML = '<div class="dash-empty px-2 py-1">Escreva para pesquisar…</div>';
-            return;
-        }
-        fetch("/api/search?q=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } })
-            .then(function (resp) { return resp.json(); })
-            .then(function (files) {
-                if (!Array.isArray(files) || !files.length) {
-                    box.innerHTML = '<div class="dash-empty px-2 py-1">Sem ficheiros.</div>';
-                    return;
-                }
-                var attachedIds = {};
-                (S.doc.attachments || []).forEach(function (a) { attachedIds[a.fileId] = true; });
-                box.innerHTML = "";
-                files.forEach(function (f) {
-                    var b = document.createElement("button");
-                    b.type = "button";
-                    b.className = "dash-pickrow";
-                    if (attachedIds[f.file_id]) {
-                        b.disabled = true;
-                        b.innerHTML = '<i class="fas fa-file-lines opacity-50"></i>' +
-                            "<span>" + esc(f.name) + '</span><span class="dash-pick-used">já anexado</span>';
-                    } else {
-                        b.innerHTML = '<i class="fas fa-file-lines opacity-50"></i>' +
-                            "<span>" + esc(f.name) + "</span>";
-                        b.addEventListener("click", function () {
-                            S.els.dlgLink.close();
-                            linkFile(S, f.file_id, f.name);
-                        });
-                    }
-                    box.appendChild(b);
-                });
-            })
-            .catch(function () {
-                box.innerHTML = '<div class="dash-empty px-2 py-1">Pesquisa falhou — tente de novo.</div>';
-            });
+    function browseAttachedIds(S) {
+        var ids = {};
+        (S.doc.attachments || []).forEach(function (a) { ids[a.fileId] = true; });
+        return ids;
     }
 
-    function linkFile(S, fileId, name) {
+    // One pick row for a file, shared by the tree and quick search.
+    function browseFileRow(S, f, attachedIds) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "dash-pickrow";
+        b.setAttribute("data-bfile", String(f.id));
+        var label = '<i class="fas fa-file-lines opacity-50"></i>' +
+            "<span>" + esc(f.name) + "</span>";
+        if (attachedIds[f.id]) {
+            b.disabled = true;
+            b.innerHTML = label + '<span class="dash-pick-used">já anexado</span>';
+        } else {
+            b.innerHTML = label;
+            b.addEventListener("click", function () {
+                attachBrowseFile(S, f.id, f.name, b);
+            });
+        }
+        return b;
+    }
+
+    // Attach from the browse modal but keep it open for more picks; the
+    // row flips to "já anexado" once the save + reload lands.
+    function attachBrowseFile(S, fileId, name, btn) {
+        btn.disabled = true;
         fetch(S.base + "/attachments", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1160,13 +1168,161 @@
             .then(function (out) {
                 if (out.resp.ok && out.data && out.data.ok) {
                     toast(S, '"' + (name || "ficheiro") + '" ligado como original');
-                    save(S, false).then(function () { reloadDoc(S); });
+                    save(S, false).then(function () { return reloadDoc(S); }).then(function () {
+                        markBrowseAttached(S);
+                    });
                 } else {
+                    btn.disabled = false;
                     toast(S, "Ligar falhou: " + ((out.data && out.data.error) || out.resp.status), true);
                 }
             })
             .catch(function () {
+                btn.disabled = false;
                 toast(S, "Ligar falhou: erro de rede.", true);
+            });
+    }
+
+    // After an attach lands, disable the matching rows in both views.
+    function markBrowseAttached(S) {
+        var box = S.els.dlgLink;
+        if (!box || !box.open) return;
+        var attached = browseAttachedIds(S);
+        box.querySelectorAll("[data-bfile]").forEach(function (b) {
+            if (attached[Number(b.getAttribute("data-bfile"))] && !b.disabled) {
+                b.disabled = true;
+                if (!b.querySelector(".dash-pick-used")) {
+                    var s = document.createElement("span");
+                    s.className = "dash-pick-used";
+                    s.textContent = "já anexado";
+                    b.appendChild(s);
+                }
+            }
+        });
+    }
+
+    function renderBrowseTree(S) {
+        var tree = S.els.linkTree;
+        tree.innerHTML = '<div class="dash-empty px-2 py-1">A carregar drives…</div>';
+        fetch(S.base + "/browse/drives", { headers: { "Accept": "application/json" } })
+            .then(function (resp) {
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                return resp.json();
+            })
+            .then(function (drives) {
+                tree.innerHTML = "";
+                if (!drives || !drives.length) {
+                    tree.innerHTML = '<div class="dash-empty px-2 py-1">Sem drives.</div>';
+                    return;
+                }
+                drives.forEach(function (d) {
+                    tree.appendChild(browseDriveNode(S, d));
+                });
+            })
+            .catch(function () {
+                tree.innerHTML = '<div class="dash-empty px-2 py-1">Falhou a carregar as drives — tente de novo.</div>';
+            });
+    }
+
+    function browseDriveNode(S, drive) {
+        return browseFolderNode(S, drive.id, null, String(drive.name),
+            "fa-hdd");
+    }
+
+    // A drive root (folder === null) or one folder level. Folders without
+    // kids hold no visible files either, so they render as a static leaf.
+    function browseFolderNode(S, driveId, folder, label, icon) {
+        var isRoot = folder === null;
+        var wrap = document.createElement("div");
+        wrap.className = "dash-browse-node";
+        var head = document.createElement("button");
+        head.type = "button";
+        var expandable = isRoot || folder.hasKids;
+        head.className = expandable ? "dash-browse-head" : "dash-browse-leaf";
+        head.setAttribute("aria-expanded", "false");
+        head.innerHTML =
+            (expandable ? '<span class="dash-browse-arrow">▸</span>'
+                : '<span class="dash-browse-arrow"></span>') +
+            '<i class="fas ' + icon + ' opacity-50"></i>' +
+            "<span>" + esc(label) + "</span>";
+        wrap.appendChild(head);
+        if (!expandable) return wrap;
+        var kids = document.createElement("div");
+        kids.className = "dash-browse-kids hidden";
+        var loaded = false;
+        head.addEventListener("click", function () {
+            var collapsed = kids.classList.toggle("hidden");
+            head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            head.querySelector(".dash-browse-arrow").textContent = collapsed ? "▸" : "▾";
+            if (!collapsed && !loaded) {
+                loaded = true;
+                loadBrowseKids(S, kids, driveId, isRoot ? null : folder.id);
+            }
+        });
+        wrap.appendChild(kids);
+        return wrap;
+    }
+
+    function loadBrowseKids(S, box, driveId, parentId) {
+        box.innerHTML = '<div class="dash-empty px-2 py-1">A carregar…</div>';
+        var url = S.base + "/browse/children?drive_id=" + encodeURIComponent(driveId) +
+            "&parent_id=" + (parentId === null ? "null" : encodeURIComponent(parentId));
+        fetch(url, { headers: { "Accept": "application/json" } })
+            .then(function (resp) {
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                return resp.json();
+            })
+            .then(function (data) {
+                box.innerHTML = "";
+                var attached = browseAttachedIds(S);
+                var folders = (data && data.folders) || [];
+                var files = (data && data.files) || [];
+                if (!folders.length && !files.length) {
+                    box.innerHTML = '<div class="dash-empty px-2 py-1">Vazio.</div>';
+                    return;
+                }
+                folders.forEach(function (f) {
+                    box.appendChild(browseFolderNode(S, driveId, f, f.name, "fa-folder"));
+                });
+                files.forEach(function (f) {
+                    box.appendChild(browseFileRow(S, f, attached));
+                });
+            })
+            .catch(function () {
+                box.innerHTML = '<div class="dash-empty px-2 py-1">Falhou a carregar — tente de novo.</div>';
+            });
+    }
+
+    function searchBrowse(S, q) {
+        var box = S.els.linkResults;
+        var tree = S.els.linkTree;
+        if (!q) {
+            box.innerHTML = "";
+            box.classList.add("hidden");
+            tree.classList.remove("hidden");
+            return;
+        }
+        box.classList.remove("hidden");
+        tree.classList.add("hidden");
+        box.innerHTML = '<div class="dash-empty px-2 py-1">A pesquisar…</div>';
+        fetch(S.base + "/browse/search?q=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } })
+            .then(function (resp) {
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                return resp.json();
+            })
+            .then(function (data) {
+                var files = (data && data.files) || [];
+                if (!files.length) {
+                    box.innerHTML = '<div class="dash-empty px-2 py-1">Sem ficheiros.</div>';
+                    return;
+                }
+                var attached = browseAttachedIds(S);
+                box.innerHTML = "";
+                files.forEach(function (f) {
+                    box.appendChild(browseFileRow(S, f, attached));
+                });
+            })
+            .catch(function () {
+                box.innerHTML = '<div class="dash-empty px-2 py-1">Pesquisa falhou — tente de novo.</div>';
             });
     }
 

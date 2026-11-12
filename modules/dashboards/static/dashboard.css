@@ -194,6 +194,29 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
 .dash-refpick .dash-pickrow:disabled { opacity: .55; cursor: default; }
 .dash-pick-used { margin-left: auto; font-size: 11px; opacity: .55; font-style: italic; }
 
+/* attach-via-tree browser modal (Task 8): drive list, lazy folder tree,
+   quick-search rows. Dialog rows share the refpick pickrow look. */
+.dash-browse-tree { display: flex; flex-direction: column; gap: 2px; }
+.dash-browse-node { display: flex; flex-direction: column; }
+.dash-browse-head {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 5px 8px; border-radius: 8px; border: 0; background: transparent;
+    color: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.dash-browse-head:hover { background: rgba(127, 127, 127, .16); }
+.dash-browse-arrow { width: 14px; flex-shrink: 0; opacity: .55; font-size: 11px; }
+.dash-browse-leaf {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px 5px 30px; font-size: 13px; opacity: .75;
+}
+dialog[data-dlg="link"] .dash-pickrow {
+    display: flex; align-items: center; gap: 8px; text-align: left;
+    padding: 5px 8px; border-radius: 8px; border: 0; background: transparent;
+    color: inherit; font-size: 13px; cursor: pointer; width: 100%;
+}
+dialog[data-dlg="link"] .dash-pickrow:hover:not(:disabled) { background: rgba(127, 127, 127, .16); }
+dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; }
+
 /* ---------- workflow ref ---------- */
 .dash-wf { font-size: 13px; }
 .dash-wf summary { cursor: pointer; font-size: 12.5px; font-weight: 600; opacity: .8; }
