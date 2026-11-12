@@ -24,6 +24,7 @@ recorded through the existing AI usage events for every model call.
 
 import importlib
 import json
+import re
 import threading
 import time
 
@@ -41,6 +42,127 @@ TOOLS_OFF_MAX_CHARS = 20_000
 # suite runs them inline, so this only binds in async production mode).
 RUN_POLL_INTERVAL_S = 1.0
 RUN_POLL_TIMEOUT_S = 180
+
+# Per-type output contracts (Task 10): the run prompt tells the model the
+# exact shape each card type needs, and bans file references in answers
+# (agents used to echo "(Ficheiros usados: ... (file://...))" into results).
+# KPI/chart answers are parsed back into structured snapshots; anything
+# unparseable keeps the old {"text"} behavior (never an error).
+_NO_FILE_REFS = ("Never include file names, file IDs or file:// references "
+                 "in the answer.")
+_OUTPUT_CONTRACTS = {
+    "kpi": ("--- Output contract (KPI card) ---\n"
+            "Reply with ONLY a JSON object, no prose. Shape: "
+            '{"value": "...", "label": "..."} — "value" is the single '
+            'number/text shown big (e.g. "177,8 kWh"), "label" is what it '
+            'refers to (e.g. "jun/2026"). Optional "delta" (e.g. "+5%"). '
+            + _NO_FILE_REFS),
+    "chart": ("--- Output contract (chart card) ---\n"
+              "Reply with ONLY a JSON object, no prose. Shape: "
+              '{"chart": {"kind": "bar|line|pie", "labels": [...up to 50...], '
+              '"datasets": [{"label": "...", "data": [numbers...]}]}}. '
+              + _NO_FILE_REFS),
+    "list": ("--- Output contract (list card) ---\n"
+             "Reply with one item per line, no numbering or bullets. "
+             + _NO_FILE_REFS),
+    "table": ("--- Output contract (table card) ---\n"
+              "Reply as plain rows, one per line, columns separated by "
+              "' | ', first line the header. " + _NO_FILE_REFS),
+}
+
+# Notebook chart-cell caps, mirrored for dashboard chart snapshots.
+_CHART_MAX_LABELS = 50
+_CHART_MAX_DATASETS = 500
+
+
+def _output_contract(card_type):
+    """The prompt suffix for a card type (empty for markdown/workflow)."""
+    return _OUTPUT_CONTRACTS.get(card_type or "", "")
+
+
+def _extract_json_block(answer):
+    """First JSON object in an answer: fenced block, else whole text."""
+    if not isinstance(answer, str):
+        return None
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", answer, re.S)
+    candidate = match.group(1) if match else answer.strip()
+    try:
+        data = json.loads(candidate)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _parse_kpi_result(answer):
+    """KPI answers become {"kpi": {...}}; prose keeps {"text"}."""
+    data = _extract_json_block(answer)
+    if data is not None:
+        payload = data.get("kpi") if isinstance(data.get("kpi"),
+                                                dict) else data
+        if (isinstance(payload, dict)
+                and payload.get("value") not in (None, "")):
+            kpi = {"value": payload["value"]}
+            for key in ("label", "delta"):
+                if payload.get(key) not in (None, ""):
+                    kpi[key] = payload[key]
+            return {"kpi": kpi}
+    return {"text": answer}
+
+
+def _coerce_number(value):
+    """A numeric cell: ints stay ints, floats stay floats, else 0."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if number != number or number in (float("inf"), float("-inf")):
+        return 0
+    return int(number) if number.is_integer() else number
+
+
+def _parse_chart_result(answer):
+    """Chart answers become {"chart": {...}} (notebook validation/caps)."""
+    data = _extract_json_block(answer)
+    spec = None
+    if isinstance(data, dict):
+        inner = data.get("chart")
+        spec = inner if isinstance(inner, dict) else data
+    if not isinstance(spec, dict):
+        return {"text": answer}
+    kind = spec.get("kind")
+    kind = kind if kind in ("bar", "line", "pie") else "bar"
+    labels = [str(label) for label in (spec.get("labels") or [])]
+    labels = labels[:_CHART_MAX_LABELS]
+    raw_datasets = spec.get("datasets") or []
+    if not labels or not raw_datasets:
+        return {"text": answer}
+    datasets = []
+    for entry in raw_datasets[:_CHART_MAX_DATASETS]:
+        if not isinstance(entry, dict):
+            continue
+        values = [_coerce_number(v) for v in (entry.get("data") or [])]
+        values = values[:_CHART_MAX_LABELS]
+        if not values:
+            continue
+        datasets.append({"label": str(entry.get("label") or ""),
+                         "data": values})
+    if not datasets:
+        return {"text": answer}
+    chart = {"kind": kind, "labels": labels, "datasets": datasets}
+    if spec.get("title") not in (None, ""):
+        chart["title"] = str(spec.get("title"))[:200]
+    return {"chart": chart}
+
+
+def _parse_prompt_result(card_type, answer):
+    """Structured snapshot for kpi/chart answers; {"text"} otherwise."""
+    if card_type == "kpi":
+        return _parse_kpi_result(answer)
+    if card_type == "chart":
+        return _parse_chart_result(answer)
+    return {"text": answer}
 
 
 class MissingInputError(ValueError):
@@ -216,6 +338,7 @@ def _run_prompt_card(stored, doc, card, user, files):
     if not prompt and not files:
         raise ValueError("Card has no prompt and no inputs — nothing to run.")
     refs = (card.get("inputs") or {}).get("attachments") or []
+    contract = _output_contract(card.get("type"))
     if card.get("tools", True):
         lines = [prompt] if prompt else ["Summarize the attached files."]
         if refs:
@@ -224,19 +347,26 @@ def _run_prompt_card(stored, doc, card, user, files):
             for ref in refs:
                 target = files[ref]
                 lines.append(f"- {target.name} (file_id {target.id})")
+        if contract:
+            lines += ["", contract]
         drive = stored.drive
         answer, usages = run_agent_answer(
             user, "\n".join(lines),
             drive=[drive] if drive is not None else None)
         _record_usage(user.id, usages)
-        return {"text": answer}, []
+        return _parse_prompt_result(card.get("type"), answer), []
     context, truncated = build_context(stored, doc, card, files)
     body = prompt or "Summarize the attached files."
     if context:
         body += "\n\n--- Attached context ---\n" + context
+    if contract:
+        body += "\n\n" + contract
     text, usage = complete_once(user, [{"role": "user", "content": body}])
     _record_usage(user.id, [usage])
-    return {"text": text, "truncated": truncated}, []
+    result = _parse_prompt_result(card.get("type"), text)
+    if truncated:
+        result = dict(result, truncated=True)
+    return result, []
 
 
 def _run_workflow_card(stored, doc, card, user, workflow_ref, files):

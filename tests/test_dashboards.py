@@ -1321,3 +1321,116 @@ def test_prompt_textareas_autogrow():
     # visible textareas after inserting it into the document.
     grid = re.search(r"function renderGrid\(S\) \{(.*?)\n    \}", src, re.S)
     assert grid and "autoGrow(" in grid.group(1)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: structured card outputs (per-type contracts + result parsing)
+# ---------------------------------------------------------------------------
+
+def _stub_ai(monkeypatch, answer):
+    """Stub the engine's agent seam with a canned answer; capture prompt."""
+    dash_engine = _engine()
+    calls = {}
+
+    def fake_agent(user, prompt, drive=None):
+        calls["agent_prompt"] = prompt
+        return (answer, [{"prompt_tokens": 1, "completion_tokens": 1,
+                          "estimated": True, "model": "fake"}])
+
+    monkeypatch.setattr(dash_engine, "run_agent_answer", fake_agent)
+    return calls
+
+
+def _run_and_finish(app, auth_client, fid, cid):
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    st = auth_client.get(f"/m/dashboards/runs/{run_id}/status")
+    assert st.status_code == 200
+    body = st.get_json()
+    assert body["status"] == "done"
+    return body["result"]
+
+
+def test_run_card_kpi_parses_structured_json(app, auth_client, user,
+                                             enabled, monkeypatch):
+    """Task 10: a KPI card whose answer carries JSON (+file-list garbage)
+    snapshots a clean {"kpi": {...}} — the View renders one big value,
+    not the raw prose (screenshot: numbered text + leaked file refs)."""
+    answer = ('```json\n{"value": "177,8 kWh", "label": "jun/2026"}\n```\n'
+              '(Ficheiros usados: [entrada.csv] (file://1/110888))')
+    calls = _stub_ai(monkeypatch, answer)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Low month",
+                    prompt="Lowest month and value",
+                    attachments=[att["id"]])
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"kpi": {"value": "177,8 kWh", "label": "jun/2026"}}
+    assert "file://" not in str(result)
+    assert "JSON" in calls["agent_prompt"]
+    assert _card(app, fid, cid)["result"] == result
+
+
+def test_run_card_kpi_falls_back_to_text(app, auth_client, user,
+                                         enabled, monkeypatch):
+    """Task 10: KPI prose with no JSON keeps the old {"text"} behavior."""
+    _stub_ai(monkeypatch, "3 open incidents")
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open",
+                    prompt="Count open")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "3 open incidents"}
+
+
+def test_run_card_chart_parses_and_validates(app, auth_client, user,
+                                             enabled, monkeypatch):
+    """Task 10: chart JSON is validated like notebook chart cells — bad
+    kind defaults to bar, labels/data capped, numeric coercion applied."""
+    import json
+    spec = {"chart": {"kind": "donut", "labels": ["m%d" % i for i in
+                                                 range(60)],
+                      "datasets": [{"label": "kWh",
+                                    "data": ["10", "x", 30.5]}]}}
+    calls = _stub_ai(monkeypatch, json.dumps(spec))
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="chart", title="Usage",
+                    prompt="Monthly usage chart")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert set(result) == {"chart"}
+    chart = result["chart"]
+    assert chart["kind"] == "bar"
+    assert len(chart["labels"]) == 50
+    assert chart["datasets"] == [{"label": "kWh", "data": [10, 0, 30.5]}]
+    assert "JSON" in calls["agent_prompt"]
+
+
+def test_run_card_chart_falls_back_to_text(app, auth_client, user,
+                                           enabled, monkeypatch):
+    """Task 10: a chart answer with no usable spec keeps {"text"}."""
+    _stub_ai(monkeypatch, "no chart here, just prose")
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="chart", title="Usage",
+                    prompt="Monthly usage chart")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "no chart here, just prose"}
+
+
+def test_run_card_list_contract_bans_file_refs(app, auth_client, user,
+                                               enabled, monkeypatch):
+    """Task 10: list/table prompts carry the no-file-refs contract; their
+    answers still snapshot as text (renderer line-splits lists)."""
+    calls = _stub_ai(monkeypatch, "- alpha\n- beta")
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", title="Tops",
+                    prompt="Top items")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "- alpha\n- beta"}
+    assert "file://" in calls["agent_prompt"].lower() or \
+        "file references" in calls["agent_prompt"]
