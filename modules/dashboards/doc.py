@@ -47,8 +47,9 @@ GRID_COLUMNS = 12
 MAX_CARD_HEIGHT = 12
 
 # Per-type minima (width, height) enforced when snapping sizes to the grid.
+# KPI cards may shrink to a compact 3x1 single-value row (Task 11).
 MIN_SIZE = {
-    "kpi": (2, 2),
+    "kpi": (2, 1),
     "table": (4, 2),
     "list": (3, 2),
     "chart": (4, 3),

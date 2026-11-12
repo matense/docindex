@@ -29,7 +29,7 @@
     // Per-type minima. Widths follow the mockup steps; heights follow the
     // server MIN_SIZE (chart needs h>=3 — a chart at h=2 is 400-rejected).
     var MIN_W = { kpi: 3, table: 4, list: 3, chart: 6, markdown: 4, workflow: 6 };
-    var MIN_H = { kpi: 2, table: 2, list: 2, chart: 3, markdown: 2, workflow: 2 };
+    var MIN_H = { kpi: 1, table: 2, list: 2, chart: 3, markdown: 2, workflow: 2 };
     var MAX_H = 6;
     var MAX_TITLE = 255;
     var MAX_PROMPT = 20000;

@@ -89,6 +89,40 @@ def test_validate_snaps_sizes_to_grid():
     assert kpi["h"] >= 1
 
 
+def test_kpi_cards_allow_compact_3x1():
+    """Task 11: KPI cards can shrink to 3x1 — a compact single-value row
+    taking less grid space when the user wants it."""
+    doc = dash_doc.empty_dashboard("Compact")
+    slim = dash_doc.new_card("kpi")
+    slim["w"], slim["h"] = 3, 1
+    doc["cards"] = [slim]
+    validated = dash_doc.validate(doc)
+    assert validated["cards"][0]["w"] == 3
+    assert validated["cards"][0]["h"] == 1
+
+
+def test_builder_allows_kpi_height_1():
+    """Task 11: the Builder's per-type height floor lets KPI cards reach
+    h=1 (pointer resize, keyboard resize and new-card defaults all read
+    the same MIN_H table)."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"var MIN_H = (\{[^}]*\});", src)
+    assert match, "MIN_H table missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = ("var MIN_H = " + match.group(1) + ";"
+             "console.log([MIN_H.kpi, MIN_H.table, MIN_H.chart].join(','))")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().split(",") == ["1", "2", "3"]
+
+
 def test_validate_rejects_overlong_prompt():
     doc = dash_doc.empty_dashboard("T")
     card = dash_doc.new_card("markdown")
@@ -489,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=2" in body
-    assert "?v=8" in body
+    assert "?v=9" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
