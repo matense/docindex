@@ -170,8 +170,11 @@
         if (opts.mode === "view") return mountView(root, opts);
         var ac = new AbortController();
         var base = String(opts.saveUrl || "").replace(/\/save$/, "");
+        // Browse endpoints live at the module root (/m/dashboards/browse/*),
+        // not under the per-dashboard base (/m/dashboards/<id>).
+        var moduleBase = base.replace(/\/\d+$/, "");
         var S = {
-            root: root, opts: opts, base: base,
+            root: root, opts: opts, base: base, moduleBase: moduleBase,
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
             dirty: false, saving: false, saveTimer: null, saveError: "",
@@ -1203,7 +1206,7 @@
     function renderBrowseTree(S) {
         var tree = S.els.linkTree;
         tree.innerHTML = '<div class="dash-empty px-2 py-1">A carregar drives…</div>';
-        fetch(S.base + "/browse/drives", { headers: { "Accept": "application/json" } })
+        fetch(S.moduleBase + "/browse/drives", { headers: { "Accept": "application/json" } })
             .then(function (resp) {
                 if (!resp.ok) throw new Error("HTTP " + resp.status);
                 return resp.json();
@@ -1264,7 +1267,7 @@
 
     function loadBrowseKids(S, box, driveId, parentId) {
         box.innerHTML = '<div class="dash-empty px-2 py-1">A carregar…</div>';
-        var url = S.base + "/browse/children?drive_id=" + encodeURIComponent(driveId) +
+        var url = S.moduleBase + "/browse/children?drive_id=" + encodeURIComponent(driveId) +
             "&parent_id=" + (parentId === null ? "null" : encodeURIComponent(parentId));
         fetch(url, { headers: { "Accept": "application/json" } })
             .then(function (resp) {
@@ -1304,7 +1307,7 @@
         box.classList.remove("hidden");
         tree.classList.add("hidden");
         box.innerHTML = '<div class="dash-empty px-2 py-1">A pesquisar…</div>';
-        fetch(S.base + "/browse/search?q=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } })
+        fetch(S.moduleBase + "/browse/search?q=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } })
             .then(function (resp) {
                 if (!resp.ok) throw new Error("HTTP " + resp.status);
                 return resp.json();

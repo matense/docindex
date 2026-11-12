@@ -1107,3 +1107,16 @@ def test_browse_search_matches_names(app, auth_client, user, enabled):
     assert auth_client.get(
         "/m/dashboards/browse/search?q=").status_code == 400
     assert auth_client.get("/m/dashboards/browse/search").status_code == 400
+
+
+def test_browse_js_calls_module_root_urls():
+    """Regression (controller-verified in the browser): the tree modal must
+    call ``/m/dashboards/browse/*`` (module root), never
+    ``/m/dashboards/<id>/browse/*`` — the per-dashboard base 404s there, so
+    the modal showed "Falhou a carregar as drives" on every open."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'S.base + "/browse/' not in src
+    for path in ("/browse/drives", "/browse/children", "/browse/search"):
+        assert ('moduleBase + "%s' % path) in src
