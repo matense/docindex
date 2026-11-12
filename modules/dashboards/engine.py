@@ -115,7 +115,7 @@ def _coerce_number(value):
         return 0
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     if number != number or number in (float("inf"), float("-inf")):
         return 0
@@ -133,16 +133,21 @@ def _parse_chart_result(answer):
         return {"text": answer}
     kind = spec.get("kind")
     kind = kind if kind in ("bar", "line", "pie") else "bar"
-    labels = [str(label) for label in (spec.get("labels") or [])]
+    raw_labels = spec.get("labels")
+    labels = ([str(label) for label in raw_labels]
+              if isinstance(raw_labels, list) else [])
     labels = labels[:_CHART_MAX_LABELS]
-    raw_datasets = spec.get("datasets") or []
+    raw_datasets = spec.get("datasets")
+    raw_datasets = raw_datasets if isinstance(raw_datasets, list) else []
     if not labels or not raw_datasets:
         return {"text": answer}
     datasets = []
     for entry in raw_datasets[:_CHART_MAX_DATASETS]:
         if not isinstance(entry, dict):
             continue
-        values = [_coerce_number(v) for v in (entry.get("data") or [])]
+        raw_data = entry.get("data")
+        raw_data = raw_data if isinstance(raw_data, list) else []
+        values = [_coerce_number(v) for v in raw_data]
         values = values[:_CHART_MAX_LABELS]
         if not values:
             continue

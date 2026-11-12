@@ -1421,6 +1421,38 @@ def test_run_card_chart_falls_back_to_text(app, auth_client, user,
     assert result == {"text": "no chart here, just prose"}
 
 
+def test_run_card_chart_malformed_shapes_never_error(app, auth_client,
+                                                   user, enabled,
+                                                   monkeypatch):
+    """Task 10 fix round: malformed model output (huge ints, non-list
+    labels/data) must fall back to a snapshot — never an error state."""
+    import json
+    huge = {"chart": {"kind": "bar", "labels": ["a", "b"],
+                      "datasets": [{"label": "x",
+                                    "data": [10 ** 400, 5]}]}}
+    calls = _stub_ai(monkeypatch, json.dumps(huge))
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="chart", title="Usage",
+                    prompt="Monthly usage chart")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert set(result) == {"chart"}
+    assert result["chart"]["datasets"][0]["data"] == [0, 5]
+
+    _stub_ai(monkeypatch, json.dumps({"chart": {"kind": "bar",
+                                                "labels": 5,
+                                                "datasets": "nope"}}))
+    cid2 = _add_card(app, fid, type="chart", title="Usage 2",
+                     prompt="Monthly usage chart")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid2})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    st = auth_client.get(f"/m/dashboards/runs/{run_id}/status")
+    assert st.status_code == 200
+    assert st.get_json()["status"] == "done"
+
+
 def test_run_card_list_contract_bans_file_refs(app, auth_client, user,
                                                enabled, monkeypatch):
     """Task 10: list/table prompts carry the no-file-refs contract; their
