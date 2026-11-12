@@ -37,40 +37,40 @@
 
     var TYPE_META = {
         kpi: {
-            icon: "fa-bolt", label: "KPI", title: "Novo KPI", defW: 3, defH: 2,
-            prompt: "Conta os incidentes abertos e calcula o MTTR",
-            ph: "Ex.: Conta os incidentes abertos e calcula o MTTR sobre incidentes.csv…",
-            desc: "Um ou dois números grandes com delta — ex. abertos, MTTR."
+            icon: "fa-bolt", label: "KPI", title: "New KPI", defW: 3, defH: 2,
+            prompt: "Count the open incidents and compute the MTTR",
+            ph: "E.g.: count the open incidents and compute the MTTR over incidents.csv…",
+            desc: "One or two big numbers with a delta — e.g. open, MTTR."
         },
         table: {
-            icon: "fa-table", label: "Tabela", title: "Nova tabela", defW: 4, defH: 2,
-            prompt: "Lista os 5 mais recentes com as colunas que fizerem sentido",
-            ph: "Ex.: Lista os 5 mais recentes com as colunas que fizerem sentido…",
-            desc: "Tabela com cabeçalho fixo — ex. últimos incidentes."
+            icon: "fa-table", label: "Table", title: "New table", defW: 4, defH: 2,
+            prompt: "List the 5 most recent with the columns that make sense",
+            ph: "E.g.: list the 5 most recent with the columns that make sense…",
+            desc: "Fixed-header table — e.g. latest incidents."
         },
         list: {
-            icon: "fa-list", label: "Lista", title: "Nova lista", defW: 4, defH: 2,
-            prompt: "Top 3 críticos abertos",
-            ph: "Ex.: Top 3 críticos abertos, com workaround conhecido ou não…",
-            desc: "Lista curta com pontos de estado — ex. top críticos."
+            icon: "fa-list", label: "List", title: "New list", defW: 4, defH: 2,
+            prompt: "Top 3 open criticals",
+            ph: "E.g.: top 3 open criticals, with a known workaround or not…",
+            desc: "Short list with status dots — e.g. top criticals."
         },
         chart: {
-            icon: "fa-chart-column", label: "Gráfico", title: "Novo gráfico", defW: 6, defH: 3,
-            prompt: "Agrega por mês × severidade e desenha o gráfico",
-            ph: "Ex.: Agrega por mês × severidade e desenha o gráfico…",
-            desc: "Barras + anel por severidade — ex. incidentes por mês."
+            icon: "fa-chart-column", label: "Chart", title: "New chart", defW: 6, defH: 3,
+            prompt: "Aggregate by month × severity and draw the chart",
+            ph: "E.g.: aggregate by month × severity and draw the chart…",
+            desc: "Bars + donut by severity — e.g. incidents per month."
         },
         markdown: {
-            icon: "fa-paragraph", label: "Texto", title: "Novo texto", defW: 6, defH: 3,
-            prompt: "Escreve um resumo executivo de 1 parágrafo",
-            ph: "Ex.: Escreve um resumo executivo de 1 parágrafo…",
-            desc: "Texto gerado pela IA — ex. resumo executivo."
+            icon: "fa-paragraph", label: "Text", title: "New text", defW: 6, defH: 3,
+            prompt: "Write a 1-paragraph executive summary",
+            ph: "E.g.: write a 1-paragraph executive summary…",
+            desc: "AI-generated text — e.g. executive summary."
         },
         workflow: {
-            icon: "fa-gear", label: "Workflow", title: "Novo workflow", defW: 12, defH: 2,
-            prompt: "Resume o output do workflow numa frase para o relatório",
-            ph: "Ex.: Resume o output do workflow numa frase para o relatório…",
-            desc: "Corre um workflow e resume o output — ex. agregação mensal."
+            icon: "fa-gear", label: "Workflow", title: "New workflow", defW: 12, defH: 2,
+            prompt: "Summarize the workflow output in one sentence for the report",
+            ph: "E.g.: summarize the workflow output in one sentence for the report…",
+            desc: "Run a workflow and summarize the output — e.g. monthly aggregation."
         }
     };
     var CARD_TYPES = Object.keys(TYPE_META);
@@ -80,6 +80,12 @@
             .replace(/&/g, "&amp;").replace(/</g, "&lt;")
             .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    function autoGrow(el) {
+        if (!el || !el.style) return;
+        el.style.height = "auto";
+        el.style.height = el.scrollHeight + "px";
     }
 
     function uid() {
@@ -111,14 +117,14 @@
         var t = Date.parse(iso);
         if (isNaN(t)) return null;
         var min = Math.round((Date.now() - t) / 60000);
-        if (min < 1) return "agora mesmo";
-        if (min < 60) return "há " + min + " min";
+        if (min < 1) return "just now";
+        if (min < 60) return min + " min ago";
         if (min < 1440) {
             var h = Math.round(min / 60);
-            return h === 1 ? "há 1 h" : "há " + h + " h";
+            return h === 1 ? "1 h ago" : h + " h ago";
         }
         var d = Math.round(min / 1440);
-        return d === 1 ? "há 1 dia" : "há " + d + " dias";
+        return d === 1 ? "1 day ago" : d + " days ago";
     }
 
     function cardById(doc, id) {
@@ -149,7 +155,7 @@
 
     function ranText(card) {
         var rel = relTime(card.ranAt);
-        return rel === null ? "nunca correu" : "última execução " + rel;
+        return rel === null ? "never ran" : "last run " + rel;
     }
 
     function accentVar(t) {
@@ -279,13 +285,13 @@
                 S.dirty = false;
                 S.saveError = (data && data.error) || ("HTTP " + resp.status);
                 setStatus(S, "error", S.saveError);
-                toast(S, "Guardar falhou: " + S.saveError, true);
+                toast(S, "Save failed: " + S.saveError, true);
                 return false;
             });
         }).catch(function () {
             S.dirty = true;
             setStatus(S, "error", "network");
-            toast(S, "Guardar falhou: erro de rede — tente de novo.", true);
+            toast(S, "Save failed: network error — try again.", true);
             return false;
         }).then(function (ok) {
             S.saving = false;
@@ -318,11 +324,11 @@
                     renderAll(S);
                     return true;
                 }
-                toast(S, "Recarregar falhou: " + ((data && data.error) || "resposta inválida"), true);
+                toast(S, "Reload failed: " + ((data && data.error) || "invalid response"), true);
                 return false;
             })
             .catch(function () {
-                toast(S, "Recarregar falhou: erro de rede.", true);
+                toast(S, "Reload failed: network error.", true);
                 return false;
             });
     }
@@ -339,63 +345,63 @@
         holder.innerHTML =
             '<div class="dash-scope flex flex-col gap-3">' +
             '<div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">' +
-            '<span class="dash-label">Composição · grelha 12 col</span>' +
+            '<span class="dash-label">Layout · 12-col grid</span>' +
             '<button type="button" class="btn btn-primary btn-sm gap-1" data-act="add">' +
-            '<i class="fas fa-plus"></i> Adicionar card</button>' +
+            '<i class="fas fa-plus"></i> Add card</button>' +
             '<button type="button" class="btn btn-ghost btn-sm gap-1" data-act="cleanup">' +
-            '<i class="fas fa-broom"></i> Limpar artefactos</button>' +
+            '<i class="fas fa-broom"></i> Clear artifacts</button>' +
             '<button type="button" class="btn btn-ghost btn-sm gap-1 text-error" data-act="delete-dash">' +
-            '<i class="fas fa-trash"></i> Eliminar dashboard…</button>' +
-            '<span class="dash-hint">arraste pelo ⠿ para mover · ◢ para redimensionar ' +
-            "(larguras " + WIDTH_STEPS.join("/") + ") · com ⠿ focado: setas movem, Shift+setas redimensionam, Esc cancela</span>" +
+            '<i class="fas fa-trash"></i> Delete dashboard…</button>' +
+            '<span class="dash-hint">drag by ⠿ to move · ◢ to resize ' +
+            "(widths " + WIDTH_STEPS.join("/") + ") · with ⠿ focused: arrows move, Shift+arrows resize, Esc cancels</span>" +
             "</div>" +
             '<div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-2">' +
-            '<div><span class="dash-label">Anexos do dashboard</span>' +
-            '<span class="dash-hint"> — os ficheiros vivem no dashboard; os cards referenciam estes anexos</span></div>' +
+            '<div><span class="dash-label">Dashboard attachments</span>' +
+            '<span class="dash-hint"> — files live on the dashboard; cards reference these attachments</span></div>' +
             '<div class="dash-attach-list" data-zone="attach-list"></div>' +
             '<div class="flex gap-2 flex-wrap">' +
             '<button type="button" class="btn btn-ghost btn-sm gap-1" data-act="upload">' +
-            '<i class="fas fa-upload"></i> Carregar ficheiro</button>' +
+            '<i class="fas fa-upload"></i> Upload file</button>' +
             '<button type="button" class="btn btn-ghost btn-sm gap-1" data-act="link">' +
-            '<i class="fas fa-link"></i> Ligar ficheiro existente</button>' +
+            '<i class="fas fa-link"></i> Attach existing file</button>' +
             '<input type="file" data-zone="file-input" class="hidden" multiple>' +
             "</div></div>" +
             '<div class="dash-grid" data-zone="grid"></div>' +
             '<dialog class="modal" data-dlg="add"><div class="modal-box glass-panel">' +
-            '<h3 class="font-bold text-lg mb-1">Adicionar card</h3>' +
-            '<p class="dash-hint mb-3">Escolha o tipo — o tamanho inicial segue os mínimos do tipo.</p>' +
+            '<h3 class="font-bold text-lg mb-1">Add card</h3>' +
+            '<p class="dash-hint mb-3">Pick a type — the initial size follows the type minimums.</p>' +
             '<div class="dash-type-grid" data-zone="type-grid"></div>' +
-            '<div class="modal-action"><button type="button" class="btn" data-close>Cancelar</button></div>' +
+            '<div class="modal-action"><button type="button" class="btn" data-close>Cancel</button></div>' +
             "</div></dialog>" +
             '<dialog class="modal" data-dlg="link"><div class="modal-box glass-panel">' +
-            '<h3 class="font-bold text-lg mb-1">Ligar ficheiro existente</h3>' +
-            '<p class="dash-hint mb-3">Percorra as suas drives ou pesquise por nome — só ficheiros seus podem ser ligados (validação no servidor).</p>' +
+            '<h3 class="font-bold text-lg mb-1">Attach existing file</h3>' +
+            '<p class="dash-hint mb-3">Browse your drives or search by name — only your own files can be attached (server-validated).</p>' +
             '<input type="text" class="input input-bordered input-sm w-full" data-zone="link-q" ' +
-            'placeholder="Pesquisa rápida por nome…" aria-label="Pesquisa rápida por nome">' +
+            'placeholder="Quick search by name…" aria-label="Quick search by name">' +
             '<div class="flex flex-col max-h-40 overflow-y-auto mt-2 hidden" data-zone="link-results"></div>' +
             '<div class="dash-browse-tree max-h-64 overflow-y-auto mt-2" data-zone="link-tree"></div>' +
-            '<div class="modal-action"><button type="button" class="btn" data-close>Cancelar</button></div>' +
+            '<div class="modal-action"><button type="button" class="btn" data-close>Cancel</button></div>' +
             "</div></dialog>" +
             '<dialog class="modal" data-dlg="confirm"><div class="modal-box glass-panel">' +
             '<h3 class="font-bold text-lg mb-2" data-zone="cf-title"></h3>' +
             '<div class="text-sm opacity-80" data-zone="cf-body"></div>' +
             '<div class="modal-action">' +
-            '<button type="button" class="btn" data-close>Cancelar</button>' +
-            '<button type="button" class="btn" data-zone="cf-ok">Confirmar</button>' +
+            '<button type="button" class="btn" data-close>Cancel</button>' +
+            '<button type="button" class="btn" data-zone="cf-ok">Confirm</button>' +
             "</div></div></dialog>" +
             '<dialog class="modal" data-dlg="cleanup"><div class="modal-box glass-panel">' +
-            '<h3 class="font-bold text-lg mb-2"><i class="fas fa-broom mr-2"></i>Limpar artefactos</h3>' +
+            '<h3 class="font-bold text-lg mb-2"><i class="fas fa-broom mr-2"></i>Clear artifacts</h3>' +
             '<div class="text-sm opacity-80" data-zone="cu-body"></div>' +
             '<div class="modal-action">' +
-            '<button type="button" class="btn" data-close>Cancelar</button>' +
-            '<button type="button" class="btn btn-primary" data-zone="cu-ok">Limpar</button>' +
+            '<button type="button" class="btn" data-close>Cancel</button>' +
+            '<button type="button" class="btn btn-primary" data-zone="cu-ok">Clean</button>' +
             "</div></div></dialog>" +
             '<dialog class="modal" data-dlg="delete"><div class="modal-box glass-panel">' +
-            '<h3 class="font-bold text-lg mb-2 text-error"><i class="fas fa-trash mr-2"></i>Eliminar dashboard?</h3>' +
+            '<h3 class="font-bold text-lg mb-2 text-error"><i class="fas fa-trash mr-2"></i>Delete dashboard?</h3>' +
             '<div class="text-sm opacity-80" data-zone="del-body"></div>' +
             '<div class="modal-action">' +
-            '<button type="button" class="btn" data-close>Cancelar</button>' +
-            '<button type="button" class="btn btn-error" data-zone="del-ok">Eliminar tudo</button>' +
+            '<button type="button" class="btn" data-close>Cancel</button>' +
+            '<button type="button" class="btn btn-error" data-zone="del-ok">Delete everything</button>' +
             "</div></div></dialog>" +
             '<div class="dash-toast glass-panel" data-zone="toast" role="status"></div>' +
             '<div class="dash-refpick glass-panel hidden" data-zone="refpick"></div>' +
@@ -468,7 +474,7 @@
         var list = S.els.attachList;
         var atts = S.doc.attachments || [];
         if (!atts.length) {
-            list.innerHTML = '<div class="dash-empty">sem anexos — carregue um ficheiro ou ligue um existente.</div>';
+            list.innerHTML = '<div class="dash-empty">No attachments — upload a file or attach an existing one.</div>';
             return;
         }
         list.innerHTML = atts.map(function (a) {
@@ -476,8 +482,8 @@
                 '<span class="dash-fname">' + esc(a.name) + "</span>" +
                 '<span class="dash-og dash-og-' + esc(a.origin) + '">' + esc(a.origin) + "</span>" +
                 '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto" data-detach="' + esc(a.id) + '"' +
-                ' title="desanexar (os cards que o referenciam passam a missing input)">' +
-                '<i class="fas fa-xmark"></i> desanexar</button></div>';
+                ' title="detach (cards referencing it become missing input)">' +
+                '<i class="fas fa-xmark"></i> detach</button></div>';
         }).join("");
         list.querySelectorAll("[data-detach]").forEach(function (b) {
             b.addEventListener("click", function () { detachAttachment(S, b.getAttribute("data-detach")); });
@@ -490,29 +496,29 @@
         var statics = refs.filter(isDanglingRef);
         var h = statics.map(function (r) {
             return '<span class="dash-ref dash-ref-static">' + esc(r) +
-                '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remover referência">×</button></span>';
+                '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remove reference">×</button></span>';
         }).join("");
         h += files.map(function (r) {
             var a = attById(S.doc, r);
             if (a) {
                 return '<span class="dash-ref"><i class="fas fa-file-lines opacity-50"></i>' +
                     '<span class="dash-fname">' + esc(a.name) + "</span>" +
-                    '<button type="button" class="dash-chip-btn" data-swap="' + esc(card.id) + ":" + esc(r) + '" title="trocar ficheiro">⇄ trocar</button>' +
-                    '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remover referência">×</button></span>';
+                    '<button type="button" class="dash-chip-btn" data-swap="' + esc(card.id) + ":" + esc(r) + '" title="swap file">⇄ swap</button>' +
+                    '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remove reference">×</button></span>';
             }
-            return '<span class="dash-ref dash-ref-missing" title="anexo em falta — volte a anexar o ficheiro para curar">⚠ ' +
+            return '<span class="dash-ref dash-ref-missing" title="missing attachment — re-attach the file to fix">⚠ ' +
                 esc(r) + " · missing input" +
-                '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remover referência">×</button></span>';
+                '<button type="button" class="dash-chip-btn" data-unref="' + esc(card.id) + ":" + esc(r) + '" title="remove reference">×</button></span>';
         }).join("");
-        if (!files.length) h += '<span class="dash-empty-refs">sem ficheiros — adicione um anexo</span>';
-        h += '<button type="button" class="dash-chip-btn" data-addref="' + esc(card.id) + '" title="referenciar um anexo neste card">+ ficheiro</button>';
+        if (!files.length) h += '<span class="dash-empty-refs">no files — add an attachment</span>';
+        h += '<button type="button" class="dash-chip-btn" data-addref="' + esc(card.id) + '" title="reference an attachment on this card">+ file</button>';
         var wf = cardWorkflow(card);
         if (wf && wf.workflow_id !== undefined && wf.workflow_id !== null && String(wf.workflow_id) !== "") {
             h += '<span class="dash-ref"><i class="fas fa-gear opacity-50"></i>' +
                 "<span>workflow #" + esc(wf.workflow_id) + "</span>" +
-                '<button type="button" class="dash-chip-btn" data-unwf="' + esc(card.id) + '" title="remover referência ao workflow">×</button></span>';
+                '<button type="button" class="dash-chip-btn" data-unwf="' + esc(card.id) + '" title="remove workflow reference">×</button></span>';
         } else if (card.type === "workflow") {
-            h += '<span class="dash-ref dash-ref-missing">⚙ escolher workflow…</span>';
+            h += '<span class="dash-ref dash-ref-missing">⚙ pick a workflow…</span>';
         }
         return h;
     }
@@ -542,41 +548,41 @@
         var wfFields =
             '<div class="dash-wf-grid">' +
             '<input type="text" inputmode="numeric" class="dash-wf-id" data-f="wfid" ' +
-            'placeholder="id do workflow (ex. 12)" value="' + esc(wfId) + '" aria-label="ID do workflow">' +
+            'placeholder="workflow id (e.g. 12)" value="' + esc(wfId) + '" aria-label="Workflow ID">' +
             '<textarea class="dash-wf-params" data-f="wfparams" rows="2" ' +
-            'placeholder="params JSON, ex. {&quot;mes&quot;: &quot;2026-11&quot;}" ' +
-            'aria-label="Parâmetros do workflow (JSON)">' + esc(wfParams) + "</textarea>" +
+            'placeholder="params JSON, e.g. {&quot;month&quot;: &quot;2026-11&quot;}" ' +
+            'aria-label="Workflow params (JSON)">' + esc(wfParams) + "</textarea>" +
             '<div class="dash-field-err hidden" data-f="wferr"></div></div>';
         var wfBlock = card.type === "workflow"
-            ? '<div class="dash-wf"><span class="dash-prompt-label">Workflow referenciado</span>' + wfFields + "</div>"
-            : '<details class="dash-wf"><summary>⚙ Workflow (opcional)</summary>' + wfFields + "</details>";
+            ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
+            : '<details class="dash-wf"><summary>⚙ Workflow (optional)</summary>' + wfFields + "</details>";
         d.innerHTML =
             '<div class="dash-title-row">' +
             '<button type="button" class="dash-drag" data-drag="' + esc(card.id) + '" ' +
-            'title="arrastar para mover (setas movem, Shift+setas redimensionam)" ' +
-            'aria-label="Mover card ' + esc(card.title || card.type) + '">⠿</button>' +
+            'title="drag to move (arrows move, Shift+arrows resize)" ' +
+            'aria-label="Move card ' + esc(card.title || card.type) + '">⠿</button>' +
             '<span class="dash-icon-chip"><i class="fas ' + m.icon + '"></i></span>' +
             '<input type="text" class="dash-title" data-f="title" maxlength="' + MAX_TITLE + '" ' +
-            'value="' + esc(card.title || "") + '" aria-label="Título do card" placeholder="Título do card">' +
+            'value="' + esc(card.title || "") + '" aria-label="Card title" placeholder="Card title">' +
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
-            '<span class="dash-csize" data-f="size" title="largura × altura em células">' + card.w + "×" + card.h + "</span></div>" +
-            '<div><div class="dash-prompt-label">Prompt do card</div>' +
+            '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
+            '<div><div class="dash-prompt-label">Card prompt</div>' +
             '<textarea class="dash-prompt" data-f="prompt" maxlength="' + MAX_PROMPT + '" ' +
             'placeholder="' + esc(m.ph) + '">' + esc(card.prompt || "") + "</textarea></div>" +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
             wfBlock +
             '<div class="dash-tools"><b>tools</b>' +
             '<div class="dash-toggle' + (card.tools ? " on" : "") + '" data-f="tools" role="switch" tabindex="0" ' +
-            'aria-checked="' + (card.tools ? "true" : "false") + '" aria-label="Tools do card" ' +
-            'title="on = agent completo; off = 1 chamada LLM"></div>' +
-            "<span>" + (card.tools ? "<b>on</b> · agent completo" : "<b>off</b> · 1 chamada LLM") + "</span>" +
-            '<span class="dash-tools-hint">on = agent completo (lê ficheiros mid-run, mais capaz) · ' +
-            "off = 1 chamada LLM sobre contexto pré-injetado (mais barato/rápido, truncado sinalizado)</span></div>" +
+            'aria-checked="' + (card.tools ? "true" : "false") + '" aria-label="Card tools" ' +
+            'title="on = full agent; off = 1 LLM call"></div>' +
+            "<span>" + (card.tools ? "<b>on</b> · full agent" : "<b>off</b> · 1 LLM call") + "</span>" +
+            '<span class="dash-tools-hint">on = full agent (reads files mid-run, more capable) · ' +
+            "off = 1 LLM call over pre-injected context (cheaper/faster, truncation flagged)</span></div>" +
             '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i><span class="dash-ran">' + esc(ranText(card)) + "</span>" +
             '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto text-error" data-f="del">' +
-            '<i class="fas fa-xmark"></i> eliminar</button></div>' +
+            '<i class="fas fa-xmark"></i> delete</button></div>' +
             '<button type="button" class="dash-resize" data-resize="' + esc(card.id) + '" ' +
-            'title="arrastar para redimensionar" aria-label="Redimensionar card ' + esc(card.title || card.type) + '">◢</button>';
+            'title="drag to resize" aria-label="Resize card ' + esc(card.title || card.type) + '">◢</button>';
 
         var titleInput = d.querySelector('[data-f="title"]');
         titleInput.addEventListener("input", function () {
@@ -586,8 +592,10 @@
         var promptInput = d.querySelector('[data-f="prompt"]');
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
+            autoGrow(promptInput);
             scheduleSave(S);
         });
+        autoGrow(promptInput);
         var toolsEl = d.querySelector('[data-f="tools"]');
         var flipTools = function () {
             card.tools = !card.tools;
@@ -612,6 +620,8 @@
         var paramsInput = d.querySelector('[data-f="wfparams"]');
         var errEl = d.querySelector('[data-f="wferr"]');
         if (!idInput || !paramsInput) return;
+        paramsInput.addEventListener("input", function () { autoGrow(paramsInput); });
+        autoGrow(paramsInput);
         var showErr = function (msg) {
             if (!msg) {
                 errEl.classList.add("hidden");
@@ -638,7 +648,7 @@
             var wid = Number(rawId);
             if (rawId === "" || !/^\d+$/.test(rawId)) {
                 idInput.classList.add("dash-invalid");
-                showErr("O id do workflow tem de ser um número (ou limpe os dois campos para remover a referência).");
+                showErr("The workflow id must be a number (or clear both fields to remove the reference).");
                 return;
             }
             var params = {};
@@ -647,12 +657,12 @@
                     params = JSON.parse(rawParams);
                 } catch (e) {
                     paramsInput.classList.add("dash-invalid");
-                    showErr("Params não é JSON válido — corrija para guardar.");
+                    showErr("Params is not valid JSON — fix it before saving.");
                     return;
                 }
                 if (params === null || typeof params !== "object" || Array.isArray(params)) {
                     paramsInput.classList.add("dash-invalid");
-                    showErr("Params tem de ser um objeto JSON (ex. {\"mes\": \"2026-11\"}).");
+                    showErr("Params must be a JSON object (e.g. {\"month\": \"2026-11\"}).");
                     return;
                 }
             }
@@ -672,7 +682,7 @@
         scope.querySelectorAll("[data-addref]").forEach(function (b) {
             b.addEventListener("click", function () {
                 if (!(S.doc.attachments || []).length) {
-                    toast(S, "sem anexos no dashboard — carregue ou ligue um ficheiro primeiro");
+                    toast(S, "no attachments on this dashboard — upload or attach a file first");
                     return;
                 }
                 openRefPick(S, card.id, -1, b);
@@ -697,7 +707,7 @@
                 if (card.inputs) delete card.inputs.workflow;
                 renderGrid(S);
                 scheduleSave(S);
-                toast(S, "referência ao workflow removida");
+                toast(S, "workflow reference removed");
             });
         });
     }
@@ -723,8 +733,8 @@
                 '<i class="fas fa-file-lines opacity-50"></i>' +
                 '<span class="dash-fname">' + esc(a.name) + "</span>" +
                 '<span class="dash-og dash-og-' + esc(a.origin) + '">' + esc(a.origin) + "</span>" +
-                (used ? '<span class="dash-pick-used">já anexado</span>' : "") + "</button>";
-        }).join("") : '<div class="dash-empty">sem anexos no dashboard.</div>';
+                (used ? '<span class="dash-pick-used">attached</span>' : "") + "</button>";
+        }).join("") : '<div class="dash-empty">No attachments on this dashboard.</div>';
         var r = anchor.getBoundingClientRect();
         box.style.left = Math.max(8, Math.min(r.left + window.scrollX,
             document.documentElement.scrollWidth - 330)) + "px";
@@ -771,7 +781,7 @@
         var node = gridCardEl(S, created.id);
         if (node) node.scrollIntoView({ block: "nearest" });
         focusHandle(S, created.id, false);
-        toast(S, 'card "' + m.title + '" adicionado');
+        toast(S, 'card "' + m.title + '" added');
     }
 
     function openDelCard(S, id) {
@@ -779,11 +789,11 @@
         if (!card) return;
         S.pendingDelCard = id;
         confirmDialog(S, {
-            title: 'Eliminar "' + (card.title || card.type) + '"?',
-            bodyHTML: "O card <b>" + esc(card.title || card.type) + "</b> (<code>" +
-                esc(card.type) + "</code>) e o seu último snapshot serão removidos do dashboard. " +
-                "Os ficheiros de origem não são afetados.",
-            okLabel: "Eliminar card",
+            title: 'Delete "' + (card.title || card.type) + '"?',
+            bodyHTML: "The card <b>" + esc(card.title || card.type) + "</b> (<code>" +
+                esc(card.type) + "</code>) and its latest snapshot will be removed from the dashboard. " +
+                "Source files are not affected.",
+            okLabel: "Delete card",
             okClass: "btn-error"
         }).then(function (ok) {
             S.pendingDelCard = null;
@@ -795,16 +805,16 @@
             renderGrid(S);
             flipFrom(prev, null);
             scheduleSave(S);
-            toast(S, 'card "' + (removed.title || removed.type) + '" eliminado');
+            toast(S, 'card "' + (removed.title || removed.type) + '" deleted');
             var addBtn = S.els.holder.querySelector('[data-act="add"]');
             if (addBtn) addBtn.focus();
         });
     }
 
     function confirmDialog(S, opts) {
-        S.els.cfTitle.textContent = opts.title || "Confirmar?";
+        S.els.cfTitle.textContent = opts.title || "Confirm?";
         S.els.cfBody.innerHTML = opts.bodyHTML || "";
-        S.els.cfOk.textContent = opts.okLabel || "Confirmar";
+        S.els.cfOk.textContent = opts.okLabel || "Confirm";
         S.els.cfOk.className = "btn " + (opts.okClass || "btn-primary");
         openDialog(S.els.dlgConfirm);
         return new Promise(function (resolve) {
@@ -986,7 +996,7 @@
             window.removeEventListener("pointermove", S._onPtrMove);
             S.ptrOp = null;
             focusHandle(S, op.id, false);
-            toast(S, "operação cancelada (Esc)");
+            toast(S, "operation cancelled (Esc)");
         } else {
             endPtrOp(S);
             renderGrid(S);
@@ -1007,7 +1017,7 @@
         scheduleSave(S);
         if (op.moved) {
             var pos = S.doc.cards.findIndex(function (c) { return c.id === op.id; }) + 1;
-            toast(S, "card movido para a posição " + pos + " de " + S.doc.cards.length);
+            toast(S, "card moved to position " + pos + " of " + S.doc.cards.length);
         }
         focusHandle(S, op.id, false);
     }
@@ -1108,14 +1118,14 @@
                     .then(function (out) {
                         if (out.resp.ok && out.data && out.data.ok) {
                             mergeAttached(S, out.data.attachment);
-                            toast(S, '"' + f.name + '" carregado para o dashboard');
+                            toast(S, '"' + f.name + '" uploaded to the dashboard');
                             return true;
                         }
-                        toast(S, 'Carregar "' + f.name + '" falhou: ' + ((out.data && out.data.error) || out.resp.status), true);
+                        toast(S, 'Upload "' + f.name + '" failed: ' + ((out.data && out.data.error) || out.resp.status), true);
                         return false;
                     })
                     .catch(function () {
-                        toast(S, 'Carregar "' + f.name + '" falhou: erro de rede.', true);
+                        toast(S, 'Upload "' + f.name + '" failed: network error.', true);
                         return false;
                     });
             });
@@ -1129,7 +1139,7 @@
     // Replaces the old link search box: drive list with a lazy per-level
     // folder tree (hasKids arrows; files list under their folder with a
     // per-file attach button) plus a top quick-search box. Already-attached
-    // files are disabled with "já anexado" in both views. Attach/detach
+    // files are disabled with "attached" in both views. Attach/detach
     // semantics and validation are unchanged (POST <base>/attachments).
 
     function openLinkPicker(S) {
@@ -1176,7 +1186,7 @@
             '<span class="dash-bname">' + esc(f.name) + "</span>";
         if (attachedIds[f.id]) {
             b.disabled = true;
-            b.innerHTML = label + '<span class="dash-pick-used">já anexado</span>';
+            b.innerHTML = label + '<span class="dash-pick-used">attached</span>';
         } else {
             b.innerHTML = label;
             b.addEventListener("click", function () {
@@ -1187,7 +1197,7 @@
     }
 
     // Attach from the browse modal but keep it open for more picks; the
-    // row flips to "já anexado" once the save + reload lands.
+    // row flips to "attached" once the save + reload lands.
     function attachBrowseFile(S, fileId, name, btn) {
         btn.disabled = true;
         fetch(S.base + "/attachments", {
@@ -1199,18 +1209,18 @@
             .then(function (out) {
                 if (out.resp.ok && out.data && out.data.ok) {
                     mergeAttached(S, out.data.attachment);
-                    toast(S, '"' + (name || "ficheiro") + '" ligado como original');
+                    toast(S, '"' + (name || "file") + '" attached as linked original');
                     save(S, false).then(function () { return reloadDoc(S); }).then(function () {
                         markBrowseAttached(S);
                     });
                 } else {
                     btn.disabled = false;
-                    toast(S, "Ligar falhou: " + ((out.data && out.data.error) || out.resp.status), true);
+                    toast(S, "Attach failed: " + ((out.data && out.data.error) || out.resp.status), true);
                 }
             })
             .catch(function () {
                 btn.disabled = false;
-                toast(S, "Ligar falhou: erro de rede.", true);
+                toast(S, "Attach failed: network error.", true);
             });
     }
 
@@ -1225,7 +1235,7 @@
                 if (!b.querySelector(".dash-pick-used")) {
                     var s = document.createElement("span");
                     s.className = "dash-pick-used";
-                    s.textContent = "já anexado";
+                    s.textContent = "attached";
                     b.appendChild(s);
                 }
             }
@@ -1234,7 +1244,7 @@
 
     function renderBrowseTree(S) {
         var tree = S.els.linkTree;
-        tree.innerHTML = '<div class="dash-empty px-2 py-1">A carregar drives…</div>';
+        tree.innerHTML = '<div class="dash-empty px-2 py-1">Loading drives…</div>';
         fetch(S.moduleBase + "/browse/drives", { headers: { "Accept": "application/json" } })
             .then(function (resp) {
                 if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -1243,7 +1253,7 @@
             .then(function (drives) {
                 tree.innerHTML = "";
                 if (!drives || !drives.length) {
-                    tree.innerHTML = '<div class="dash-empty px-2 py-1">Sem drives.</div>';
+                    tree.innerHTML = '<div class="dash-empty px-2 py-1">No drives.</div>';
                     return;
                 }
                 drives.forEach(function (d) {
@@ -1251,7 +1261,7 @@
                 });
             })
             .catch(function () {
-                tree.innerHTML = '<div class="dash-empty px-2 py-1">Falhou a carregar as drives — tente de novo.</div>';
+                tree.innerHTML = '<div class="dash-empty px-2 py-1">Failed to load drives — try again.</div>';
             });
     }
 
@@ -1299,7 +1309,7 @@
     }
 
     function loadBrowseKids(S, box, driveId, parentId, depth) {
-        box.innerHTML = '<div class="dash-empty px-2 py-1">A carregar…</div>';
+        box.innerHTML = '<div class="dash-empty px-2 py-1">Loading…</div>';
         var url = S.moduleBase + "/browse/children?drive_id=" + encodeURIComponent(driveId) +
             "&parent_id=" + (parentId === null ? "null" : encodeURIComponent(parentId));
         fetch(url, { headers: { "Accept": "application/json" } })
@@ -1313,7 +1323,7 @@
                 var folders = (data && data.folders) || [];
                 var files = (data && data.files) || [];
                 if (!folders.length && !files.length) {
-                    box.innerHTML = '<div class="dash-empty px-2 py-1">Vazio.</div>';
+                    box.innerHTML = '<div class="dash-empty px-2 py-1">Empty.</div>';
                     return;
                 }
                 folders.forEach(function (f) {
@@ -1324,7 +1334,7 @@
                 });
             })
             .catch(function () {
-                box.innerHTML = '<div class="dash-empty px-2 py-1">Falhou a carregar — tente de novo.</div>';
+                box.innerHTML = '<div class="dash-empty px-2 py-1">Failed to load — try again.</div>';
             });
     }
 
@@ -1339,7 +1349,7 @@
         }
         box.classList.remove("hidden");
         tree.classList.add("hidden");
-        box.innerHTML = '<div class="dash-empty px-2 py-1">A pesquisar…</div>';
+        box.innerHTML = '<div class="dash-empty px-2 py-1">Searching…</div>';
         fetch(S.moduleBase + "/browse/search?q=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } })
             .then(function (resp) {
                 if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -1348,7 +1358,7 @@
             .then(function (data) {
                 var files = (data && data.files) || [];
                 if (!files.length) {
-                    box.innerHTML = '<div class="dash-empty px-2 py-1">Sem ficheiros.</div>';
+                    box.innerHTML = '<div class="dash-empty px-2 py-1">No files.</div>';
                     return;
                 }
                 var attached = browseAttachedIds(S);
@@ -1358,7 +1368,7 @@
                 });
             })
             .catch(function () {
-                box.innerHTML = '<div class="dash-empty px-2 py-1">Pesquisa falhou — tente de novo.</div>';
+                box.innerHTML = '<div class="dash-empty px-2 py-1">Search failed — try again.</div>';
             });
     }
 
@@ -1373,24 +1383,24 @@
                 .then(function (out) {
                     if (out.resp.ok && out.data && out.data.ok) {
                         dropAttached(S, attId);
-                        var extra = out.data.removed_file ? " (ficheiro carregado apagado)" : "";
-                        toast(S, '"' + entry.name + '" desanexado' + extra + " — cards que o referenciam mostram missing input");
+                        var extra = out.data.removed_file ? " (uploaded file deleted)" : "";
+                        toast(S, '"' + entry.name + '" detached' + extra + " — cards referencing it show missing input");
                         save(S, false).then(function () { reloadDoc(S); });
                     } else {
-                        toast(S, "Desanexar falhou: " + ((out.data && out.data.error) || out.resp.status), true);
+                        toast(S, "Detach failed: " + ((out.data && out.data.error) || out.resp.status), true);
                     }
                 })
                 .catch(function () {
-                    toast(S, "Desanexar falhou: erro de rede.", true);
+                    toast(S, "Detach failed: network error.", true);
                 });
         };
         if (entry.origin === "upload") {
             confirmDialog(S, {
-                title: "Desanexar \"" + entry.name + "\"?",
-                bodyHTML: "Este ficheiro foi <b>carregado para o dashboard</b> — desanexar " +
-                    "<b>apaga o ficheiro</b>. Os cards que o referenciam passam a " +
-                    "<b>missing input</b>. Continuar?",
-                okLabel: "Desanexar e apagar",
+                title: "Detach \"" + entry.name + "\"?",
+                bodyHTML: "This file was <b>uploaded to the dashboard</b> — detaching " +
+                    "<b>deletes the file</b>. Cards referencing it become " +
+                    "<b>missing input</b>. Continue?",
+                okLabel: "Detach and delete",
                 okClass: "btn-error"
             }).then(function (ok) { if (ok) doDetach(); });
         } else {
@@ -1406,35 +1416,35 @@
     }
 
     function invList(items, keep) {
-        if (!items.length) return "<li><span class=\"dash-empty\">nenhum</span></li>";
+        if (!items.length) return "<li><span class=\"dash-empty\">none</span></li>";
         return items.map(function (it) {
-            var label = it.name || ("ficheiro #" + it.id);
+            var label = it.name || ("file #" + it.id);
             return "<li>" + (keep
-                ? '<span class="dash-inv-keep">🔗 <code>' + esc(label) + "</code> — mantido</span>"
+                ? '<span class="dash-inv-keep">🔗 <code>' + esc(label) + "</code> — kept</span>"
                 : "<code>" + esc(label) + "</code>") + "</li>";
         }).join("");
     }
 
     function openCleanup(S) {
-        S.els.cuBody.innerHTML = "<p>A carregar inventário…</p>";
-        S.els.cuOk.textContent = "Limpar";
+        S.els.cuBody.innerHTML = "<p>Loading inventory…</p>";
+        S.els.cuOk.textContent = "Clear";
         openDialog(S.els.dlgCleanup);
         fetchDeleteInfo(S).then(function (out) {
             if (!out.resp.ok || !out.data || !out.data.ok) {
-                S.els.cuBody.innerHTML = "<p>Não foi possível carregar o inventário: " +
+                S.els.cuBody.innerHTML = "<p>Could not load the inventory: " +
                     esc((out.data && out.data.error) || out.resp.status) + "</p>";
                 return;
             }
             var arts = out.data.artifacts || [];
             S.els.cuBody.innerHTML =
-                "<p>Remove <b>só</b> ficheiros/tabelas criados pelas execuções. " +
-                "Os <b>anexos do dashboard não são tocados</b>; o dashboard é mantido; " +
-                "resultados que apontavam para artefactos passam a <b>missing-input</b>.</p>" +
-                '<div class="dash-inv-group">Artefactos a remover</div>' +
+                "<p>Removes <b>only</b> files/tables created by runs. " +
+                "The <b>dashboard attachments are untouched</b>; the dashboard is kept; " +
+                "results pointing at artifacts become <b>missing-input</b>.</p>" +
+                '<div class="dash-inv-group">Artifacts to remove</div>' +
                 '<ul class="dash-inv-list">' + invList(arts, false) + "</ul>";
-            S.els.cuOk.textContent = "Limpar " + arts.length + " artefacto" + (arts.length === 1 ? "" : "s");
+            S.els.cuOk.textContent = "Clear " + arts.length + " artifact" + (arts.length === 1 ? "" : "s");
         }).catch(function () {
-            S.els.cuBody.innerHTML = "<p>Não foi possível carregar o inventário (erro de rede).</p>";
+            S.els.cuBody.innerHTML = "<p>Could not load the inventory (network error).</p>";
         });
         S.els.cuOk.onclick = function () {
             S.els.dlgCleanup.close();
@@ -1445,27 +1455,26 @@
                         S.doc.createdFileIds = [];
                         var cleared = (out.data.cleared || []).length;
                         var missing = (out.data.missing || []).length;
-                        var msg = cleared + " artefacto" + (cleared === 1 ? "" : "s") + " removido" +
-                            (cleared === 1 ? "" : "s");
-                        if (missing) msg += " (" + missing + " já " + (missing === 1 ? "estava" : "estavam") + " em falta)";
-                        toast(S, msg + " — resultados afetados passam a missing-input");
+                        var msg = cleared + " artifact" + (cleared === 1 ? "" : "s") + " removed";
+                        if (missing) msg += " (" + missing + " already " + (missing === 1 ? "was" : "were") + " missing)";
+                        toast(S, msg + " — affected results become missing-input");
                         save(S, false).then(function () { reloadDoc(S); });
                     } else {
-                        toast(S, "Limpar artefactos falhou: " + ((out.data && out.data.error) || out.resp.status), true);
+                        toast(S, "Clear artifacts failed: " + ((out.data && out.data.error) || out.resp.status), true);
                     }
                 })
                 .catch(function () {
-                    toast(S, "Limpar artefactos falhou: erro de rede.", true);
+                    toast(S, "Clear artifacts failed: network error.", true);
                 });
         };
     }
 
     function openDeleteDashboard(S) {
-        S.els.delBody.innerHTML = "<p>A carregar inventário…</p>";
+        S.els.delBody.innerHTML = "<p>Loading inventory…</p>";
         openDialog(S.els.dlgDelete);
         fetchDeleteInfo(S).then(function (out) {
             if (!out.resp.ok || !out.data || !out.data.ok) {
-                S.els.delBody.innerHTML = "<p>Não foi possível carregar o inventário: " +
+                S.els.delBody.innerHTML = "<p>Could not load the inventory: " +
                     esc((out.data && out.data.error) || out.resp.status) + "</p>";
                 return;
             }
@@ -1475,16 +1484,16 @@
             var kept = out.data.linkedKept || [];
             var removed = 1 + ups.length + arts.length;
             S.els.delBody.innerHTML =
-                "Esta ação remove o dashboard <b>e</b> tudo o que ele possui. Inventário:" +
-                '<div class="dash-inv-group">A remover — dashboard + uploads + artefactos</div>' +
+                "This action removes the dashboard <b>and</b> everything it owns. Inventory:" +
+                '<div class="dash-inv-group">Removing — dashboard + uploads + artifacts</div>' +
                 '<ul class="dash-inv-list"><li>dashboard <code>' + esc(dash.name || "") + "</code></li>" +
                 invList(ups, false) + invList(arts, false) + "</ul>" +
-                '<div class="dash-inv-group">A manter — originais ligados (não são apagados)</div>' +
+                '<div class="dash-inv-group">Keeping — linked originals (not deleted)</div>' +
                 '<ul class="dash-inv-list">' + invList(kept, true) + "</ul>" +
-                "<p><b>Total a remover: " + removed + " item" + (removed === 1 ? "" : "s") +
-                " (1 dashboard + " + ups.length + " upload(s) + " + arts.length + " artefacto(s)).</b></p>";
+                "<p><b>Total to remove: " + removed + " item" + (removed === 1 ? "" : "s") +
+                " (1 dashboard + " + ups.length + " upload(s) + " + arts.length + " artifact(s)).</b></p>";
         }).catch(function () {
-            S.els.delBody.innerHTML = "<p>Não foi possível carregar o inventário (erro de rede).</p>";
+            S.els.delBody.innerHTML = "<p>Could not load the inventory (network error).</p>";
         });
         S.els.delOk.onclick = function () {
             S.els.dlgDelete.close();
@@ -1494,11 +1503,11 @@
                     if (out.resp.ok && out.data && out.data.ok) {
                         window.location.href = S.opts.indexUrl || "/m/dashboards/";
                     } else {
-                        toast(S, "Eliminar dashboard falhou: " + ((out.data && out.data.error) || out.resp.status), true);
+                        toast(S, "Delete dashboard failed: " + ((out.data && out.data.error) || out.resp.status), true);
                     }
                 })
                 .catch(function () {
-                    toast(S, "Eliminar dashboard falhou: erro de rede.", true);
+                    toast(S, "Delete dashboard failed: network error.", true);
                 });
         };
     }
@@ -1577,9 +1586,9 @@
     }
 
     function viewStatusLabel(st) {
-        return { idle: "em espera", running: "a correr", done: "pronto",
-            error: "erro", missing: "missing-input",
-            interrupted: "interrompido" }[st] || st;
+        return { idle: "idle", running: "running", done: "done",
+            error: "error", missing: "missing-input",
+            interrupted: "interrupted" }[st] || st;
     }
 
     function viewChipHTML(card) {
@@ -1608,7 +1617,7 @@
             if (!document.body.contains(V.root)) return;
             if (e.key === "Escape" && V.runAllActive) {
                 V.runAllStop = true;
-                viewToast(V, "run-all interrompido após os cards em curso");
+                viewToast(V, "run-all stopped after the cards in flight");
             }
         }, { capture: true, signal: ac.signal });
 
@@ -1654,11 +1663,11 @@
         holder.innerHTML =
             '<div class="dash-scope dash-view flex flex-col gap-3">' +
             '<div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">' +
-            '<span class="dash-label">Vista · snapshots</span>' +
+            '<span class="dash-label">View · snapshots</span>' +
             '<button type="button" class="btn btn-primary btn-sm gap-1" data-vact="runall">' +
-            '<i class="fas fa-rotate"></i> <span data-vzone="runall-label">Correr tudo</span></button>' +
-            '<label class="dash-cap" title="quantos cards correm em simultâneo (guardado no dashboard)">' +
-            "concorrência " +
+            '<i class="fas fa-rotate"></i> <span data-vzone="runall-label">Run all</span></button>' +
+            '<label class="dash-cap" title="how many cards run at once (saved on the dashboard)">' +
+            "concurrency " +
             '<select class="select select-bordered select-xs w-16" data-vact="cap">' +
             [1, 2, 3].map(function (n) {
                 return '<option value="' + n + '"' + (n === cap ? " selected" : "") +
@@ -1694,13 +1703,13 @@
         }).then(function (out) {
             if (out.resp.ok && out.data && out.data.ok) {
                 if (window.spaInvalidate) window.spaInvalidate();
-                viewToast(V, "concorrência " + n + " guardada");
+                viewToast(V, "concurrency " + n + " saved");
             } else {
-                viewToast(V, "Guardar concorrência falhou: " +
+                viewToast(V, "Save concurrency failed: " +
                     ((out.data && out.data.error) || out.resp.status), true);
             }
         }).catch(function () {
-            viewToast(V, "Guardar concorrência falhou: erro de rede.", true);
+            viewToast(V, "Save concurrency failed: network error.", true);
         });
     }
 
@@ -1712,7 +1721,7 @@
         g.innerHTML = "";
         if (!V.doc.cards.length) {
             g.innerHTML = '<div class="glass-panel rounded-2xl px-6 py-12 text-center">' +
-                '<p class="text-sm opacity-50">Sem cards — abra o Builder para compor o dashboard.</p></div>';
+                '<p class="text-sm opacity-50">No cards — open the Builder to compose the dashboard.</p></div>';
             return;
         }
         V.doc.cards.forEach(function (card) {
@@ -1741,10 +1750,10 @@
             '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i>' +
             '<span class="dash-ran" data-vf="ran">' + esc(ranText(card)) + "</span>" +
             '<span class="dash-vtools' + (card.tools ? "" : " off") + '" data-vf="tools" ' +
-            'title="' + (card.tools ? "agent completo" : "1 chamada LLM") + '">' +
+            'title="' + (card.tools ? "full agent" : "1 LLM call") + '">' +
             (card.tools ? "tools on" : "tools off") + "</span>" +
             '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto" data-vf="refresh" ' +
-            'title="recorrer este card" aria-label="Recorrer ' + esc(card.title || card.type) + '">' +
+            'title="Run this card" aria-label="Run ' + esc(card.title || card.type) + '">' +
             '<i class="fas fa-rotate"></i></button></div>';
         renderViewBody(V, card, d.querySelector('[data-vf="body"]'));
         d.querySelector('[data-vf="refresh"]').addEventListener("click", function () {
@@ -1768,7 +1777,7 @@
         if (btn) {
             btn.disabled = running;
             btn.classList.toggle("dash-spinning", running);
-            btn.title = running ? "a correr…" : "recorrer este card";
+            btn.title = running ? "running…" : "Run this card";
         }
     }
 
@@ -1791,7 +1800,7 @@
     function viewTextHTML(text) {
         var parts = String(text === undefined || text === null ? "" : text).split(/\n{2,}/);
         if (!parts.length || (parts.length === 1 && parts[0].trim() === "")) {
-            return '<div class="dash-empty">sem conteúdo.</div>';
+            return '<div class="dash-empty">No content.</div>';
         }
         return parts.map(function (p) {
             return "<p>" + esc(p).replace(/\n/g, "<br>") + "</p>";
@@ -1966,10 +1975,10 @@
         if (/missing input/i.test(msg)) {
             return '<div class="dash-missing-box" role="alert"><b>⚠ missing-input</b>' +
                 "<p>" + esc(msg) + "</p>" +
-                "<p class=\"dash-hint\">Um anexo ou workflow referenciado desapareceu — " +
-                "volte a anexar o ficheiro no Builder.</p></div>";
+                "<p class=\"dash-hint\">A referenced attachment or workflow is gone — " +
+                "re-attach the file in the Builder.</p></div>";
         }
-        return '<div class="dash-err-box" role="alert"><b><i class="fas fa-triangle-exclamation"></i> erro</b>' +
+        return '<div class="dash-err-box" role="alert"><b><i class="fas fa-triangle-exclamation"></i> error</b>' +
             "<p>" + esc(msg) + "</p></div>";
     }
 
@@ -2006,10 +2015,10 @@
         var res = card.result;
         if (res === null || res === undefined) {
             if (card.status === "running") {
-                bodyEl.innerHTML = '<div class="dash-vskeleton"><i class="fas fa-circle-notch fa-spin"></i> a correr…</div>';
+                bodyEl.innerHTML = '<div class="dash-vskeleton"><i class="fas fa-circle-notch fa-spin"></i> running…</div>';
             } else {
-                bodyEl.innerHTML = '<div class="dash-vskeleton">nunca correu — ' +
-                    "prime ⟳ para gerar o snapshot.</div>";
+                bodyEl.innerHTML = '<div class="dash-vskeleton">never ran — ' +
+                    "press ⟳ to generate the snapshot.</div>";
             }
             return;
         }
@@ -2045,7 +2054,7 @@
             return;
         }
         var trunc = res.truncated
-            ? '<p class="dash-hint">contexto truncado — o modelo viu só parte dos anexos.</p>' : "";
+            ? '<p class="dash-hint">truncated context — the model saw only part of the attachments.</p>' : "";
         var text = typeof res.text === "string" && res.text.trim() ? res.text : "";
         if (card.type === "kpi") {
             bodyEl.innerHTML = viewKpiHTML(res, text) + trunc;
@@ -2060,7 +2069,7 @@
         } else {
             if (card.type === "markdown") {
                 if (!text) {
-                    bodyEl.innerHTML = '<div class="dash-empty">sem conteúdo.</div>';
+                    bodyEl.innerHTML = '<div class="dash-empty">No content.</div>';
                     return;
                 }
                 setDashMarkdownBody(bodyEl, text);
@@ -2069,14 +2078,14 @@
             }
             bodyEl.innerHTML = text
                 ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" + trunc
-                : '<div class="dash-empty">sem conteúdo.</div>';
+                : '<div class="dash-empty">No content.</div>';
         }
     }
 
     function viewKpiHTML(res, text) {
         var k = (res.kpi && typeof res.kpi === "object") ? res.kpi : res;
         var hasValue = k.value !== undefined && k.value !== null && k.value !== "";
-        if (!hasValue && !text) return '<div class="dash-empty">sem conteúdo.</div>';
+        if (!hasValue && !text) return '<div class="dash-empty">No content.</div>';
         var h = '<div class="dash-kpis">';
         if (hasValue) {
             h += '<div class="dash-kpi"><span class="dash-kpi-v">' + esc(k.value) + "</span>";
@@ -2126,7 +2135,7 @@
         }
         return text
             ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>"
-            : '<div class="dash-empty">sem conteúdo.</div>';
+            : '<div class="dash-empty">No content.</div>';
     }
 
     function viewListHTML(res, text) {
@@ -2135,7 +2144,7 @@
             items = text.split("\n").map(function (l) { return l.replace(/^[-*•\d.)\s]+/, "").trim(); })
                 .filter(function (l) { return l; });
         }
-        if (!items || !items.length) return '<div class="dash-empty">sem conteúdo.</div>';
+        if (!items || !items.length) return '<div class="dash-empty">No content.</div>';
         return '<ul class="dash-vlist">' + items.slice(0, 50).map(function (it) {
             if (it && typeof it === "object") {
                 var label = it.text || it.title || it.name || JSON.stringify(it);
@@ -2156,12 +2165,12 @@
         }
         if (Array.isArray(wf.files) && wf.files.length) {
             h += '<ul class="dash-vfiles">' + wf.files.slice(0, 20).map(function (f) {
-                var name = (f && (f.name || f.path)) || ("ficheiro #" + (f && f.file_id));
+                var name = (f && (f.name || f.path)) || ("file #" + (f && f.file_id));
                 return '<li><i class="fas fa-file-lines opacity-50"></i> ' + esc(name) + "</li>";
             }).join("") + "</ul>";
         }
         if (text) h += '<div class="dash-vtext">' + viewTextHTML(text) + "</div>";
-        return h || '<div class="dash-empty">sem conteúdo.</div>';
+        return h || '<div class="dash-empty">No content.</div>';
     }
 
     // Chart: vendored Chart.js, fluid canvas. Mirrors the notebooks
@@ -2175,7 +2184,7 @@
         if (!spec) {
             bodyEl.innerHTML = text
                 ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" + trunc
-                : '<div class="dash-vskeleton">sem dados de gráfico — recorra o card.</div>';
+                : '<div class="dash-vskeleton">No chart data — run the card.</div>';
             return;
         }
         var kind = spec.kind || "bar";
@@ -2183,8 +2192,8 @@
         var rawDs = Array.isArray(spec.datasets) ? spec.datasets : [];
         if (!labels.length || !rawDs.length ||
                 !rawDs.some(function (ds) { return ds && Array.isArray(ds.data) && ds.data.length; })) {
-            bodyEl.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico inválido</b>' +
-                "<p>labels ou datasets em falta no snapshot.</p></div>";
+            bodyEl.innerHTML = '<div class="dash-err-box" role="alert"><b>invalid chart</b>' +
+                "<p>labels or datasets missing from the snapshot.</p></div>";
             return;
         }
         bodyEl.innerHTML = '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
@@ -2193,8 +2202,8 @@
         loadChartLib(function (err) {
             if (!document.body.contains(canvas)) return;
             if (err || !window.Chart) {
-                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico indisponível</b>' +
-                    "<p>A biblioteca de gráficos não carregou.</p></div>";
+                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>chart unavailable</b>' +
+                    "<p>The chart library failed to load.</p></div>";
                 return;
             }
             try {
@@ -2247,8 +2256,8 @@
                     V.observers.push(ro);
                 }
             } catch (e) {
-                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>gráfico inválido</b>' +
-                    "<p>Não foi possível desenhar o gráfico.</p></div>";
+                wrap.innerHTML = '<div class="dash-err-box" role="alert"><b>invalid chart</b>' +
+                    "<p>Could not draw the chart.</p></div>";
             }
         });
     }
@@ -2325,7 +2334,7 @@
                 }
             })
             .catch(function () {
-                viewToast(V, "Recarregar o card falhou — recarregue a página.", true);
+                viewToast(V, "Reloading the card failed — reload the page.", true);
             })
             .then(function () {
                 delete V.inFlight[cardId];
@@ -2339,7 +2348,7 @@
         var card = cardById(V.doc, cardId);
         if (!card) return;
         if (V.inFlight[cardId] || card.status === "running") {
-            viewToast(V, "Este card já está a correr — aguarde.");
+            viewToast(V, "This card is already running — wait.");
             return;
         }
         V.inFlight[cardId] = true;
@@ -2347,12 +2356,12 @@
         refreshViewCard(V, card);
         viewPostRun(V, { card_id: cardId }).then(function (out) {
             if (out.resp.status === 409) {
-                viewToast(V, "Já há uma execução em curso — aguarde e tente de novo.");
+                viewToast(V, "A run is already in progress — wait and try again.");
                 finishViewRun(V, cardId);
                 return;
             }
             if (!out.resp.ok || !out.data || !out.data.ok) {
-                viewToast(V, "Correr o card falhou: " +
+                viewToast(V, "Running the card failed: " +
                     ((out.data && out.data.error) || ("HTTP " + out.resp.status)), true);
                 finishViewRun(V, cardId);
                 return;
@@ -2364,7 +2373,7 @@
             }
             pollViewRun(V, runId, cardId);
         }).catch(function () {
-            viewToast(V, "Correr o card falhou: erro de rede.", true);
+            viewToast(V, "Running the card failed: network error.", true);
             finishViewRun(V, cardId);
         });
     }
@@ -2373,7 +2382,7 @@
         if (V.runAllActive) return;
         var ids = (V.doc.cards || []).map(function (c) { return c.id; });
         if (!ids.length) {
-            viewToast(V, "Sem cards para correr.");
+            viewToast(V, "No cards to run.");
             return;
         }
         var cap = viewCap(V.doc);
@@ -2388,9 +2397,9 @@
         var active = 0;
 
         var paint = function () {
-            V.els.runAllLabel.textContent = "A correr " + Math.min(finished + active, total) + "/" + total + "…";
-            V.els.runAllState.textContent = "concorrência " + cap +
-                (V.runAllStop ? " · a parar…" : "");
+            V.els.runAllLabel.textContent = "Running " + Math.min(finished + active, total) + "/" + total + "…";
+            V.els.runAllState.textContent = "concurrency " + cap +
+                (V.runAllStop ? " · stopping…" : "");
         };
 
         var settle = function () {
@@ -2418,7 +2427,7 @@
                     viewPostRun(V, { card_id: id }).then(function (out) {
                         if (!out.resp.ok || !out.data || !out.data.ok) {
                             if (out.resp.status !== 409) {
-                                viewToast(V, "Correr falhou num card: " +
+                                viewToast(V, "Run failed on one card: " +
                                     ((out.data && out.data.error) || ("HTTP " + out.resp.status)), true);
                             }
                             // Reload server truth for the card, then continue
@@ -2433,7 +2442,7 @@
                         }
                         pollViewRun(V, runId, id, settle);
                     }).catch(function () {
-                        viewToast(V, "Correr falhou num card: erro de rede.", true);
+                        viewToast(V, "Run failed on one card: network error.", true);
                         finishViewRun(V, id, settle);
                     });
                 })(queue.shift());
@@ -2449,9 +2458,9 @@
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
-        V.els.runAllLabel.textContent = "Correr tudo";
+        V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
-        viewToast(V, total + (total === 1 ? " card atualizado." : " cards atualizados."));
+        viewToast(V, total + (total === 1 ? " card updated." : " cards updated."));
         if (window.spaInvalidate) window.spaInvalidate();
     }
 
@@ -2459,9 +2468,9 @@
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
-        V.els.runAllLabel.textContent = "Correr tudo";
+        V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
-        viewToast(V, "run-all parado (" + finished + "/" + total + " concluídos).");
+        viewToast(V, "run-all stopped (" + finished + "/" + total + " done).");
     }
 
     // Aggregate status poll (notebooks pollRemote pattern): every 5 s the

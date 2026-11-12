@@ -488,7 +488,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=1" in body
+    assert "?v=2" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -1253,3 +1253,64 @@ def test_browse_rows_indent_by_shared_depth_and_truncate():
     for prop in ("text-overflow: ellipsis", "white-space: nowrap",
                  "min-width: 0"):
         assert prop in css
+
+
+# ---------------------------------------------------------------------------
+# Task 9: Builder polish — prompt textareas auto-expand, full English UI
+# ---------------------------------------------------------------------------
+
+def test_dashboard_ui_ships_in_english():
+    """Task 9 (user scope): the dashboards module UI is English — no
+    Portuguese diacritics in the shipped JS/templates, and the key
+    Builder/View chrome strings read English."""
+    import re
+    files = [os.path.join(_DASH_DIR, "static", "dashboard.js"),
+             os.path.join(_DASH_DIR, "templates", "dashboards", "list.html"),
+             os.path.join(_DASH_DIR, "templates", "dashboards", "edit.html"),
+             os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "history.html"),
+             os.path.join(_DASH_DIR, "templates", "dashboards", "diff.html")]
+    pt = re.compile("[ãõçéêáàâîôûäëïöüñÃÕÇÉÊÁÀÂÎÔÛ]")
+    bad = []
+    for path in files:
+        with open(path, encoding="utf-8") as fh:
+            import unicodedata
+            src = unicodedata.normalize("NFC", fh.read())
+            for num, line in enumerate(src.splitlines(), 1):
+                if pt.search(line):
+                    bad.append("%s:%d: %s" % (
+                        os.path.basename(path), num, line.strip()[:100]))
+    assert not bad, ("Portuguese UI strings remain:\n" +
+                     "\n".join(bad[:25]))
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        js = fh.read()
+    for s in ("Add card", "Card prompt", "Run all", "Delete dashboard",
+              "No attachments", "Attach existing file", "Run this card",
+              "No content", "Upload file", "Clear artifacts"):
+        assert s in js, "missing English chrome string: %r" % (s,)
+
+
+def test_prompt_textareas_autogrow():
+    """Task 9 (user scope): card prompt + workflow-params textareas grow
+    with their content instead of clipping at a fixed height."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function autoGrow\(el\) \{(.*?)\n    \}", src, re.S)
+    assert match, "autoGrow helper missing"
+    # Wired to both prompt textareas: card prompt + workflow params.
+    assert src.count("autoGrow(") >= 3
+    assert "dash-prompt" in src and "dash-wf-params" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) +
+             ";var el={style:{},scrollHeight:132};autoGrow(el);"
+             "console.log(el.style.height)")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "132px"
