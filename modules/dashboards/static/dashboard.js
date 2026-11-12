@@ -1604,6 +1604,163 @@
         }).join("");
     }
 
+    // -- markdown cards: notebooks-equivalent pipeline ---------------------
+    // Spec: markdown cards reuse the marked + sanitize + KaTeX pipeline
+    // (same as notebooks). marked + DOMPurify are global from base.html;
+    // KaTeX loads lazily from the vendored copy. Raw TeX stays
+    // HTML-escaped until KaTeX reads it from textContent, and KaTeX's
+    // auto-render skips <pre>/<code> so code samples stay literal.
+
+    function dashEscapeTeX(text) {
+        return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function dashCodeRanges(src) {
+        var lines = String(src).split("\n");
+        var ranges = [];
+        var pos = 0, i, m;
+        var fence = { "```": null, "~~~": null };
+        var blanked = [];
+        for (i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            m = line.match(/^\s{0,3}(```|~~~)/);
+            var fenceLine = false;
+            if (m) {
+                var mark = m[1];
+                var other = mark === "```" ? "~~~" : "```";
+                if (fence[other] === null) {
+                    fenceLine = true;
+                    if (fence[mark] === null) fence[mark] = pos;
+                    else {
+                        ranges.push([fence[mark], pos + line.length]);
+                        fence[mark] = null;
+                    }
+                }
+            }
+            var inCode = fence["```"] !== null || fence["~~~"] !== null;
+            blanked.push(inCode || fenceLine ? new Array(line.length + 1).join(" ") : line);
+            pos += line.length + 1;
+        }
+        for (i = 0; i < 2; i++) {
+            var k = i === 0 ? "```" : "~~~";
+            if (fence[k] !== null) ranges.push([fence[k], src.length]);
+        }
+        var flat = blanked.join("\n");
+        var re = /(`+)[^`\n]*?\1/g, sm;
+        while ((sm = re.exec(flat)) !== null) {
+            ranges.push([sm.index, sm.index + sm[0].length]);
+        }
+        return ranges;
+    }
+
+    function dashMathOverlapsCode(ranges, start, end) {
+        return ranges.some(function (r) { return start < r[1] && r[0] < end; });
+    }
+
+    function dashProtectMath(src) {
+        var map = {};
+        var n = 0;
+        var ranges = dashCodeRanges(src || "");
+        var marked = String(src || "").replace(
+            /\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?=\S)[^$\n]*[^$\s\n]\$/g,
+            function (m, offset, string) {
+                if (dashMathOverlapsCode(ranges, offset, offset + m.length)) return m;
+                if (m.charAt(0) === "$" && m.indexOf("$$") !== 0) {
+                    if (string[offset - 1] === "$"
+                            || string[offset + m.length] === "$") return m;
+                    var k = "<!--MATH" + (n++) + "-->";
+                    map[k] = "\\(" + m.slice(1, -1) + "\\)";
+                    return k;
+                }
+                var kk = "<!--MATH" + (n++) + "-->";
+                map[kk] = m;
+                return kk;
+            });
+        return { marked: marked, map: map };
+    }
+
+    function dashRestoreMath(html, map) {
+        return String(html).replace(/<!--MATH\d+-->|&lt;!--MATH\d+--&gt;/g, function (k) {
+            var raw = k.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+            return raw in map ? dashEscapeTeX(map[raw]) : k;
+        });
+    }
+
+    function dashSanitizeHtml(html) {
+        if (window.DOMPurify && window.DOMPurify.sanitize) {
+            return window.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
+        }
+        return null;
+    }
+
+    // Render markdown to HTML (marked + sanitize + math-restore). Returns
+    // null when the pipeline libs are unavailable — the caller falls back
+    // to escaped plain text via viewTextHTML.
+    function renderMarkdownDash(text) {
+        if (!window.marked || !window.marked.parse) return null;
+        var pm = dashProtectMath(text || "");
+        var clean = dashSanitizeHtml(window.marked.parse(pm.marked, { breaks: true }));
+        if (clean === null) return null;
+        return dashRestoreMath(clean, pm.map);
+    }
+
+    var _dashKatexCallbacks = null;
+
+    function loadDashKaTeX(cb) {
+        if (window.renderMathInElement) { cb(); return; }
+        if (_dashKatexCallbacks) { _dashKatexCallbacks.push(cb); return; }
+        _dashKatexCallbacks = [cb];
+        var link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "/static/vendor/katex/0.16.47/katex.min.css";
+        document.head.appendChild(link);
+        var script = document.createElement("script");
+        script.src = "/static/vendor/katex/0.16.47/katex.min.js";
+        script.onload = function () {
+            var ar = document.createElement("script");
+            ar.src = "/static/vendor/katex/0.16.47/contrib/auto-render.min.js";
+            ar.onload = function () {
+                var cbs = _dashKatexCallbacks;
+                _dashKatexCallbacks = null;
+                cbs.forEach(function (fn) { fn(); });
+            };
+            document.head.appendChild(ar);
+        };
+        document.head.appendChild(script);
+    }
+
+    // Same delimiter set as the rest of the app: $$ display, \(…\) inline
+    // (single-$ pairs are rewritten to \(…\) up in dashProtectMath, so
+    // KaTeX only ever splits $$ and \(; bare prices stay literal text).
+    // Parse errors fall back to raw text silently (no console noise).
+    function maybeRenderMathDash(containerEl, sourceText) {
+        if (!/\$\$|\\\(|\$(?=\S)[^$\n]*[^$\s\n]\$/.test(sourceText || "")) return;
+        loadDashKaTeX(function () {
+            if (!document.body.contains(containerEl)) return;
+            try {
+                window.renderMathInElement(containerEl, {
+                    delimiters: [
+                        { left: "$$", right: "$$", display: true },
+                        { left: "\\(", right: "\\)", display: false }
+                    ],
+                    errorCallback: function () { /* silent fallback */ }
+                });
+            } catch (e) { /* raw text stays */ }
+        });
+    }
+
+    function setDashMarkdownBody(bodyEl, text) {
+        var html = renderMarkdownDash(text || "");
+        if (html === null) {
+            bodyEl.innerHTML = '<div class="dash-vtext">' + viewTextHTML(text) + "</div>";
+            return;
+        }
+        bodyEl.innerHTML = '<div class="dash-vtext dash-md">' + html + "</div>";
+        maybeRenderMathDash(bodyEl, text || "");
+    }
+
     function viewErrorHTML(card) {
         var res = (card.result && typeof card.result === "object") ? card.result : {};
         var msg = String(res.error || "The run failed.");
@@ -1658,10 +1815,20 @@
             return;
         }
         if (typeof res === "string") {
+            if (card.type === "markdown") {
+                setDashMarkdownBody(bodyEl, res);
+                return;
+            }
             bodyEl.innerHTML = '<div class="dash-vtext">' + viewTextHTML(res) + "</div>";
             return;
         }
         if (Array.isArray(res)) {
+            if (card.type === "markdown") {
+                setDashMarkdownBody(bodyEl, res.map(function (v) {
+                    return (v && typeof v === "object") ? JSON.stringify(v) : String(v);
+                }).join("\n"));
+                return;
+            }
             var t = objectsToTable(res);
             bodyEl.innerHTML = t
                 ? t
@@ -1692,6 +1859,15 @@
         } else if (card.type === "workflow") {
             bodyEl.innerHTML = viewWorkflowHTML(res, text) + trunc;
         } else {
+            if (card.type === "markdown") {
+                if (!text) {
+                    bodyEl.innerHTML = '<div class="dash-empty">sem conteúdo.</div>';
+                    return;
+                }
+                setDashMarkdownBody(bodyEl, text);
+                if (trunc) bodyEl.innerHTML += trunc;
+                return;
+            }
             bodyEl.innerHTML = text
                 ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" + trunc
                 : '<div class="dash-empty">sem conteúdo.</div>';
@@ -2153,7 +2329,13 @@
         TYPE_META: TYPE_META,
         WIDTH_STEPS: WIDTH_STEPS,
         MIN_W: MIN_W,
-        MIN_H: MIN_H
+        MIN_H: MIN_H,
+        renderMarkdownHTML: renderMarkdownDash,
+        _markdownTest: {
+            protectMath: dashProtectMath,
+            restoreMath: dashRestoreMath,
+            codeRanges: dashCodeRanges
+        }
     };
 })();
 

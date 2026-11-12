@@ -186,6 +186,40 @@ def _validate_attachment(att):
     return att
 
 
+def _enforce_owned_files(stored, doc):
+    """Reject/strip file ids the dashboard owner must not reference.
+
+    Called by save_document() so the ``POST /save`` path cannot persist a
+    forged ``{fileId: <another user's id>}``: every attachment entry must
+    resolve to a StoredFile row owned by the dashboard owner, otherwise
+    ValueError (→400) and nothing is persisted. Same-user trashed files
+    are allowed through so the missing-input flow keeps working (a
+    trashed attachment persists as a visible "missing input" error at
+    run time instead of failing the save).
+
+    ``createdFileIds`` are neutralized by stripping: ids with no
+    same-user StoredFile row (foreign or nonexistent) can never be acted
+    on (clear/delete resolve same-user only), so they are dropped.
+    Same-user ids are kept even when trashed so the artifacts-clear
+    "missing" report still sees them.
+    """
+    for att in doc.get("attachments", []):
+        target = db.session.get(StoredFile, att.get("fileId"))
+        if target is None or target.user_id != stored.user_id:
+            raise ValueError(
+                f"Attachment '{att.get('name') or att.get('id')}' "
+                f"references file {att.get('fileId')} which is not found "
+                f"or not owned by you — attachments must reference your "
+                f"own files.")
+    owned = []
+    for fid in doc.get("createdFileIds", []):
+        target = db.session.get(StoredFile, fid)
+        if target is not None and target.user_id == stored.user_id:
+            if fid not in owned:
+                owned.append(fid)
+    doc["createdFileIds"] = owned
+
+
 def validate(doc):
     """Normalize a dashboard document dict; raises ValueError on bad shape."""
     if not isinstance(doc, dict):
@@ -662,6 +696,7 @@ def save_document(stored, doc, force_checkpoint=False, note="",
     """
     _guard_writable(stored)
     validate(doc)
+    _enforce_owned_files(stored, doc)
     try:
         old_shape = _structural_shape(load(stored))
     except (ValueError, OSError):

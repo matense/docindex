@@ -337,6 +337,75 @@ def test_hostile_layout_rejected(app, auth_client, user, enabled):
         assert db.session.get(StoredFile, fid).versions == []
 
 
+def _foreign_file(app, user):
+    """A file owned by another user; returns its id."""
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        bob_drive = Drive(name="Bob drive", user_id=bob.id)
+        db.session.add(bob_drive)
+        db.session.commit()
+        foreign = dash_doc.create_dashboard(bob, bob_drive, "Bob's")
+        return foreign.id
+
+
+def test_save_rejects_forged_foreign_attachment(app, auth_client, user,
+                                                enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    foreign_id = _foreign_file(app, user)
+    before = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+
+    # Forged attachment pointing at another user's file: 400, never
+    # persisted (same standard as the attach_link endpoint).
+    forged = dict(before, attachments=[
+        {"id": "forge00000001", "fileId": foreign_id, "name": "stolen",
+         "origin": "link", "addedAt": "2026-01-01T00:00:00"}])
+    resp = auth_client.post(f"/m/dashboards/{fid}/save",
+                           json={"doc": forged})
+    assert resp.status_code == 400
+
+    # Forged attachment pointing at a nonexistent file: same 400.
+    forged_missing = dict(before, attachments=[
+        {"id": "forge00000002", "fileId": 999999999, "name": "ghost",
+         "origin": "link", "addedAt": "2026-01-01T00:00:00"}])
+    assert auth_client.post(f"/m/dashboards/{fid}/save",
+                           json={"doc": forged_missing}).status_code == 400
+
+    after = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert after == before
+    assert after["attachments"] == []
+    with app.app_context():
+        assert db.session.get(StoredFile, foreign_id).deleted_at is None
+        assert db.session.get(StoredFile, fid).versions == []
+
+
+def test_save_strips_forged_created_file_ids(app, auth_client, user,
+                                             enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    foreign_id = _foreign_file(app, user)
+    before = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+
+    # Forged artifact registry entry (foreign id) is neutralized: stripped
+    # at save time so no cross-user effect is possible.
+    forged = dict(before, createdFileIds=[foreign_id, 999999999])
+    resp = auth_client.post(f"/m/dashboards/{fid}/save",
+                           json={"doc": forged})
+    assert resp.status_code == 200
+    after = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert after["createdFileIds"] == []
+
+    # The foreign file is untouched and never surfaces as an artifact.
+    info = auth_client.get(
+        f"/m/dashboards/{fid}/delete-info").get_json()
+    assert info["artifacts"] == []
+    with app.app_context():
+        assert db.session.get(StoredFile, foreign_id).deleted_at is None
+
+
 def test_history_versions_on_structural_save(app, auth_client, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)

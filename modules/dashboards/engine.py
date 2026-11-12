@@ -48,6 +48,15 @@ class MissingInputError(ValueError):
 
 
 _locks_guard = threading.Lock()
+# Per-dashboard run locks, keyed by dashboard file id.
+#
+# DEPLOYMENT ASSUMPTION: single-worker gunicorn (Dockerfile runs
+# ``--workers 1 --threads 8``), so one process holds all threads and this
+# dict + the lock held across the whole check-and-mark-and-run section in
+# ``routes.run_cards`` is a correct mutual-exclusion guard. Moving to
+# ``--workers > 1`` would make the cap per-process only — promote this to
+# a DB/file lock first (e.g. SELECT ... FOR UPDATE on the dashboard row
+# or a lock file under the file store).
 _dashboard_locks = {}
 
 
