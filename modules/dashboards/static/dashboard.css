@@ -196,7 +196,9 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
 
 /* attach-via-tree browser modal (Task 8): drive list, lazy folder tree,
    quick-search rows. Dialog rows share the refpick pickrow look. */
-.dash-browse-tree { display: flex; flex-direction: column; gap: 2px; }
+.dash-browse-tree { display: flex; flex-direction: column; gap: 2px; overflow-x: hidden; }
+.dash-browse-tree .dash-browse-node,
+dialog[data-dlg="link"] .dash-pickrow { min-width: 0; }
 .dash-browse-node { display: flex; flex-direction: column; }
 .dash-browse-head {
     display: flex; align-items: center; gap: 8px; width: 100%;
@@ -207,8 +209,17 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
 .dash-browse-arrow { width: 14px; flex-shrink: 0; opacity: .55; font-size: 11px; }
 .dash-browse-leaf {
     display: flex; align-items: center; gap: 8px;
-    padding: 5px 8px 5px 30px; font-size: 13px; opacity: .75;
+    padding: 5px 8px; font-size: 13px; opacity: .75;
 }
+/* Name truncation for tree + search rows: the name flexes and ellipsizes,
+   icons and the "já anexado" tag never shrink, so long names can never
+   force horizontal overflow. */
+.dash-bname {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-browse-head > i, dialog[data-dlg="link"] .dash-pickrow > i,
+.dash-pick-used { flex-shrink: 0; }
 dialog[data-dlg="link"] .dash-pickrow {
     display: flex; align-items: center; gap: 8px; text-align: left;
     padding: 5px 8px; border-radius: 8px; border: 0; background: transparent;

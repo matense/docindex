@@ -1120,3 +1120,43 @@ def test_browse_js_calls_module_root_urls():
     assert 'S.base + "/browse/' not in src
     for path in ("/browse/drives", "/browse/children", "/browse/search"):
         assert ('moduleBase + "%s' % path) in src
+
+
+def test_browse_rows_indent_by_shared_depth_and_truncate():
+    """Regression (screenshot-verified): tree file rows rendered at root
+    indent while folders nested, and long names forced a horizontal
+    scrollbar. The depth→padding mapping lives in the DOM-less
+    ``browseDepthPad`` helper (evaluated here with node); folder heads,
+    leaves and file rows must all build their indent from it, and names
+    must ellipsize inside an overflow-x-hidden tree."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(
+        r"function browseDepthPad\(depth\) \{(.*?)\n    \}", src, re.S)
+    assert match, "browseDepthPad helper missing"
+    # Both row builders share the helper: folder heads/leaves and file rows.
+    assert src.count("browseDepthPad(depth)") >= 2
+    assert "dash-bname" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) + ";console.log("
+             "[browseDepthPad(0),browseDepthPad(1),"
+             "browseDepthPad(2),browseDepthPad(3)].join(','))")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    pads = [int(v) for v in out.stdout.strip().split(",")]
+    assert pads == [8, 26, 44, 62]
+    assert all(b > a for a, b in zip(pads, pads[1:]))
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert "overflow-x: hidden" in css
+    assert ".dash-bname" in css
+    for prop in ("text-overflow: ellipsis", "white-space: nowrap",
+                 "min-width: 0"):
+        assert prop in css

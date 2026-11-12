@@ -1138,14 +1138,24 @@
         return ids;
     }
 
+    // Shared depth indent for tree rows: drive head sits at depth 0 and
+    // every level adds one step, so a file indents exactly like a folder
+    // at the same depth. Pure (DOM-less) so tests can pin the mapping.
+    function browseDepthPad(depth) {
+        depth = Number(depth) || 0;
+        if (depth < 0) depth = 0;
+        return 8 + depth * 18;
+    }
+
     // One pick row for a file, shared by the tree and quick search.
-    function browseFileRow(S, f, attachedIds) {
+    function browseFileRow(S, f, attachedIds, depth) {
         var b = document.createElement("button");
         b.type = "button";
         b.className = "dash-pickrow";
         b.setAttribute("data-bfile", String(f.id));
+        b.style.paddingLeft = browseDepthPad(depth) + "px";
         var label = '<i class="fas fa-file-lines opacity-50"></i>' +
-            "<span>" + esc(f.name) + "</span>";
+            '<span class="dash-bname">' + esc(f.name) + "</span>";
         if (attachedIds[f.id]) {
             b.disabled = true;
             b.innerHTML = label + '<span class="dash-pick-used">já anexado</span>';
@@ -1228,17 +1238,20 @@
 
     function browseDriveNode(S, drive) {
         return browseFolderNode(S, drive.id, null, String(drive.name),
-            "fa-hdd");
+            "fa-hdd", 0);
     }
 
-    // A drive root (folder === null) or one folder level. Folders without
-    // kids hold no visible files either, so they render as a static leaf.
-    function browseFolderNode(S, driveId, folder, label, icon) {
+    // A drive root (folder === null, depth 0) or one folder level. Folders
+    // without kids hold no visible files either, so they render as a
+    // static leaf. Heads, leaves and file rows share browseDepthPad, so
+    // siblings always line up.
+    function browseFolderNode(S, driveId, folder, label, icon, depth) {
         var isRoot = folder === null;
         var wrap = document.createElement("div");
         wrap.className = "dash-browse-node";
         var head = document.createElement("button");
         head.type = "button";
+        head.style.paddingLeft = browseDepthPad(depth) + "px";
         var expandable = isRoot || folder.hasKids;
         head.className = expandable ? "dash-browse-head" : "dash-browse-leaf";
         head.setAttribute("aria-expanded", "false");
@@ -1246,7 +1259,7 @@
             (expandable ? '<span class="dash-browse-arrow">▸</span>'
                 : '<span class="dash-browse-arrow"></span>') +
             '<i class="fas ' + icon + ' opacity-50"></i>' +
-            "<span>" + esc(label) + "</span>";
+            '<span class="dash-bname">' + esc(label) + "</span>";
         wrap.appendChild(head);
         if (!expandable) return wrap;
         var kids = document.createElement("div");
@@ -1258,14 +1271,15 @@
             head.querySelector(".dash-browse-arrow").textContent = collapsed ? "▸" : "▾";
             if (!collapsed && !loaded) {
                 loaded = true;
-                loadBrowseKids(S, kids, driveId, isRoot ? null : folder.id);
+                loadBrowseKids(S, kids, driveId, isRoot ? null : folder.id,
+                    (Number(depth) || 0) + 1);
             }
         });
         wrap.appendChild(kids);
         return wrap;
     }
 
-    function loadBrowseKids(S, box, driveId, parentId) {
+    function loadBrowseKids(S, box, driveId, parentId, depth) {
         box.innerHTML = '<div class="dash-empty px-2 py-1">A carregar…</div>';
         var url = S.moduleBase + "/browse/children?drive_id=" + encodeURIComponent(driveId) +
             "&parent_id=" + (parentId === null ? "null" : encodeURIComponent(parentId));
@@ -1284,10 +1298,10 @@
                     return;
                 }
                 folders.forEach(function (f) {
-                    box.appendChild(browseFolderNode(S, driveId, f, f.name, "fa-folder"));
+                    box.appendChild(browseFolderNode(S, driveId, f, f.name, "fa-folder", depth));
                 });
                 files.forEach(function (f) {
-                    box.appendChild(browseFileRow(S, f, attached));
+                    box.appendChild(browseFileRow(S, f, attached, depth));
                 });
             })
             .catch(function () {
@@ -1321,7 +1335,7 @@
                 var attached = browseAttachedIds(S);
                 box.innerHTML = "";
                 files.forEach(function (f) {
-                    box.appendChild(browseFileRow(S, f, attached));
+                    box.appendChild(browseFileRow(S, f, attached, 0));
                 });
             })
             .catch(function () {
