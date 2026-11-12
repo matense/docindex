@@ -1695,15 +1695,20 @@
         return null;
     }
 
-    // Render markdown to HTML (marked + sanitize + math-restore). Returns
+    // Render markdown to HTML (marked + math-restore + sanitize). Returns
     // null when the pipeline libs are unavailable — the caller falls back
     // to escaped plain text via viewTextHTML.
+    // NOTE: restore runs BEFORE sanitize — DOMPurify strips HTML comments,
+    // so restoring after sanitize would destroy the <!--MATHn-->
+    // placeholders. dashRestoreMath only splices dashEscapeTeX-escaped
+    // inert text (no tags), so author HTML is still sanitized afterward.
     function renderMarkdownDash(text) {
         if (!window.marked || !window.marked.parse) return null;
         var pm = dashProtectMath(text || "");
-        var clean = dashSanitizeHtml(window.marked.parse(pm.marked, { breaks: true }));
+        var restored = dashRestoreMath(window.marked.parse(pm.marked, { breaks: true }), pm.map);
+        var clean = dashSanitizeHtml(restored);
         if (clean === null) return null;
-        return dashRestoreMath(clean, pm.map);
+        return clean;
     }
 
     var _dashKatexCallbacks = null;
