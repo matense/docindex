@@ -267,7 +267,8 @@ def browse_drives():
 def browse_children():
     """One tree level: ``?drive_id=`` plus ``parent_id=`` (root when absent
     or ``null``). Folders carry ``hasKids`` for the lazy expand arrows;
-    trashed files are excluded. 404 on foreign/unowned drive or folder."""
+    trashed files and folders are excluded. 404 on foreign/unowned,
+    trashed, or cross-drive folder."""
     drive = _browse_drive(request.args.get("drive_id"))
     raw_parent = request.args.get("parent_id")
     parent = None
@@ -278,12 +279,14 @@ def browse_children():
             abort(400, "Invalid folder.")
         parent = db.session.get(Folder, parent_id)
         if (parent is None or parent.user_id != current_user.id
-                or parent.drive_id != drive.id):
+                or parent.drive_id != drive.id
+                or parent.deleted_at is not None):
             abort(404)
     parent_id = parent.id if parent is not None else None
     folders = (Folder.query
                .filter_by(user_id=current_user.id, drive_id=drive.id,
                           parent_id=parent_id)
+               .filter(Folder.deleted_at.is_(None))
                .order_by(Folder.name).all())
     files = (StoredFile.query
              .filter_by(user_id=current_user.id, drive_id=drive.id,
@@ -298,7 +301,8 @@ def browse_children():
         nonempty |= {row[0] for row in db.session.query(Folder.parent_id)
                      .filter(Folder.user_id == current_user.id,
                              Folder.drive_id == drive.id,
-                             Folder.parent_id.in_(folder_ids))
+                             Folder.parent_id.in_(folder_ids),
+                              Folder.deleted_at.is_(None))
                      .distinct().all()}
         nonempty |= {row[0] for row in db.session.query(StoredFile.folder_id)
                      .filter(StoredFile.user_id == current_user.id,
@@ -317,7 +321,8 @@ def browse_children():
 @bp.get("/browse/search")
 def browse_search():
     """Name match over the user's visible files for the picker's quick
-    search. Same file shape as children, capped at 20, 400 on empty query."""
+    search. Files in trashed drives or trashed folders are excluded.
+    Same file shape as children, capped at 20, 400 on empty query."""
     query = (request.args.get("q") or "").strip()
     if not query:
         return jsonify({"ok": False, "error": "Missing query."}), 400
@@ -330,6 +335,9 @@ def browse_search():
              .outerjoin(Drive, StoredFile.drive_id == Drive.id)
              .filter((Drive.id.is_(None))
                      | (Drive.deleted_at.is_(None)))
+             .outerjoin(Folder, StoredFile.folder_id == Folder.id)
+             .filter((Folder.id.is_(None))
+                     | (Folder.deleted_at.is_(None)))
              .order_by(StoredFile.name)
              .limit(BROWSE_SEARCH_CAP).all())
     return jsonify({"files": [_browse_file_entry(stored)

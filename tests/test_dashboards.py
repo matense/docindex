@@ -1109,6 +1109,51 @@ def test_browse_search_matches_names(app, auth_client, user, enabled):
     assert auth_client.get("/m/dashboards/browse/search").status_code == 400
 
 
+def test_browse_excludes_trashed_folders(app, auth_client, user, enabled):
+    """Trashed folders stay out of the tree: invisible in children, a
+    parent whose only content is trashed reports hasKids False, a trashed
+    parent 404s, and files inside trashed folders stay out of search."""
+    from app.models import Folder, utcnow
+    drive_id = _drive(app, user)
+    ids = _seed_browse_tree(app, user, drive_id)
+    with app.app_context():
+        db.session.get(Folder, ids["sub"]).deleted_at = utcnow()
+        db.session.commit()
+
+    # "Sub" trashed: gone from the mid level, "Proj" left childless.
+    mid = auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={ids['proj']}")
+    assert mid.status_code == 200
+    assert mid.get_json()["folders"] == []
+    root = auth_client.get(
+        f"/m/dashboards/browse/children?drive_id={drive_id}")
+    proj = root.get_json()["folders"][0]
+    assert proj["id"] == ids["proj"] and proj["hasKids"] is False
+
+    # A trashed parent is not browsable.
+    assert auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={ids['sub']}").status_code == 404
+
+    # The file itself is healthy, but its folder is trashed:
+    # quick search must not surface it.
+    search = auth_client.get("/m/dashboards/browse/search?q=nested")
+    assert search.status_code == 200
+    assert search.get_json()["files"] == []
+
+    # Trash "Proj" too: root level hides it and refuses it as a parent.
+    with app.app_context():
+        db.session.get(Folder, ids["proj"]).deleted_at = utcnow()
+        db.session.commit()
+    root = auth_client.get(
+        f"/m/dashboards/browse/children?drive_id={drive_id}")
+    assert root.get_json()["folders"] == []
+    assert auth_client.get(
+        "/m/dashboards/browse/children"
+        f"?drive_id={drive_id}&parent_id={ids['proj']}").status_code == 404
+
+
 def test_browse_js_calls_module_root_urls():
     """Regression (controller-verified in the browser): the tree modal must
     call ``/m/dashboards/browse/*`` (module root), never

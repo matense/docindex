@@ -117,6 +117,7 @@ class Folder(db.Model):
     parent_id = db.Column(db.Integer, db.ForeignKey("folders.id"), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     drive_id = db.Column(db.Integer, db.ForeignKey("drives.id"), nullable=True, index=True)
+    deleted_at = db.Column(db.DateTime, nullable=True, index=True)  # soft-delete (trash)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     children = db.relationship(
