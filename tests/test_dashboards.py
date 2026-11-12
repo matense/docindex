@@ -489,6 +489,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=2" in body
+    assert "?v=8" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -1314,3 +1315,9 @@ def test_prompt_textareas_autogrow():
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "132px"
+    # Initial fit must run post-append: a detached textarea reports
+    # scrollHeight 0, so fitting inside buildCard (pre-append) no-ops and
+    # clips long prompts (overflow-y hidden). renderGrid fits each card's
+    # visible textareas after inserting it into the document.
+    grid = re.search(r"function renderGrid\(S\) \{(.*?)\n    \}", src, re.S)
+    assert grid and "autoGrow(" in grid.group(1)

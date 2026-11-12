@@ -528,7 +528,16 @@
         var g = S.els.grid;
         g.innerHTML = "";
         (S.doc.cards || []).forEach(function (card) {
-            g.appendChild(buildCard(S, card));
+            var node = buildCard(S, card);
+            g.appendChild(node);
+            // Fit after insertion: a detached textarea reports
+            // scrollHeight 0, so fitting inside buildCard no-ops. Skip
+            // hidden fields (e.g. workflow params inside a closed
+            // <details>) — they keep their rows default until opened.
+            node.querySelectorAll(".dash-prompt, .dash-wf-params")
+                .forEach(function (el) {
+                    if (el.offsetParent !== null) autoGrow(el);
+                });
         });
     }
 
@@ -595,7 +604,6 @@
             autoGrow(promptInput);
             scheduleSave(S);
         });
-        autoGrow(promptInput);
         var toolsEl = d.querySelector('[data-f="tools"]');
         var flipTools = function () {
             card.tools = !card.tools;
@@ -621,7 +629,6 @@
         var errEl = d.querySelector('[data-f="wferr"]');
         if (!idInput || !paramsInput) return;
         paramsInput.addEventListener("input", function () { autoGrow(paramsInput); });
-        autoGrow(paramsInput);
         var showErr = function (msg) {
             if (!msg) {
                 errEl.classList.add("hidden");
