@@ -18,7 +18,7 @@ rejected (409) instead of queued; cards stuck in ``running`` on load are
 marked ``interrupted`` by ``doc.recover_interrupted``.
 
 The AI entry points are module-level seams (``run_agent_answer``,
-``complete_once``, ``start_workflow_run``) so tests can stub them; usage is
+``run_agent_collected``, ``complete_once``, ``start_workflow_run``) so tests can stub them; usage is
 recorded through the existing AI usage events for every model call.
 """
 
@@ -56,11 +56,15 @@ _OUTPUT_CONTRACTS = {
             '{"value": "...", "label": "..."} — "value" is the single '
             'number/text shown big (e.g. "177,8 kWh"), "label" is what it '
             'refers to (e.g. "jun/2026"). Optional "delta" (e.g. "+5%"). '
+            "If you must explain your reasoning, write it BEFORE the JSON "
+            "and keep the JSON as one fenced ```json block. "
             + _NO_FILE_REFS),
     "chart": ("--- Output contract (chart card) ---\n"
               "Reply with ONLY a JSON object, no prose. Shape: "
               '{"chart": {"kind": "bar|line|pie", "labels": [...up to 50...], '
               '"datasets": [{"label": "...", "data": [numbers...]}]}}. '
+              "If you must explain your reasoning, write it BEFORE the JSON "
+              "and keep the JSON as one fenced ```json block. "
               + _NO_FILE_REFS),
     "list": ("--- Output contract (list card) ---\n"
              "Reply with one item per line, no numbering or bullets. "
@@ -74,23 +78,72 @@ _OUTPUT_CONTRACTS = {
 _CHART_MAX_LABELS = 50
 _CHART_MAX_DATASETS = 500
 
+# Table snapshot caps (mirror the notebooks table shape).
+_TABLE_MAX_COLS = 50
+_TABLE_MAX_ROWS = 500
+
+# Run-trace caps: a chatty model must not blow up the card document.
+_TRACE_MAX_ENTRIES = 128
+_TRACE_DETAIL_CHARS = 500
+_TRACE_THINKING_CHARS = 2000
+
 
 def _output_contract(card_type):
     """The prompt suffix for a card type (empty for markdown/workflow)."""
     return _OUTPUT_CONTRACTS.get(card_type or "", "")
 
 
+def _balanced_blocks(answer):
+    """Top-level {...} spans, innermost-nested ignored.
+
+    String-aware (double quotes + backslash escapes only — JSON strings
+    cannot use single quotes, so prose apostrophes never break the
+    counting). Yields the raw span text, outermost spans only.
+    """
+    spans, depth, start = [], 0, -1
+    in_string, escaped = False, False
+    for i, ch in enumerate(answer):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    spans.append(answer[start:i + 1])
+                    start = -1
+    return spans
+
+
 def _extract_json_block(answer):
-    """First JSON object in an answer: fenced block, else whole text."""
+    """First JSON object in an answer: fenced block, whole text, else the
+    last balanced {...} span (models often write prose first and append
+    the JSON at the end)."""
     if not isinstance(answer, str):
         return None
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", answer, re.S)
-    candidate = match.group(1) if match else answer.strip()
-    try:
-        data = json.loads(candidate)
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    candidates = [match.group(1)] if match else []
+    candidates.append(answer.strip())
+    candidates.extend(reversed(_balanced_blocks(answer)))
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def _parse_kpi_result(answer):
@@ -161,12 +214,49 @@ def _parse_chart_result(answer):
     return {"chart": chart}
 
 
+def _parse_table_result(answer):
+    """Pipe-row answers become {"table": {"headers", "rows"}}.
+
+    The table output contract asks for one `a | b | c` row per line with
+    the header first. Ragged rows are padded/cut to the header width;
+    anything without a usable header plus at least one data row keeps
+    the old {"text"} behavior.
+    """
+    if not isinstance(answer, str):
+        return {"text": answer}
+    rows = []
+    for line in answer.splitlines():
+        if "|" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not any(cells):
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue  # markdown separator row, not data
+        rows.append(cells)
+    if len(rows) < 2 or not any(rows[0]):
+        return {"text": answer}
+    headers = [str(h) for h in rows[0][: _TABLE_MAX_COLS]]
+    width = len(headers)
+    data = []
+    for row in rows[1:][: _TABLE_MAX_ROWS]:
+        cells = [str(c) for c in row[:width]]
+        cells += [""] * (width - len(cells))
+        if any(cells):
+            data.append(cells)
+    if not data:
+        return {"text": answer}
+    return {"table": {"headers": headers, "rows": data}}
+
+
 def _parse_prompt_result(card_type, answer):
-    """Structured snapshot for kpi/chart answers; {"text"} otherwise."""
+    """Structured snapshot for kpi/chart/table answers; {"text"} otherwise."""
     if card_type == "kpi":
         return _parse_kpi_result(answer)
     if card_type == "chart":
         return _parse_chart_result(answer)
+    if card_type == "table":
+        return _parse_table_result(answer)
     return {"text": answer}
 
 
@@ -221,18 +311,110 @@ def _automation_runtime():
 # AI seams (stubbed in tests; production bodies below)
 # ---------------------------------------------------------------------------
 
-def run_agent_answer(user, prompt, drive=None):
+def run_agent_answer(user, prompt, drive=None, max_steps=None):
     """Full agent run with the tool loop; returns (answer_text, [usages])."""
-    from app.services import agent_service
-    answer, usages = "", []
-    events = agent_service.run_agent_events(
-        user, [{"role": "user", "content": prompt}], drive=drive)
-    for kind, payload in events:
-        if kind == "answer":
-            answer = payload if isinstance(payload, str) else str(payload or "")
-        elif kind == "usage" and isinstance(payload, dict):
-            usages.append(payload)
+    answer, usages, _trace = run_agent_collected(
+        user, prompt, drive=drive, max_steps=max_steps)
     return answer, usages
+
+
+def run_agent_collected(user, prompt, drive=None, max_steps=None):
+    """Full agent run; returns (answer_text, [usages], trace)."""
+    from app.services import agent_service
+    answer, usages, trace = "", [], []
+    for frame in _iter_agent_frames(agent_service, user, prompt, drive,
+                                   max_steps):
+        if frame["t"] == "answer":
+            answer = frame["text"]
+        elif frame["t"] == "usage":
+            usages.append(frame["usage"])
+        elif frame["t"] in ("step", "thinking"):
+            trace.append({k: frame[k] for k in ("index", "label", "detail")
+                          if k in frame})
+    return answer, usages, trace
+
+
+def _iter_agent_frames(agent_service, user, prompt, drive, max_steps):
+    """Yield step/thinking/answer/usage frame dicts from the agent loop."""
+    trace_len, thinking_chars = 0, 0
+    for kind, payload in agent_service.run_agent_events(
+            user, [{"role": "user", "content": prompt}], drive=drive,
+            max_steps=max_steps):
+        if kind == "answer":
+            yield {"t": "answer", "text": payload
+                   if isinstance(payload, str) else str(payload or "")}
+        elif kind == "usage" and isinstance(payload, dict):
+            yield {"t": "usage", "usage": payload}
+        elif kind in ("tool_start", "step") and isinstance(payload, dict):
+            if trace_len >= _TRACE_MAX_ENTRIES:
+                continue
+            detail = payload.get("detail", "")
+            if kind == "tool_start" and not detail:
+                detail = payload.get("name", "")
+            trace_len += 1
+            yield {"t": "step", "index": payload.get("index"),
+                   "label": str(payload.get("label") or kind),
+                   "detail": str(detail or "")[:_TRACE_DETAIL_CHARS]}
+        elif kind == "thinking" and isinstance(payload, str) and payload:
+            room = _TRACE_THINKING_CHARS - thinking_chars
+            if room > 0:
+                chunk = payload[:room]
+                thinking_chars += len(chunk)
+                yield {"t": "thinking", "label": "thinking",
+                       "detail": chunk}
+
+
+def iter_run_events(stored, card, user):
+    """Stream a prompt-card run as frame dicts, ending with a done frame.
+
+    Frames: {"t": "step", index, label, detail}, {"t": "thinking",
+    detail}, then {"t": "done", "result": ..., "trace": ...}. Non-string
+    thinking payloads are skipped; caps mirror the stored trace.
+    Usage is recorded when a user with an id is given (tests pass None).
+    """
+    prompt = (card.get("prompt") or "").strip()
+    refs = (card.get("inputs") or {}).get("attachments") or []
+    if not prompt and not refs:
+        raise ValueError("Card has no prompt and no inputs — nothing to run.")
+    lines = [prompt] if prompt else ["Summarize the attached files."]
+    if refs:
+        if stored is None:
+            raise ValueError("Card has attachments but no dashboard — "
+                             "nothing to run.")
+        files = resolve_inputs(stored, doc_service.load(stored), card)
+        lines += ["", "Attached files (read them with the file tools):"]
+        for ref in refs:
+            target = files[ref]
+            lines.append(f"- {target.name} (file_id {target.id})")
+    contract = _output_contract(card.get("type"))
+    if contract:
+        lines += ["", contract]
+    drive = stored.drive if stored is not None else None
+    from app.services import agent_service
+    answer, usages, trace = "", [], []
+    thinking, thinking_chars = [], 0
+    for frame in _iter_agent_frames(agent_service, user, "\n".join(lines),
+                                   [drive] if drive is not None else None,
+                                   card.get("maxSteps")):
+        if frame["t"] == "answer":
+            answer = frame["text"]
+        elif frame["t"] == "usage":
+            usages.append(frame["usage"])
+        elif frame["t"] == "step":
+            trace.append({k: frame[k] for k in ("index", "label", "detail")})
+            yield dict(frame, card_id=card.get("id"))
+        elif frame["t"] == "thinking":
+            thinking.append(frame["detail"])
+            thinking_chars += len(frame["detail"])
+            yield dict(frame, card_id=card.get("id"))
+    if thinking_chars:
+        trace.append({"index": None, "label": "thinking",
+                      "detail": "".join(thinking)})
+    if user is not None and hasattr(user, "id"):
+        _record_usage(user.id, usages)
+    yield {"t": "done", "card_id": card.get("id"),
+           "result": _parse_prompt_result(card.get("type"), answer),
+           "trace": trace}
 
 
 def complete_once(user, messages):
@@ -322,7 +504,8 @@ def _record_usage(user_id, usages):
 def run_card(stored, card, user_id):
     """Execute one card synchronously.
 
-    Raises MissingInputError for gone inputs; other failures propagate and
+    Returns (result_dict, [new_artifact_file_ids], trace). Raises
+    MissingInputError for gone inputs; other failures propagate and
     the caller turns them into the card's visible error state.
     """
     from app.models import User
@@ -333,8 +516,9 @@ def run_card(stored, card, user_id):
     files = resolve_inputs(stored, doc, card)
     workflow_ref = (card.get("inputs") or {}).get("workflow") or {}
     if card.get("type") == "workflow" or workflow_ref.get("workflow_id"):
-        return _run_workflow_card(stored, doc, card, user, workflow_ref,
-                                  files)
+        result, artifact_ids = _run_workflow_card(stored, doc, card, user,
+                                                 workflow_ref, files)
+        return result, artifact_ids, []
     return _run_prompt_card(stored, doc, card, user, files)
 
 
@@ -355,11 +539,12 @@ def _run_prompt_card(stored, doc, card, user, files):
         if contract:
             lines += ["", contract]
         drive = stored.drive
-        answer, usages = run_agent_answer(
+        answer, usages, trace = run_agent_collected(
             user, "\n".join(lines),
-            drive=[drive] if drive is not None else None)
+            drive=[drive] if drive is not None else None,
+            max_steps=card.get("maxSteps"))
         _record_usage(user.id, usages)
-        return _parse_prompt_result(card.get("type"), answer), []
+        return _parse_prompt_result(card.get("type"), answer), [], trace
     context, truncated = build_context(stored, doc, card, files)
     body = prompt or "Summarize the attached files."
     if context:
@@ -371,7 +556,8 @@ def _run_prompt_card(stored, doc, card, user, files):
     result = _parse_prompt_result(card.get("type"), text)
     if truncated:
         result = dict(result, truncated=True)
-    return result, []
+    # Single LLM call: no tool steps, so the trace stays empty.
+    return result, [], []
 
 
 def _run_workflow_card(stored, doc, card, user, workflow_ref, files):

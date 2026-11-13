@@ -460,21 +460,23 @@ def _settle_run(stored, card_id, run_id, user_id):
             fresh = doc_service.load(stored)
             target = next(c for c in fresh["cards"]
                           if c.get("id") == card_id)
-            result, artifact_ids = engine_service.run_card(
+            result, artifact_ids, trace = engine_service.run_card(
                 stored, target, user_id)
             status = "done"
         except engine_service.MissingInputError as exc:
-            result, artifact_ids, status = (
-                {"error": str(exc)}, [], "error")
+            result, artifact_ids, trace, status = (
+                {"error": str(exc)}, [], [], "error")
         except Exception as exc:  # noqa: BLE001 - errors surface on card
             db.session.rollback()
-            result, artifact_ids, status = (
-                {"error": (str(exc) or "The run failed.")[:500]}, [], "error")
+            result, artifact_ids, trace, status = (
+                {"error": (str(exc) or "The run failed.")[:500]},
+                [], [], "error")
         settled = doc_service.load(stored)
         target = next(c for c in settled["cards"]
                       if c.get("id") == card_id)
         target["status"] = status
         target["result"] = result
+        target["trace"] = trace
         target["ranAt"] = utcnow().isoformat()
         registry = settled.setdefault("createdFileIds", [])
         for new_id in artifact_ids:
@@ -589,13 +591,17 @@ def _recommend(document, owner_id):
             })
         for ref in (card.get("inputs") or {}).get("attachments", []):
             entry = attachments.get(ref)
+            refs = [r for r in
+                    (card.get("inputs") or {}).get("attachments", [])
+                    if r != ref]
             if entry is None:
                 recs.append({
                     "kind": "update_card",
                     "card_id": cid,
                     "message": f"Card references attachment '{ref}' which "
-                               f"is no longer on this dashboard.",
-                    "suggested_edit": {"detach_attachment_id": ref},
+                               f"is no longer on this dashboard — remove "
+                               f"the reference from the card.",
+                    "suggested_edit": {"attachments": refs},
                 })
                 continue
             target = db.session.get(StoredFile, entry.get("fileId"))
@@ -605,9 +611,10 @@ def _recommend(document, owner_id):
                     "kind": "update_card",
                     "card_id": cid,
                     "message": f"Missing input: '{entry.get('name') or ref}' "
-                               f"was trashed, moved or deleted — restore it "
-                               f"or detach it from the card.",
-                    "suggested_edit": {"detach_attachment_id": ref},
+                               f"was trashed, moved or deleted — remove the "
+                               f"reference from the card (detach is blocked "
+                               f"while cards link it).",
+                    "suggested_edit": {"attachments": refs},
                 })
         result = card.get("result") or {}
         if card.get("status") == "error":
@@ -797,8 +804,9 @@ register_tool(
     "detach_file",
     _schema("dashboards.detach_file",
             "Detach an attachment by attachment id (upload-origin files "
-            "are trashed too, linked originals are kept). Cards "
-            "referencing it are unwired automatically.",
+            "are trashed too, linked originals are kept). Refused while "
+            "any card references the attachment — unref the cards first "
+            "(update_card with the attachment id removed).",
             {"file_id": _FILE_ID,
              "attachment_id": {"type": "string",
                                "description": "Attachment id to detach."}},

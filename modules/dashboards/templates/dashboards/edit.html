@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Dashboards{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=9">
 {% endblock %}
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="dash-root">
@@ -69,7 +69,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=9')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=22')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

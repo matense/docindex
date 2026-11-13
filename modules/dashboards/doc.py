@@ -79,7 +79,7 @@ MAX_CONCURRENCY = 8
 
 # Card keys that change on every run without changing the dashboard's shape.
 # save_document() writes these through without snapshotting a FileVersion.
-VOLATILE_CARD_KEYS = ("result", "status", "ranAt", "runId")
+VOLATILE_CARD_KEYS = ("result", "status", "ranAt", "runId", "trace")
 
 SNAPSHOT_INTERVAL = timedelta(minutes=2)
 
@@ -94,7 +94,7 @@ def new_card(type="kpi", title="", prompt=""):
     w, h = DEFAULT_SIZE[type]
     card = {"id": uuid.uuid4().hex[:12], "type": type,
             "title": title or "", "w": w, "h": h,
-            "prompt": prompt or "", "tools": True,
+            "prompt": prompt or "", "tools": True, "maxSteps": None,
             "inputs": {"attachments": []},
             "result": None, "status": "idle", "ranAt": None}
     return _validate_card(card)
@@ -144,6 +144,14 @@ def _validate_card(card, attachment_ids=None):
                          f"character cap.")
     card["prompt"] = prompt
     card["tools"] = bool(card.get("tools", True))
+    max_steps = card.get("maxSteps")
+    if max_steps is None:
+        card["maxSteps"] = None
+    elif isinstance(max_steps, bool) or not isinstance(max_steps, int) \
+            or not 1 <= max_steps <= 128:
+        raise ValueError("Card maxSteps must be an integer 1..128 or null.")
+    else:
+        card["maxSteps"] = max_steps
     inputs = card.get("inputs")
     card["inputs"] = inputs if isinstance(inputs, dict) else {}
     refs = card["inputs"].get("attachments", [])
@@ -165,6 +173,11 @@ def _validate_card(card, attachment_ids=None):
     result = card.get("result")
     if result is not None and not isinstance(result, (dict, list, str)):
         raise ValueError("Card result must be an object, list, text or null.")
+    trace = card.get("trace")
+    if trace is None:
+        card["trace"] = None
+    elif not isinstance(trace, list):
+        raise ValueError("Card trace must be a list or null.")
     ran_at = card.get("ranAt")
     if ran_at is not None:
         card["ranAt"] = str(ran_at)
@@ -461,14 +474,24 @@ def attach_link(stored, file_id):
 def detach_attachment(stored, att_id):
     """Remove an attachment; upload-origin also trashes the owned file.
 
-    Returns ``{"removed_file": bool}`` — True only when an upload-origin
-    file was actually trashed.
+    Refused while any card still references the attachment — unref the
+    cards first. Returns ``{"removed_file": bool}`` — True only when an
+    upload-origin file was actually trashed.
     """
     doc = load(stored)
     entry = next((a for a in doc.get("attachments", [])
                   if a.get("id") == att_id), None)
     if entry is None:
         raise ValueError(f"Attachment '{att_id}' not found.")
+    users = [c.get("title") or c.get("type", "?") for c in
+             doc.get("cards", [])
+             if att_id in ((c.get("inputs") or {}).get("attachments")
+                           or [])]
+    if users:
+        raise ValueError(
+            f"Cannot detach '{entry.get('name') or att_id}': still used "
+            f"by card(s) {', '.join(users)} — remove the reference from "
+            f"the card(s) first.")
     doc["attachments"] = [a for a in doc["attachments"]
                           if a.get("id") != att_id]
     for card in doc.get("cards", []):

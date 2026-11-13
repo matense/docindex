@@ -1,14 +1,15 @@
 """Dashboard module routes: list, editor, save, attachments, history."""
 
 import difflib
+import json
 import uuid
 
-from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
-                   request, url_for)
+from flask import (Blueprint, Response, abort, flash, jsonify, redirect,
+                   render_template, request, stream_with_context, url_for)
 from flask_login import current_user
 
 from app.extensions import db
-from app.models import Drive, Folder, StoredFile, utcnow
+from app.models import Drive, Folder, StoredFile, User, utcnow
 from app.services import file_service, indexing_service
 
 from . import doc as doc_service
@@ -550,22 +551,23 @@ def run_cards(file_id):
         for target, run_id in zip(targets, accepted):
             try:
                 card = _fresh_card(stored, target)
-                result, artifact_ids = engine_service.run_card(
+                result, artifact_ids, trace = engine_service.run_card(
                     stored, card, current_user.id)
                 status = "done"
             except engine_service.MissingInputError as exc:
-                result, artifact_ids, status = (
-                    {"error": str(exc)}, [], "error")
+                result, artifact_ids, trace, status = (
+                    {"error": str(exc)}, [], [], "error")
             except Exception as exc:  # noqa: BLE001 - errors surface on card
                 db.session.rollback()
-                result, artifact_ids, status = (
+                result, artifact_ids, trace, status = (
                     {"error": (str(exc) or "The run failed.")[:500]},
-                    [], "error")
+                    [], [], "error")
             fresh = doc_service.load(stored)
             card = next(c for c in fresh["cards"]
                         if c.get("id") == target)
             card["status"] = status
             card["result"] = result
+            card["trace"] = trace
             card["ranAt"] = utcnow().isoformat()
             registry = fresh.setdefault("createdFileIds", [])
             for new_id in artifact_ids:
@@ -573,6 +575,169 @@ def run_cards(file_id):
                     registry.append(new_id)
             doc_service.save_document(stored, fresh)
     return jsonify({"ok": True, "accepted": accepted})
+
+
+def _settle_stream_card(stored_id, card_id, status, result, trace,
+                        artifact_ids=()):
+    """Persist a streamed run outcome; shared settle shape with run_cards."""
+    with engine_service.dashboard_lock(stored_id):
+        live = db.session.get(StoredFile, stored_id)
+        fresh = doc_service.load(live)
+        card = next(c for c in fresh["cards"] if c.get("id") == card_id)
+        card["status"] = status
+        card["result"] = result
+        card["trace"] = trace
+        card["ranAt"] = utcnow().isoformat()
+        registry = fresh.setdefault("createdFileIds", [])
+        for new_id in artifact_ids:
+            if new_id not in registry:
+                registry.append(new_id)
+        doc_service.save_document(live, fresh)
+
+
+@bp.post("/<int:file_id>/run/stream")
+def run_card_stream(file_id):
+    """Run one prompt card, streaming agent step frames as SSE.
+
+    Same guards and settle shape as ``run_cards``. Frames are
+    ``data: {"t": "step"|"thinking"|"done", ...}``; the client renders
+    rows live and reloads the snapshot on the ``done`` frame. If the
+    client disconnects, the generator runs to completion so the card
+    still settles (the remaining frames are simply not consumed).
+    """
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    payload = request.get_json(silent=True) or {}
+    card_id = payload.get("card_id")
+    if not card_id:
+        return jsonify({"ok": False,
+                        "error": "Pass card_id."}), 400
+    try:
+        doc = doc_service.load(stored)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    known = {c.get("id") for c in doc.get("cards", [])}
+    if card_id not in known:
+        return jsonify({"ok": False,
+                        "error": f"Unknown card '{card_id}'."}), 404
+
+    with engine_service.dashboard_lock(stored.id):
+        doc = doc_service.load(stored)
+        cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
+        running = [c.get("id") for c in doc.get("cards", [])
+                   if c.get("status") == "running"]
+        if card_id in running:
+            return _busy([card_id])
+        if len(running) >= cap:
+            return _busy(running)
+        card = next(c for c in doc["cards"] if c.get("id") == card_id)
+        run_id = f"{stored.id}:{uuid.uuid4().hex[:12]}"
+        card["status"] = "running"
+        card["runId"] = run_id
+        doc_service.save_document(stored, doc)
+        user = db.session.get(User, current_user.id)
+        if user is None:
+            return jsonify({"ok": False,
+                            "error": "Dashboard owner not found."}), 404
+        # The generator runs after the view returns, when the request's
+        # ORM instances may be detached — re-resolve everything inside.
+        stored_id, user_id = stored.id, user.id
+        card_snapshot = dict(card)
+
+        def generate():
+            live = db.session.get(StoredFile, stored_id)
+            live_user = db.session.get(User, user_id)
+            yield ": connected\n\n"
+            workflow_ref = (card_snapshot.get("inputs") or {}).get(
+                "workflow") or {}
+            if card_snapshot.get("type") == "workflow" or \
+                    workflow_ref.get("workflow_id"):
+                trace, artifact_ids = [], []
+                try:
+                    result, artifact_ids, trace = engine_service.run_card(
+                        live, card_snapshot, live_user.id)
+                    _settle_stream_card(stored_id, card_id, "done",
+                                        result, trace, artifact_ids)
+                except engine_service.MissingInputError as exc:
+                    result = {"error": str(exc)}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                except Exception as exc:  # noqa: BLE001
+                    db.session.rollback()
+                    result = {"error": (str(exc) or "The run failed.")[:500]}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": trace},
+                    default=str) + "\n\n"
+                return
+            if not card_snapshot.get("tools", True):
+                try:
+                    refs = (card_snapshot.get("inputs") or {}).get(
+                        "attachments") or []
+                    files = engine_service.resolve_inputs(
+                        live, doc_service.load(live), card_snapshot
+                    ) if refs else {}
+                    result, _, _ = engine_service._run_prompt_card(
+                        live, doc_service.load(live), card_snapshot,
+                        live_user, files)
+                    _settle_stream_card(stored_id, card_id, "done",
+                                        result, [])
+                except engine_service.MissingInputError as exc:
+                    result = {"error": str(exc)}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                except Exception as exc:  # noqa: BLE001
+                    db.session.rollback()
+                    result = {"error": (str(exc) or "The run failed.")[:500]}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": []},
+                    default=str) + "\n\n"
+                return
+            it = engine_service.iter_run_events(live, card_snapshot,
+                                               live_user)
+            try:
+                for frame in it:
+                    if frame.get("t") == "done":
+                        _settle_stream_card(
+                            stored_id, card_id, "done",
+                            frame.get("result"), frame.get("trace") or [])
+                        yield "data: " + json.dumps(frame,
+                                                    default=str) + "\n\n"
+                        return
+                    yield "data: " + json.dumps(frame,
+                                                default=str) + "\n\n"
+            except GeneratorExit:
+                try:
+                    for frame in it:
+                        if frame.get("t") == "done":
+                            _settle_stream_card(
+                                stored_id, card_id, "done",
+                                frame.get("result"),
+                                frame.get("trace") or [])
+                            return
+                except Exception as exc:  # noqa: BLE001 - drain must settle
+                    db.session.rollback()
+                    _settle_stream_card(
+                        stored_id, card_id, "error",
+                        {"error": (str(exc) or "The run failed.")[:500]},
+                        [])
+            except engine_service.MissingInputError as exc:
+                result = {"error": str(exc)}
+                _settle_stream_card(stored_id, card_id, "error", result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": []}) + "\n\n"
+            except Exception as exc:  # noqa: BLE001 - errors surface on card
+                db.session.rollback()
+                result = {"error": (str(exc) or "The run failed.")[:500]}
+                _settle_stream_card(stored_id, card_id, "error", result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": []}) + "\n\n"
+
+        return Response(stream_with_context(generate()),
+                        mimetype="text/event-stream")
 
 
 def _run_card_payload(stored, run_id):

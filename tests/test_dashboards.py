@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=2" in body
     assert "?v=9" in body
+    assert "?v=22" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -588,11 +588,13 @@ def fake_ai(monkeypatch):
     dash_engine = _engine()
     calls = {}
 
-    def fake_agent(user, prompt, drive=None):
+    def fake_agent(user, prompt, drive=None, max_steps=None):
         calls["agent_prompt"] = prompt
+        calls["max_steps"] = max_steps
         return ("3 open incidents",
                 [{"prompt_tokens": 10, "completion_tokens": 5,
-                  "estimated": True, "model": "fake"}])
+                  "estimated": True, "model": "fake"}],
+                [])
 
     def fake_complete(user, messages):
         calls["messages"] = messages
@@ -600,7 +602,7 @@ def fake_ai(monkeypatch):
                 {"prompt_tokens": 8, "completion_tokens": 4,
                  "estimated": True, "model": "fake"})
 
-    monkeypatch.setattr(dash_engine, "run_agent_answer", fake_agent)
+    monkeypatch.setattr(dash_engine, "run_agent_collected", fake_agent)
     monkeypatch.setattr(dash_engine, "complete_once", fake_complete)
     return calls
 
@@ -1366,12 +1368,14 @@ def _stub_ai(monkeypatch, answer):
     dash_engine = _engine()
     calls = {}
 
-    def fake_agent(user, prompt, drive=None):
+    def fake_agent(user, prompt, drive=None, max_steps=None):
         calls["agent_prompt"] = prompt
+        calls["max_steps"] = max_steps
         return (answer, [{"prompt_tokens": 1, "completion_tokens": 1,
-                          "estimated": True, "model": "fake"}])
+                          "estimated": True, "model": "fake"}],
+                [])
 
-    monkeypatch.setattr(dash_engine, "run_agent_answer", fake_agent)
+    monkeypatch.setattr(dash_engine, "run_agent_collected", fake_agent)
     return calls
 
 
@@ -1500,3 +1504,768 @@ def test_run_card_list_contract_bans_file_refs(app, auth_client, user,
     assert result == {"text": "- alpha\n- beta"}
     assert "file://" in calls["agent_prompt"].lower() or \
         "file references" in calls["agent_prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Run-console plan — Task 1: per-card step budget
+# ---------------------------------------------------------------------------
+
+def test_max_steps_validated_and_default_none():
+    card = dash_doc.new_card("kpi")
+    assert card["maxSteps"] is None
+    card["maxSteps"] = 5
+    assert dash_doc.validate({**dash_doc.empty_dashboard("T"),
+                              "cards": [card]})["cards"][0]["maxSteps"] == 5
+    for bad in (0, -3, 129, 2.5, True, "many", [4]):
+        card["maxSteps"] = bad
+        with pytest.raises(ValueError):
+            dash_doc.validate({**dash_doc.empty_dashboard("T"),
+                               "cards": [card]})
+
+
+def test_run_passes_max_steps_to_agent(app, auth_client, user, enabled,
+                                       monkeypatch):
+    dash_engine = _engine()
+    seen = {}
+
+    def fake_collected(user, prompt, drive=None, max_steps=None):
+        seen["max_steps"] = max_steps
+        return ("done-text", [], [])
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", fake_collected)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", prompt="Hi")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["cards"][0]["maxSteps"] = 7
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    assert auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid}).status_code == 200
+    assert seen["max_steps"] == 7
+
+
+def test_tools_off_ignores_max_steps(app, auth_client, user, enabled,
+                                     monkeypatch):
+    calls = {}
+
+    def fake_complete(user, messages):
+        calls["body"] = messages[0]["content"]
+        return ("formatted summary",
+                {"prompt_tokens": 8, "completion_tokens": 4,
+                 "estimated": True, "model": "fake"})
+
+    monkeypatch.setattr(_engine(), "complete_once", fake_complete)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", prompt="Hi", tools=False)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["cards"][0]["maxSteps"] = 7
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "formatted summary"}
+    assert "Output contract" in calls["body"]
+
+
+# ---------------------------------------------------------------------------
+# Run-console plan — Task 2: run trace collection
+# ---------------------------------------------------------------------------
+
+def test_run_collects_step_trace(app, auth_client, user, enabled,
+                                 monkeypatch):
+    def fake_events(user, history, drive=None, **kw):
+        yield ("tool_start", {"label": "read file", "name": "read",
+                              "index": 1, "max_steps": 7})
+        yield ("step", {"label": "read file", "detail": "opened a.csv",
+                        "index": 1, "max_steps": 7})
+        yield ("thinking", "need the june rows")
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "final"}
+    trace = _card(app, fid, cid)["trace"]
+    assert trace[0] == {"index": 1, "label": "read file", "detail": "read"}
+    assert trace[1] == {"index": 1, "label": "read file",
+                        "detail": "opened a.csv"}
+    assert any(e["label"] == "thinking" for e in trace)
+
+
+def test_trace_caps_and_old_docs(app, auth_client, user, enabled,
+                                 monkeypatch):
+    def fake_many(user, history, drive=None, **kw):
+        for i in range(1, 201):
+            yield ("step", {"label": "s", "detail": "d",
+                            "index": i, "max_steps": 128})
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_many)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    _run_and_finish(app, auth_client, fid, cid)
+    assert len(_card(app, fid, cid)["trace"]) <= 128
+    doc = dash_doc.empty_dashboard("Old")
+    doc["cards"] = [{"id": "c1", "type": "kpi", "title": "T",
+                     "w": 4, "h": 2, "prompt": "Hi"}]
+    validated = dash_doc.validate(doc)
+    assert validated["cards"][0]["maxSteps"] is None
+    assert validated["cards"][0]["trace"] is None
+
+
+def test_help_documents_prose_fallback():
+    """The help page carries the honest note: if the model answers prose
+    instead of JSON the card shows text by design — re-run the card."""
+    import json
+    import io
+    with io.open(os.path.join(_DASH_DIR, "module.json"),
+                 encoding="utf-8") as fh:
+        module = json.load(fh)
+    blob = "\n".join(module.get("help", []))
+    assert "plain text" in blob
+    assert "run" in blob.lower() and "again" in blob.lower()
+
+
+# ---------------------------------------------------------------------------
+# Prose-plus-JSON answers (screenshot: model writes prose, JSON last)
+# ---------------------------------------------------------------------------
+
+def test_kpi_parses_trailing_json_after_prose(app, auth_client, user,
+                                              enabled, monkeypatch):
+    answer = ("All three files read. Minimum is jun/2026 with 17737.23 Wh.\n"
+              '{"value": "177,8 kWh", "label": "jun/2026"}')
+    _stub_ai(monkeypatch, answer)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Low month",
+                    prompt="Lowest month and value")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"kpi": {"value": "177,8 kWh", "label": "jun/2026"}}
+
+
+def test_chart_parses_trailing_json_after_prose(app, auth_client, user,
+                                               enabled, monkeypatch):
+    import json
+    spec = {"chart": {"kind": "bar", "title": "Consumo mensal (kWh)",
+                      "labels": ["dez/2025", "jan/2026"],
+                      "datasets": [{"label": "kWh", "data": [370.9, 362.9]}]}}
+    answer = ("Merging the sections by date, rounded to 1 decimal.\n"
+              + json.dumps(spec))
+    _stub_ai(monkeypatch, answer)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="chart", title="Usage",
+                    prompt="Monthly usage chart")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"chart": spec["chart"]}
+
+
+def test_braces_in_prose_without_json_fall_back(app, auth_client, user,
+                                               enabled, monkeypatch):
+    _stub_ai(monkeypatch, "Use {a, b} notation for {x} here, no JSON at all")
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Tops", prompt="Tops")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "Use {a, b} notation for {x} here, no JSON at all"}
+
+
+# ---------------------------------------------------------------------------
+# Live-console plan — fix round (review findings)
+# ---------------------------------------------------------------------------
+
+def test_stream_honors_tools_off(app, auth_client, user, enabled,
+                                 monkeypatch):
+    """Fix: tools-off cards via /run/stream must use the single LLM call,
+    never the agent loop."""
+    dash_engine = _engine()
+    calls = {}
+
+    def fake_complete(user, messages):
+        calls["body"] = messages[0]["content"]
+        return ("formatted summary",
+                {"prompt_tokens": 8, "completion_tokens": 4,
+                 "estimated": True, "model": "fake"})
+
+    def boom_events(user, history, drive=None, **kw):
+        raise AssertionError("agent loop must not run for tools-off")
+
+    monkeypatch.setattr(dash_engine, "complete_once", fake_complete)
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        boom_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", prompt="Hi", tools=False)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "formatted summary" in body
+    assert _card(app, fid, cid)["status"] == "done"
+
+
+def test_iter_run_events_rejects_empty_prompt(app, user, enabled):
+    dash_engine = _engine()
+    with pytest.raises(ValueError):
+        list(dash_engine.iter_run_events(
+            None,
+            {"id": "c1", "type": "list", "prompt": "  ",
+             "tools": True, "inputs": {"attachments": []}}, None))
+
+
+def test_stream_disconnect_still_settles(app, auth_client, user, enabled,
+                                        monkeypatch):
+    """Fix: closing the stream mid-run must settle the card (done), never
+    leave it stuck running."""
+    def fake_events(user, history, drive=None, **kw):
+        yield ("step", {"label": "read", "detail": "a.csv",
+                        "index": 1, "max_steps": 7})
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    first = b""
+    for chunk in resp.response:
+        first += chunk
+        if b'"t": "step"' in first:
+            break
+    assert b'"t": "step"' in first
+    resp.response.close()
+    card = _card(app, fid, cid)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "final"}
+
+
+def test_stream_drain_error_settles_error(app, auth_client, user, enabled,
+                                         monkeypatch):
+    """Fix: an agent failure after partial frames settles error state."""
+    def fake_events(user, history, drive=None, **kw):
+        yield ("step", {"label": "read", "detail": "a.csv",
+                        "index": 1, "max_steps": 7})
+        raise ValueError("boom mid-run")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert "boom mid-run" in card["result"]["error"]
+
+
+def test_stream_workflow_registers_artifacts(app, auth_client, user,
+                                            enabled, monkeypatch):
+    """Fix: workflow runs via /run/stream must join the artifact registry
+    like the classic path."""
+    dash_tools = _dash_tools()
+    wid = _workflow_id(app, user)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    created_id = att["fileId"]
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+    monkeypatch.setattr(dash_tools.engine_service, "run_card",
+                        lambda stored, card, uid: (
+                            {"text": "w"}, [created_id], []))
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    b"".join(resp.response)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert created_id in dash_doc.load(stored)["createdFileIds"]
+
+
+def test_stream_frames_carry_card_id(app, user, enabled, monkeypatch):
+    dash_engine = _engine()
+
+    def fake_events(user, history, drive=None, **kw):
+        yield ("step", {"label": "read", "detail": "a.csv",
+                        "index": 1, "max_steps": 7})
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    frames = list(dash_engine.iter_run_events(
+        None,
+        {"id": "c9", "type": "list", "prompt": "Tops",
+         "tools": True, "inputs": {"attachments": []}}, None))
+    assert frames[0]["card_id"] == "c9"
+    assert frames[-1]["card_id"] == "c9"
+
+
+# ---------------------------------------------------------------------------
+# Live-console plan — Task 2: SSE endpoint + live frontend
+# ---------------------------------------------------------------------------
+
+def test_run_stream_endpoint_streams_frames(app, auth_client, user,
+                                            enabled, monkeypatch):
+    dash_engine = _engine()
+    if not hasattr(dash_engine, "iter_run_events"):
+        pytest.fail("iter_run_events seam missing")
+
+    def fake_events(user, history, drive=None, **kw):
+        yield ("step", {"label": "read", "detail": "a.csv",
+                        "index": 1, "max_steps": 7})
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert body.startswith(": connected")
+    assert 'data: {"t": "step"' in body
+    assert '"t": "done"' in body
+    assert _card(app, fid, cid)["status"] == "done"
+
+
+def test_view_subscribes_live_stream():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "run/stream" in src
+    assert "getReader" in src or "ReadableStream" in src
+    assert "frame.card_id" in src
+
+
+def test_console_opens_only_on_icon_click():
+    """The live console must never auto-open on run start: the stream
+    buffers frames silently and the popup opens only via the icon."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "openLiveConsole" not in src
+    assert "ensureLiveBuffer" in src
+
+
+def test_console_close_never_cancels_stream():
+    """Closing the popup (x / Esc / outside click) only hides it — the
+    run continues untouched. Reader cancel belongs to view teardown."""
+    import re
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function closeConsole\(V\) \{(.*?)\n    \}", src,
+                      re.S)
+    assert match, "closeConsole missing"
+    assert "consoleReader" not in match.group(1)
+    assert "cancel" not in match.group(1)
+    teardown = re.findall(r"root\._dashTeardown = function \(\) \{(.*?)\n    \}",
+                         src, re.S)
+    assert teardown, "teardown missing"
+    assert any("consoleReader" in body for body in teardown)
+
+
+# ---------------------------------------------------------------------------
+# Card-size plan — Task 1: honor card height
+# ---------------------------------------------------------------------------
+
+def test_card_height_is_honored():
+    import re
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    m = re.search(r"\.dash-grid \{(.*?)\}", css, re.S)
+    assert m and "align-items" in m.group(1)
+    assert "stretch" not in m.group(1).replace("start", "")
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-chart-wrap" in src
+    assert re.search(r"card\.h\s*\*", src), \
+        "wrap height must derive from card.h"
+
+
+def test_same_type_rows_stay_aligned():
+    """Same type + same h in one row must share the row's max height
+    (content varies: 1- vs 2-line labels); different h must stay free."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "equalizeRowHeights" in src
+
+
+# ---------------------------------------------------------------------------
+# Card-size plan — Task 2: forgiving drop targets
+# ---------------------------------------------------------------------------
+
+def test_drop_target_looks_through_overlays():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "elementsFromPoint" in src
+
+
+def test_run_all_has_stop_button():
+    """Run-all mode shows a Stop button that stops after in-flight cards."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "stopall" in src
+    assert "runAllStop = true" in src
+
+
+def test_btn_hidden_guard_wins():
+    """style.css loads after tailwind and sets .btn{display:inline-flex},
+    which beats tailwind's .hidden on equal specificity — any btn that
+    relies on .hidden (the Stop button) would never hide. A scoped
+    guard must always win."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".btn.hidden" in css
+
+
+# ---------------------------------------------------------------------------
+# Live-console plan — Task 1: streaming engine seam
+# ---------------------------------------------------------------------------
+
+def test_iter_run_events_streams_then_done(app, user, enabled, monkeypatch):
+    dash_engine = _engine()
+    if not hasattr(dash_engine, "iter_run_events"):
+        pytest.fail("iter_run_events seam missing")
+
+    def fake_events(user, history, drive=None, **kw):
+        yield ("tool_start", {"label": "read", "name": "r",
+                              "index": 1, "max_steps": 7})
+        yield ("thinking", {"oops": 1})
+        yield ("thinking", "plan the months")
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    frames = list(dash_engine.iter_run_events(
+        None,
+        {"id": "c1", "type": "list", "prompt": "Tops",
+         "tools": True, "inputs": {"attachments": []}}, None))
+    kinds = [f["t"] for f in frames]
+    assert kinds[0] == "step" and kinds[-1] == "done"
+    assert any(f.get("label") == "thinking" for f in frames)
+    done = frames[-1]
+    assert done["result"] == {"text": "final"}
+    assert isinstance(done["trace"], list)
+
+
+def test_iter_run_events_no_steps_still_done(app, user, enabled,
+                                            monkeypatch):
+    dash_engine = _engine()
+    if not hasattr(dash_engine, "iter_run_events"):
+        pytest.fail("iter_run_events seam missing")
+
+    def fake_instant(user, history, drive=None, **kw):
+        yield ("answer", "42")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_instant)
+    frames = list(dash_engine.iter_run_events(
+        None,
+        {"id": "c1", "type": "kpi", "prompt": "Hi",
+         "tools": True, "inputs": {"attachments": []}}, None))
+    assert frames[-1]["t"] == "done"
+    assert frames[-1]["result"] == {"text": "42"}
+
+
+# ---------------------------------------------------------------------------
+# Run-console plan — Task 3: run console popup (View)
+# ---------------------------------------------------------------------------
+
+def test_view_renders_run_console():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-console-pop" in src
+    assert "console-btn" in src
+    assert "console-close" in src
+    assert "card.trace" in src or 'card["trace"]' in src
+
+
+def test_popups_hide_despite_display_rules():
+    """Popup close bug: component classes that set `display` share
+    specificity with tailwind's `.hidden` and dashboard.css loads later,
+    so `display:flex/block` used to win and popups never hid. Each such
+    popup needs a scoped `.hidden` guard that always wins."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    for cls in ("dash-refpick", "dash-console-pop", "dash-browse-tree"):
+        assert ("." + cls + ".hidden" in css), \
+            "missing .hidden guard for ." + cls
+
+
+# ---------------------------------------------------------------------------
+# Run-console plan — Task 4: table snapshots
+# ---------------------------------------------------------------------------
+
+def test_run_card_table_parses_pipe_rows(app, auth_client, user, enabled,
+                                        monkeypatch):
+    _stub_ai(monkeypatch, "Month | Wh | kWh | % of total\n"
+                          "dez/2025 | 370906.01 | 370.9 | 10.6\n"
+                          "jan/2026 | 362908.78 | 362.9")
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="table", title="Usage",
+                    prompt="Monthly usage table")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"table": {
+        "headers": ["Month", "Wh", "kWh", "% of total"],
+        "rows": [["dez/2025", "370906.01", "370.9", "10.6"],
+                 ["jan/2026", "362908.78", "362.9", ""]]}}
+
+
+def test_run_card_table_caps_and_fallback(app, auth_client, user,
+                                         enabled, monkeypatch):
+    big = "h1 | h2\n" + "".join("a | b\n" for _ in range(600))
+    _stub_ai(monkeypatch, big)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="table", title="Big",
+                    prompt="Big table")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert set(result) == {"table"}
+    assert len(result["table"]["rows"]) == 500
+    _stub_ai(monkeypatch, "no pipes here, just prose")
+    cid2 = _add_card(app, fid, type="table", title="Prose",
+                     prompt="Prose table")
+    assert _run_and_finish(app, auth_client, fid,
+                           cid2) == {"text": "no pipes here, just prose"}
+
+
+# ---------------------------------------------------------------------------
+# Attachment-usage plan — Task 1: detach guard + recommend unref
+# ---------------------------------------------------------------------------
+
+def test_detach_blocked_while_card_uses_file(app, user):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        att = dash_doc.attach_upload(stored, _upload())
+        doc = dash_doc.load(stored)
+        card = dash_doc.new_card("kpi", title="KPI")
+        card["inputs"]["attachments"] = [att["id"]]
+        doc["cards"].append(card)
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        with pytest.raises(ValueError, match="KPI"):
+            dash_doc.detach_attachment(stored, att["id"])
+        reloaded = dash_doc.load(db.session.get(StoredFile, fid))
+        assert len(reloaded["attachments"]) == 1  # entry kept
+        asset = db.session.get(StoredFile, att["fileId"])
+        assert asset.deleted_at is None  # file NOT trashed
+
+
+def test_detach_blocked_over_route(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    _add_card(app, fid, attachments=[att["id"]])
+    resp = auth_client.delete(
+        f"/m/dashboards/{fid}/attachments/{att['id']}")
+    assert resp.status_code == 400
+    assert "card" in resp.get_json()["error"].lower()
+
+
+def test_detach_allowed_after_unref(app, user):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        att = dash_doc.attach_upload(stored, _upload())
+        doc = dash_doc.load(stored)
+        card = dash_doc.new_card("kpi", title="KPI")
+        card["inputs"]["attachments"] = [att["id"]]
+        doc["cards"].append(card)
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        with pytest.raises(ValueError):
+            dash_doc.detach_attachment(stored, att["id"])
+        fresh = dash_doc.load(db.session.get(StoredFile, fid))
+        fresh["cards"][0]["inputs"]["attachments"] = []
+        dash_doc.save_document(stored, fresh, force_checkpoint=True)
+        result = dash_doc.detach_attachment(stored, att["id"])
+        assert result == {"removed_file": True}
+        assert dash_doc.load(
+            db.session.get(StoredFile, fid))["attachments"] == []
+
+
+def test_recommend_suggests_unref_not_detach(app, user, enabled):
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    _add_card(app, fid, attachments=[att["id"]])
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        target = db.session.get(StoredFile, att["fileId"])
+        from app.services import file_service
+        file_service.delete_file(target)  # file gone, card ref remains
+        recs = tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)["recommendations"]
+    unrefs = [r for r in recs
+              if r.get("kind") == "update_card" and "attachments" in
+              r.get("suggested_edit", {})]
+    assert unrefs, recs
+    assert all("detach_attachment_id" not in r["suggested_edit"]
+               for r in recs)
+
+
+def test_render_attach_with_linked_files():
+    """Regression (dashboard 110894 rendered nothing): renderAttach must
+    run without throwing when attachments are linked to cards — plain
+    JS objects have no .get() (Python-style call broke the whole grid)."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    esc_m = re.search(r"function esc\(value\) \{(.*?)\n    \}", src, re.S)
+    refs_m = re.search(r"function cardRefs\(card\) \{(.*?)\n    \}", src,
+                       re.S)
+    attach_m = re.search(
+        r"function renderAttach\(S\) \{(.*?)\n    \}\n", src, re.S)
+    assert esc_m and refs_m and attach_m, "helpers missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    harness = (
+        "function esc(value) {" + esc_m.group(1) + "\n    }\n"
+        "function cardRefs(card) {" + refs_m.group(1) + "\n    }\n"
+        "function renderAttach(S) {" + attach_m.group(1) + "\n    }\n"
+        "var html = '';\n"
+        "var listEl = { querySelectorAll: function () { return []; } };\n"
+        "Object.defineProperty(listEl, 'innerHTML',\n"
+        "  { set: function (v) { html = v; }, get: function () { return html; }, configurable: true });\n"
+        "var S = { els: { attachList: listEl }, usageHi: null,\n"
+        "  doc: { attachments: [{id: 'a1', name: 'data.csv', origin: 'upload'}],\n"
+        "    cards: [{id: 'c1', type: 'kpi', title: 'KPI', inputs: {attachments: ['a1']}}] } };\n"
+        "renderAttach(S);\n"
+        "if (html.indexOf('data-detach-tip') < 0) throw new Error('no linked tooltip');\n"
+        "if (html.indexOf('KPI') < 0) throw new Error('card title missing from tooltip');\n"
+        "console.log('RENDER_OK');\n")
+    out = subprocess.run(["node", "-e", harness], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "RENDER_OK"
+
+
+# ---------------------------------------------------------------------------
+# Attachment-usage plan — Task 2: usage highlight toggle (Builder)
+# ---------------------------------------------------------------------------
+
+def test_attachment_usage_highlight():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "data-usage" in src
+    assert "usageHi" in src
+    assert "dash-dim" in src and "dash-use-hi" in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".dash-dim" in css and ".dash-use-hi" in css
+
+
+def test_placeholder_ignores_pointer_events():
+    """The drop placeholder must never swallow hit tests: after the first
+    swap it sits under the cursor, and every later hover would hit it
+    instead of a card — freezing the drag."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    import re
+    m = re.search(r"\.dash-ph \{(.*?)\}", css, re.S)
+    assert m and "pointer-events" in m.group(1)
+    assert "none" in m.group(1)
+
+
+def test_drop_position_uses_dominant_axis():
+    """Drag drop: before/after must follow the dominant axis (x for
+    side-by-side cards, y for stacked ones) — a vertical-only half made
+    left-to-right moves impossible except at the card's right edge."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function dropAfter\(rect, x, y\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "dropAfter helper missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) +
+             ";var R={left:10,top:0,width:300,height:200};"
+             "console.log([dropAfter(R,270,100),dropAfter(R,20,100),"
+             "dropAfter({left:0,top:0,width:300,height:200},150,150),"
+             "dropAfter({left:0,top:0,width:300,height:200},150,50)].join(','))")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "true,false,true,false"
+
+
+def test_detach_disabled_tooltip_names_cards():
+    """The disabled detach button must explain why via a hoverable
+    wrapper (native title doesn't fire on disabled buttons) and name
+    the using cards."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Can\\'t detach" in src or "Cannot detach" in src
+    assert "data-detach-tip" in src
+
+
+def test_ref_change_repaints_attachment_buttons():
+    """Fix round: setCardRefs must re-render the attachment list, or the
+    detach button keeps a stale disabled state after un/ref."""
+    import re
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function setCardRefs\(S, card, refs\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "setCardRefs helper missing"
+    assert "renderAttach(S)" in match.group(1)
+
+
+def test_ai_detach_linked_is_refused(app, user, enabled):
+    """Review Focus #1 (tools path): the AI detach tool refuses linked
+    attachments with the using card(s) named."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    _add_card(app, fid, title="KPI", attachments=[att["id"]])
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = tools._tool_detach_file(
+            user_obj, {"file_id": fid, "attachment_id": att["id"]},
+            None)
+    assert "error" in out and "KPI" in out["error"]

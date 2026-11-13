@@ -184,7 +184,7 @@
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
             dirty: false, saving: false, saveTimer: null, saveError: "",
-            ptrOp: null, pickFor: null, pendingDelCard: null, els: {}
+            ptrOp: null, pickFor: null, pendingDelCard: null, usageHi: null, els: {}
         };
         if (!Array.isArray(S.doc.cards)) S.doc.cards = [];
         if (!Array.isArray(S.doc.attachments)) S.doc.attachments = [];
@@ -477,16 +477,66 @@
             list.innerHTML = '<div class="dash-empty">No attachments — upload a file or attach an existing one.</div>';
             return;
         }
+        var usersOf = function (attId) {
+            return (S.doc.cards || []).filter(function (c) {
+                return cardRefs(c).indexOf(attId) >= 0;
+            });
+        };
         list.innerHTML = atts.map(function (a) {
+            var users = usersOf(a.id);
+            var n = users.length;
+            var active = S.usageHi === a.id;
+            // Native title doesn't fire on a disabled button, so the
+            // disabled detach control is wrapped in a span carrying a
+            // tooltip that names the using cards.
+            var names = users.map(function (c) {
+                return c.title || c.type;
+            });
+            var shown = names.slice(0, 3).map(function (t) {
+                return '"' + t + '"';
+            }).join(", ");
+            if (names.length > 3) shown += " and " + (names.length - 3) + " more";
+            var detachBtn = '<button type="button" class="btn btn-ghost btn-xs gap-1' + (n ? "" : " ml-auto") + '" data-detach="' + esc(a.id) + '"';
+            if (n) {
+                detachBtn += ' disabled><i class="fas fa-xmark"></i> detach</button>';
+                detachBtn = '<span class="ml-auto" data-detach-tip="' + esc(a.id) + '"' +
+                    ' title="Can\'t detach — still used by ' + n + " card" + (n === 1 ? "" : "s") +
+                    " (" + shown + '). Remove the reference' + (n === 1 ? "" : "s") + ' first.">' +
+                    detachBtn + "</span>";
+            } else {
+                detachBtn += ' title="Detach this file">' +
+                    '<i class="fas fa-xmark"></i> detach</button>';
+            }
             return '<div class="dash-attach-row"><i class="fas fa-file-lines opacity-50"></i>' +
                 '<span class="dash-fname">' + esc(a.name) + "</span>" +
                 '<span class="dash-og dash-og-' + esc(a.origin) + '">' + esc(a.origin) + "</span>" +
-                '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto" data-detach="' + esc(a.id) + '"' +
-                ' title="detach (cards referencing it become missing input)">' +
-                '<i class="fas fa-xmark"></i> detach</button></div>';
+                '<button type="button" class="btn btn-ghost btn-xs gap-1' + (active ? " btn-active" : "") + '" data-usage="' + esc(a.id) + '"' +
+                ' aria-pressed="' + (active ? "true" : "false") + '"' +
+                ' title="' + (n ? "Show cards using this file — " + n + " card" + (n === 1 ? "" : "s") : "Not used by any card") + '">' +
+                '<i class="fas fa-eye"></i></button>' +
+                detachBtn + "</div>";
         }).join("");
+        list.querySelectorAll("[data-usage]").forEach(function (b) {
+            b.addEventListener("click", function () {
+                var id = b.getAttribute("data-usage");
+                S.usageHi = (S.usageHi === id) ? null : id;
+                renderAttach(S);
+                paintUsage(S);
+            });
+        });
         list.querySelectorAll("[data-detach]").forEach(function (b) {
             b.addEventListener("click", function () { detachAttachment(S, b.getAttribute("data-detach")); });
+        });
+    }
+
+    function paintUsage(S) {
+        (S.doc.cards || []).forEach(function (card) {
+            var node = gridCardEl(S, card.id);
+            if (!node) return;
+            node.classList.remove("dash-dim", "dash-use-hi");
+            if (!S.usageHi) return;
+            if (cardRefs(card).indexOf(S.usageHi) >= 0) node.classList.add("dash-use-hi");
+            else node.classList.add("dash-dim");
         });
     }
 
@@ -539,6 +589,8 @@
                     if (el.offsetParent !== null) autoGrow(el);
                 });
         });
+        paintUsage(S);
+        equalizeRowHeights(g, S.doc.cards);
     }
 
     function buildCard(S, card) {
@@ -585,6 +637,12 @@
             'aria-checked="' + (card.tools ? "true" : "false") + '" aria-label="Card tools" ' +
             'title="on = full agent; off = 1 LLM call"></div>' +
             "<span>" + (card.tools ? "<b>on</b> · full agent" : "<b>off</b> · 1 LLM call") + "</span>" +
+            '<label class="dash-maxsteps" title="max agent steps for this card (empty = auto)">' +
+            'max steps <input type="number" class="dash-maxsteps-in" data-f="maxsteps" ' +
+            'min="1" max="128" step="1" placeholder="auto" ' +
+            'aria-label="Max AI steps" value="' +
+            (card.maxSteps === null || card.maxSteps === undefined ? "" : esc(card.maxSteps)) + '">' +
+            "</label>" +
             '<span class="dash-tools-hint">on = full agent (reads files mid-run, more capable) · ' +
             "off = 1 LLM call over pre-injected context (cheaper/faster, truncation flagged)</span></div>" +
             '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i><span class="dash-ran">' + esc(ranText(card)) + "</span>" +
@@ -609,10 +667,30 @@
             card.tools = !card.tools;
             renderGrid(S);
             scheduleSave(S);
-        };
-        toolsEl.addEventListener("click", flipTools);
+        };        toolsEl.addEventListener("click", flipTools);
         toolsEl.addEventListener("keydown", function (e) {
             if (e.key === " " || e.key === "Enter") { e.preventDefault(); flipTools(); }
+        });
+        var maxStepsEl = d.querySelector('[data-f="maxsteps"]');
+        maxStepsEl.addEventListener("change", function () {
+            var raw = maxStepsEl.value.trim();
+            if (raw === "") {
+                card.maxSteps = null;
+                scheduleSave(S);
+                return;
+            }
+            var n = Number(raw);
+            if (!/^\d+$/.test(raw) || n < 1 || n > 128) {
+                maxStepsEl.classList.add("dash-invalid");
+                maxStepsEl.value = card.maxSteps === null ||
+                    card.maxSteps === undefined ? "" : card.maxSteps;
+                setTimeout(function () {
+                    maxStepsEl.classList.remove("dash-invalid");
+                }, 1500);
+                return;
+            }
+            card.maxSteps = n;
+            scheduleSave(S);
         });
         d.querySelector('[data-f="del"]').addEventListener("click", function () {
             openDelCard(S, card.id);
@@ -723,6 +801,7 @@
         if (!card.inputs || typeof card.inputs !== "object") card.inputs = {};
         card.inputs.attachments = refs;
         renderGrid(S);
+        renderAttach(S);
         scheduleSave(S);
     }
 
@@ -845,6 +924,48 @@
         return S.els.grid.querySelector('[data-card="' + id + '"]');
     }
 
+    // Same type + same h sharing a row get the row's max height so their
+    // footers line up even when content varies (1- vs 2-line labels).
+    // Different h (or mixed types) intentionally keep natural heights.
+    function equalizeRowHeights(grid, cards) {
+        if (!grid) return;
+        var nodes = Array.prototype.slice.call(
+            grid.querySelectorAll("[data-card],[data-vcard]"));
+        nodes.forEach(function (n) { n.style.height = ""; });
+        var byId = {};
+        (cards || []).forEach(function (c) { byId[c.id] = c; });
+        var rows = [], cur = null;
+        nodes.slice().sort(function (a, b) {
+            return a.offsetTop - b.offsetTop;
+        }).forEach(function (n) {
+            if (!cur || Math.abs(n.offsetTop - cur.top) > 8) {
+                cur = { top: n.offsetTop, nodes: [] };
+                rows.push(cur);
+            }
+            cur.nodes.push(n);
+        });
+        rows.forEach(function (row) {
+            if (row.nodes.length < 2) return;
+            var key = function (n) {
+                return n.getAttribute("data-card") ||
+                    n.getAttribute("data-vcard");
+            };
+            var first = byId[key(row.nodes[0])];
+            if (!first) return;
+            var same = row.nodes.every(function (n) {
+                var c = byId[key(n)];
+                return c && c.type === first.type && c.h === first.h;
+            });
+            if (!same) return;
+            var max = row.nodes.reduce(function (m, n) {
+                return Math.max(m, n.offsetHeight);
+            }, 0);
+            if (max > 0) row.nodes.forEach(function (n) {
+                n.style.height = max + "px";
+            });
+        });
+    }
+
     function focusHandle(S, id, isResize) {
         var b = S.els.grid.querySelector(
             "[data-" + (isResize ? "resize" : "drag") + '="' + id + '"]');
@@ -926,6 +1047,16 @@
         window.addEventListener("pointercancel", S._onPtrCancel, { once: true });
     }
 
+    // Drop position follows the dominant axis: horizontal midpoint for
+    // side-by-side cards, vertical midpoint for stacked ones. A
+    // vertical-only half made left-to-right moves impossible except at
+    // the card's right edge.
+    function dropAfter(rect, x, y) {
+        var dx = x - (rect.left + rect.width / 2);
+        var dy = y - (rect.top + rect.height / 2);
+        return Math.abs(dx) > Math.abs(dy) ? dx > 0 : dy > 0;
+    }
+
     function onPtrMoveImpl(S, e) {
         var op = S.ptrOp;
         if (!op) return;
@@ -933,11 +1064,22 @@
             op.lastX = e.clientX;
             op.lastY = e.clientY;
             moveFloat(S, e.clientX, e.clientY);
-            var t = document.elementFromPoint(e.clientX, e.clientY);
-            var over = t && t.closest ? t.closest(".dash-grid .dash-card") : null;
+            var over = null;
+            var hits = document.elementsFromPoint && document.elementsFromPoint(e.clientX, e.clientY);
+            if (hits && hits.length) {
+                for (var hi = 0; hi < hits.length; hi++) {
+                    var el = hits[hi];
+                    var cand = el && el.closest ? el.closest(".dash-grid .dash-card") : null;
+                    if (cand && cand !== op.node) { over = cand; break; }
+                }
+            } else {
+                var t = document.elementFromPoint(e.clientX, e.clientY);
+                var single = t && t.closest ? t.closest(".dash-grid .dash-card") : null;
+                if (single && single !== op.node) over = single;
+            }
             if (over && over !== op.node) {
                 var r = over.getBoundingClientRect();
-                var after = (e.clientY - r.top) > r.height / 2;
+                var after = dropAfter(r, e.clientX, e.clientY);
                 var key = over.getAttribute("data-card") + (after ? "a" : "b");
                 if (key !== op.lastKey) {
                     op.lastKey = key;
@@ -1390,8 +1532,12 @@
                 .then(function (out) {
                     if (out.resp.ok && out.data && out.data.ok) {
                         dropAttached(S, attId);
+                        if (S.usageHi === attId) {
+                            S.usageHi = null;
+                            paintUsage(S);
+                        }
                         var extra = out.data.removed_file ? " (uploaded file deleted)" : "";
-                        toast(S, '"' + entry.name + '" detached' + extra + " — cards referencing it show missing input");
+                        toast(S, '"' + entry.name + '" detached' + extra);
                         save(S, false).then(function () { reloadDoc(S); });
                     } else {
                         toast(S, "Detach failed: " + ((out.data && out.data.error) || out.resp.status), true);
@@ -1611,7 +1757,9 @@
             root: root, opts: opts, base: base, mode: "view",
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             charts: {}, observers: [], timers: [],
-            inFlight: {}, runAllActive: false, runAllStop: false, els: {}
+            inFlight: {}, runAllActive: false, runAllStop: false, els: {},
+            live: {}, consoleFor: null, consoleLive: null,
+            consoleReader: null, consoleDismissed: false
         };
         if (!Array.isArray(V.doc.cards)) V.doc.cards = [];
         if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
@@ -1626,12 +1774,29 @@
                 V.runAllStop = true;
                 viewToast(V, "run-all stopped after the cards in flight");
             }
+            if (e.key === "Escape") userCloseConsole(V);
+        }, { capture: true, signal: ac.signal });
+        document.addEventListener("click", function (e) {
+            if (!V.consoleFor || !V.els.consolePop ||
+                    V.els.consolePop.classList.contains("hidden")) return;
+            if (!document.body.contains(V.root)) return;
+            var box = V.els.consolePop;
+            if (box.contains(e.target)) return;
+            var btn = e.target.closest
+                ? e.target.closest('[data-vf="console-btn"]') : null;
+            if (btn && V.root.contains(btn)) return;
+            userCloseConsole(V);
         }, { capture: true, signal: ac.signal });
 
         root._dashTeardown = function () {
             ac.abort();
             stopViewTimers(V);
             destroyViewCharts(V);
+            if (V.consoleReader) {
+                try { V.consoleReader.cancel(); } catch (e) { /* noop */ }
+                V.consoleReader = null;
+            }
+            V.consoleLive = null;
             root._dashTeardown = null;
             root._dash = null;
         };
@@ -1673,6 +1838,9 @@
             '<span class="dash-label">View · snapshots</span>' +
             '<button type="button" class="btn btn-primary btn-sm gap-1" data-vact="runall">' +
             '<i class="fas fa-rotate"></i> <span data-vzone="runall-label">Run all</span></button>' +
+            '<button type="button" class="btn btn-error btn-sm gap-1 hidden" data-vact="stopall" ' +
+            'title="Stop after the cards in flight" aria-label="Stop run all">' +
+            '<i class="fas fa-stop"></i> <span>Stop</span></button>' +
             '<label class="dash-cap" title="how many cards run at once (saved on the dashboard)">' +
             "concurrency " +
             '<select class="select select-bordered select-xs w-16" data-vact="cap">' +
@@ -1683,16 +1851,24 @@
             '<span class="dash-hint" data-vzone="runall-state"></span>' +
             "</div>" +
             '<div class="dash-grid" data-vzone="grid"></div>' +
+            '<div class="dash-console-pop glass-panel hidden" data-vzone="console" role="dialog" aria-label="Run console"></div>' +
             '<div class="dash-toast glass-panel" data-vzone="toast" role="status"></div>' +
             "</div>";
         var q = function (sel) { return holder.querySelector('[data-vzone="' + sel + '"]'); };
         V.els = {
             holder: holder, grid: q("grid"), toast: q("toast"),
+            consolePop: q("console"),
             runAllBtn: holder.querySelector('[data-vact="runall"]'),
+            stopAllBtn: holder.querySelector('[data-vact="stopall"]'),
             runAllLabel: q("runall-label"), runAllState: q("runall-state"),
             capSel: holder.querySelector('[data-vact="cap"]')
         };
         V.els.runAllBtn.addEventListener("click", function () { runAll(V); });
+        V.els.stopAllBtn.addEventListener("click", function () {
+            if (!V.runAllActive) return;
+            V.runAllStop = true;
+            viewToast(V, "Stopping after the cards in flight…");
+        });
         V.els.capSel.addEventListener("change", function () { setViewCap(V); });
     }
 
@@ -1722,6 +1898,7 @@
 
     function renderViewGrid(V) {
         destroyViewCharts(V);
+        closeConsole(V);
         V.observers.forEach(function (o) { try { o.disconnect(); } catch (e) { /* noop */ } });
         V.observers = [];
         var g = V.els.grid;
@@ -1734,6 +1911,7 @@
         V.doc.cards.forEach(function (card) {
             g.appendChild(buildViewCard(V, card));
         });
+        equalizeRowHeights(g, V.doc.cards);
     }
 
     function viewCardNode(V, id) {
@@ -1759,6 +1937,11 @@
             '<span class="dash-vtools' + (card.tools ? "" : " off") + '" data-vf="tools" ' +
             'title="' + (card.tools ? "full agent" : "1 LLM call") + '">' +
             (card.tools ? "tools on" : "tools off") + "</span>" +
+            ((Array.isArray(card.trace) && card.trace.length) || V.inFlight[card.id]
+                ? '<button type="button" class="btn btn-ghost btn-xs gap-1" data-vf="console-btn" ' +
+                  'title="Run console" aria-label="Show run console for ' + esc(card.title || card.type) + '">' +
+                  '<i class="fas fa-terminal"></i></button>'
+                : "") +
             '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto" data-vf="refresh" ' +
             'title="Run this card" aria-label="Run ' + esc(card.title || card.type) + '">' +
             '<i class="fas fa-rotate"></i></button></div>';
@@ -1766,14 +1949,234 @@
         d.querySelector('[data-vf="refresh"]').addEventListener("click", function () {
             refreshCard(V, card.id);
         });
+        var consoleBtn = d.querySelector('[data-vf="console-btn"]');
+        if (consoleBtn) {
+            consoleBtn.addEventListener("click", function () {
+                toggleConsole(V, card.id, consoleBtn);
+            });
+        }
         syncViewRunning(V, card, d);
         return d;
+    }
+
+    function traceHTML(trace) {
+        var head = '<div class="dash-console-pop-head"><span>Run console · ' + trace.length +
+            " step" + (trace.length === 1 ? "" : "s") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1 dash-console-close" ' +
+            'data-console-close="1" title="Close console" aria-label="Close run console">' +
+            '<i class="fas fa-xmark"></i></button></div>';
+        var items = trace.map(function (e) {
+            if (e && e.label === "thinking") {
+                return '<li class="dash-console-thinking"><b>thinking</b><p>' +
+                    esc(e.detail || "") + "</p></li>";
+            }
+            var idx = e && e.index !== null && e.index !== undefined ? esc(e.index) : "·";
+            return '<li><span class="dash-console-i">' + idx + "</span><div><b>" +
+                esc((e && e.label) || "step") + "</b><p>" + esc((e && e.detail) || "") +
+                "</p></div></li>";
+        }).join("");
+        return head + '<ol class="dash-console-pop-list">' + items + "</ol>";
+    }
+
+    function toggleConsole(V, cardId, anchor) {
+        var box = V.els.consolePop;
+        if (!box || !anchor) return;
+        if (V.consoleFor === cardId && !box.classList.contains("hidden")) {
+            userCloseConsole(V);
+            return;
+        }
+        var buf = V.live && V.live[cardId];
+        var live = !!(buf && !buf.done && buf.frames.length);
+        var card = cardById(V.doc, cardId);
+        var trace = card && Array.isArray(card.trace) ? card.trace : [];
+        if (live) {
+            box.innerHTML = livePopupHTML(buf, true);
+        } else if (buf && buf.done && buf.frames.length) {
+            box.innerHTML = livePopupHTML(buf, false);
+        } else if (trace.length) {
+            box.innerHTML = traceHTML(trace);
+        } else {
+            return;
+        }
+        var closer = box.querySelector('[data-console-close]');
+        if (closer) closer.addEventListener("click", function () {
+            userCloseConsole(V);
+        });
+        box.classList.remove("hidden");
+        V.consoleFor = cardId;
+        V.consoleDismissed = false;
+        placeConsole(V, anchor);
+    }
+
+    function placeConsole(V, anchor) {
+        var box = V.els.consolePop;
+        var r = anchor.getBoundingClientRect();
+        var w = Math.min(400, window.innerWidth - 16);
+        box.style.width = w + "px";
+        var h = Math.min(box.offsetHeight || 300, window.innerHeight - 16);
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+        var top = r.bottom + 6 + h <= window.innerHeight
+            ? r.bottom + 6
+            : Math.max(8, r.top - 6 - h);
+        box.style.left = left + "px";
+        box.style.top = top + "px";
+    }
+
+    function liveRowHTML(frame) {
+        if (frame && frame.label === "thinking") {
+            return '<li class="dash-console-thinking"><b>thinking</b><p>' +
+                esc(frame.detail || "") + "</p></li>";
+        }
+        var idx = frame && frame.index !== null && frame.index !== undefined
+            ? esc(frame.index) : "·";
+        return '<li class="dash-console-live-row"><span class="dash-console-i">' + idx +
+            "</span><div><b>" + esc((frame && frame.label) || "step") + "</b><p>" +
+            esc((frame && frame.detail) || "") + "</p></div></li>";
+    }
+
+    function ensureLiveBuffer(V, cardId) {
+        if (!V.live) V.live = {};
+        if (!V.live[cardId]) V.live[cardId] = { frames: [], done: false };
+        V.consoleDismissed = false;
+        return V.live[cardId];
+    }
+
+    function livePopupHTML(buf, live) {
+        var head = '<div class="dash-console-pop-head"><span>Run console · ' +
+            (live ? "live · " : "") + buf.frames.length +
+            " step" + (buf.frames.length === 1 ? "" : "s") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1 dash-console-close" ' +
+            'data-console-close="1" title="Close console" aria-label="Close run console">' +
+            '<i class="fas fa-xmark"></i></button></div>' +
+            '<ol class="dash-console-pop-list" data-live-list="1">' +
+            buf.frames.map(liveRowHTML).join("") + "</ol>" +
+            (live ? '<div class="dash-console-live-hint"><i class="fas fa-circle-notch fa-spin"></i> streaming…</div>' : "");
+        return head;
+    }
+
+    function appendLiveFrame(V, cardId, frame) {
+        if (frame && frame.card_id && frame.card_id !== cardId) return;
+        var buf = V.live && V.live[cardId];
+        if (buf && !buf.done) buf.frames.push(frame);
+        if (V.consoleFor !== cardId || !V.els.consolePop ||
+                V.els.consolePop.classList.contains("hidden")) return;
+        var list = V.els.consolePop.querySelector('[data-live-list]');
+        if (!list) return;
+        var tmp = document.createElement("div");
+        tmp.innerHTML = "<ol>" + liveRowHTML(frame) + "</ol>";
+        var li = tmp.firstChild.firstChild;
+        if (li) {
+            list.appendChild(li);
+            list.scrollTop = list.scrollHeight;
+        }
+        var head = V.els.consolePop.querySelector(".dash-console-pop-head span");
+        if (head) {
+            var n = list.children.length;
+            head.textContent = "Run console · live · " + n +
+                " step" + (n === 1 ? "" : "s");
+        }
+    }
+
+    function streamCardRun(V, cardId, done, fallback) {
+        if (!window.fetch || !window.ReadableStream || !window.TextDecoder) {
+            fallback();
+            return;
+        }
+        ensureLiveBuffer(V, cardId);
+        var buf = V.live[cardId];
+        var frames = 0;
+        var settled = false;
+        var finishLive = function (ok) {
+            if (settled) return;
+            settled = true;
+            V.consoleReader = null;
+            V.consoleLive = null;
+            buf.done = true;
+            if (ok) {
+                var box = V.els.consolePop;
+                if (box && V.consoleFor === cardId &&
+                        !box.classList.contains("hidden")) {
+                    box.innerHTML = livePopupHTML(buf, false);
+                    var closer = box.querySelector('[data-console-close]');
+                    if (closer) closer.addEventListener("click", function () {
+                        userCloseConsole(V);
+                    });
+                }
+            } else {
+                closeConsole(V);
+            }
+            finishViewRun(V, cardId, done);
+        };
+        fetch(V.base + "/run/stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ card_id: cardId })
+        }).then(function (resp) {
+            if (!resp.ok || !resp.body || !resp.body.getReader) {
+                throw new Error("no stream");
+            }
+            var reader = resp.body.getReader();
+            V.consoleReader = reader;
+            var decoder = new TextDecoder();
+            var buf = "";
+            var pumpStream = function () {
+                return reader.read().then(function (r) {
+                    if (r.done) { finishLive(true); return; }
+                    buf += decoder.decode(r.value, { stream: true });
+                    var parts = buf.split("\n\n");
+                    buf = parts.pop();
+                    parts.forEach(function (chunk) {
+                        var lines = chunk.split("\n");
+                        for (var i = 0; i < lines.length; i++) {
+                            var line = lines[i].trim();
+                            if (line.indexOf("data:") !== 0) continue;
+                            var frame = null;
+                            try {
+                                frame = JSON.parse(line.slice(5));
+                            } catch (e) { frame = null; }
+                            if (!frame || typeof frame !== "object") continue;
+                            if (frame.t === "done") { finishLive(true); return; }
+                            frames++;
+                            appendLiveFrame(V, cardId, frame);
+                        }
+                    });
+                    return pumpStream();
+                });
+            };
+            return pumpStream();
+        }).catch(function () {
+            if (V.consoleDismissed) {
+                V.consoleDismissed = false;
+                V.consoleReader = null;
+                V.consoleLive = null;
+                finishViewRun(V, cardId, done);
+            } else if (!settled && frames === 0) {
+                V.consoleReader = null;
+                V.consoleLive = null;
+                closeConsole(V);
+                fallback();
+            } else {
+                finishLive(false);
+                viewToast(V, "Live feed interrupted — reloading snapshot.");
+            }
+        });
+    }
+
+    function closeConsole(V) {
+        if (V.els.consolePop) V.els.consolePop.classList.add("hidden");
+        V.consoleFor = null;
+    }
+
+    function userCloseConsole(V) {
+        V.consoleDismissed = true;
+        closeConsole(V);
     }
 
     function refreshViewCard(V, card) {
         var node = viewCardNode(V, card.id);
         if (!node) return;
         node.replaceWith(buildViewCard(V, card));
+        equalizeRowHeights(V.els.grid, V.doc.cards);
     }
 
     function syncViewRunning(V, card, node) {
@@ -2206,6 +2609,9 @@
         bodyEl.innerHTML = '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
         var wrap = bodyEl.querySelector(".dash-chart-wrap");
         var canvas = bodyEl.querySelector("canvas");
+        // Height follows the card's h so sizes stay honest (h=3 renders
+        // visibly shorter than h=6); the CSS min-height is only fallback.
+        wrap.style.height = Math.max(160, 90 + card.h * 32) + "px";
         loadChartLib(function (err) {
             if (!document.body.contains(canvas)) return;
             if (err || !window.Chart) {
@@ -2361,6 +2767,12 @@
         V.inFlight[cardId] = true;
         card.status = "running";
         refreshViewCard(V, card);
+        streamCardRun(V, cardId, null, function () {
+            classicRefreshCard(V, cardId);
+        });
+    }
+
+    function classicRefreshCard(V, cardId) {
         viewPostRun(V, { card_id: cardId }).then(function (out) {
             if (out.resp.status === 409) {
                 viewToast(V, "A run is already in progress — wait and try again.");
@@ -2398,6 +2810,7 @@
         V.runAllActive = true;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = true;
+        V.els.stopAllBtn.classList.remove("hidden");
         var queue = ids.slice();
         var total = ids.length;
         var finished = 0;
@@ -2431,7 +2844,8 @@
                     V.inFlight[id] = true;
                     card.status = "running";
                     refreshViewCard(V, card);
-                    viewPostRun(V, { card_id: id }).then(function (out) {
+                    streamCardRun(V, id, settle, function () {
+                        viewPostRun(V, { card_id: id }).then(function (out) {
                         if (!out.resp.ok || !out.data || !out.data.ok) {
                             if (out.resp.status !== 409) {
                                 viewToast(V, "Run failed on one card: " +
@@ -2452,6 +2866,7 @@
                         viewToast(V, "Run failed on one card: network error.", true);
                         finishViewRun(V, id, settle);
                     });
+                    });
                 })(queue.shift());
             }
             if (!queue.length && active === 0 && finished >= total) endRunAll(V, total);
@@ -2465,6 +2880,7 @@
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
+        V.els.stopAllBtn.classList.add("hidden");
         V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
         viewToast(V, total + (total === 1 ? " card updated." : " cards updated."));
@@ -2475,6 +2891,7 @@
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
+        V.els.stopAllBtn.classList.add("hidden");
         V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
         viewToast(V, "run-all stopped (" + finished + "/" + total + " done).");
