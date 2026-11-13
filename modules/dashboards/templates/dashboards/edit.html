@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} - Dashboards{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=9">
+{% endblock %}
+{% block content %}
+<div class="mx-auto w-full flex flex-col gap-3" id="dash-root">
+
+    <!-- Toolbar -->
+    <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">
+        <a href="{{ url_for('dashboards.index') }}" class="btn btn-ghost btn-sm btn-square"
+           title="All dashboards"><i class="fas fa-arrow-left"></i></a>
+        <div class="flex-1 min-w-0 dash-toolbar-doc">
+            <h1 class="font-bold truncate">{{ doc.title }}</h1>
+            <p class="text-xs opacity-40">
+                {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
+            </p>
+        </div>
+        <span id="dash-save-status" class="text-xs opacity-50 whitespace-nowrap">
+            <i class="fas fa-check mr-1"></i>Saved
+        </span>
+        {% set dash_mode = request.args.get('mode', 'builder') %}
+        {% if dash_mode == 'view' %}
+        <a href="{{ url_for('dashboards.editor', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Back to Builder">
+            <i class="fas fa-pen"></i> Builder
+        </a>
+        {% else %}
+        <a href="{{ url_for('dashboards.editor', file_id=file.id, mode='view') }}"
+           class="btn btn-ghost btn-sm gap-1" title="View snapshots">
+            <i class="fas fa-eye"></i> View
+        </a>
+        {% endif %}
+        <a href="{{ url_for('dashboards.history', file_id=file.id) }}"
+           class="btn btn-ghost btn-sm gap-1" title="Version history">
+            <i class="fas fa-clock-rotate-left"></i> History
+        </a>
+    </div>
+
+    <!-- Mount point: the DashboardEditor (Tasks 5-6) renders cards here. -->
+    <div id="dash-mount" class="flex flex-col gap-2">
+        <div class="glass-panel rounded-2xl px-6 py-12 text-center">
+            <i class="fas fa-circle-notch fa-spin text-2xl opacity-30"></i>
+            <p class="text-sm opacity-50 mt-3">Loading dashboard editor…</p>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const root = document.getElementById('dash-root');
+    if (!root) return;
+    const opts = {
+        dashboardId: {{ file.id }},
+        saveUrl: {{ url_for('dashboards.save', file_id=file.id)|tojson }},
+        docUrl: {{ url_for('dashboards.document_json', file_id=file.id)|tojson }},
+        runUrl: {{ ('/m/dashboards/%s/run' % file.id)|tojson }},
+        statusUrl: {{ ('/m/dashboards/%s/status' % file.id)|tojson }},
+        runStatusUrlTemplate: {{ '/m/dashboards/runs/RUN_ID/status'|tojson }},
+        indexUrl: {{ url_for('dashboards.index')|tojson }},
+        checksum: {{ (file.checksum or '')|tojson }},
+        mode: {{ (request.args.get('mode', 'builder'))|tojson }},
+        doc: {{ doc|tojson }}
+    };
+    // Lets the AI chat's @here attach this dashboard (mirrors drive/view.html).
+    window.currentFile = { id: {{ file.id }}, name: {{ file.name|tojson }} };
+    function boot() { window.DashboardEditor.mount(root, opts); }
+    // SPA page swaps don't execute external <script> src tags, so load the
+    // editor script on demand — it stays cached in window after first load.
+    if (window.DashboardEditor) return boot();
+    const s = document.createElement('script');
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=22')|tojson }};
+    s.onload = boot;
+    document.head.appendChild(s);
+})();
+</script>
+{% endblock %}

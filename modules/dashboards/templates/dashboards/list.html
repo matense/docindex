@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Dashboards - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto w-full flex flex-col gap-4">
+
+    <!-- Header -->
+    <div class="glass-panel rounded-2xl px-6 py-5 flex items-center gap-4 flex-wrap">
+        <span class="w-11 h-11 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-lg">
+            <i class="fas fa-table-cells"></i>
+        </span>
+        <div class="flex-1 min-w-0">
+            <h1 class="text-xl font-bold">Dashboards</h1>
+            <p class="text-xs opacity-50">
+                Living pages of prompt-driven cards (KPIs, tables, lists, charts, text)
+                over your drive files — indexed for search and fully accessible to the
+                AI assistant.
+            </p>
+        </div>
+        <button class="btn btn-primary btn-sm gap-1" onclick="document.getElementById('dash-new-modal').showModal()">
+            <i class="fas fa-plus"></i> New dashboard
+        </button>
+    </div>
+
+    {% if dashboards %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {% for d in dashboards %}
+        <div class="glass-panel rounded-2xl px-5 py-4 flex flex-col gap-2">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-table-cells text-primary"></i>
+                <a href="{{ url_for('dashboards.editor', file_id=d.file.id) }}"
+                   class="font-semibold truncate hover:text-primary transition-colors">
+                    {{ d.file.name[:-6] if d.file.name.endswith('.pdash') else d.file.name }}
+                </a>
+                <span class="text-xs opacity-40 ml-auto whitespace-nowrap">
+                    {{ d.file.updated_at.strftime('%Y-%m-%d %H:%M') if d.file.updated_at }}
+                </span>
+            </div>
+            <div class="text-xs opacity-50 flex items-center gap-3 flex-wrap">
+                <span><i class="fas fa-hard-drive mr-1"></i>{{ d.file.drive.name if d.file.drive else '—' }}</span>
+                {% if d.file.folder %}<span><i class="fas fa-folder mr-1"></i>{{ d.file.folder.name }}</span>{% endif %}
+                <span><i class="fas fa-table-cells mr-1"></i>{{ d.cards }} card{{ 's' if d.cards != 1 }}</span>
+            </div>
+            <div class="flex gap-2 mt-1">
+                <a href="{{ url_for('dashboards.editor', file_id=d.file.id) }}"
+                   class="btn btn-ghost btn-xs gap-1"><i class="fas fa-pen"></i> Open</a>
+                <a href="{{ url_for('dashboards.history', file_id=d.file.id) }}"
+                   class="btn btn-ghost btn-xs gap-1"><i class="fas fa-clock-rotate-left"></i> History</a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="glass-panel rounded-2xl px-6 py-12 text-center">
+        <i class="fas fa-table-cells text-4xl opacity-20"></i>
+        <p class="text-sm opacity-50 mt-3">No dashboards yet. Create your first one — or ask the AI
+        assistant to create one for you.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- New dashboard modal -->
+<dialog id="dash-new-modal" class="modal">
+    <div class="modal-box glass-panel">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New dashboard</h3>
+        <p class="text-xs opacity-50 mb-4">Saved as a file on the chosen drive — synced (read-only)
+        drives are not available. Dashboards are indexed for search and AI automatically.</p>
+        <form method="POST" action="{{ url_for('dashboards.new') }}" class="flex flex-col gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="name" placeholder="Dashboard name" required
+                   class="input input-bordered input-sm w-full">
+            <select name="location" class="select select-bordered select-sm w-full">
+                {% for value, label in locations %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+            {% if not locations %}
+            <p class="text-xs text-warning">You need a writable drive first — create one on the
+            drive page.</p>
+            {% endif %}
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        onclick="document.getElementById('dash-new-modal').close()">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm" {{ 'disabled' if not locations }}>
+                    Create
+                </button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+{% endblock %}

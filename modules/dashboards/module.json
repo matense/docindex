@@ -1,0 +1,14 @@
+{
+  "name": "dashboards",
+  "version": "0.1.0",
+  "description": "Living dashboards: pages of prompt-driven cards (KPIs, tables, lists, charts, text) over your drive files, with per-card runs, version history and full AI tooling.",
+  "capabilities": ["routes", "tools"],
+  "nav": {"label": "Dashboards", "icon": "fa-table-cells", "url": "/"},
+  "help": [
+    "Dashboards are pages of cards — KPIs, tables, lists, charts and text — that live on your drives like files: they are indexed, searchable and keep a full version history.",
+    "Each card carries a natural-language prompt plus references to files attached to the dashboard. Running a card executes the prompt and snapshots the result, so the page reads instantly — every card has a refresh icon and the page has a run-all action.",
+    "Files are attached to the dashboard itself — either uploaded into the dashboard's folder or linked from your drives — and cards reference attachments by id.",
+    "Ask the AI to build or maintain dashboards: it can create pages with cards, attach your drive files, wire cards to them, run cards and suggest concrete edits — one answer leaves a single restorable history entry. Detaching an upload-origin file deletes it; linked originals are never touched.",
+    "Results depend on the shape of the model's answer: KPI, chart and table cards look their best when the model returns the requested JSON. If a run comes back as plain text instead, nothing is broken — a run never fails for this — just run the card again for a fresh answer."
+  ]
+}

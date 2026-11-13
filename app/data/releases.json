@@ -1,6 +1,23 @@
 {
   "releases": [
     {
+      "version": "0.1.16",
+      "date": "2026-11-11",
+      "title": "Dashboards: living pages of prompt-driven cards",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "New Dashboards module: compose pages of cards — KPIs, tables, lists, charts and text — over your drive files, stored as files on your drives with version history, trash and full-text search.",
+            "Each card carries a natural-language prompt plus references to files attached to the dashboard (uploaded or linked); running a card executes the prompt and snapshots the result, so the page reads instantly and works with the AI down. Every card has a refresh icon and View mode has a run-all action.",
+            "The AI assistant can now build and maintain dashboards for you: create pages with cards, attach files, wire cards to them, run cards and suggest concrete edits — one answer leaves a single restorable history entry.",
+            "Artifact cleanup and safe delete: run-created files are tracked and removable with one action, and deleting a dashboard shows exactly what goes (dashboard, owned uploads, artifacts) and what stays (linked originals)."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.15",
       "date": "2026-11-11",
       "title": "Academic notebooks: reading view, math, charts and editing tools",
