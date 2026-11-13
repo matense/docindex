@@ -1,6 +1,32 @@
 {
   "releases": [
     {
+      "version": "0.1.17",
+      "date": "2026-11-13",
+      "title": "Dashboards: run console, step budgets and honest snapshots",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Run console: watch the agent think while a card runs — each card's popup streams the steps and intermediate thinking live, with the full trace kept on the snapshot; a Stop button ends run-all mode after the in-flight cards.",
+            "Per-card AI step budget: cap how many agent steps a card may use (automatic by default, 1 to 128), set in the card's build config.",
+            "Attachment usage view: an eye toggle on each attached file highlights the cards using it and dims the rest, so you can see the impact before changing anything."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "KPI, chart and table cards now snapshot structured results — one big value, real charts, real tables — and tolerate prose-plus-JSON answers; if the model answers in plain text the card shows text by design, never an error — just run it again.",
+            "Detaching a file is now refused while any card still links it, with the using cards named; unref the cards first.",
+            "Honest card sizes: card heights follow their size badge, rows of equal cards align, KPI cards can shrink to a compact 3x1, and drag-and-drop targets look through overlays.",
+            "The Builder speaks English throughout, prompt fields grow with their content, and every dashboard string is covered by the help page."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.16",
       "date": "2026-11-11",
       "title": "Dashboards: living pages of prompt-driven cards",
