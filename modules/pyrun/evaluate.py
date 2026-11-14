@@ -7,9 +7,9 @@ tracebacks, no host paths).
 Semantics (binding for this task):
 
 * Inputs: ``code`` (str), ``variables`` (name -> JSON value), ``files``
-  (name -> list of text chunks; each file's chunks are joined and parsed
-  by the ``rows()`` host helper below), ``limits`` (partial dict
-  merged over :data:`DEFAULT_LIMITS`).
+  (name -> list of text chunks; each chunk is parsed by the ``rows()``
+  host helper below as an independent header-first CSV fragment),
+  ``limits`` (partial dict merged over :data:`DEFAULT_LIMITS`).
 * Result: ``{"ok": True, "value": <JSON value>}`` or
   ``{"ok": False, "error": str}``. The value is the last *top-level*
   expression statement (``total = ...; total``); a script ending without
@@ -101,8 +101,10 @@ _BUILTIN_NAMES = frozenset({
 })
 
 # Host-side data helpers. Plain value-only functions injected into the
-# sandbox namespace (same precedence as builtins: they can never be
-# shadowed by user bindings).
+# sandbox namespace at the variables layer: an explicit user binding
+# (scope assignment or tool-layer variable) shadows a helper for that
+# run — shadowing one just replaces it, it is not a security boundary.
+# Whitelisted builtins still take absolute precedence over everything.
 _HOST_HELPERS = frozenset({"parse_json", "parse_csv", "rows"})
 
 # Per-type method whitelist: exactly the spec'd data-work surface.

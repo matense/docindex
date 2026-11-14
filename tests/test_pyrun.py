@@ -135,3 +135,26 @@ def test_internal_limits_bypass_user_except():
     out = evaluate(code)
     assert out["ok"] is False
     assert out.get("value") != -1
+
+
+def test_wall_clock_path_aborts_and_suggests_chunking():
+    # ~5000 ticks: far below the iteration budget, so only _check_wall
+    # can fail this (max_wall_seconds=0 trips at the first timed check).
+    out = evaluate("s=0\nfor i in range(5000):\n s+=(i%7)\ns",
+                   limits={"max_wall_seconds": 0})
+    assert out["ok"] is False
+    assert "wall-clock" in out["error"]
+    assert "chunk" in out["error"].lower()
+
+
+def test_rows_consumes_shared_iteration_budget():
+    # rows() alone ticks once per parsed row (20000 rows here); with no
+    # consumer loop in the program, only the per-row ticks can exhaust
+    # a 10000-operation budget.
+    chunks = ["a,b\n" + "1,2\n" * 5000 for _ in range(4)]
+    out = evaluate("rows('f')\n0",
+                   files={"f": chunks},
+                   limits={"max_iterations": 10000})
+    assert out["ok"] is False
+    assert "iteration budget" in out["error"]
+    assert "chunk" in out["error"].lower()
