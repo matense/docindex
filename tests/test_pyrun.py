@@ -347,3 +347,77 @@ def test_help_lists_pyrun_when_enabled(app, auth_client):
     html = resp.data.decode()
     assert 'id="help-modules"' in html
     assert "pyrun" in html.lower() or "Python" in html
+
+
+# ---------------------------------------------------------------------------
+# Task 4: tool-level hostile + scale evidence
+# ---------------------------------------------------------------------------
+
+
+def test_tool_level_code_cannot_escape(app, user):
+    for code in ["__import__('os').system('id')",
+                 "open('/etc/passwd').read()",
+                 "(1).__class__.__base__.__subclasses__()",
+                 "x = parse_json.__globals__",
+                 "y = rows.__class__"]:
+        with app.app_context():
+            out = _call_compute(user, {"code": code})
+        assert out["ok"] is False
+        assert "traceback" not in out.get("error", "").lower()
+        assert out.get("retry_hint")
+
+
+def test_tool_level_path_traversal_rejected(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "1",
+                                   "outputs": {"../evil.txt": "x"}})
+    assert out["ok"] is False
+    assert out.get("retry_hint")
+
+
+def test_tool_outputs_stay_small(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "s = 'z' * (10**7)\ns"})
+    assert out["ok"] is False
+    assert out.get("retry_hint")
+
+
+def test_large_file_streams_in_chunks(app, user, monkeypatch):
+    # >200KB blob must take the 64KB streaming branch, never the
+    # whole-file read_text_content path (which caps at 200k chars).
+    n = 20000
+    content = ("v,pad\n" + ("1," + "x" * 10 + "\n") * n).encode()
+    assert len(content) > 200_000
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id, name="big.csv", content=content)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.size > 200_000
+        tools = _pyrun_tools()
+        chunks = tools._read_chunks(stored)
+        assert len(chunks) > 1
+        assert "".join(chunks) == content.decode()
+
+        def _no_whole_read(*args, **kwargs):
+            raise AssertionError("large files must stream, not whole-read")
+
+        monkeypatch.setattr(file_service, "read_text_content", _no_whole_read)
+        out = _call_compute(user, {"code": "1",
+                                   "files": [{"file_id": fid, "as": "f"}]})
+    assert out["ok"] is True and out["value"] == 1
+
+
+def test_save_key_single_use(app, user):
+    drive_id = _writable_drive(app, user)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'a,b\\n1,2\\n'",
+                                   "outputs": {"result.csv": "out"}})
+    assert out["ok"] is True
+    key = out["artifacts"][0]["key"]
+    with app.app_context():
+        first = _call_save(user, {"key": key, "drive_id": drive_id})
+    assert first["ok"] is True
+    with app.app_context():
+        second = _call_save(user, {"key": key, "drive_id": drive_id})
+    assert second["ok"] is False
+    assert second.get("retry_hint")
