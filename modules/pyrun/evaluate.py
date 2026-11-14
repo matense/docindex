@@ -7,9 +7,10 @@ tracebacks, no host paths).
 Semantics (binding for this task):
 
 * Inputs: ``code`` (str), ``variables`` (name -> JSON value), ``files``
-  (name -> list of text chunks; each chunk is parsed by the ``rows()``
-  host helper below as an independent header-first CSV fragment),
-  ``limits`` (partial dict merged over :data:`DEFAULT_LIMITS`).
+  (name -> list of text chunks; the first chunk carries the CSV header
+  and later chunks hold data lines for that header, per the ``rows()``
+  host helper below), ``limits`` (partial dict merged over
+  :data:`DEFAULT_LIMITS`).
 * Result: ``{"ok": True, "value": <JSON value>}`` or
   ``{"ok": False, "error": str}``. The value is the last *top-level*
   expression statement (``total = ...; total``); a script ending without
@@ -45,7 +46,9 @@ Semantics (binding for this task):
   surface as catchable ``ValueError``); ``parse_csv(text[, delimiter])``
   parses CSV text with a header row into a list of ``str->str`` dicts;
   ``rows(name[, delimiter])`` does the same over a named file's chunk
-  list (each chunk is parsed as a header-first CSV fragment; every parsed
+  list (the header comes from the first chunk only and is passed as
+  ``fieldnames`` for the later data-only chunks; a repeated header line
+  at the top of a later chunk is defensively skipped. Every parsed
   row consumes one shared-iteration tick and is charged to the allocation
   budget, and each chunk read checks the wall clock). All three return
   plain JSON-serializable lists/dicts. Helpers ride the variables-style
@@ -1485,16 +1488,35 @@ class _Interpreter:
                 "delimiter must be a single-character string"))
         return delimiter
 
-    def _csv_records(self, text, delimiter):
+    def _csv_records(self, text, delimiter, fieldnames=None):
         """Parse header-first CSV ``text`` into a list of plain dicts.
 
         Every parsed row consumes one shared-iteration tick (so chunked
         inputs stay bounded by the same budget as loops) and is charged
         to the allocation budget. Ragged-short fields stay ``None``
         (JSON ``null``); ragged-long extras (``None`` key) are dropped.
+
+        When ``fieldnames`` is given, ``text`` already belongs to a
+        known header: its first row is data, except that a repeated
+        header line in first position is defensively skipped
+        (tolerated, not required — chunk producers never emit one).
         """
         try:
-            reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+            if fieldnames is not None:
+                head, sep, rest = text.partition("\n")
+                candidate = head if sep else text
+                if candidate:
+                    try:
+                        first = next(csv.reader([candidate],
+                                                delimiter=delimiter),
+                                     None)
+                    except Exception:
+                        first = None
+                    if first is not None and \
+                            list(first) == list(fieldnames):
+                        text = rest if sep else ""
+            reader = csv.DictReader(io.StringIO(text), delimiter=delimiter,
+                                    fieldnames=fieldnames)
             if reader.fieldnames is None:
                 return []
             out = []
@@ -1559,11 +1581,21 @@ class _Interpreter:
         if name not in self.files:
             raise _UserError(KeyError(name))
         chunks = self.files[name]
+        if not chunks:
+            return []
+        header = next(csv.reader(io.StringIO(chunks[0]),
+                                 delimiter=delimiter), None)
+        if not header:
+            return []
         out = []
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
             self._tick()
             self._check_wall()
-            out.extend(self._csv_records(chunk, delimiter))
+            if index == 0:
+                out.extend(self._csv_records(chunk, delimiter))
+            else:
+                out.extend(self._csv_records(chunk, delimiter,
+                                             fieldnames=header))
         return out
 
     # -- whitelisted methods -----------------------------------------------

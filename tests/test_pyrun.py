@@ -421,3 +421,41 @@ def test_save_key_single_use(app, user):
         second = _call_save(user, {"key": key, "drive_id": drive_id})
     assert second["ok"] is False
     assert second.get("retry_hint")
+
+
+# ---------------------------------------------------------------------------
+# Final-review findings: line-aligned chunks + header-aware rows()
+# ---------------------------------------------------------------------------
+
+
+def test_rows_over_large_file_exact_values(app, user):
+    # >200KB file whose data rows cross several 64KB chunk boundaries
+    # (pad column forces the size; the ✓ pins the incremental UTF-8
+    # decoder). rows() must return every row with EXACT values — the old
+    # byte-split chunks silently misaligned/dropped rows here.
+    n = 4000
+    rows = []
+    expected = []
+    for i in range(n):
+        value = f"val-{i}-\u2713"
+        rows.append(f"{i},{value}," + "x" * 40)
+        expected.append([str(i), value])
+    content = ("id,v,pad\n" + "\n".join(rows) + "\n").encode("utf-8")
+    assert len(content) > 200_000
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id, name="big-rows.csv",
+                    content=content)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.size > 200_000
+        tools = _pyrun_tools()
+        chunks = tools._read_chunks(stored)
+        assert len(chunks) > 1
+        assert "".join(chunks) == content.decode("utf-8")
+        out = _call_compute(
+            user,
+            {"code": "rs = rows('f')\n"
+                     "[[r['id'], r['v']] for r in rs]",
+             "files": [{"file_id": fid, "as": "f"}]})
+    assert out["ok"] is True, out
+    assert out["value"] == expected

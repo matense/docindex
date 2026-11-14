@@ -7,6 +7,7 @@ same validated save path as every other upload flow). Agent-only in
 v1: no routes, no nav.
 """
 
+import codecs
 import json
 import mimetypes
 import os
@@ -27,6 +28,10 @@ _CODE_MAX_CHARS = 20_000
 _FILES_MAX_COUNT = 5
 _SMALL_FILE_MAX_CHARS = 200_000
 _CHUNK_BYTES = 65536
+# Hard backstops for the streamed large-file path: a pathological file
+# fails closed (ValueError -> safe tool error) instead of blowing RAM.
+_LARGE_FILE_MAX_BYTES = 16 * 1024 * 1024
+_LARGE_FILE_MAX_CHUNKS = 512
 
 # Pending artifacts: key (uuid hex) -> {name, content, size}. Bounded so
 # abandoned compute outputs cannot grow RAM without limit: at most 50
@@ -80,17 +85,66 @@ def _record(user_id, code, value=None):
 
 def _read_chunks(stored):
     """Text chunks for the evaluator: one read for small files, streamed
-    64KB chunks for large ones (each chunk ticks the wall clock)."""
+    line-aligned chunks for large ones (each chunk ticks the wall clock).
+
+    Large-file contract (shared with ``evaluate._bi_rows``): the byte
+    stream is decoded with an incremental UTF-8 decoder (multibyte chars
+    never split) and split on newlines, so every chunk ends at a line
+    boundary. The first line of the file is the header and lives in the
+    first chunk only; later chunks are pure data lines (no repeated
+    header). ``"".join(chunks)`` still reproduces the file text exactly.
+    Totals are capped; oversized files raise (the caller maps any read
+    failure to a safe retryable error).
+    """
     if (stored.size or 0) <= _SMALL_FILE_MAX_CHARS:
         return [file_service.read_text_content(
             stored, max_chars=_SMALL_FILE_MAX_CHARS)]
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     chunks = []
+    pending = []  # complete lines for the in-progress chunk
+    pending_chars = 0
+    buf = ""  # decoded text not yet split into lines
+    total_bytes = 0
+    ended_newline = True
     with open(file_service.file_path(stored), "rb") as fh:
         while True:
             blob = fh.read(_CHUNK_BYTES)
-            if not blob:
+            if blob:
+                total_bytes += len(blob)
+                if total_bytes > _LARGE_FILE_MAX_BYTES:
+                    raise ValueError(
+                        "File is too large to process in the sandbox.")
+                buf += decoder.decode(blob)
+                final = False
+            else:
+                buf += decoder.decode(b"", final=True)
+                final = True
+            lines = buf.split("\n")
+            if final:
+                if lines and lines[-1] == "":
+                    lines.pop()  # newline terminator, not a line
+                    ended_newline = True
+                else:
+                    ended_newline = False
+                complete = lines
+                buf = ""
+            else:
+                complete, buf = lines[:-1], lines[-1]
+            for line in complete:
+                pending.append(line)
+                pending_chars += len(line) + 1  # +1 for the split "\n"
+                if pending_chars >= _CHUNK_BYTES:
+                    chunks.append("\n".join(pending) + "\n")
+                    if len(chunks) > _LARGE_FILE_MAX_CHUNKS:
+                        raise ValueError(
+                            "File has too many rows to process.")
+                    pending = []
+                    pending_chars = 0
+            if final:
                 break
-            chunks.append(blob.decode("utf-8", errors="replace"))
+    if pending:
+        text = "\n".join(pending)
+        chunks.append(text + ("\n" if ended_newline else ""))
     return chunks or [""]
 
 
@@ -144,7 +198,7 @@ def _resolve_input_files(user, entries):
                 "Give each file a distinct 'as' name and retry.")
         try:
             files_map[as_name] = _read_chunks(stored)
-        except OSError:
+        except Exception:  # noqa: BLE001 - any read failure is retryable
             return None, _err(
                 f"Could not read file {file_id}.",
                 "Pick another file and retry.")
