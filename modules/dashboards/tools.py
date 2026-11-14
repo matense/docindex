@@ -456,6 +456,7 @@ def _settle_run(stored, card_id, run_id, user_id):
         card["status"] = "running"
         card["runId"] = run_id
         doc_service.save_document(stored, document)
+        doc_service.run_started(stored.id, run_id)
         try:
             fresh = doc_service.load(stored)
             target = next(c for c in fresh["cards"]
@@ -471,6 +472,9 @@ def _settle_run(stored, card_id, run_id, user_id):
             result, artifact_ids, trace, status = (
                 {"error": (str(exc) or "The run failed.")[:500]},
                 [], [], "error")
+        finally:
+            elapsed = doc_service.run_elapsed(stored.id, run_id)
+            doc_service.run_finished(stored.id, run_id)
         settled = doc_service.load(stored)
         target = next(c for c in settled["cards"]
                       if c.get("id") == card_id)
@@ -478,6 +482,8 @@ def _settle_run(stored, card_id, run_id, user_id):
         target["result"] = result
         target["trace"] = trace
         target["ranAt"] = utcnow().isoformat()
+        if elapsed is not None:
+            target["ranSecs"] = elapsed
         registry = settled.setdefault("createdFileIds", [])
         for new_id in artifact_ids:
             if new_id not in registry:

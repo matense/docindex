@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=9" in body
-    assert "?v=22" in body
+    assert "?v=23" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -1621,6 +1621,126 @@ def test_trace_caps_and_old_docs(app, auth_client, user, enabled,
     assert validated["cards"][0]["trace"] is None
 
 
+# ---------------------------------------------------------------------------
+# Run duration: how long each card took, shown on the card
+# ---------------------------------------------------------------------------
+
+def test_run_records_duration(app, auth_client, user, enabled, fake_ai):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="T", prompt="Hi")
+    result = _run_and_finish(app, auth_client, fid, cid)
+    assert result == {"text": "3 open incidents"}
+    card = _card(app, fid, cid)
+    assert isinstance(card.get("ranSecs"), (int, float))
+    assert card["ranSecs"] >= 0
+
+
+def test_stream_run_records_duration(app, auth_client, user, enabled,
+                                     monkeypatch):
+    def fake_events(user, history, drive=None, **kw):
+        yield ("step", {"label": "read", "detail": "a.csv",
+                        "index": 1, "max_steps": 7})
+        yield ("answer", "final")
+
+    monkeypatch.setattr("app.services.agent_service.run_agent_events",
+                        fake_events)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="list", prompt="Tops")
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    b"".join(resp.response)
+    card = _card(app, fid, cid)
+    assert isinstance(card.get("ranSecs"), (int, float))
+    assert card["ranSecs"] >= 0
+
+
+def test_duration_format_units():
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function fmtDur\(s\) \{(.*?)\n    \}", src, re.S)
+    assert match, "fmtDur helper missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) +
+             ";console.log([fmtDur(4.2), fmtDur(75), fmtDur(3725)]"
+             ".join('|'))")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "4s|1m 15s|1h 2m"
+
+
+def test_ai_tool_run_records_duration(app, user, enabled, monkeypatch):
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="T", prompt="Hi")
+    monkeypatch.setattr(tools.engine_service, "run_card",
+                        lambda stored, card, uid: ({"text": "w"}, [], []))
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = tools._tool_run_card(user_obj, {"file_id": fid,
+                                              "card_id": cid}, None)
+    assert out.get("status") == "done"
+    assert out.get("status") == "done"
+    assert isinstance(_card(app, fid, cid).get("ranSecs"), (int, float))
+
+
+# ---------------------------------------------------------------------------
+# Live-run registry: reloads must not kill live runs
+# ---------------------------------------------------------------------------
+
+def test_recover_skips_live_runs(app, user):
+    """A card marked running WITH a live worker registered must survive
+    recover_interrupted (reloading/navigating mid-run must not fake an
+    interruption); a running card with no live worker is still recovered."""
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        live = dash_doc.new_card("kpi", title="Live")
+        live["status"] = "running"
+        live["runId"] = f"{fid}:live123"
+        dead = dash_doc.new_card("kpi", title="Dead")
+        dead["status"] = "running"
+        dead["runId"] = f"{fid}:dead456"
+        doc["cards"] = [live, dead]
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        dash_doc.run_started(fid, f"{fid}:live123")
+        try:
+            assert dash_doc.recover_interrupted(stored) == 1
+        finally:
+            dash_doc.run_finished(fid, f"{fid}:live123")
+        reloaded = dash_doc.load(db.session.get(StoredFile, fid))
+        by_title = {c["title"]: c for c in reloaded["cards"]}
+        assert by_title["Live"]["status"] == "running"
+        assert "error" not in (by_title["Live"].get("result") or {})
+        assert by_title["Dead"]["status"] == "interrupted"
+        assert "interrupted" in by_title["Dead"]["result"]["error"]
+
+
+def test_live_registry_tracks_runs():
+    assert not dash_doc.is_run_live(1, "1:abc")
+    dash_doc.run_started(1, "1:abc")
+    try:
+        assert dash_doc.is_run_live(1, "1:abc")
+        assert not dash_doc.is_run_live(1, "1:other")
+        assert not dash_doc.is_run_live(2, "1:abc")
+    finally:
+        dash_doc.run_finished(1, "1:abc")
+    assert not dash_doc.is_run_live(1, "1:abc")
+    dash_doc.run_finished(1, "1:never")  # unknown: no crash
+
+
 def test_help_documents_prose_fallback():
     """The help page carries the honest note: if the model answers prose
     instead of JSON the card shows text by design — re-run the card."""
@@ -2205,30 +2325,29 @@ def test_placeholder_ignores_pointer_events():
     assert "none" in m.group(1)
 
 
-def test_drop_position_uses_dominant_axis():
-    """Drag drop: before/after must follow the dominant axis (x for
-    side-by-side cards, y for stacked ones) — a vertical-only half made
-    left-to-right moves impossible except at the card's right edge."""
+def test_drop_follows_movement_direction():
+    """Drag direction decides before/after (not cursor position inside
+    the card): grabbing the top handle pins dy negative, which used to
+    lock after=false and made left-to-right moves impossible."""
     import re
     import shutil
     import subprocess
     with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
               encoding="utf-8") as fh:
         src = fh.read()
-    match = re.search(r"function dropAfter\(rect, x, y\) \{(.*?)\n    \}",
+    match = re.search(r"function dropSide\(mdx, mdy\) \{(.*?)\n    \}",
                       src, re.S)
-    assert match, "dropAfter helper missing"
+    assert match, "dropSide helper missing"
     if shutil.which("node") is None:
         pytest.skip("node not available")
     probe = (match.group(0) +
-             ";var R={left:10,top:0,width:300,height:200};"
-             "console.log([dropAfter(R,270,100),dropAfter(R,20,100),"
-             "dropAfter({left:0,top:0,width:300,height:200},150,150),"
-             "dropAfter({left:0,top:0,width:300,height:200},150,50)].join(','))")
+             ";console.log([dropSide(5, 1), dropSide(-5, 1),"
+             " dropSide(1, 5), dropSide(1, -5),"
+             " dropSide(0, 0)].join(','))")
     out = subprocess.run(["node", "-e", probe], capture_output=True,
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "true,false,true,false"
+    assert out.stdout.strip() == "true,false,true,false,false"
 
 
 def test_detach_disabled_tooltip_names_cards():

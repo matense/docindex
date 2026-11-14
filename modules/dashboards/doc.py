@@ -26,6 +26,8 @@ trash, FileVersion history, FTS search and the AI agent's core tools free.
 import hashlib
 import json
 import os
+import threading
+import time
 import uuid
 from datetime import UTC, timedelta
 from io import BytesIO
@@ -79,7 +81,8 @@ MAX_CONCURRENCY = 8
 
 # Card keys that change on every run without changing the dashboard's shape.
 # save_document() writes these through without snapshotting a FileVersion.
-VOLATILE_CARD_KEYS = ("result", "status", "ranAt", "runId", "trace")
+VOLATILE_CARD_KEYS = ("result", "status", "ranAt", "runId", "trace",
+                        "ranSecs")
 
 SNAPSHOT_INTERVAL = timedelta(minutes=2)
 
@@ -181,6 +184,14 @@ def _validate_card(card, attachment_ids=None):
     ran_at = card.get("ranAt")
     if ran_at is not None:
         card["ranAt"] = str(ran_at)
+    ran_secs = card.get("ranSecs")
+    if ran_secs is None:
+        card["ranSecs"] = None
+    elif isinstance(ran_secs, bool) or not isinstance(ran_secs,
+                                                      (int, float)):
+        raise ValueError("Card ranSecs must be a number of seconds or null.")
+    else:
+        card["ranSecs"] = float(ran_secs)
     _snap_size(card)
     return card
 
@@ -649,7 +660,8 @@ def recover_interrupted(stored):
         return 0
     fixed = 0
     for card in doc.get("cards", []):
-        if card.get("status") == "running":
+        if card.get("status") == "running" and not is_run_live(
+                stored.id, card.get("runId")):
             card["status"] = "interrupted"
             card["result"] = {
                 "error": "This run was interrupted (the dashboard was "
@@ -659,6 +671,42 @@ def recover_interrupted(stored):
     if fixed:
         save_document(stored, doc)
     return fixed
+
+
+_live_guard = threading.Lock()
+# Live runs with their start monotonic, keyed by (dashboard_id, run_id).
+# Same single-worker assumption as the engine's per-dashboard locks:
+# one process holds all threads, and a server restart clears the set —
+# after a restart every stuck `running` card is genuinely dead, so
+# recover_interrupted still does its job.
+_live_runs = {}
+
+
+def run_started(file_id, run_id):
+    """Register a live run; reloads must spare its card."""
+    with _live_guard:
+        _live_runs[(file_id, run_id)] = time.monotonic()
+
+
+def run_finished(file_id, run_id):
+    """Drop a finished run from the live set (unknown ids are no-ops)."""
+    with _live_guard:
+        _live_runs.pop((file_id, run_id), None)
+
+
+def is_run_live(file_id, run_id):
+    """Whether run_id on file_id currently has a live worker."""
+    with _live_guard:
+        return (file_id, run_id) in _live_runs
+
+
+def run_elapsed(file_id, run_id):
+    """Seconds since the run started (one decimal), or None if unknown."""
+    with _live_guard:
+        start = _live_runs.get((file_id, run_id))
+    if start is None:
+        return None
+    return round(time.monotonic() - start, 1)
 
 
 def _structural_shape(doc):

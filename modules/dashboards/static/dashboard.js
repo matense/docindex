@@ -158,6 +158,24 @@
         return rel === null ? "never ran" : "last run " + rel;
     }
 
+    function fmtDur(s) {
+        var n = Number(s);
+        if (!isFinite(n) || n < 0) return "";
+        n = Math.floor(n);
+        if (n < 60) return n + "s";
+        if (n < 3600) return Math.floor(n / 60) + "m " + (n % 60) + "s";
+        return Math.floor(n / 3600) + "h " + (Math.floor(n / 60) % 60) + "m";
+    }
+
+    function ranFull(card) {
+        var text = ranText(card);
+        if (card && card.ranSecs !== undefined && card.ranSecs !== null) {
+            var dur = fmtDur(card.ranSecs);
+            if (dur) text += " · took " + dur;
+        }
+        return text;
+    }
+
     function accentVar(t) {
         return t === "markdown" ? "md" : t;
     }
@@ -645,7 +663,7 @@
             "</label>" +
             '<span class="dash-tools-hint">on = full agent (reads files mid-run, more capable) · ' +
             "off = 1 LLM call over pre-injected context (cheaper/faster, truncation flagged)</span></div>" +
-            '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i><span class="dash-ran">' + esc(ranText(card)) + "</span>" +
+            '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i><span class="dash-ran">' + esc(ranFull(card)) + "</span>" +
             '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto text-error" data-f="del">' +
             '<i class="fas fa-xmark"></i> delete</button></div>' +
             '<button type="button" class="dash-resize" data-resize="' + esc(card.id) + '" ' +
@@ -1039,7 +1057,8 @@
         S.ptrOp = {
             kind: "drag", id: id, node: node, ph: ph, originNext: node.nextSibling,
             dx: e.clientX - r.left, dy: e.clientY - r.top,
-            moved: false, lastX: e.clientX, lastY: e.clientY, lastKey: null
+            moved: false, lastX: e.clientX, lastY: e.clientY, lastKey: null,
+            px: e.clientX, py: e.clientY
         };
         moveFloat(S, e.clientX, e.clientY);
         window.addEventListener("pointermove", S._onPtrMove);
@@ -1047,20 +1066,24 @@
         window.addEventListener("pointercancel", S._onPtrCancel, { once: true });
     }
 
-    // Drop position follows the dominant axis: horizontal midpoint for
-    // side-by-side cards, vertical midpoint for stacked ones. A
-    // vertical-only half made left-to-right moves impossible except at
-    // the card's right edge.
-    function dropAfter(rect, x, y) {
-        var dx = x - (rect.left + rect.width / 2);
-        var dy = y - (rect.top + rect.height / 2);
-        return Math.abs(dx) > Math.abs(dy) ? dx > 0 : dy > 0;
+    // Drop position follows the pointer's movement direction: dragging
+    // right puts the placeholder after the hovered card, left puts it
+    // before (same vertically). Position-inside-card rules break this
+    // because the drag handle sits at the card's top, pinning the
+    // vertical offset and locking one direction out.
+    function dropSide(mdx, mdy) {
+        if (Math.abs(mdx) > Math.abs(mdy)) return mdx > 0;
+        return mdy > 0;
     }
 
     function onPtrMoveImpl(S, e) {
         var op = S.ptrOp;
         if (!op) return;
         if (op.kind === "drag") {
+            var mdx = e.clientX - (typeof op.px === "number" ? op.px : e.clientX);
+            var mdy = e.clientY - (typeof op.py === "number" ? op.py : e.clientY);
+            op.px = e.clientX;
+            op.py = e.clientY;
             op.lastX = e.clientX;
             op.lastY = e.clientY;
             moveFloat(S, e.clientX, e.clientY);
@@ -1078,8 +1101,7 @@
                 if (single && single !== op.node) over = single;
             }
             if (over && over !== op.node) {
-                var r = over.getBoundingClientRect();
-                var after = dropAfter(r, e.clientX, e.clientY);
+                var after = dropSide(mdx, mdy);
                 var key = over.getAttribute("data-card") + (after ? "a" : "b");
                 if (key !== op.lastKey) {
                     op.lastKey = key;
@@ -1933,7 +1955,7 @@
             viewChipHTML(card) + "</div>" +
             '<div class="dash-vbody" data-vf="body"></div>' +
             '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i>' +
-            '<span class="dash-ran" data-vf="ran">' + esc(ranText(card)) + "</span>" +
+            '<span class="dash-ran" data-vf="ran">' + esc(ranFull(card)) + "</span>" +
             '<span class="dash-vtools' + (card.tools ? "" : " off") + '" data-vf="tools" ' +
             'title="' + (card.tools ? "full agent" : "1 LLM call") + '">' +
             (card.tools ? "tools on" : "tools off") + "</span>" +
@@ -2201,7 +2223,7 @@
             chip.replaceWith(tmp.firstChild);
         }
         var ran = node.querySelector('[data-vf="ran"]');
-        if (ran) ran.textContent = ranText(card);
+        if (ran) ran.textContent = ranFull(card);
         syncViewRunning(V, card, node);
     }
 
@@ -2922,6 +2944,7 @@
                         if (card.status !== remote.status || card.ranAt !== remote.ranAt) {
                             card.status = remote.status;
                             card.ranAt = remote.ranAt;
+                            card.ranSecs = remote.ranSecs;
                             if (remote.status !== "running") {
                                 changed = true;
                             }
@@ -2941,6 +2964,7 @@
                                             local.result = rc.result;
                                             local.status = rc.status;
                                             local.ranAt = rc.ranAt;
+                                            local.ranSecs = rc.ranSecs;
                                             local.runId = rc.runId;
                                             refreshViewCard(V, local);
                                         }

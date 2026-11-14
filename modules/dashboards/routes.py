@@ -2,6 +2,7 @@
 
 import difflib
 import json
+import time
 import uuid
 
 from flask import (Blueprint, Response, abort, flash, jsonify, redirect,
@@ -549,6 +550,8 @@ def run_cards(file_id):
         doc_service.save_document(stored, doc)
 
         for target, run_id in zip(targets, accepted):
+            doc_service.run_started(stored.id, run_id)
+            started = time.monotonic()
             try:
                 card = _fresh_card(stored, target)
                 result, artifact_ids, trace = engine_service.run_card(
@@ -562,6 +565,8 @@ def run_cards(file_id):
                 result, artifact_ids, trace, status = (
                     {"error": (str(exc) or "The run failed.")[:500]},
                     [], [], "error")
+            finally:
+                doc_service.run_finished(stored.id, run_id)
             fresh = doc_service.load(stored)
             card = next(c for c in fresh["cards"]
                         if c.get("id") == target)
@@ -569,6 +574,7 @@ def run_cards(file_id):
             card["result"] = result
             card["trace"] = trace
             card["ranAt"] = utcnow().isoformat()
+            card["ranSecs"] = round(time.monotonic() - started, 1)
             registry = fresh.setdefault("createdFileIds", [])
             for new_id in artifact_ids:
                 if new_id not in registry:
@@ -584,10 +590,14 @@ def _settle_stream_card(stored_id, card_id, status, result, trace,
         live = db.session.get(StoredFile, stored_id)
         fresh = doc_service.load(live)
         card = next(c for c in fresh["cards"] if c.get("id") == card_id)
+        elapsed = doc_service.run_elapsed(stored_id, card.get("runId"))
+        doc_service.run_finished(stored_id, card.get("runId"))
         card["status"] = status
         card["result"] = result
         card["trace"] = trace
         card["ranAt"] = utcnow().isoformat()
+        if elapsed is not None:
+            card["ranSecs"] = elapsed
         registry = fresh.setdefault("createdFileIds", [])
         for new_id in artifact_ids:
             if new_id not in registry:
@@ -647,6 +657,11 @@ def run_card_stream(file_id):
         def generate():
             live = db.session.get(StoredFile, stored_id)
             live_user = db.session.get(User, user_id)
+            # Register the live run before the first frame: reloads (page
+            # or /doc) must spare this card while it runs. Registration
+            # happens here (not in the view) so a generate() that never
+            # starts leaves no stale entry behind.
+            doc_service.run_started(stored_id, run_id)
             yield ": connected\n\n"
             workflow_ref = (card_snapshot.get("inputs") or {}).get(
                 "workflow") or {}
@@ -785,6 +800,7 @@ def dashboard_status(file_id):
         return jsonify({"ok": False, "error": str(exc)}), 400
     cards = {c.get("id"): {"status": c.get("status"),
                            "ranAt": c.get("ranAt"),
+                           "ranSecs": c.get("ranSecs"),
                            "runId": c.get("runId")}
              for c in doc.get("cards", [])}
     running = [cid for cid, state in cards.items()
