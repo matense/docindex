@@ -7,8 +7,8 @@ tracebacks, no host paths).
 Semantics (binding for this task):
 
 * Inputs: ``code`` (str), ``variables`` (name -> JSON value), ``files``
-  (name -> list of text chunks; accepted and validated here, consumed by
-  the ``rows()`` host helper in a later task), ``limits`` (partial dict
+  (name -> list of text chunks; each file's chunks are joined and parsed
+  by the ``rows()`` host helper below), ``limits`` (partial dict
   merged over :data:`DEFAULT_LIMITS`).
 * Result: ``{"ok": True, "value": <JSON value>}`` or
   ``{"ok": False, "error": str}``. The value is the last *top-level*
@@ -20,7 +20,8 @@ Semantics (binding for this task):
   (no decorators, no nested ``def``), comprehensions, f-strings.
 * Calls: only the builtin whitelist (``len range sum min max sorted abs
   round enumerate zip str int float bool list dict set tuple``) plus the
-  per-type method whitelist below. ALL dunder/underscore attribute access
+  host helpers (``parse_json parse_csv rows``) and the per-type method
+  whitelist below. ALL dunder/underscore attribute access
   is denied, as are ``eval|exec|compile|open|__import__`` and friends
   (they are simply absent from the namespace).
 * Denied: ``import``, ``while``, dunders, ``global`` / ``nonlocal``,
@@ -40,17 +41,31 @@ Semantics (binding for this task):
   rejected before the host computes them; ``str.format`` field access
   (``{0.__class__}`` style) is rejected; generator expressions evaluate
   eagerly to a one-shot iterator (no scope-interleaving hazards).
+* Host helpers: ``parse_json(text)`` parses a JSON document (errors
+  surface as catchable ``ValueError``); ``parse_csv(text[, delimiter])``
+  parses CSV text with a header row into a list of ``str->str`` dicts;
+  ``rows(name[, delimiter])`` does the same over a named file's chunk
+  list (each chunk is parsed as a header-first CSV fragment; every parsed
+  row consumes one shared-iteration tick and is charged to the allocation
+  budget, and each chunk read checks the wall clock). All three return
+  plain JSON-serializable lists/dicts. Helpers ride the variables-style
+  namespace layer: an explicit user binding shadows them (so a `rows`
+  data variable keeps working), while builtins still take precedence
+  over everything.
 * Namespace hygiene: whitelisted builtins take precedence over every
   user binding (scopes and tool-layer variables alike), so sandboxed code
-  can never shadow or neutralize one; nested ``str.format`` specs are
-  validated recursively for the same reason.
+  can never shadow or neutralize one; the sandbox never sees host
+  ``__builtins__`` at all (unknown/dunder names fail closed); nested
+  ``str.format`` specs are validated recursively for the same reason.
 
-Only the standard library is used (``ast``, ``copy``, ``json``,
-``keyword``, ``string``, ``time``).
+Only the standard library is used (``ast``, ``copy``, ``csv``, ``io``,
+``json``, ``keyword``, ``string``, ``time``).
 """
 
 import ast
 import copy
+import csv
+import io
 import json
 import keyword
 import string
@@ -84,6 +99,11 @@ _BUILTIN_NAMES = frozenset({
     "enumerate", "zip", "str", "int", "float", "bool",
     "list", "dict", "set", "tuple",
 })
+
+# Host-side data helpers. Plain value-only functions injected into the
+# sandbox namespace (same precedence as builtins: they can never be
+# shadowed by user bindings).
+_HOST_HELPERS = frozenset({"parse_json", "parse_csv", "rows"})
 
 # Per-type method whitelist: exactly the spec'd data-work surface.
 _METHODS = {
@@ -389,10 +409,13 @@ class _Lambda:
 # ---------------------------------------------------------------------------
 
 class _Interpreter:
-    def __init__(self, variables, limits):
+    def __init__(self, variables, files, limits):
         self.limits = limits
         self.variables = variables
+        self.files = files
         self.builtins = {name: _Builtin(name) for name in _BUILTIN_NAMES}
+        self.host_helpers = {name: _Builtin(name)
+                             for name in _HOST_HELPERS}
         self.scopes = [{}]  # module-level env; functions push more
         self.ticks = 0
         self.alloc = 0
@@ -441,6 +464,36 @@ class _Interpreter:
         elif isinstance(value, dict):
             self._charge(64 + 72 * len(value))
 
+    def _charge_deep(self, value):
+        """Charge a whole host-parsed value tree against the allocation
+        budget (charge-only: no iteration ticks, so chunked consumers
+        account ticks once per row at their own loop)."""
+        stack = [value]
+        seen = set()
+        while stack:
+            item = stack.pop()
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            if isinstance(item, bool):
+                self._charge(28)
+            elif isinstance(item, int):
+                self._charge(32 + (item.bit_length() + 7) // 8)
+            elif isinstance(item, float):
+                self._charge(24)
+            elif isinstance(item, str):
+                self._charge(40 + len(item))
+            elif isinstance(item, (list, tuple, set)):
+                self._charge(56 + 8 * len(item))
+                stack.extend(item)
+            elif isinstance(item, dict):
+                self._charge(64 + 72 * len(item))
+                for key, val in item.items():
+                    stack.append(key)
+                    stack.append(val)
+            else:
+                self._charge(16)
+
     def _guard(self, fn, *args, **kwargs):
         """Run host-side work; only whitelisted errors reach user code."""
         try:
@@ -464,7 +517,11 @@ class _Interpreter:
     def _lookup(self, name):
         # Builtins take precedence over every user binding (scopes and
         # tool-layer variables): sandboxed code can never shadow or
-        # neutralize a whitelisted builtin.
+        # neutralize a whitelisted builtin. Host data helpers ride the
+        # variables-style layer instead: an explicit user binding (scope
+        # assignment or tool-layer variable) shadows them, so Task 1's
+        # `rows`-as-data contract keeps working while `rows('f')` over
+        # files resolves whenever no such binding exists.
         if name in self.builtins:
             return self.builtins[name]
         for scope in reversed(self.scopes):
@@ -472,6 +529,8 @@ class _Interpreter:
                 return scope[name]
         if name in self.variables:
             return self.variables[name]
+        if name in self.host_helpers:
+            return self.host_helpers[name]
         raise _Denied(f"unknown name: '{name}'")
 
     # -- blocks / statements ---------------------------------------------
@@ -1417,6 +1476,94 @@ class _Interpreter:
         self._charge(64 + 72 * len(result))
         return result
 
+    # -- host data helpers (parse_json / parse_csv / rows) -------------------
+    def _check_delimiter(self, delimiter):
+        if not isinstance(delimiter, str) or len(delimiter) != 1:
+            raise _UserError(TypeError(
+                "delimiter must be a single-character string"))
+        return delimiter
+
+    def _csv_records(self, text, delimiter):
+        """Parse header-first CSV ``text`` into a list of plain dicts.
+
+        Every parsed row consumes one shared-iteration tick (so chunked
+        inputs stay bounded by the same budget as loops) and is charged
+        to the allocation budget. Ragged-short fields stay ``None``
+        (JSON ``null``); ragged-long extras (``None`` key) are dropped.
+        """
+        try:
+            reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+            if reader.fieldnames is None:
+                return []
+            out = []
+            for record in reader:
+                self._tick()
+                row = {}
+                for key, val in record.items():
+                    if key is None:
+                        continue
+                    row[str(key)] = val
+                self._charge(64 + 72 * len(row) + sum(
+                    len(v) for v in row.values() if isinstance(v, str)))
+                out.append(row)
+            return out
+        except (_Halt, _UserError):
+            raise
+        except _ALLOWED_EXC_TYPES as exc:
+            raise _UserError(exc) from None
+        except Exception:
+            raise _Denied("operation failed") from None
+
+    def _bi_parse_json(self, *args, **kwargs):
+        if kwargs:
+            raise _UserError(TypeError(
+                "parse_json takes no keyword arguments"))
+        self._checked_args("parse_json", args, 1, 1)
+        text = args[0]
+        if not isinstance(text, str):
+            raise _UserError(TypeError("parse_json needs a string"))
+        try:
+            value = json.loads(text)
+        except ValueError as exc:
+            raise _UserError(exc) from None
+        except (_Halt, _UserError):
+            raise
+        except Exception:
+            raise _Denied("operation failed") from None
+        self._charge_deep(value)
+        return value
+
+    def _bi_parse_csv(self, *args, **kwargs):
+        if kwargs:
+            raise _UserError(TypeError(
+                "parse_csv takes no keyword arguments"))
+        self._checked_args("parse_csv", args, 1, 2)
+        text = args[0]
+        if not isinstance(text, str):
+            raise _UserError(TypeError("parse_csv needs a string"))
+        delimiter = self._check_delimiter(
+            args[1] if len(args) > 1 else ",")
+        return self._csv_records(text, delimiter)
+
+    def _bi_rows(self, *args, **kwargs):
+        if kwargs:
+            raise _UserError(TypeError("rows takes no keyword arguments"))
+        self._checked_args("rows", args, 1, 2)
+        name = args[0]
+        if not isinstance(name, str):
+            raise _UserError(TypeError("rows needs a file name string"))
+        delimiter = self._check_delimiter(
+            args[1] if len(args) > 1 else ",")
+        if name not in self.files:
+            raise _UserError(KeyError(name))
+        chunks = self.files[name]
+        out = []
+        for chunk in chunks:
+            self._tick()
+            self._check_wall()
+            out.extend(self._csv_records(chunk, delimiter))
+        return out
+
     # -- whitelisted methods -----------------------------------------------
     def _call_method(self, bound, args, kwargs):
         obj, name = bound.obj, bound.name
@@ -1658,7 +1805,7 @@ def evaluate(code, variables=None, files=None, limits=None):
         except (_Denied, _Budget) as exc:
             return _fail(str(exc))
         try:
-            runner = _Interpreter(clean_vars, merged)
+            runner = _Interpreter(clean_vars, files, merged)
             result = runner.run(tree)
             runner._check_wall()
         except (_Denied, _Budget) as exc:

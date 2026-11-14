@@ -65,3 +65,73 @@ def test_format_nested_spec_inspected():
     # Benign nested specs (plain names) still work.
     assert evaluate("'{0:{w}}'.format(3.14159, w='.2f')") == {
         "ok": True, "value": "3.14"}
+
+
+def test_no_builtin_leakage():
+    for code in ["__builtins__",
+                 "[c for c in ().__class__.__base__.__subclasses__()]",
+                 "().__class__.__base__.__subclasses__()",
+                 "getattr((), 'clip')",
+                 "().__class__.__dict__"]:
+        assert evaluate(code)["ok"] is False
+
+
+def test_hostile_exfiltration_paths_blocked():
+    payloads = [
+        "__import__('os').system('id')",
+        "().__class__.__base__.__subclasses__()[100]",
+        "eval('2*21')",
+        "compile('1', 'x', 'eval')",
+        "open('/etc/passwd').read()",
+        "(lambda: (lambda: 1))().__class__",
+        "try:\n x = 1/0\nexcept:\n import os",
+        "def f():\n  def g():\n   return 1",
+    ]
+    for code in payloads:
+        out = evaluate(code)
+        assert out["ok"] is False, code
+
+
+def test_unbounded_loops_rejected_or_aborted():
+    assert evaluate("i=0\nwhile True:\n i+=1")["ok"] is False
+    out = evaluate("s=0\nfor i in range(10**9):\n s+=i\ns")
+    assert out["ok"] is False
+
+
+def test_allocation_accounting_aborts_giant_builds():
+    assert evaluate('"x" * 10**9')["ok"] is False
+    assert evaluate("[0] * 10**8")["ok"] is False
+
+
+def test_wall_clock_abort_suggests_chunking():
+    out = evaluate("s=0\nfor i in range(10**8):\n s+=(i%7)\ns",
+                   limits={"max_wall_seconds": 1})
+    assert out["ok"] is False and "chunk" in out["error"].lower()
+
+
+def test_chunked_large_input_stays_bounded():
+    chunks = ["a,b\n" + "1,2\n" * 5000 for _ in range(4)]
+    out = evaluate("total = sum(int(r['a']) for r in rows('f'))\ntotal",
+                   files={"f": chunks},
+                   limits={"max_iterations": 100000})
+    assert out == {"ok": True, "value": 20000}
+
+
+def test_host_helpers_parse_and_rows():
+    assert evaluate('parse_json(\'{"a": [1,2]}\')') == {
+        "ok": True, "value": {"a": [1, 2]}}
+    out = evaluate('rows("f")',
+                   files={"f": ["x,y\n1,2\n3,4\n"]})
+    assert out == {"ok": True, "value": [{"x": "1", "y": "2"},
+                                         {"x": "3", "y": "4"}]}
+    assert evaluate('parse_json("{oops}")')["ok"] is False
+    assert evaluate('parse_csv("a;b\\n1;2", ";")') == {
+        "ok": True, "value": [{"a": "1", "b": "2"}]}
+
+
+def test_internal_limits_bypass_user_except():
+    code = ("s = 0\ntry:\n for i in range(10**9):\n  s += i\n"
+            "except Exception:\n s = -1\ns")
+    out = evaluate(code)
+    assert out["ok"] is False
+    assert out.get("value") != -1
