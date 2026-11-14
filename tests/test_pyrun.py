@@ -44,3 +44,24 @@ def test_denied_constructs_fail_closed():
 def test_budgets_abort_runaway_work():
     out = evaluate("total = 0\nfor i in range(10**12):\n total += i\ntotal")
     assert out["ok"] is False
+
+
+def test_builtin_names_cannot_be_shadowed():
+    # Builtins take precedence over every user binding site: assignment,
+    # function definitions, and tool-layer variables.
+    assert evaluate("len = 1\nlen([1, 2])") == {"ok": True, "value": 2}
+    assert evaluate("def sum(vals):\n return 0\nsum([1, 2])") == {
+        "ok": True, "value": 3}
+    assert evaluate("range = [1, 2, 3]\nlist(range(2))") == {
+        "ok": True, "value": [0, 1]}
+    assert evaluate("sum([10])", {"sum": 5}) == {"ok": True, "value": 10}
+
+
+def test_format_nested_spec_inspected():
+    # Item access smuggled through a nested format spec must be denied,
+    # even though it resolves to a valid spec at format time.
+    assert evaluate("'{0:{a[0]}}'.format('x', a=['5'])")["ok"] is False
+    assert evaluate('"{0:{a.__class__}}".format(1, a=2)')["ok"] is False
+    # Benign nested specs (plain names) still work.
+    assert evaluate("'{0:{w}}'.format(3.14159, w='.2f')") == {
+        "ok": True, "value": "3.14"}

@@ -40,7 +40,10 @@ Semantics (binding for this task):
   rejected before the host computes them; ``str.format`` field access
   (``{0.__class__}`` style) is rejected; generator expressions evaluate
   eagerly to a one-shot iterator (no scope-interleaving hazards).
-* Namespace hygiene: user variables never shadow the builtin whitelist.
+* Namespace hygiene: whitelisted builtins take precedence over every
+  user binding (scopes and tool-layer variables alike), so sandboxed code
+  can never shadow or neutralize one; nested ``str.format`` specs are
+  validated recursively for the same reason.
 
 Only the standard library is used (``ast``, ``copy``, ``json``,
 ``keyword``, ``string``, ``time``).
@@ -133,6 +136,23 @@ class _UserError(Exception):
 
 def _fail(error):
     return {"ok": False, "error": error}
+
+
+def _validate_format_template(template):
+    """Reject attribute/item access in every field of a format template.
+
+    The real ``str.format`` machinery resolves nested format specs
+    (e.g. ``{0:{a[0]}}``) outside the interpreter, so each nesting level
+    is parsed and inspected recursively; every field the host would
+    resolve is checked here first.
+    """
+    for _, field_name, format_spec, _ in _FORMATTER.parse(template):
+        if field_name is not None and (
+                "." in field_name or "[" in field_name):
+            raise _Denied("str.format with attribute/item "
+                          "access is not allowed")
+        if format_spec and "{" in format_spec:
+            _validate_format_template(format_spec)
 
 
 # ---------------------------------------------------------------------------
@@ -442,11 +462,14 @@ class _Interpreter:
 
     # -- names ----------------------------------------------------------
     def _lookup(self, name):
+        # Builtins take precedence over every user binding (scopes and
+        # tool-layer variables): sandboxed code can never shadow or
+        # neutralize a whitelisted builtin.
+        if name in self.builtins:
+            return self.builtins[name]
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
-        if name in self.builtins:
-            return self.builtins[name]
         if name in self.variables:
             return self.variables[name]
         raise _Denied(f"unknown name: '{name}'")
@@ -1491,11 +1514,7 @@ class _Interpreter:
             for key in kwargs:
                 if not isinstance(key, str):
                     raise _UserError(TypeError("format keywords need str"))
-            for _, field_name, _, _ in _FORMATTER.parse(obj):
-                if field_name is not None and (
-                        "." in field_name or "[" in field_name):
-                    raise _Denied("str.format with attribute/item "
-                                  "access is not allowed")
+            _validate_format_template(obj)
             result = obj.format(*args, **kwargs)
             self._charge(40 + len(result))
             return result
