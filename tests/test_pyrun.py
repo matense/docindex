@@ -158,3 +158,192 @@ def test_rows_consumes_shared_iteration_budget():
     assert out["ok"] is False
     assert "iteration budget" in out["error"]
     assert "chunk" in out["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: module + pyrun.compute / pyrun.save tool wiring
+# ---------------------------------------------------------------------------
+
+import io
+
+import pytest
+from werkzeug.datastructures import FileStorage
+
+from app.extensions import db
+from app.models import AIUsageEvent, Drive, ModuleState, StoredFile, User
+from app.services import file_service
+
+
+def _pyrun_tools():
+    """The AI tools module (Task 3) — ImportError until implemented."""
+    return importlib.import_module("docindex_module_pyrun.tools")
+
+
+def _call_compute(user, args, drive=None):
+    """Call pyrun.compute directly; caller must hold an app context.
+
+    Accepts the raw `user` fixture id or a User object, mirroring how
+    tests/test_dashboards.py resolves fixtures before calling handlers.
+    """
+    tools = _pyrun_tools()
+    user_obj = (db.session.get(User, user)
+                if isinstance(user, int) else user)
+    return tools._tool_compute(user_obj, args, drive)
+
+
+def _call_save(user, args, drive=None):
+    """Call pyrun.save directly; caller must hold an app context."""
+    tools = _pyrun_tools()
+    user_obj = (db.session.get(User, user)
+                if isinstance(user, int) else user)
+    return tools._tool_save(user_obj, args, drive)
+
+
+def _writable_drive(app, user_id):
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user_id, source_path=None)
+        db.session.add(drive)
+        db.session.commit()
+        return drive.id
+
+
+def _csv_file(app, user_id, drive_id, name="data.csv",
+              content=b"v\n1\n2\n"):
+    with app.app_context():
+        owner = db.session.get(User, user_id)
+        drive = db.session.get(Drive, drive_id)
+        stored = file_service.save_upload(
+            FileStorage(stream=io.BytesIO(content), filename=name,
+                        content_type="text/csv"),
+            owner, None, drive=drive)
+        stored.drive_id = drive_id
+        db.session.commit()
+        return stored.id
+
+
+def test_compute_end_to_end_with_file(app, user):
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id)
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "total = sum(int(r['v']) for r in rows('f'))\ntotal",
+            "files": [{"file_id": fid, "as": "f"}]})
+    assert out["ok"] is True and out["value"] == 3
+
+
+def test_foreign_or_missing_file_rejected(app, user):
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id)
+    with app.app_context():
+        # Unknown id.
+        assert _call_compute(
+            user, {"code": "1", "files": [{"file_id": 999999, "as": "f"}]}
+        )["ok"] is False
+        # Trashed own file: rejected, never silently skipped.
+        file_service.delete_file(db.session.get(StoredFile, fid))
+        out = _call_compute(
+            user, {"code": "1", "files": [{"file_id": fid, "as": "f"}]})
+        assert out["ok"] is False
+        assert out.get("retry_hint")
+
+
+def test_foreign_owned_file_rejected(app, user):
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id)
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        bob_id = bob.id
+    with app.app_context():
+        out = _call_compute(bob_id, {
+            "code": "1", "files": [{"file_id": fid, "as": "f"}]})
+        assert out["ok"] is False
+        assert out.get("retry_hint")
+
+
+def test_save_artifact_roundtrip(app, user):
+    drive_id = _writable_drive(app, user)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'a,b\\n1,2\\n'",
+                                   "outputs": {"result.csv": "out"}})
+    assert out["ok"] is True
+    key = out["artifacts"][0]["key"]
+    with app.app_context():
+        saved = _call_save(user, {"key": key, "drive_id": drive_id})
+    assert saved["ok"] is True and saved["file_id"] > 0
+    with app.app_context():
+        stored = db.session.get(StoredFile, saved["file_id"])
+        assert stored is not None and stored.drive_id == drive_id
+        assert stored.name == "result.csv"
+        assert file_service.read_text_content(stored) == "a,b\n1,2\n"
+
+
+def test_save_rejects_path_traversal_and_foreign_drive(app, user):
+    drive_id = _writable_drive(app, user)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x'",
+                                   "outputs": {"result.csv": "out"}})
+        key = out["artifacts"][0]["key"]
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        foreign_drive = Drive(name="Bob drive", user_id=bob.id)
+        db.session.add(foreign_drive)
+        db.session.commit()
+        foreign_id = foreign_drive.id
+    with app.app_context():
+        for bad in ("../../evil.csv", "/abs/evil.csv", "sub/dir.csv",
+                    ".."):
+            denied = _call_save(user, {"key": key, "drive_id": drive_id,
+                                       "name": bad})
+            assert denied["ok"] is False, bad
+            assert denied.get("retry_hint"), bad
+        foreign = _call_save(user, {"key": key,
+                                    "drive_id": foreign_id})
+        assert foreign["ok"] is False
+        assert foreign.get("retry_hint")
+        unknown = _call_save(user, {"key": "nope-" + "0" * 28,
+                                    "drive_id": drive_id})
+        assert unknown["ok"] is False
+        assert unknown.get("retry_hint")
+        # An empty name override falls back to the artifact's own name
+        # and saves (consumes the single-use key last).
+        fallback = _call_save(user, {"key": key, "drive_id": drive_id,
+                                     "name": ""})
+        assert fallback["ok"] is True
+        assert db.session.get(StoredFile,
+                              fallback["file_id"]).name == "result.csv"
+
+
+def test_error_shape_has_retry_hint(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "open('/etc/passwd').read()"})
+    assert out["ok"] is False
+    assert out.get("retry_hint"), "retryable errors must carry a hint"
+    assert "traceback" not in out.get("error", "").lower()
+
+
+def test_compute_records_usage(app, user):
+    with app.app_context():
+        before = AIUsageEvent.query.filter_by(user_id=user).count()
+        out = _call_compute(user, {"code": "1 + 1"})
+        assert out["ok"] is True and out["value"] == 2
+        assert (AIUsageEvent.query.filter_by(user_id=user).count()
+                == before + 1)
+
+
+def test_help_lists_pyrun_when_enabled(app, auth_client):
+    resp = auth_client.get("/settings/help")
+    assert b'id="help-modules"' not in resp.data
+
+    with app.app_context():
+        db.session.add(ModuleState(name="pyrun", enabled=True))
+        db.session.commit()
+
+    resp = auth_client.get("/settings/help")
+    html = resp.data.decode()
+    assert 'id="help-modules"' in html
+    assert "pyrun" in html.lower() or "Python" in html

@@ -1,0 +1,9 @@
+{
+  "name": "pyrun",
+  "version": "0.1.0",
+  "description": "Sandboxed Python compute for the AI agent: run small programs over attached files and save the results.",
+  "capabilities": ["tools"],
+  "help": [
+    "Pyrun lets the AI run small, bounded Python programs in a sealed sandbox instead of burning agent steps on mechanical data crunching: the agent attaches files it already owns, computes aggregates, filters and reshapes tables with pyrun.compute, reads back plain values, and persists named text results with pyrun.save into a validated drive destination — never an agent-supplied path. Every run is bounded (no imports, no filesystem, no network) and recorded in the AI usage log."
+  ]
+}
