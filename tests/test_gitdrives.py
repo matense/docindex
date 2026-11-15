@@ -458,3 +458,56 @@ def test_sync_path_enforces_url_policy(app, user, monkeypatch):
         err = provider.materialize(drive)
         assert err and "GITDRIVES_ALLOWED_HOSTS" in err
     assert attempted == []
+
+
+# --- S4: checkout must not follow crafted tree paths or symlink modes -------
+
+
+def test_checkout_head_raw_never_writes_outside_root(tmp_path):
+    """Crafted tree entries (.., absolute drive-rooted, symlink mode) must
+    not escape the checkout root or materialize as links (S4)."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    from modules.gitdrives.source import _checkout_head_raw
+
+    root = tmp_path / "root"
+    root.mkdir()
+    abs_target = tmp_path / "evil-abs.txt"
+    abs_entry = str(abs_target).replace(os.sep, "/")
+
+    repo = Repo.init(str(root))
+    try:
+        store = repo.object_store
+
+        def _blob(data):
+            blob = Blob.from_string(data)
+            store.add_object(blob)
+            return blob.id
+
+        tree = Tree()
+        tree.add(b"ok.txt", 0o100644, _blob(b"ok"))
+        tree.add(b"../evil-rel.txt", 0o100644, _blob(b"escape"))
+        tree.add(abs_entry.encode("utf-8"), 0o100644, _blob(b"escape"))
+        tree.add(b"link.txt", 0o120000, _blob(b"ok.txt"))
+        store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.author = commit.committer = b"T <t@t>"
+        commit.author_time = commit.commit_time = 0
+        commit.author_timezone = commit.commit_timezone = 0
+        commit.message = b"evil"
+        commit.encoding = b"UTF-8"
+        store.add_object(commit)
+        repo.refs.set_symbolic_ref(b"HEAD", b"refs/heads/master")
+        repo.refs[b"refs/heads/master"] = commit.id
+    finally:
+        repo.close()
+
+    written = _checkout_head_raw(str(root))
+
+    assert (root / "ok.txt").read_bytes() == b"ok"
+    assert written == {"ok.txt"}
+    assert not (tmp_path / "evil-rel.txt").exists()
+    assert not abs_target.exists()
+    assert not (root / "link.txt").exists()

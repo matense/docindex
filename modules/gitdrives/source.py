@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import time
 from urllib.parse import urlsplit
 
@@ -223,10 +224,15 @@ def _checkout_head_raw(path, on_progress=None):
                 pass
         written = set()
         for i, entry in enumerate(entries):
-            rel = os.path.normpath(entry.path.decode())
-            if rel.startswith(".."):
+            if stat.S_ISLNK(entry.mode):
                 continue
-            full = os.path.join(path, rel)
+            rel = os.path.normpath(entry.path.decode())
+            full = os.path.normpath(os.path.join(path, rel))
+            try:
+                if os.path.commonpath([path, full]) != path:
+                    continue
+            except ValueError:
+                continue
             os.makedirs(os.path.dirname(full) or path, exist_ok=True)
             with open(full, "wb") as fh:
                 fh.write(repo[entry.sha].data)

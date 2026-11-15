@@ -996,6 +996,8 @@ def _safe_changed_path(root, path, changed_paths):
         if candidate.is_symlink() or not resolved.is_relative_to(root_path):
             raise GitSyncError("Symlinks and paths outside the repository cannot be discarded.")
     target = candidate / parts[-1]
+    if target.is_symlink():
+        raise GitSyncError("Symlinks and paths outside the repository cannot be discarded.")
     if not target.parent.resolve().is_relative_to(root_path):
         raise GitSyncError("That file path is outside the repository.")
     return path, target

@@ -1597,3 +1597,38 @@ def test_module_migration_roundtrip(tmp_path):
             second.upgrade()
             assert columns(connection) == model_columns
     engine.dispose()
+
+
+# --- S4: discard must reject symlinked leaves ---------------------------------
+
+
+def test_safe_changed_path_rejects_leaf_symlink(app, tmp_path, monkeypatch):
+    """A changed leaf that is a symlink must be refused (S4).
+
+    Real symlinks need a privilege this environment lacks (WinError 1314),
+    so the leaf-symlink condition is simulated by reporting this one path
+    as a symlink; the branch under test (target.is_symlink()) is identical.
+    """
+    from pathlib import Path
+
+    service = _module().service
+
+    leaf = tmp_path / "link.txt"
+    leaf.write_text("x", encoding="utf-8")
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path, "is_symlink",
+        lambda self: True if self.name == "link.txt"
+        else real_is_symlink(self),
+    )
+    with pytest.raises(service.GitSyncError):
+        service._safe_changed_path(str(tmp_path), "link.txt", {"link.txt"})
+
+
+def test_safe_changed_path_allows_plain_leaf(app, tmp_path):
+    service = _module().service
+
+    (tmp_path / "ok.txt").write_text("x", encoding="utf-8")
+    _path, target = service._safe_changed_path(
+        str(tmp_path), "ok.txt", {"ok.txt"})
+    assert target.name == "ok.txt"
