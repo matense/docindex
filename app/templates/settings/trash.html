@@ -153,11 +153,13 @@
                     </div>
                     <div class="flex gap-2 flex-shrink-0">
                         {% if t.drive and t.drive.deleted_at %}
-                        <a href="{{ url_for('drive.restore', file_id=t.id) }}"
-                           class="btn btn-ghost btn-sm gap-1"
-                           title="Its drive '{{ t.drive.name }}' is also trashed — pick where to restore">
-                            <i class="fas fa-rotate-left"></i> Restore…
-                        </a>
+                        <form method="POST" action="{{ url_for('drive.restore', file_id=t.id) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-ghost btn-sm gap-1"
+                                title="Its drive '{{ t.drive.name }}' is also trashed — pick where to restore">
+                                <i class="fas fa-rotate-left"></i> Restore…
+                            </button>
+                        </form>
                         {% else %}
                         <form method="POST" action="{{ url_for('drive.restore', file_id=t.id) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

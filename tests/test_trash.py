@@ -177,6 +177,16 @@ def test_trash_page_requires_login(client):
     assert "/login" in resp.headers["Location"]
 
 
+def test_restore_get_does_not_mutate(auth_client, app):
+    _upload(auth_client, "notes.txt", b"some content")
+    fid = _file_id(app)
+    auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
+
+    resp = auth_client.get(f"/file/{fid}/restore")
+    assert resp.status_code in (404, 405)
+    assert _get(app, fid).deleted_at is not None
+
+
 def test_profile_links_to_trash_page_with_count(auth_client, app):
     _upload(auth_client, "notes.txt", b"some content")
     auth_client.post(f"/file/{_file_id(app)}/delete", follow_redirects=True)

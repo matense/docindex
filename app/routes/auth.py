@@ -3,7 +3,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 
 from ..extensions import db
 from ..models import Setting, User
-from ..utils import json_error, wants_json
+from ..utils import json_error, safe_local_redirect, wants_json
 
 bp = Blueprint("auth", __name__)
 
@@ -43,10 +43,9 @@ def login():
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
-            # Open-redirect guard: only allow relative paths (no //, no scheme).
-            next_page = request.args.get("next") or ""
-            if not next_page.startswith("/") or next_page.startswith("//"):
-                next_page = ""
+            # Same-origin path-only guard: query or hidden-field `next`.
+            next_page = safe_local_redirect(request.values.get("next"),
+                                            url_for("search.results"))
             return redirect(next_page or url_for("search.results"))
         flash("Invalid username or password.", "error")
     return render_template("auth/login.html",

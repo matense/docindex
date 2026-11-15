@@ -25,3 +25,31 @@ def test_drive_requires_login(client):
     resp = client.get("/")
     assert resp.status_code == 302
     assert "/login" in resp.headers["Location"]
+
+
+def _login_with_next(app, nxt, via):
+    from urllib.parse import quote
+    client = app.test_client()
+    data = {"username": "alice", "password": "password123"}
+    if via == "form":
+        data["next"] = nxt
+        return client.post("/login", data=data, follow_redirects=False)
+    return client.post(f"/login?next={quote(nxt, safe='')}",
+                      data=data, follow_redirects=False)
+
+
+def test_login_next_rejects_open_redirects(app, user):
+    evil = ["//evil.com", "/\\evil.com", "https://evil.com",
+            "http://evil.com/x", "javascript:alert(1)", "data:text/plain,hi"]
+    for nxt in evil:
+        for via in ("query", "form"):
+            r = _login_with_next(app, nxt, via)
+            assert r.status_code == 302, (nxt, via)
+            loc = r.headers.get("Location", "")
+            assert loc == "/search", (nxt, via, loc)
+
+
+def test_login_next_keeps_safe_relative_path(app, user):
+    r = _login_with_next(app, "/settings/profile", "query")
+    assert r.status_code == 302
+    assert r.headers["Location"].endswith("/settings/profile")
