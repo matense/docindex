@@ -353,42 +353,59 @@ def pull_repo(path, url=None, branch=None, username=None, password=None,
 # --- Clone-URL policy (SSRF / local-file lockdown). ---
 #
 # `https://` is always allowed provided the host resolves exclusively to
-# public IP addresses. Every other scheme or host (ssh://, git://, plain
-# http://, file://, scp-like user@host:path, ...) is refused unless the
-# host is explicitly listed in the GITDRIVES_ALLOWED_HOSTS admin
-# allowlist (comma- or semicolon-separated hostnames or CIDR ranges;
-# default empty = deny). Plain local filesystem paths are still permitted
-# — but only when they exist — so pre-staged mirrors keep working; they
-# are equivalent to what folder sync already lets a user point at.
+# public IP addresses. Every other scheme, host, or local path (ssh://,
+# git://, plain http://, file://, scp-like user@host:path, `/srv/git/...`,
+# `C:/...`) is refused unless explicitly listed in the
+# GITDRIVES_ALLOWED_HOSTS admin allowlist (comma- or semicolon-separated
+# hostnames, CIDR ranges, or explicit local paths; default empty = deny).
+# A path-shaped entry allowlists that path and everything under it. The
+# same policy is enforced on every sync (materialize/pre_sync), so rows
+# created before the lockdown cannot be cloned/pulled anymore.
 # Hostnames are resolved with socket.getaddrinfo (IPv4-mapped IPv6
 # unwrapped) and rejected unless EVERY address is public; unresolvable
-# hosts fail closed. All refusals happen BEFORE ls_remote, so a rejected
-# URL never triggers a network connection or filesystem touch.
+# hosts fail closed. All refusals happen BEFORE ls_remote/clone/pull, so
+# a rejected URL never triggers a network connection or filesystem touch.
 
 _GITDRIVES_ALLOWLIST_ENV = "GITDRIVES_ALLOWED_HOSTS"
 
 _SCP_LIKE_RE = re.compile(
     r"^(?P<user>[^/@\s:]+)@(?P<host>[^:/\s]+):(?P<path>.*)$")
 
+_PATH_LIKE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _looks_like_path(entry):
+    """True when an allowlist entry is a local path, not a host/CIDR."""
+    return ("/" in entry or "\\" in entry
+            or _PATH_LIKE_RE.match(entry) is not None)
+
 
 def _allowlist_entries():
-    """(hosts, networks) parsed from GITDRIVES_ALLOWED_HOSTS."""
-    hosts, networks = set(), []
+    """(hosts, networks, paths) parsed from GITDRIVES_ALLOWED_HOSTS."""
+    hosts, networks, paths = set(), [], []
     raw = os.environ.get(_GITDRIVES_ALLOWLIST_ENV, "")
-    for part in re.split(r"[;,\s]+", raw):
-        part = part.strip().lower().rstrip(".")
-        if not part:
+    for part in re.split(r"[;,]+", raw):
+        entry = part.strip()
+        if not entry:
             continue
         try:
-            networks.append(ipaddress.ip_network(part, strict=False))
+            # CIDR range or literal IP — checked first because CIDR
+            # notation contains a slash that would otherwise look
+            # path-shaped.
+            networks.append(ipaddress.ip_network(entry, strict=False))
+            continue
         except ValueError:
-            hosts.add(part)
-    return hosts, networks
+            pass
+        if _looks_like_path(entry):
+            paths.append(os.path.normcase(os.path.abspath(entry)))
+            continue
+        hosts.add(entry.lower().rstrip("."))
+    return hosts, networks, paths
 
 
 def _host_allowlisted(host):
     """True when a hostname (or literal IP inside a CIDR entry) is listed."""
-    hosts, networks = _allowlist_entries()
+    hosts, networks, _paths = _allowlist_entries()
     name = (host or "").strip().lower().rstrip(".")
     if not name:
         return False
@@ -399,6 +416,15 @@ def _host_allowlisted(host):
     except ValueError:
         return False
     return any(ip in net for net in networks)
+
+
+def _path_allowlisted(raw):
+    """True when a local path falls under an allowlisted path entry."""
+    _hosts, _networks, paths = _allowlist_entries()
+    if not paths:
+        return False
+    cand = os.path.normcase(os.path.abspath(raw))
+    return any(cand == p or cand.startswith(p + os.sep) for p in paths)
 
 
 def _public_dns_error(host):
@@ -458,12 +484,14 @@ def url_policy_error(url):
         return _public_dns_error(host)
     if scheme == "" or (len(scheme) == 1 and scheme.isalpha()):
         # Plain local path (including Windows `C:/...` / `C:\\...`, which
-        # urlsplit reports as a one-letter scheme): allowed only when it
-        # exists; ls_remote then decides whether it is a repository.
-        if os.path.exists(raw):
+        # urlsplit reports as a one-letter scheme): denied by default like
+        # any other non-https URL — allowlistable only as an explicit
+        # local path in GITDRIVES_ALLOWED_HOSTS.
+        if _path_allowlisted(raw):
             return None
-        return (f"Local repository path {raw!r} does not exist. Only "
-                "https:// clone URLs and existing local paths are allowed.")
+        return ("Local repository paths are not allowed by default; ask "
+                "the administrator to list this path in "
+                "GITDRIVES_ALLOWED_HOSTS.")
     return _remote_policy_error(parts.hostname)
 
 
@@ -492,6 +520,12 @@ class GitDriveSource:
         return None
 
     def materialize(self, drive, on_progress=None):
+        # Re-check the URL policy on the sync path: rows created before
+        # the lockdown (or crafted directly in the DB) must not be
+        # cloned. Returns the error string like any other failure.
+        policy_error = url_policy_error(drive.repo_url or "")
+        if policy_error:
+            return policy_error
         target = cache_path(drive.id)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if os.path.exists(os.path.join(target, ".git")):
@@ -516,6 +550,11 @@ class GitDriveSource:
             return None
 
     def pre_sync(self, drive, on_progress=None):
+        # Same re-check as materialize: covers the pull branch below for
+        # checkouts that already exist.
+        policy_error = url_policy_error(drive.repo_url or "")
+        if policy_error:
+            return policy_error
         target = cache_path(drive.id)
         if not os.path.exists(os.path.join(target, ".git")):
             error = self.materialize(drive, on_progress=on_progress)

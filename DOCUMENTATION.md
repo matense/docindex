@@ -1465,13 +1465,16 @@ tool + table).
   never block the HTTP request; the floating sync widget shows live progress.
   LFS is not fetched — LFS-tracked files stay as pointer text (flagged
   wherever detected). Clone URLs must use `https://` (always allowed when
-  the host resolves only to public IP addresses); every other scheme or
-  host (SSH, `git://`, plain `http://`, `file://`) is refused unless the
-  host is explicitly listed in the `GITDRIVES_ALLOWED_HOSTS` admin
-  allowlist (comma- or semicolon-separated hostnames or CIDR ranges,
-  default empty = deny), which also covers private/intranet mirrors.
-  Hostnames are resolved with `socket.getaddrinfo` (IPv4-mapped IPv6
-  unwrapped) and rejected unless every address is public, and the
+  the host resolves only to public IP addresses); every other scheme,
+  host, or local path (SSH, `git://`, plain `http://`, `file://`,
+  `/srv/git/...`, `C:/...`) is refused unless explicitly listed in the
+  `GITDRIVES_ALLOWED_HOSTS` admin allowlist (comma- or semicolon-separated
+  hostnames, CIDR ranges, or explicit local paths; default empty = deny),
+  which also covers private/intranet mirrors and pre-staged local
+  checkouts. The same policy is re-checked on every sync, so rows created
+  before the lockdown cannot be cloned or pulled anymore. Hostnames are
+  resolved with `socket.getaddrinfo` (IPv4-mapped IPv6 unwrapped) and
+  rejected unless every address is public, and the
   `/m/gitdrives/api/check` validation endpoint only answers POST
   (CSRF-protected).
 - `gitsync` — "Git changes" for synced local-folder drives, implemented

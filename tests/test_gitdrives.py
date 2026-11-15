@@ -10,7 +10,7 @@ from app.services import drive_service
 
 
 @pytest.fixture()
-def gitrepo(tmp_path, app):
+def gitrepo(tmp_path, app, monkeypatch):
     """A real local git repo with one committed file; returns its path."""
     import importlib
 
@@ -33,6 +33,10 @@ def gitrepo(tmp_path, app):
     porcelain.add(repo, paths=["readme.md"])
     porcelain.commit(repo, message=b"first",
                      author=b"T <t@t>", committer=b"T <t@t>")
+    # Local clone paths are deny-by-default (S1 lockdown): the test admin
+    # allowlists the fixture repo, the same way a deployment allowlists
+    # pre-staged mirrors via GITDRIVES_ALLOWED_HOSTS.
+    monkeypatch.setenv("GITDRIVES_ALLOWED_HOSTS", repo)
     return repo
 
 
@@ -402,3 +406,55 @@ def test_check_endpoint_is_post_only(auth_client, app, enabled, monkeypatch):
                             data={"repo_url": "https://github.com/o/r.git"})
     assert resp.status_code == 200
     assert resp.get_json() == {"ok": True}
+
+
+def test_existing_local_path_denied_without_allowlist(app, user, monkeypatch,
+                                                      tmp_path):
+    """Fix round finding 1: a REAL existing directory must still be
+    refused — the old os.path.exists bypass is gone. Local paths are
+    deny-by-default like any other non-https URL."""
+    provider = _s1_provider()
+    calls = _s1_no_fetch(monkeypatch, provider)
+    target = tmp_path / "existing"
+    target.mkdir()
+    u = _s1_user(app, user)
+    err = provider.validate(u, {"repo_url": str(target)})
+    assert err and "GITDRIVES_ALLOWED_HOSTS" in err
+    assert calls == []
+
+
+def test_allowlisted_local_path_permitted(app, user, monkeypatch, tmp_path):
+    """Fix round finding 1: an explicit allowlisted local path (prefix)
+    passes the policy and reaches ls_remote."""
+    provider = _s1_provider()
+    calls = _s1_no_fetch(monkeypatch, provider)
+    monkeypatch.setenv("GITDRIVES_ALLOWED_HOSTS", str(tmp_path))
+    u = _s1_user(app, user)
+    assert provider.validate(
+        u, {"repo_url": str(tmp_path / "repo.git")}) is None
+    assert len(calls) == 1
+
+
+def test_sync_path_enforces_url_policy(app, user, monkeypatch):
+    """Fix round finding 2: a pre-existing non-https row (created before
+    the lockdown) is refused on sync — clone/pull must never run."""
+    provider = _s1_provider()
+    mod = _sys.modules[type(provider).__module__]
+    attempted = []
+
+    def _boom(*args, **kwargs):
+        attempted.append((args, kwargs))
+        raise AssertionError("sync must not fetch a policy-rejected URL")
+
+    monkeypatch.setattr(mod, "clone_repo", _boom)
+    monkeypatch.setattr(mod, "pull_repo", _boom)
+    with app.app_context():
+        drive = Drive(name="Old", user_id=user, source_kind="git",
+                      repo_url="ssh://git@internal/x.git")
+        db.session.add(drive)
+        db.session.commit()
+        err = provider.pre_sync(drive)
+        assert err and "GITDRIVES_ALLOWED_HOSTS" in err
+        err = provider.materialize(drive)
+        assert err and "GITDRIVES_ALLOWED_HOSTS" in err
+    assert attempted == []
