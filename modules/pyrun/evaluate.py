@@ -112,6 +112,7 @@ _TICK_WALL_CHECK_MASK = 1023  # wall-clock check every 1024 ticks
 
 _ALLOWED_EXC_NAMES = frozenset({
     "ValueError", "ZeroDivisionError", "KeyError", "IndexError", "TypeError",
+    "Exception",
 })
 _ALLOWED_EXC_TYPES = (ValueError, ZeroDivisionError, KeyError, IndexError,
                       TypeError)
@@ -978,7 +979,7 @@ class _Interpreter:
             mapping = {"ValueError": ValueError,
                        "ZeroDivisionError": ZeroDivisionError,
                        "KeyError": KeyError, "IndexError": IndexError,
-                       "TypeError": TypeError}
+                       "TypeError": TypeError, "Exception": Exception}
             if any(isinstance(exc, mapping[name]) for name in wanted):
                 return handler
         return None

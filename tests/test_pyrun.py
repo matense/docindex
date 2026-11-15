@@ -751,3 +751,23 @@ def test_list_sort_rejects_bad_shapes():
                  "l = [1]\nl.sort(key=1)",
                  "l = [1, 'a']\nl.sort()\nl"]:
         assert evaluate(code)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 8: allow `except Exception` as a handler spelling (raise unchanged)
+# ---------------------------------------------------------------------------
+
+
+def test_except_exception_spelling_allowed():
+    assert evaluate("try:\n x = 1/0\nexcept Exception:\n x = 99\nx") == {
+        "ok": True, "value": 99}
+    assert evaluate("try:\n d = {}\n x = d['k']\nexcept Exception as e:\n x = 'caught'\nx") == {
+        "ok": True, "value": "caught"}
+    assert evaluate("try:\n x = int('oops')\nexcept (KeyError, Exception):\n x = 7\nx") == {
+        "ok": True, "value": 7}
+
+
+def test_except_exception_cannot_swallow_internal():
+    out = evaluate("s = 0\ntry:\n for i in range(10**9):\n  s += i\nexcept Exception:\n s = -1\ns")
+    assert out["ok"] is False
+    assert evaluate("try:\n import os\nexcept Exception:\n x = 1\nx")["ok"] is False
