@@ -81,10 +81,10 @@ def test_profile_lists_drive_stats_with_files(auth_client):
     assert b"files" in resp.data
 
 
-def test_profile_groups_drives_by_kind(auth_client, app, tmp_path):
+def test_profile_groups_drives_by_kind(admin_client, app, tmp_path):
     import io
     # Native drive with a file.
-    auth_client.post("/upload", data={
+    admin_client.post("/upload", data={
         "folder_id": "",
         "files": (io.BytesIO(b"hello"), "notes.txt"),
     }, content_type="multipart/form-data", follow_redirects=True)
@@ -97,12 +97,12 @@ def test_profile_groups_drives_by_kind(auth_client, app, tmp_path):
     shared.mkdir()
     (mirror / "m.txt").write_text("mirror", encoding="utf-8")
     (shared / "s.txt").write_text("shared", encoding="utf-8")
-    auth_client.post("/drives/sync-create", data={"path": str(mirror)},
+    admin_client.post("/drives/sync-create", data={"path": str(mirror)},
                      follow_redirects=True)
-    auth_client.post("/drives/sync-create",
+    admin_client.post("/drives/sync-create",
                      data={"path": str(shared), "sync_mode": "shared"},
                      follow_redirects=True)
-    html = auth_client.get("/settings/profile").data.decode()
+    html = admin_client.get("/settings/profile").data.decode()
     for section in ("Native drives", "Shared sync drives", "Mirror drives"):
         assert section in html
     # Sections render in native → shared → mirror order.

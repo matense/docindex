@@ -298,21 +298,16 @@ def remove_synced_drive(drive):
 # Drive creation
 # --------------------------------------------------------------------------
 
-def validate_path(path):
-    """Normalize and validate a local folder path. Returns (abs_path, error)."""
-    path = (path or "").strip().strip('"')
-    if not path:
-        return None, "A folder path is required."
-    abs_path = os.path.realpath(os.path.abspath(path))
-    if not os.path.exists(abs_path):
-        return None, f'"{path}" does not exist on this machine.'
-    if not os.path.isdir(abs_path):
-        return None, f'"{path}" is not a folder.'
-    if not os.access(abs_path, os.R_OK):
-        return None, f'"{path}" is not readable by the server.'
+def _app_basedir():
+    """Absolute real path of the application root (parent of `app/`)."""
+    return os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..")))
+
+
+def _blocked_dirs():
+    """Absolute real paths that must never be synced (system/app dirs)."""
     try:
-        basedir = os.path.realpath(os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..")))
+        basedir = _app_basedir()
         blocked = {
             os.path.realpath(p) for p in (
                 "/etc", "/proc", "/sys", "/root", "/boot",
@@ -328,10 +323,52 @@ def validate_path(path):
                 blocked.add(os.path.realpath(win))
     except Exception:
         blocked = set()
+    return blocked
+
+
+def _shields_blocked(path, blocked=None):
+    """True when `path` IS a blocked dir or a parent of one.
+
+    Descending into `path` could reach blocked content, so the walk must
+    not enter it. Note the direction: a drive root that lives *inside* a
+    blocked dir (e.g. a git-drive clone under ``uploads/``) is NOT
+    shielded — only the blocked dir itself and its ancestors are.
+    """
+    rp = os.path.realpath(path)
+    if blocked is None:
+        blocked = _blocked_dirs()
+    if rp in blocked:
+        return True
+    # rstrip covers the filesystem root, where rp + os.sep would otherwise
+    # never match ("//" is not a prefix of "/etc").
+    return any(b.startswith(rp.rstrip(os.sep) + os.sep) for b in blocked)
+
+
+def validate_path(path):
+    """Normalize and validate a local folder path. Returns (abs_path, error)."""
+    path = (path or "").strip().strip('"')
+    if not path:
+        return None, "A folder path is required."
+    abs_path = os.path.realpath(os.path.abspath(path))
+    if not os.path.exists(abs_path):
+        return None, f'"{path}" does not exist on this machine.'
+    if not os.path.isdir(abs_path):
+        return None, f'"{path}" is not a folder.'
+    if not os.access(abs_path, os.R_OK):
+        return None, f'"{path}" is not readable by the server.'
+    basedir = _app_basedir()
+    blocked = _blocked_dirs()
+    if abs_path == basedir:
+        return None, "That system folder cannot be synced."
     if abs_path in blocked:
         return None, "That system folder cannot be synced."
     for b in blocked:
         if abs_path.startswith(b + os.sep):
+            return None, "That system folder cannot be synced."
+        if b.startswith(abs_path.rstrip(os.sep) + os.sep):
+            # `abs_path` is a parent of a blocked dir: syncing it would
+            # expose the blocked dir (rstrip covers the filesystem root,
+            # where abs_path + os.sep would otherwise never match).
             return None, "That system folder cannot be synced."
     allowed = os.environ.get("SYNC_ALLOWED_ROOTS", "")
     roots = [os.path.realpath(os.path.abspath(r.strip()))
@@ -429,8 +466,13 @@ def _index_batch(file_ids, app):
 def _count_files(root):
     """Fast pre-pass: how many files will be scanned (for the % progress)."""
     total = 0
+    blocked = _blocked_dirs()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name != ".git"]
+        # Never descend into a blocked dir (or a dir shielding one).
+        dirnames[:] = [name for name in dirnames
+                       if name != ".git"
+                       and not _shields_blocked(os.path.join(dirpath, name),
+                                                blocked)]
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             if os.path.islink(path):
@@ -567,6 +609,14 @@ def sync_drive(drive, job=None):
         raise ValueError("Not a synced drive.")
     if not os.path.isdir(drive.source_path):
         raise ValueError(f'Synced folder "{drive.source_path}" no longer exists.')
+    blocked = _blocked_dirs()
+    if (os.path.realpath(drive.source_path) == _app_basedir()
+            or os.path.realpath(drive.source_path) in blocked):
+        # Fail closed: a legacy drive rooted exactly at the app dir or at a
+        # blocked dir must not be scanned (walk pruning below only shields
+        # their children). Parents of blocked dirs are NOT refused here —
+        # the walk skips the blocked subtree and syncs the rest.
+        raise ValueError("That system folder cannot be synced.")
 
     stats = job.stats if job else {"added": 0, "updated": 0, "removed": 0,
                                    "skipped": 0}
@@ -602,7 +652,11 @@ def sync_drive(drive, job=None):
     adds, updates, thumbnails = [], [], []
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name != ".git"]
+        # Never descend into a blocked dir (or a dir shielding one).
+        dirnames[:] = [name for name in dirnames
+                       if name != ".git"
+                       and not _shields_blocked(os.path.join(dirpath, name),
+                                                blocked)]
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir != ".":
             needed_dirs.add(rel_dir)

@@ -4,7 +4,18 @@ hooks that drive.js uses for drag & drop, multi-select and the context menu."""
 import io
 import re
 
-from app.models import Drive, StoredFile
+import pytest
+
+from app.extensions import db
+from app.models import Drive, StoredFile, User
+
+
+@pytest.fixture(autouse=True)
+def _ui_attrs_tests_run_as_admin(app, user):
+    """sync-create is admin-only: run this module's sync tests as an admin."""
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
 
 
 def _upload(client, name, content):

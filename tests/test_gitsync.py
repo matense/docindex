@@ -14,6 +14,14 @@ from app.services import ai_service
 IDENTITY = {"author_name": "Local Committer", "author_email": "local@example.com"}
 
 
+@pytest.fixture(autouse=True)
+def _gitsync_tests_run_as_admin(app, user):
+    """sync-create is admin-only: run this module's sync flows as an admin."""
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
+
+
 def _git(path, *args, check=True):
     return subprocess.run(
         ["git", "-C", str(path), "-c", "user.name=Test User",

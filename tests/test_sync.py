@@ -10,6 +10,18 @@ from app.models import Drive, Folder, StoredFile, User
 from app.services import agent_service, file_service, search_service, sync_service
 
 
+@pytest.fixture(autouse=True)
+def _sync_tests_run_as_admin(app, user):
+    """sync-create is admin-only: run this module's sync tests as an admin.
+
+    (Follows the tests/test_modules.py `_make_admin` convention; scoped to
+    this module so no other test file is affected.)
+    """
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
+
+
 @pytest.fixture()
 def local_folder(tmp_path):
     """A real folder on disk with a small file tree."""
@@ -684,3 +696,61 @@ def test_captions_toggle_disables_ai_captioning(auth_client, app, local_folder):
         caption_mock.assert_not_called()
         db.session.refresh(pic)
         assert pic.index.status == "ok"
+
+
+# --- S2 (argon P0): admin-only sync-create + blocked-path hardening ---
+
+def _non_admin_client(client, app):
+    """Log in a second, non-admin user on a fresh client."""
+    with app.app_context():
+        u = User(username="bob", email="bob@example.com")
+        u.set_password("password123")
+        db.session.add(u)
+        db.session.commit()
+    client.post("/login", data={"username": "bob", "password": "password123"})
+    return client
+
+
+def test_sync_create_rejects_non_admin(client, app, local_folder):
+    bob = _non_admin_client(client, app)
+    resp = bob.post("/drives/sync-create", data={"path": local_folder})
+    assert resp.status_code == 403
+    with app.app_context():
+        assert Drive.query.filter(
+            Drive.source_path.isnot(None)).count() == 0
+
+
+def test_basedir_and_parents_blocked_even_with_roots(monkeypatch):
+    basedir = os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(sync_service.__file__), "..", "..")))
+    # Even if the admin allowlist names the basedir, it stays blocked.
+    monkeypatch.setenv("SYNC_ALLOWED_ROOTS", basedir)
+    abs_path, error = sync_service.validate_path(basedir)
+    assert abs_path is None
+    assert error is not None
+    parent = os.path.dirname(basedir)
+    abs_path, error = sync_service.validate_path(parent)
+    assert abs_path is None
+    assert error is not None
+
+
+def test_sync_walk_skips_blocked_dirs(auth_client, app, local_folder,
+                                      monkeypatch):
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive_id = Drive.query.filter(
+            Drive.source_path.isnot(None)).one().id
+    nested = os.path.join(local_folder, "evil")
+    os.makedirs(nested, exist_ok=True)
+    with open(os.path.join(nested, "evil.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("evil content")
+    real_blocked = sync_service._blocked_dirs
+    monkeypatch.setattr(sync_service, "_blocked_dirs",
+                        lambda: set(real_blocked())
+                        | {os.path.realpath(nested)})
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        sync_service.sync_drive(drive)
+    with app.app_context():
+        assert StoredFile.query.filter_by(name="evil.txt").count() == 0

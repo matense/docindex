@@ -214,7 +214,10 @@ def create_drive():
 @login_required
 def sync_create():
     """Create a drive that mirrors a local folder (mirror) or two-way
-    syncs it with writes + history (shared)."""
+    syncs it with writes + history (shared). Admin only: syncing exposes
+    server-side files to the app."""
+    if not current_user.is_admin:
+        abort(403)
     mode = request.form.get("sync_mode", "mirror")
     drive, job, error = sync_service.create_synced_drive(
         current_user, request.form.get("path", ""),
