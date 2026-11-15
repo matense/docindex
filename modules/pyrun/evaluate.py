@@ -141,7 +141,8 @@ _METHODS = {
 _SQL_MAX_CHARS = 20000
 _SQL_SEED_BATCH = 500
 _SQL_DENIED_RE = re.compile(
-    r"\bATTACH\b|\bDETACH\b|\bPRAGMA\b|\bVACUUM\b|load_extension",
+    r"\bATTACH\b|\bDETACH\b|\bPRAGMA\b|\bVACUUM\b|load_extension"
+    r"|\bpragma_",
     re.IGNORECASE)
 
 
@@ -158,6 +159,11 @@ class _Db:
     def __init__(self, query, exec_):
         self.query = query
         self.exec = exec_
+
+    def __repr__(self):
+        # Address-free: sandboxed str(db)/f"{db!r}"/"{}".format(db) must
+        # never leak a host memory address.
+        return "<db>"
 
 
 def _sqlite_authorizer(action, arg1, arg2, dbname, source):
@@ -245,7 +251,128 @@ def _sql_words(sql, count=2):
             break
     return re.findall(r"[A-Za-z]+", text)[:count]
 
+
+def _skip_sql_ws(sql, pos):
+    """Advance past whitespace and `--` / `/* */` comments."""
+    n = len(sql)
+    while pos < n:
+        if sql[pos].isspace():
+            pos += 1
+        elif sql.startswith("--", pos):
+            end = sql.find("\n", pos)
+            pos = n if end == -1 else end + 1
+        elif sql.startswith("/*", pos):
+            end = sql.find("*/", pos + 2)
+            if end == -1:
+                return n
+            pos = end + 2
+        else:
+            break
+    return pos
+
+
+_IDENT_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*|\"(?:[^\"]|\"\")+\"|`[^`]*`|\[[^\]]*\]")
+
+
+def _skip_parens(sql, pos):
+    """Skip a balanced ``(...)`` group from its opening paren.
+
+    Quote- and comment-aware. Returns the index just past the closing
+    ``)``, or ``-1`` when unbalanced.
+    """
+    n = len(sql)
+    depth = 0
+    quote = None
+    i = pos
+    while i < n:
+        if quote is not None:
+            if sql[i] == quote:
+                if i + 1 < n and sql[i + 1] == quote \
+                        and quote in ("'", '"', '`'):
+                    i += 1
+                else:
+                    quote = None
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end == -1 else end + 1
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                return -1
+            i = end + 2
+            continue
+        ch = sql[i]
+        if ch in ("'", '"', '`'):
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _with_main_verb(sql):
+    """First word of the statement a ``WITH`` CTE list leads into.
+
+    Skips ``[RECURSIVE]`` and each ``name [(cols)] AS [MATERIALIZED]
+    (...)`` definition (balanced, quote-aware). Returns the upper-cased
+    verb (e.g. ``"SELECT"``) or ``""`` when unparseable — callers fail
+    closed on anything but ``SELECT``.
+    """
+    pos = _skip_sql_ws(sql, 0)
+    match = re.match(r"WITH\b", sql[pos:], re.IGNORECASE)
+    if not match:
+        return ""
+    pos = _skip_sql_ws(sql, pos + match.end())
+    match = re.match(r"RECURSIVE\b", sql[pos:], re.IGNORECASE)
+    if match:
+        pos = _skip_sql_ws(sql, pos + match.end())
+    while True:
+        match = _IDENT_RE.match(sql, pos)
+        if not match:
+            return ""
+        pos = _skip_sql_ws(sql, match.end())
+        if pos < len(sql) and sql[pos] == "(":
+            end = _skip_parens(sql, pos)
+            if end == -1:
+                return ""
+            pos = _skip_sql_ws(sql, end)
+        match = re.match(r"AS\b", sql[pos:], re.IGNORECASE)
+        if not match:
+            return ""
+        pos = _skip_sql_ws(sql, pos + match.end())
+        match = re.match(r"(?:NOT\s+MATERIALIZED|MATERIALIZED)\b",
+                         sql[pos:], re.IGNORECASE)
+        if match:
+            pos = _skip_sql_ws(sql, pos + match.end())
+        if pos >= len(sql) or sql[pos] != "(":
+            return ""
+        end = _skip_parens(sql, pos)
+        if end == -1:
+            return ""
+        pos = _skip_sql_ws(sql, end)
+        if pos < len(sql) and sql[pos] == ",":
+            pos = _skip_sql_ws(sql, pos + 1)
+            continue
+        break
+    match = re.match(r"[A-Za-z]+", sql[pos:])
+    return match.group(0).upper() if match else ""
+
+
 _FORMATTER = string.Formatter()
+
+# Width/precision pre-check for str.format (mirrors the _mult pattern):
+# digit runs inside a single format-spec level, with nested {...} fields
+# stripped (they resolve from arguments and are handled separately).
+_FORMAT_NUM_RE = re.compile(r"\d+")
+_FORMAT_NESTED_RE = re.compile(r"\{[^{}]*\}")
 
 
 # ---------------------------------------------------------------------------
@@ -1321,6 +1448,8 @@ class _Interpreter:
                     text = self._guard(str, value)
                 if part.format_spec is not None:
                     spec = self._ev(part.format_spec)
+                    self._check_format_result(
+                        sum(len(p) for p in parts) + len(text), spec)
                     text = self._guard(format, value, spec)
                 parts.append(text)
         result = "".join(parts)
@@ -1847,6 +1976,9 @@ class _Interpreter:
             if first not in ("SELECT", "WITH"):
                 raise _Denied(
                     "db.query needs a SELECT or WITH statement")
+            if first == "WITH" and _with_main_verb(sql) != "SELECT":
+                raise _Denied(
+                    "db.query needs a SELECT or WITH ... SELECT statement")
         else:
             if first in ("INSERT", "UPDATE", "DELETE"):
                 pass
@@ -1874,11 +2006,22 @@ class _Interpreter:
                 record = dict(zip(columns, row, strict=False))
                 self._charge(64 + 72 * len(record))
                 for value in record.values():
+                    if isinstance(value, (str, bytes)) and self.alloc + 40 \
+                            + len(value) > self.limits[
+                                "max_allocation_bytes"]:
+                        raise _Budget(
+                            f"query value too large ({len(value)} bytes); "
+                            "chunk the query (fewer/narrower rows) and "
+                            "combine partial results")
                     self._charge_value(value)
                 out.append(record)
                 if (index & 63) == 63:
                     self._check_wall()
+            # The query path never commits: roll back so a smuggled write
+            # can never stay visible to later reads in the same run.
+            self._db_rollback()
         except (_Halt, _UserError):
+            self._db_rollback()
             raise
         except (sqlite3.Error, sqlite3.Warning) as exc:
             raise _Denied(_sqlite_error(exc)) from None
@@ -1895,12 +2038,27 @@ class _Interpreter:
             self._db_rollback()
             raise _Denied(_sqlite_error(exc)) from None
         try:
+            affected = cursor.rowcount
+            counted = affected if isinstance(affected, int) \
+                and affected > 0 else 0
+            if counted:
+                # Bulk writes (e.g. INSERT INTO ... SELECT doubling the
+                # table per call) consume the shared budgets row by row,
+                # exactly like materialized query rows: a tiny doubling
+                # loop must abort instead of OOMing the host.
+                self._tick(counted)
+                self._charge(72 * counted)
+                self._check_wall()
             self._db_conn.commit()
+        except (_Halt, _UserError):
+            self._db_rollback()
+            raise
         except (sqlite3.Error, sqlite3.Warning) as exc:
             self._db_rollback()
             raise _Denied(_sqlite_error(exc)) from None
         affected = cursor.rowcount
-        result = {"rows_affected": affected if affected >= 0 else 0}
+        result = {"rows_affected": affected if isinstance(affected, int)
+                  and affected >= 0 else 0}
         self._charge(64 + 72)
         return result
 
@@ -1933,6 +2091,110 @@ class _Interpreter:
             raise _UserError(exc) from None
         except Exception:
             raise _Denied("operation failed") from None
+
+    def _format_spec_widths(self, spec):
+        """Width/precision ints in one format-spec level (nested stripped).
+
+        Raises before the host allocates, so e.g.
+        ``"{:>1000000000}".format("x")`` never materializes ~1GB.
+        """
+        total = 0
+        for num in _FORMAT_NUM_RE.findall(_FORMAT_NESTED_RE.sub("", spec)):
+            width = int(num)
+            if width > self.limits["max_allocation_bytes"]:
+                raise _Budget(
+                    "str.format width/precision too large; chunk the work "
+                    "into smaller pieces instead of building giant values "
+                    "at once")
+            total += width
+        return total
+
+    def _format_nested_value(self, value):
+        """Width contribution of one resolved nested-spec argument."""
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            if value > self.limits["max_allocation_bytes"]:
+                raise _Budget(
+                    "str.format width/precision too large; chunk the work "
+                    "into smaller pieces instead of building giant values "
+                    "at once")
+            return value if value > 0 else 0
+        if isinstance(value, str):
+            return self._format_spec_widths(value)
+        return 0
+
+    def _collect_nested_values(self, spec, args, kwargs):
+        """Resolve nested-spec fields to argument values.
+
+        Returns ``(values, unknown)``; ``unknown`` covers auto-numbered
+        (``{}``) or unresolvable names, which fall back to scanning every
+        argument conservatively.
+        """
+        values = []
+        unknown = False
+        for _, field_name, sub_spec, _ in _FORMATTER.parse(spec):
+            if field_name is None:
+                continue
+            if field_name == "":
+                unknown = True
+            elif field_name.isdigit():
+                idx = int(field_name)
+                if idx < len(args):
+                    values.append(args[idx])
+                else:
+                    unknown = True
+            elif field_name in kwargs:
+                values.append(kwargs[field_name])
+            else:
+                unknown = True
+            if sub_spec:
+                deeper, deep_unknown = self._collect_nested_values(
+                    sub_spec, args, kwargs)
+                values.extend(deeper)
+                unknown = unknown or deep_unknown
+        return values, unknown
+
+    def _check_format_template(self, template, args, kwargs):
+        """Pre-check before the host ``str.format`` call (mirrors _mult).
+
+        Caps width/precision (literal and argument-driven, e.g.
+        ``"{0:>{w}}".format("x", w=10**9)``) against the allocation
+        budget so the host never materializes the giant string.
+        """
+        if "{" not in template:
+            return
+        total = len(template)
+        values = []
+        unknown = False
+        for _, _, spec, _ in _FORMATTER.parse(template):
+            if not spec:
+                continue
+            total += self._format_spec_widths(spec)
+            if "{" in spec:
+                found, missed = self._collect_nested_values(
+                    spec, args, kwargs)
+                values.extend(found)
+                unknown = unknown or missed
+        for value in values:
+            total += self._format_nested_value(value)
+        if unknown:
+            for value in list(args) + list(kwargs.values()):
+                total += self._format_nested_value(value)
+        if self.alloc + total > self.limits["max_allocation_bytes"]:
+            raise _Budget(
+                "str.format width/precision too large; chunk the work "
+                "into smaller pieces instead of building giant values "
+                "at once")
+
+    def _check_format_result(self, base, spec):
+        """Pre-check before the host ``format(value, spec)`` call."""
+        total = base + self._format_spec_widths(spec)
+        if self.alloc + total > self.limits["max_allocation_bytes"]:
+            raise _Budget(
+                "str.format width/precision too large; chunk the work "
+                "into smaller pieces instead of building giant values "
+                "at once")
 
     def _no_kwargs(self, name, kwargs):
         if kwargs:
@@ -2013,6 +2275,7 @@ class _Interpreter:
                 if not isinstance(key, str):
                     raise _UserError(TypeError("format keywords need str"))
             _validate_format_template(obj)
+            self._check_format_template(obj, args, kwargs)
             result = obj.format(*args, **kwargs)
             self._charge(40 + len(result))
             return result

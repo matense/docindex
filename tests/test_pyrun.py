@@ -511,6 +511,177 @@ def test_sqlite_lockdown_denied():
         assert out["ok"] is False, sql
 
 
+# ---------------------------------------------------------------------------
+# Final-review hardening: budget + tool-boundary gaps (RED-first)
+# ---------------------------------------------------------------------------
+
+
+def test_fr_exec_bulk_writes_consume_budgets():
+    # INSERT INTO ... SELECT doubling must tick rowcount against the shared
+    # budgets: 20 doublings from 1 row would build ~1M rows unchecked.
+    files = {"f": ["a\n1\n"]}
+    code = ("for i in range(20):\n"
+            " db.exec('INSERT INTO t0 SELECT * FROM t0')\n"
+            "db.query('SELECT COUNT(*) AS n FROM t0')")
+    out = evaluate(code, files=files, limits={"max_iterations": 1000})
+    assert out["ok"] is False
+    assert "chunk" in out["error"].lower()
+
+
+def test_fr_with_write_through_query_rejected():
+    # WITH ... DELETE executed through db.query must not write (nor be
+    # visible to later reads in the same run).
+    code = ("db.query(\"WITH x AS (SELECT 1 AS a) DELETE FROM t0\")\n"
+            "db.query('SELECT COUNT(*) AS n FROM t0')")
+    out = evaluate(code, files={"f": ["a\n1\n2\n"]})
+    assert out["ok"] is False
+    # Legit WITH ... SELECT shapes (multi-CTE, RECURSIVE) still work.
+    assert evaluate(
+        "db.query('WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) "
+        "SELECT * FROM a, b')",
+        files={"f": ["a\n1\n"]}) == {
+        "ok": True, "value": [{"x": 1, "y": 2}]}
+    assert evaluate(
+        "db.query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 "
+        "FROM c WHERE x < 3) SELECT x FROM c ORDER BY x')",
+        files={"f": ["a\n1\n"]}) == {
+        "ok": True, "value": [{"x": 1}, {"x": 2}, {"x": 3}]}
+
+
+def test_fr_format_width_precheck():
+    # Giant width/precision must trip the budget BEFORE the host allocates.
+    for code in ['"{:>60000000}".format("x")',
+                 '"{:.60000000f}".format(1.5)',
+                 '"{0:>{w}}".format("x", w=60000000)',
+                 'x = "a"\nf"{x:>60000000}"']:
+        out = evaluate(code)
+        assert out["ok"] is False, code
+        assert "format" in out["error"].lower(), code
+    # Sane widths (incl. nested) still work.
+    assert evaluate('"{:>5}".format("x")') == {
+        "ok": True, "value": "    x"}
+    assert evaluate("'{0:{w}}'.format(3.14159, w='.2f')") == {
+        "ok": True, "value": "3.14"}
+
+
+def test_fr_query_blob_backstop():
+    # A huge blob must fail closed with a chunking hint before accumulation.
+    out = evaluate("db.query('SELECT randomblob(60000000)')",
+                   files={"f": ["a\n1\n"]})
+    assert out["ok"] is False
+    assert "too large" in out["error"].lower()
+    assert "chunk" in out["error"].lower()
+
+
+def test_fr_compute_survives_evaluator_crash(app, user, monkeypatch):
+    tools = _pyrun_tools()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tools, "evaluate", _boom)
+    with app.app_context():
+        out = _call_compute(user, {"code": "1"})
+    assert out["ok"] is False
+    assert out.get("retry_hint")
+
+
+def test_fr_compute_db_lookup_failure_retryable(app, user, monkeypatch):
+    tools = _pyrun_tools()
+
+    class _QueryBoom:
+        def __getattr__(self, name):
+            raise RuntimeError("db down")
+
+    stub = type("StoredFileBoom", (), {"query": _QueryBoom()})
+    monkeypatch.setattr(tools, "StoredFile", stub)
+    with app.app_context():
+        out = _call_compute(user, {"code": "1",
+                                   "files": [{"file_id": 1, "as": "f"}]})
+    assert out["ok"] is False
+    assert out.get("retry_hint")
+
+
+def test_fr_save_survives_backend_crash(app, user, monkeypatch):
+    from app.services import file_service
+    drive_id = _writable_drive(app, user)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'a,b\\n1,2\\n'",
+                                   "outputs": {"result.csv": "out"}})
+    assert out["ok"] is True
+    key = out["artifacts"][0]["key"]
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk down")
+
+    monkeypatch.setattr(file_service, "save_upload", _boom)
+    with app.app_context():
+        saved = _call_save(user, {"key": key, "drive_id": drive_id})
+    assert saved["ok"] is False
+    assert saved.get("retry_hint")
+
+
+def test_fr_inputs_size_and_json_cap(app, user):
+    with app.app_context():
+        big = _call_compute(user, {"code": "1",
+                                   "inputs": {"big": "x" * 300000}})
+    assert big["ok"] is False
+    assert big.get("retry_hint")
+    with app.app_context():
+        bad = _call_compute(user, {"code": "1",
+                                   "inputs": {"s": {1, 2}}})
+    assert bad["ok"] is False
+    assert bad.get("retry_hint")
+    # Small plain-JSON inputs still pass through.
+    with app.app_context():
+        ok = _call_compute(user, {"code": "v + 1", "inputs": {"v": 1}})
+    assert ok == {"ok": True, "value": 2, "artifacts": []}
+
+
+def test_fr_db_repr_has_no_address():
+    for code in ['str(db)', '"{}".format(db)', 'f"{db!r}"']:
+        out = evaluate(code)
+        assert out["ok"] is True, code
+        assert "0x" not in out["value"], code
+
+
+def test_fr_artifact_keys_owner_bound(app, user):
+    drive_id = _writable_drive(app, user)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x'",
+                                   "outputs": {"result.csv": "out"}})
+    assert out["ok"] is True
+    key = out["artifacts"][0]["key"]
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        bob_id = bob.id
+        bob_drive = Drive(name="Bob drive", user_id=bob_id)
+        db.session.add(bob_drive)
+        db.session.commit()
+        bob_drive_id = bob_drive.id
+    with app.app_context():
+        denied = _call_save(bob_id, {"key": key, "drive_id": bob_drive_id})
+    assert denied["ok"] is False
+    assert denied.get("retry_hint")
+    # The owner can still save afterwards (rejected save consumes nothing).
+    with app.app_context():
+        saved = _call_save(user, {"key": key, "drive_id": drive_id})
+    assert saved["ok"] is True
+
+
+def test_fr_pragma_table_functions_denied():
+    for sql in ["SELECT * FROM pragma_table_info('t0')",
+                "SELECT * FROM pragma_database_list",
+                "SELECT pragma_version()"]:
+        out = evaluate(f"db.query({sql!r})", files={"f": ["a\n1\n"]})
+        assert out["ok"] is False, sql
+        out = evaluate(f"db.exec({sql!r})", files={"f": ["a\n1\n"]})
+        assert out["ok"] is False, sql
+
+
 def test_sqlite_budgets_count_rows():
     chunks = ["a\n" + "1\n" * 50000]
     out = evaluate("db.query('SELECT * FROM t0')",

@@ -26,6 +26,7 @@ from .evaluate import evaluate
 
 _CODE_MAX_CHARS = 20_000
 _FILES_MAX_COUNT = 5
+_INPUTS_MAX_CHARS = 200_000
 _SMALL_FILE_MAX_CHARS = 200_000
 _CHUNK_BYTES = 65536
 # Hard backstops for the streamed large-file path: a pathological file
@@ -178,10 +179,15 @@ def _resolve_input_files(user, entries):
                 f"Invalid file id {entry.get('file_id')!r}.",
                 "Use an integer file_id you own that is not trashed "
                 "and retry.")
-        stored = (StoredFile.query
-                  .filter_by(id=file_id, user_id=_uid(user))
-                  .filter(StoredFile.deleted_at.is_(None))
-                  .first())
+        try:
+            stored = (StoredFile.query
+                      .filter_by(id=file_id, user_id=_uid(user))
+                      .filter(StoredFile.deleted_at.is_(None))
+                      .first())
+        except Exception:  # noqa: BLE001 - DB failures are retryable
+            return None, _err(
+                f"Could not read file {file_id}.",
+                "Pick another file and retry.")
         if stored is None:
             return None, _err(
                 f"File {file_id} not found.",
@@ -226,10 +232,11 @@ def _pending_bytes():
     return sum(entry["size"] for entry in _PENDING.values())
 
 
-def _register_artifact(name, content):
+def _register_artifact(user_id, name, content):
     key = uuid.uuid4().hex
     _PENDING[key] = {"name": name, "content": content,
-                     "size": len(content.encode("utf-8"))}
+                     "size": len(content.encode("utf-8")),
+                     "user_id": user_id}
     while (len(_PENDING) > _PENDING_MAX_ENTRIES
            or _pending_bytes() > _PENDING_MAX_BYTES):
         _PENDING.pop(next(iter(_PENDING)))
@@ -264,6 +271,21 @@ def _tool_compute(user, args, drive=None):
             "Pass 'inputs' as an object of JSON values.",
             "Pass 'inputs' as {name: value} with plain JSON values "
             "and retry.")
+    try:
+        serialized_inputs = json.dumps(inputs, allow_nan=False)
+    except (TypeError, ValueError):
+        _record(user.id, code)
+        return _err(
+            "Pass 'inputs' as an object of JSON values.",
+            "Pass 'inputs' as {name: value} with plain JSON values "
+            "and retry.")
+    if len(serialized_inputs) > _INPUTS_MAX_CHARS:
+        _record(user.id, code)
+        return _err(
+            f"Inputs are too large ({len(serialized_inputs)} > "
+            f"{_INPUTS_MAX_CHARS} chars).",
+            "Pass smaller inputs — process slices and combine partial "
+            "results across calls, then retry.")
     outputs = args.get("outputs", {})
     if not isinstance(outputs, dict):
         _record(user.id, code)
@@ -289,7 +311,14 @@ def _tool_compute(user, args, drive=None):
     if error is not None:
         _record(user.id, code)
         return error
-    outcome = evaluate(code, variables=inputs, files=files_map)
+    try:
+        outcome = evaluate(code, variables=inputs, files=files_map)
+    except Exception:  # noqa: BLE001 - the tool boundary never 500s
+        _record(user.id, code)
+        return _err(
+            "Evaluation failed unexpectedly.",
+            "Simplify the program (smaller inputs, fewer steps) "
+            "and retry.")
     if not outcome.get("ok"):
         _record(user.id, code)
         return {"ok": False,
@@ -300,8 +329,16 @@ def _tool_compute(user, args, drive=None):
     if outputs:
         probe = ("{" + ", ".join(f"{json.dumps(name)}: ({var})"
                                  for name, var in outputs.items()) + "}")
-        collected = evaluate(code + "\n" + probe, variables=inputs,
-                             files=files_map)
+        try:
+            collected = evaluate(code + "\n" + probe, variables=inputs,
+                                 files=files_map)
+        except Exception:  # noqa: BLE001 - the tool boundary never 500s
+            _record(user.id, code, outcome.get("value"))
+            return {"ok": False,
+                    "error": "Evaluation failed unexpectedly.",
+                    "retry_hint": "The 'outputs' names must match "
+                                  "variables the code assigns — fix the "
+                                  "code and retry."}
         if not collected.get("ok"):
             _record(user.id, code, outcome.get("value"))
             return {"ok": False,
@@ -318,7 +355,8 @@ def _tool_compute(user, args, drive=None):
                     f"Output {name!r} is not text.",
                     "Assign a string to each output variable and retry.")
             artifacts.append(
-                {"key": _register_artifact(name, text), "name": name,
+                {"key": _register_artifact(user.id, name, text),
+                 "name": name,
                  "size": len(text.encode("utf-8"))})
     _record(user.id, code, outcome.get("value"))
     return {"ok": True, "value": outcome.get("value"),
@@ -346,7 +384,7 @@ def _tool_save(user, args, drive=None):
                     "and retry.")
     key = args.get("key")
     entry = _PENDING.get(key) if isinstance(key, str) else None
-    if entry is None:
+    if entry is None or entry.get("user_id") != user.id:
         _record(user.id, "")
         return _err(
             "Unknown artifact key — keys are single-use and expire.",
@@ -381,6 +419,10 @@ def _tool_save(user, args, drive=None):
     except ValueError as exc:
         _record(user.id, "")
         return _err(str(exc) or "Could not save the file.",
+                    "Fix the reported problem and retry.")
+    except Exception:  # noqa: BLE001 - IO/SQLAlchemy must not 500
+        _record(user.id, "")
+        return _err("Could not save the file.",
                     "Fix the reported problem and retry.")
     stored.drive_id = dest_drive.id if dest_drive else None
     db.session.commit()
