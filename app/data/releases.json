@@ -1,6 +1,22 @@
 {
   "releases": [
     {
+      "version": "0.1.18",
+      "date": "2026-11-15",
+      "title": "Pyrun: sealed Python + SQL scratchpad for the AI agent",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "New Pyrun module: the AI runs small, bounded Python programs over files it owns (aggregates, filters, reshapes) in one tool step, and persists named text results to a validated drive destination — no imports, no filesystem, no network, every run recorded in the AI usage log.",
+            "Sealed SQLite scratchpad: attached CSVs become throwaway in-memory tables (t0, t1, …) with full read/write SQL — SELECT/JOIN/GROUP BY, INSERT/UPDATE/DELETE, CREATE TABLE AS and indexes — structurally confined to the scratch database (no file paths, no ATTACH/PRAGMA, no extensions).",
+            "Sandbox vocabulary grown from real agent use: try/except (including except Exception), str case/line/search methods, in-place list sort, isinstance, reversed, divmod, any/all and dict setdefault — each vetted as pure and value-only before admission."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.17",
       "date": "2026-11-13",
       "title": "Dashboards: run console, step budgets and honest snapshots",

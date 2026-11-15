@@ -1734,10 +1734,42 @@ tool + table).
   (node shapes, reference targets, schedule completeness) via an
   upstream-shape API before running, and graph export preserves node
   ids so references survive autosave.
+- `pyrun` — sealed Python + SQL scratchpad for the AI agent (agent-only:
+  no routes, no nav; two namespaced tools). `pyrun.compute` runs a small,
+  bounded program over explicitly attached files the user owns (up to 5
+  per call; small files read whole, large ones streamed in line-aligned
+  chunks): plain values come back, plus optional named text artifacts
+  held pending; `pyrun.save` persists one through the validated
+  drive/folder path with single-use owner-bound keys. The evaluator is a
+  hand-rolled stdlib-`ast` walking interpreter — no `import`, `while`,
+  dunders, `eval`/`exec`/`compile`/`open`, `global`/`nonlocal`,
+  decorators or nested defs; callables limited to a builtin whitelist
+  (`len range sum min max sorted abs round enumerate zip str int float
+  bool list dict set tuple` plus vetted additions: `isinstance`,
+  `reversed`, `divmod`, `any`, `all`) and per-type methods (`str`
+  split/join/strip/replace/startswith/endswith/format plus case, line,
+  search and predicate methods; `list` append/extend/sort/count;
+  `dict` get/items/keys/values/update/setdefault) — with hard budgets
+  (AST nodes, shared iteration, call depth, output size, wall clock,
+  allocation) and internal errors that user `except` clauses cannot
+  swallow (`try`/`except`/`else`/`finally` supported, `raise` stays
+  `ValueError`-only). Host helpers `parse_json`/`parse_csv`/`rows(name)`
+  expose file chunks as plain values. Attached CSVs additionally seed a
+  throwaway `:memory:` SQLite DB as tables `t0`, `t1`, … (sanitized TEXT
+  columns) visible only as a two-method `db` object: `db.query` for reads
+  (SELECT/JOIN/GROUP BY, CTEs, UNION) and `db.exec` for writes/DDL
+  (INSERT incl. INSERT INTO … SELECT, UPDATE, DELETE, CREATE TABLE [AS],
+  CREATE INDEX, DROP) — locked down by a keyword pre-filter plus
+  `set_authorizer`, `enable_load_extension(False)` and
+  host-side `temp_store=MEMORY`, single statement per call, per-row
+  budget ticks. Every tool failure is a safe retry-shaped
+  `{ok: False, error, retry_hint}` (no tracebacks, no paths); runs are
+  recorded via the AI usage path; `tests/test_pyrun.py` pins the
+  hostile battery end to end.
 
 ## Testing
 
-pytest suite in `tests/`, 750+ tests across 20+ modules:
+pytest suite in `tests/`, 1050+ tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept
