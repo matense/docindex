@@ -771,3 +771,42 @@ def test_except_exception_cannot_swallow_internal():
     out = evaluate("s = 0\ntry:\n for i in range(10**9):\n  s += i\nexcept Exception:\n s = -1\ns")
     assert out["ok"] is False
     assert evaluate("try:\n import os\nexcept Exception:\n x = 1\nx")["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 9: search/predicate builtins + methods
+# ---------------------------------------------------------------------------
+
+
+def test_str_search_methods_work():
+    assert evaluate("'aaa'.count('a')") == {"ok": True, "value": 3}
+    assert evaluate("'aaa'.count('a', 1)") == {"ok": True, "value": 2}
+    assert evaluate("'hello'.find('l')") == {"ok": True, "value": 2}
+    assert evaluate("'hello'.find('z')") == {"ok": True, "value": -1}
+    assert evaluate("'a,b,c'.partition(',')") == {
+        "ok": True, "value": ("a", ",", "b,c")}
+    assert evaluate("'abc'.isdigit()") == {"ok": True, "value": False}
+    assert evaluate("'123'.isdigit()") == {"ok": True, "value": True}
+    assert evaluate("'123'.isnumeric()") == {"ok": True, "value": True}
+
+
+def test_predicate_surface_works():
+    assert evaluate("[1, 2, 1, 3].count(1)") == {"ok": True, "value": 2}
+    assert evaluate("isinstance(1, int)") == {"ok": True, "value": True}
+    assert evaluate("isinstance('a', (str, int))") == {
+        "ok": True, "value": True}
+    assert evaluate("isinstance(1, str)") == {"ok": True, "value": False}
+    assert evaluate("list(reversed([1, 2, 3]))") == {
+        "ok": True, "value": [3, 2, 1]}
+    assert evaluate("''.join(reversed('abc'))") == {
+        "ok": True, "value": "cba"}
+    assert evaluate("divmod(7, 3)") == {"ok": True, "value": (2, 1)}
+
+
+def test_new_surface_rejects_bad_shapes():
+    for code in ["'a'.count()", "'a'.find(1)", "'a'.partition('')",
+                 "'a'.isdigit(1)", "[1].count(1, 2)",
+                 "isinstance(1, 1)", "isinstance(1)",
+                 "reversed(1)", "reversed()", "divmod(1)", "divmod(1, 0)",
+                 "'a'.title()", "'a'.rpartition(',')"]:
+        assert evaluate(code)["ok"] is False

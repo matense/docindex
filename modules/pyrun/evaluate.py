@@ -121,6 +121,7 @@ _BUILTIN_NAMES = frozenset({
     "len", "range", "sum", "min", "max", "sorted", "abs", "round",
     "enumerate", "zip", "str", "int", "float", "bool",
     "list", "dict", "set", "tuple",
+    "isinstance", "reversed", "divmod",
 })
 
 # Host-side data helpers. Plain value-only functions injected into the
@@ -134,8 +135,9 @@ _HOST_HELPERS = frozenset({"parse_json", "parse_csv", "rows"})
 _METHODS = {
     str: frozenset({"split", "join", "strip", "replace", "startswith",
                     "endswith", "format", "lower", "upper", "lstrip",
-                    "rstrip", "splitlines"}),
-    list: frozenset({"append", "extend", "sort"}),
+                    "rstrip", "splitlines", "count", "find", "partition",
+                    "isdigit", "isnumeric"}),
+    list: frozenset({"append", "extend", "sort", "count"}),
     dict: frozenset({"get", "items", "keys", "values", "update"}),
 }
 
@@ -1751,6 +1753,59 @@ class _Interpreter:
         self._charge(64 + 72 * len(result))
         return result
 
+    _ISINSTANCE_TYPES = {
+        "int": int, "str": str, "float": float, "bool": bool,
+        "list": list, "dict": dict, "set": set, "tuple": tuple,
+    }
+
+    def _bi_isinstance(self, *args, **kwargs):
+        self._no_kwargs("isinstance", kwargs)
+        self._checked_args("isinstance", args, 2, 2)
+        obj, types = args
+        if isinstance(types, _Builtin):
+            candidates = (types,)
+        elif isinstance(types, tuple):
+            candidates = types
+        else:
+            raise _UserError(TypeError(
+                "isinstance second argument must be a type or "
+                "a tuple of types"))
+        resolved = []
+        for candidate in candidates:
+            if isinstance(candidate, _Builtin) and candidate.name in \
+                    self._ISINSTANCE_TYPES:
+                resolved.append(self._ISINSTANCE_TYPES[candidate.name])
+            else:
+                raise _UserError(TypeError(
+                    "isinstance second argument must be a type or "
+                    "a tuple of types"))
+        return self._guard(isinstance, obj, resolved[0] if len(resolved) == 1
+                           and isinstance(types, _Builtin)
+                           else tuple(resolved))
+
+    def _bi_reversed(self, *args, **kwargs):
+        self._no_kwargs("reversed", kwargs)
+        self._checked_args("reversed", args, 1, 1)
+        seq = args[0]
+        if not isinstance(seq, (str, list, tuple, range)):
+            raise _UserError(TypeError(
+                "reversed needs a reversible sequence"))
+        return self._guard(reversed, seq)
+
+    def _bi_divmod(self, *args, **kwargs):
+        self._no_kwargs("divmod", kwargs)
+        self._checked_args("divmod", args, 2, 2)
+        for operand in args:
+            if isinstance(operand, bool) or not isinstance(
+                    operand, (int, float)):
+                raise _UserError(TypeError("divmod needs numbers"))
+        result = self._guard(divmod, *args)
+        checked = tuple(self._norm_int(value) for value in result)
+        self._charge(56 + 8 * len(checked))
+        for value in checked:
+            self._charge_value(value)
+        return checked
+
     # -- host data helpers (parse_json / parse_csv / rows) -------------------
     def _check_delimiter(self, delimiter):
         if not isinstance(delimiter, str) or len(delimiter) != 1:
@@ -2304,6 +2359,32 @@ class _Interpreter:
             self._charge(56 + 8 * len(parts)
                          + sum(len(p) for p in parts))
             return parts
+        if name in ("count", "find"):
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 1, 3)
+            if not isinstance(args[0], str):
+                raise _UserError(TypeError(f"{name} needs a str"))
+            for bound_arg in args[1:]:
+                if isinstance(bound_arg, bool) or not isinstance(
+                        bound_arg, int):
+                    raise _UserError(TypeError(
+                        f"{name} bounds must be int"))
+            return getattr(obj, name)(*args)
+        if name == "partition":
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 1, 1)
+            if not isinstance(args[0], str):
+                raise _UserError(TypeError("partition needs a str"))
+            if args[0] == "":
+                raise _UserError(ValueError("empty separator"))
+            result = obj.partition(args[0])
+            self._charge(56 + 8 * len(result)
+                         + sum(len(p) for p in result))
+            return result
+        if name in ("isdigit", "isnumeric"):
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 0, 0)
+            return getattr(obj, name)()
         raise _Denied(f"attribute '{name}' is not allowed")
 
     def _list_method(self, obj, name, args, kwargs):
@@ -2343,6 +2424,11 @@ class _Interpreter:
                 self._guard(obj.sort, reverse=bool(reverse))
             self._charge(8 * len(obj))
             return None
+        if name == "count":
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 1, 1)
+            self._tick(len(obj))
+            return self._guard(obj.count, args[0])
         raise _Denied(f"attribute '{name}' is not allowed")
 
     def _dict_method(self, obj, name, args, kwargs):
