@@ -262,3 +262,143 @@ def test_lfs_pointers_warn_but_do_not_block(auth_client, app, gitrepo,
         stored = StoredFile.query.filter_by(name="notes.txt").one()
         with open(stored.source_path, encoding="utf-8") as fh:
             assert "git-lfs.github.com" in fh.read()
+
+
+# ---------------------------------------------------------------------------
+# S1 (argon P0): clone-URL scheme + host lockdown, POST-only check endpoint.
+#
+# Policy under test: `https://` is always allowed provided the host
+# resolves exclusively to public IPs; every other scheme/host is refused
+# unless explicitly listed in the GITDRIVES_ALLOWED_HOSTS admin allowlist
+# (hosts/CIDR, default empty = deny). Local filesystem paths to real repos
+# keep working (equivalent to folder sync). Refusals happen BEFORE
+# ls_remote, so a rejected URL never triggers a network connection.
+# ---------------------------------------------------------------------------
+
+import socket as _socket
+import sys as _sys
+
+
+def _s1_provider():
+    from app.services import drive_service
+    provider = drive_service.get_drive_source("git")
+    assert provider is not None
+    return provider
+
+
+def _s1_user(app, uid):
+    from app.models import User
+    with app.app_context():
+        return db.session.get(User, uid)
+
+
+def _s1_no_fetch(monkeypatch, provider):
+    """Stub out ls_remote (as success) in the provider's own module
+    namespace and return the call log. Modules load under a
+    docindex_module_* alias, so patching must target the registered
+    provider's module object, not `modules.gitdrives.source`."""
+    calls = []
+    mod = _sys.modules[type(provider).__module__]
+
+    def _fake(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(mod, "ls_remote", _fake)
+    return calls
+
+
+def _s1_addrs(*ips):
+    infos = []
+    for ip in ips:
+        if ":" in ip:
+            infos.append((_socket.AF_INET6, _socket.SOCK_STREAM, 6, "",
+                          (ip, 443, 0, 0)))
+        else:
+            infos.append((_socket.AF_INET, _socket.SOCK_STREAM, 6, "",
+                          (ip, 443)))
+    return infos
+
+
+def test_file_and_remote_urls_rejected_without_fetch(app, user, monkeypatch):
+    provider = _s1_provider()
+    calls = _s1_no_fetch(monkeypatch, provider)
+    u = _s1_user(app, user)
+    for url in ["file:///etc/passwd",
+                "ssh://git@internal/x.git",
+                "http://169.254.169.254/",
+                "http://127.0.0.1:8080/x.git",
+                "https://127.0.0.1/x.git"]:
+        assert provider.validate(u, {"repo_url": url}), url
+    assert calls == []
+
+
+def test_nonexistent_local_paths_rejected(app, user, monkeypatch):
+    provider = _s1_provider()
+    calls = _s1_no_fetch(monkeypatch, provider)
+    u = _s1_user(app, user)
+    for url in ["/srv/git/secret.git", "C:/repos/secret.git"]:
+        assert provider.validate(u, {"repo_url": url}), url
+    assert calls == []
+
+
+def test_https_private_host_rejected(app, user, monkeypatch):
+    provider = _s1_provider()
+    calls = _s1_no_fetch(monkeypatch, provider)
+    u = _s1_user(app, user)
+    for ips in [["10.0.0.5"], ["127.0.0.1"], ["::ffff:127.0.0.1"]]:
+        monkeypatch.setattr(_socket, "getaddrinfo",
+                            lambda *a, **k: _s1_addrs(*ips))
+        assert provider.validate(
+            u, {"repo_url": "https://git.example.com/o/r.git"}), ips
+    assert calls == []
+
+
+def test_https_public_host_allowed(app, user, monkeypatch):
+    provider = _s1_provider()
+    _s1_no_fetch(monkeypatch, provider)
+    monkeypatch.setattr(_socket, "getaddrinfo",
+                        lambda *a, **k: _s1_addrs("93.184.216.34"))
+    u = _s1_user(app, user)
+    assert provider.validate(
+        u, {"repo_url": "https://github.com/o/r.git"}) is None
+
+
+def test_allowlisted_host_permitted_without_dns(app, user, monkeypatch):
+    provider = _s1_provider()
+    _s1_no_fetch(monkeypatch, provider)
+    monkeypatch.setenv("GITDRIVES_ALLOWED_HOSTS",
+                       "git.corp.internal, 10.0.0.0/8")
+
+    def _no_dns(*args, **kwargs):
+        raise AssertionError("allowlisted hosts must skip the DNS gate")
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _no_dns)
+    u = _s1_user(app, user)
+    assert provider.validate(
+        u, {"repo_url": "http://git.corp.internal/x.git"}) is None
+    assert provider.validate(
+        u, {"repo_url": "ssh://git@git.corp.internal/x.git"}) is None
+    assert provider.validate(
+        u, {"repo_url": "http://10.1.2.3/x.git"}) is None
+
+
+def test_check_endpoint_is_post_only(auth_client, app, enabled, monkeypatch):
+    resp = auth_client.get(
+        "/m/gitdrives/api/check?repo_url=https://github.com/o/r.git")
+    assert resp.status_code == 405
+    # POST without a URL is a validation failure (200 + ok:false),
+    # proving the POST route is live.
+    resp = auth_client.post("/m/gitdrives/api/check", data={"repo_url": ""})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is False
+    # POST with an allowlisted-path-free public URL validates cleanly.
+    provider = _s1_provider()
+    mod = _sys.modules[type(provider).__module__]
+    monkeypatch.setattr(mod, "ls_remote", lambda *a, **k: {})
+    monkeypatch.setattr(_socket, "getaddrinfo",
+                        lambda *a, **k: _s1_addrs("93.184.216.34"))
+    resp = auth_client.post("/m/gitdrives/api/check",
+                            data={"repo_url": "https://github.com/o/r.git"})
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True}

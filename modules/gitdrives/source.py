@@ -5,10 +5,13 @@ repository into a local cache and let the regular folder scan index it.
 Drives are read-only; the remote is never written to.
 """
 
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import time
+from urllib.parse import urlsplit
 
 from dulwich import porcelain
 
@@ -347,6 +350,123 @@ def pull_repo(path, url=None, branch=None, username=None, password=None,
     return None
 
 
+# --- Clone-URL policy (SSRF / local-file lockdown). ---
+#
+# `https://` is always allowed provided the host resolves exclusively to
+# public IP addresses. Every other scheme or host (ssh://, git://, plain
+# http://, file://, scp-like user@host:path, ...) is refused unless the
+# host is explicitly listed in the GITDRIVES_ALLOWED_HOSTS admin
+# allowlist (comma- or semicolon-separated hostnames or CIDR ranges;
+# default empty = deny). Plain local filesystem paths are still permitted
+# — but only when they exist — so pre-staged mirrors keep working; they
+# are equivalent to what folder sync already lets a user point at.
+# Hostnames are resolved with socket.getaddrinfo (IPv4-mapped IPv6
+# unwrapped) and rejected unless EVERY address is public; unresolvable
+# hosts fail closed. All refusals happen BEFORE ls_remote, so a rejected
+# URL never triggers a network connection or filesystem touch.
+
+_GITDRIVES_ALLOWLIST_ENV = "GITDRIVES_ALLOWED_HOSTS"
+
+_SCP_LIKE_RE = re.compile(
+    r"^(?P<user>[^/@\s:]+)@(?P<host>[^:/\s]+):(?P<path>.*)$")
+
+
+def _allowlist_entries():
+    """(hosts, networks) parsed from GITDRIVES_ALLOWED_HOSTS."""
+    hosts, networks = set(), []
+    raw = os.environ.get(_GITDRIVES_ALLOWLIST_ENV, "")
+    for part in re.split(r"[;,\s]+", raw):
+        part = part.strip().lower().rstrip(".")
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            hosts.add(part)
+    return hosts, networks
+
+
+def _host_allowlisted(host):
+    """True when a hostname (or literal IP inside a CIDR entry) is listed."""
+    hosts, networks = _allowlist_entries()
+    name = (host or "").strip().lower().rstrip(".")
+    if not name:
+        return False
+    if name in hosts:
+        return True
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return any(ip in net for net in networks)
+
+
+def _public_dns_error(host):
+    """None when every resolved address of host is public, else an error."""
+    try:
+        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        return (f"Could not resolve the repository host {host!r}. Only "
+                "public hosts are allowed.")
+    addresses = [info[4][0] for info in infos]
+    if not addresses:
+        return (f"Could not resolve the repository host {host!r}. Only "
+                "public hosts are allowed.")
+    for raw_ip in addresses:
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            return (f"Could not resolve the repository host {host!r}. "
+                    "Only public hosts are allowed.")
+        if ip.version == 6 and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return ("That host resolves to a non-public address; only "
+                    "public repository hosts are allowed (ask the "
+                    "administrator about the GITDRIVES_ALLOWED_HOSTS "
+                    "allowlist for private mirrors).")
+    return None
+
+
+def _remote_policy_error(host):
+    """Verdict for a URL with a remote host but a non-https scheme (or
+    scp-like syntax): allowed only via the admin allowlist."""
+    if host and _host_allowlisted(host):
+        return None
+    return ("Only https:// clone URLs are allowed by default; ask the "
+            "administrator to list this host in GITDRIVES_ALLOWED_HOSTS.")
+
+
+def url_policy_error(url):
+    """Clone-URL policy verdict: an error string, or None when the URL may
+    proceed to ls_remote. Never touches the network except for the
+    public-IP DNS check on non-allowlisted https hosts."""
+    raw = (url or "").strip()
+    if not raw:
+        return "A repository URL is required."
+    scp = _SCP_LIKE_RE.match(raw)
+    if scp:
+        return _remote_policy_error(scp.group("host"))
+    parts = urlsplit(raw)
+    scheme = parts.scheme.lower()
+    if scheme == "https":
+        host = parts.hostname
+        if not host:
+            return "That repository URL has no host."
+        if _host_allowlisted(host):
+            return None
+        return _public_dns_error(host)
+    if scheme == "" or (len(scheme) == 1 and scheme.isalpha()):
+        # Plain local path (including Windows `C:/...` / `C:\\...`, which
+        # urlsplit reports as a one-letter scheme): allowed only when it
+        # exists; ls_remote then decides whether it is a repository.
+        if os.path.exists(raw):
+            return None
+        return (f"Local repository path {raw!r} does not exist. Only "
+                "https:// clone URLs and existing local paths are allowed.")
+    return _remote_policy_error(parts.hostname)
+
+
 class GitDriveSource:
     """Drive source provider for git-backed mirror drives."""
 
@@ -356,6 +476,9 @@ class GitDriveSource:
         url = (config.get("repo_url") or "").strip()
         if not url:
             return "A repository URL is required."
+        policy_error = url_policy_error(url)
+        if policy_error:
+            return policy_error
         branch = (config.get("branch") or "").strip() or None
         try:
             refs = ls_remote(url, config.get("username"),
