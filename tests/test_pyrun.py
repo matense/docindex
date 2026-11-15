@@ -459,3 +459,79 @@ def test_rows_over_large_file_exact_values(app, user):
              "files": [{"file_id": fid, "as": "f"}]})
     assert out["ok"] is True, out
     assert out["value"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Task 5: sealed SQLite scratchpad — full read/write SQL in :memory:
+# ---------------------------------------------------------------------------
+
+
+def test_sqlite_select_join_groupby():
+    files = {"sales": ["id,amt\n1,10\n2,20\n3,30\n"],
+             "cats": ["id,cat\n1,a\n2,a\n3,b\n"]}
+    code = ("r = db.query('SELECT c.cat, SUM(CAST(s.amt AS INTEGER)) AS t "
+            "FROM t0 s JOIN t1 c ON s.id = c.id "
+            "GROUP BY c.cat ORDER BY c.cat')\n"
+            "r")
+    out = evaluate(code, files=files)
+    assert out == {"ok": True, "value": [
+        {"cat": "a", "t": 30}, {"cat": "b", "t": 30}]}
+
+
+def test_sqlite_writes_and_ddl():
+    files = {"f": ["id,v\n1,a\n2,b\n"]}
+    code = ("db.exec(\"INSERT INTO t0 (id, v) VALUES ('3', 'c')\")\n"
+            "db.exec(\"UPDATE t0 SET v = 'z' WHERE id = '1'\")\n"
+            "db.exec('DELETE FROM t0 WHERE id = \\'2\\'')\n"
+            "db.exec('CREATE TABLE t9 AS SELECT * FROM t0')\n"
+            "db.exec('CREATE INDEX i9 ON t9(id)')\n"
+            "db.query('SELECT id, v FROM t9 ORDER BY id')")
+    out = evaluate(code, files=files)
+    assert out == {"ok": True, "value": [
+        {"id": "1", "v": "z"}, {"id": "3", "v": "c"}]}
+    out2 = evaluate("db.exec('CREATE TABLE t9 AS SELECT * FROM t0')\n"
+                    "db.exec('CREATE INDEX i9 ON t9(id)')\n"
+                    "db.exec('DROP INDEX i9')\n"
+                    "db.exec('DROP TABLE t9')\n"
+                    "db.query('SELECT COUNT(*) AS n FROM t0')",
+                    files=files)
+    assert out2["ok"] is True
+
+
+def test_sqlite_lockdown_denied():
+    for sql in ["ATTACH DATABASE '/tmp/x.db' AS x",
+                "attach database ':memory:' as x",
+                "DETACH DATABASE t0",
+                "PRAGMA table_info(t0)",
+                "VACUUM",
+                "SELECT load_extension('x')"]:
+        out = evaluate(f"db.query({sql!r})", files={"f": ["a\n1\n"]})
+        assert out["ok"] is False, sql
+        out = evaluate(f"db.exec({sql!r})", files={"f": ["a\n1\n"]})
+        assert out["ok"] is False, sql
+
+
+def test_sqlite_budgets_count_rows():
+    chunks = ["a\n" + "1\n" * 50000]
+    out = evaluate("db.query('SELECT * FROM t0')",
+                   files={"f": chunks},
+                   limits={"max_iterations": 1000})
+    assert out["ok"] is False
+
+
+def test_sqlite_no_escape_surface():
+    for code in ["import sqlite3",
+                "open('x.db').read()",
+                "db.connection",
+                "db.sqlite3",
+                "db.exec(\"ATTACH DATABASE '/etc/passwd' AS p\")"]:
+        assert evaluate(code, files={"f": ["a\n1\n"]})["ok"] is False
+
+
+def test_sqlite_tool_error_has_retry_hint(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "db.query('SELECT * FROM t0')",
+                                   "files": []})
+    # empty scratch DB has no t0 — must be a safe retry-shaped error
+    assert out["ok"] is False and out.get("retry_hint")
+    assert "traceback" not in out.get("error", "").lower()

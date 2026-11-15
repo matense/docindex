@@ -55,6 +55,23 @@ Semantics (binding for this task):
   namespace layer: an explicit user binding shadows them (so a `rows`
   data variable keeps working), while builtins still take precedence
   over everything.
+* SQLite scratchpad: every run seeds a throwaway ``:memory:`` database
+  from ``files`` (tables ``t0``, ``t1``, ... in ``files`` insertion
+  order, every column ``TEXT``) and exposes it as ``db`` with exactly
+  two host functions — ``db.query(sql[, params])`` runs one
+  ``SELECT``/``WITH`` statement and returns a list of plain dicts;
+  ``db.exec(sql[, params])`` runs one write/DDL statement
+  (``INSERT``/``UPDATE``/``DELETE``/``CREATE TABLE|INDEX``/
+  ``DROP TABLE|INDEX``) and returns ``{"rows_affected": int}``. ``db``
+  rides the same variables layer as the helpers above (an explicit
+  user binding shadows it; builtins still take absolute precedence).
+  ``ATTACH`` / ``DETACH`` / ``PRAGMA`` / ``VACUUM`` / ``load_extension``
+  in any spelling and multi-statement strings fail closed (a
+  case-insensitive keyword pre-filter plus a ``set_authorizer`` deny,
+  explicit ``enable_load_extension(False)``, and single-``execute``
+  only). Every materialized row ticks the shared iteration budget
+  once, is allocation-charged, and fetching checks the wall clock per
+  batch. SQLite errors surface as a safe single-line message.
 * Namespace hygiene: whitelisted builtins take precedence over every
   user binding (scopes and tool-layer variables alike), so sandboxed code
   can never shadow or neutralize one; the sandbox never sees host
@@ -62,7 +79,7 @@ Semantics (binding for this task):
   ``str.format`` specs are validated recursively for the same reason.
 
 Only the standard library is used (``ast``, ``copy``, ``csv``, ``io``,
-``json``, ``keyword``, ``string``, ``time``).
+``json``, ``keyword``, ``re``, ``sqlite3``, ``string``, ``time``).
 """
 
 import ast
@@ -71,6 +88,8 @@ import csv
 import io
 import json
 import keyword
+import re
+import sqlite3
 import string
 import time
 
@@ -117,6 +136,114 @@ _METHODS = {
     list: frozenset({"append", "extend"}),
     dict: frozenset({"get", "items", "keys", "values", "update"}),
 }
+
+# Sealed SQLite scratchpad: one throwaway `:memory:` DB per run.
+_SQL_MAX_CHARS = 20000
+_SQL_SEED_BATCH = 500
+_SQL_DENIED_RE = re.compile(
+    r"\bATTACH\b|\bDETACH\b|\bPRAGMA\b|\bVACUUM\b|load_extension",
+    re.IGNORECASE)
+
+
+class _Db:
+    """Sandbox-visible SQLite handle: exactly two plain host functions.
+
+    The connection is closed over in the host closures held here, never
+    stored on the object; sandboxed code reaches it only through the
+    interpreter's ``query`` / ``exec`` dispatch.
+    """
+
+    __slots__ = ("query", "exec")
+
+    def __init__(self, query, exec_):
+        self.query = query
+        self.exec = exec_
+
+
+def _sqlite_authorizer(action, arg1, arg2, dbname, source):
+    """Layer-2 lockdown: deny attach/detach and load-extension opcodes."""
+    try:
+        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+            return sqlite3.SQLITE_DENY
+        for part in (arg1, arg2, dbname, source):
+            if isinstance(part, str) and "load_extension" in part.lower():
+                return sqlite3.SQLITE_DENY
+    except Exception:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def _sqlite_error(exc):
+    """Safe single-line message for a SQLite failure (no paths)."""
+    try:
+        line = str(exc).split("\n", 1)[0].strip()
+    except Exception:
+        line = ""
+    return line or "database operation failed"
+
+
+def _open_scratch_db():
+    """Host-side `:memory:` DB: pragma + extension lock + authorizer."""
+    try:
+        conn = sqlite3.connect(":memory:")
+    except (sqlite3.Error, sqlite3.Warning) as exc:
+        raise _Denied(_sqlite_error(exc)) from None
+    try:
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.enable_load_extension(False)
+        conn.set_authorizer(_sqlite_authorizer)
+    except (AttributeError, sqlite3.Error, sqlite3.Warning) as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise _Denied(_sqlite_error(exc)) from None
+    return conn
+
+
+def _quote_ident(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _sanitize_columns(header):
+    """Deterministic header → safe column names.
+
+    Non-``[A-Za-z0-9_]`` chars become ``_``; empty names become ``c<N>``
+    (0-based position); leading digits gain a ``_`` prefix; collisions
+    gain ``_2``, ``_3`` ... suffixes.
+    """
+    used = set()
+    out = []
+    for index, raw in enumerate(header):
+        name = re.sub(r"[^A-Za-z0-9_]", "_", raw or "")
+        if not name:
+            name = f"c{index}"
+        elif name[0].isdigit():
+            name = "_" + name
+        base, suffix = name, 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name)
+        out.append(name)
+    return out
+
+
+def _sql_words(sql, count=2):
+    """First ``count`` words of a statement, skipping space/comments."""
+    text = sql.lstrip()
+    while True:
+        if text.startswith("--"):
+            _, _, text = text.partition("\n")
+            text = text.lstrip()
+        elif text.startswith("/*"):
+            end = text.find("*/", 2)
+            if end == -1:
+                return []
+            text = text[end + 2:].lstrip()
+        else:
+            break
+    return re.findall(r"[A-Za-z]+", text)[:count]
 
 _FORMATTER = string.Formatter()
 
@@ -414,19 +541,27 @@ class _Lambda:
 # ---------------------------------------------------------------------------
 
 class _Interpreter:
-    def __init__(self, variables, files, limits):
+    def __init__(self, variables, files, limits, db_conn):
         self.limits = limits
         self.variables = variables
         self.files = files
+        self._db_conn = db_conn
         self.builtins = {name: _Builtin(name) for name in _BUILTIN_NAMES}
         self.host_helpers = {name: _Builtin(name)
                              for name in _HOST_HELPERS}
+        # `db` rides the same variables layer as the helpers above: an
+        # explicit user binding (scope assignment or tool-layer variable)
+        # shadows it, while whitelisted builtins still take precedence.
+        self.host_helpers["db"] = _Db(
+            lambda *args, **kwargs: self._db_query(*args, **kwargs),
+            lambda *args, **kwargs: self._db_exec(*args, **kwargs))
         self.scopes = [{}]  # module-level env; functions push more
         self.ticks = 0
         self.alloc = 0
         self.depth = 0
         self.start = time.monotonic()
         self.last_value = None
+        self._seed_db()
 
     # -- budgets -------------------------------------------------------
     def _tick(self, n=1):
@@ -739,6 +874,10 @@ class _Interpreter:
         obj = self._ev(node.value)
         if node.attr.startswith("_"):
             raise _Denied("denied construct: dunder/private attribute")
+        if isinstance(obj, _Db):
+            if node.attr not in ("query", "exec"):
+                raise _Denied(f"attribute '{node.attr}' is not allowed")
+            return _BoundMethod(obj, node.attr)
         allowed = _METHODS.get(type(obj))
         if not allowed or node.attr not in allowed:
             raise _Denied(f"attribute '{node.attr}' is not allowed")
@@ -1598,9 +1737,187 @@ class _Interpreter:
                                              fieldnames=header))
         return out
 
+    # -- sealed SQLite scratchpad (db.query / db.exec + seeding) ---------
+    def _seed_db(self):
+        """Seed tables ``t0``, ``t1``, ... from ``files`` chunk lists.
+
+        Header-first CSV logic mirrors ``rows()`` (first chunk carries
+        the header); zero-column files are skipped, never a path error.
+        """
+        try:
+            cursor = self._db_conn.cursor()
+        except (sqlite3.Error, sqlite3.Warning) as exc:
+            raise _Denied(_sqlite_error(exc)) from None
+        for index, name in enumerate(list(self.files.keys())):
+            chunks = self.files[name]
+            if not chunks:
+                continue
+            header = next(csv.reader(io.StringIO(chunks[0])), None)
+            if not header:
+                continue
+            columns = _sanitize_columns(header)
+            table = f"t{index}"
+            create = ("CREATE TABLE " + _quote_ident(table) + " ("
+                      + ", ".join(_quote_ident(col) + " TEXT"
+                                  for col in columns) + ")")
+            insert = ("INSERT INTO " + _quote_ident(table) + " ("
+                      + ", ".join(_quote_ident(col) for col in columns)
+                      + ") VALUES ("
+                      + ", ".join("?" * len(columns)) + ")")
+            try:
+                cursor.execute(create)
+            except (sqlite3.Error, sqlite3.Warning) as exc:
+                raise _Denied(_sqlite_error(exc)) from None
+            try:
+                for chunk_no, chunk in enumerate(chunks):
+                    self._tick()
+                    self._check_wall()
+                    records = self._csv_records(
+                        chunk, ",",
+                        fieldnames=None if chunk_no == 0 else header)
+                    batch = [[record.get(col) for col in header]
+                             for record in records]
+                    for start in range(0, len(batch), _SQL_SEED_BATCH):
+                        cursor.executemany(
+                            insert, batch[start:start + _SQL_SEED_BATCH])
+                self._db_conn.commit()
+            except (_Halt, _UserError):
+                self._db_rollback()
+                raise
+            except (sqlite3.Error, sqlite3.Warning) as exc:
+                self._db_rollback()
+                raise _Denied(_sqlite_error(exc)) from None
+            except Exception:
+                self._db_rollback()
+                raise _Denied("operation failed") from None
+
+    def _db_rollback(self):
+        try:
+            self._db_conn.rollback()
+        except Exception:
+            pass
+
+    def _check_db_value(self, value, op):
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return
+        raise _UserError(TypeError(
+            f"{op} params must hold plain JSON values"))
+
+    def _check_db_params(self, params, op):
+        if params is None:
+            return None
+        if isinstance(params, dict):
+            for key, value in params.items():
+                if not isinstance(key, str):
+                    raise _UserError(TypeError(
+                        f"{op} param names must be strings"))
+                self._check_db_value(value, op)
+            return params
+        if isinstance(params, (list, tuple)):
+            for value in params:
+                self._check_db_value(value, op)
+            return params
+        raise _UserError(TypeError(
+            f"{op} params must be None, a list, a tuple, or a dict"))
+
+    def _prepare_db_call(self, op, args, kwargs):
+        if kwargs:
+            raise _UserError(TypeError(
+                f"{op} takes no keyword arguments"))
+        if not 1 <= len(args) <= 2:
+            raise _UserError(TypeError(
+                f"{op} takes a SQL string and optional params"))
+        sql = args[0]
+        if not isinstance(sql, str):
+            raise _UserError(TypeError(f"{op} needs a SQL string"))
+        if not sql:
+            raise _UserError(ValueError(
+                f"{op} needs a non-empty SQL string"))
+        if len(sql) > _SQL_MAX_CHARS:
+            raise _UserError(ValueError(
+                f"{op} SQL is too large (max {_SQL_MAX_CHARS} chars)"))
+        # Layer-1 lockdown: keyword pre-filter, any spelling/case.
+        if _SQL_DENIED_RE.search(sql):
+            raise _Denied(f"denied SQL statement in {op}")
+        params = self._check_db_params(
+            args[1] if len(args) > 1 else None, op)
+        words = _sql_words(sql)
+        first = words[0].upper() if words else ""
+        if op == "query":
+            if first not in ("SELECT", "WITH"):
+                raise _Denied(
+                    "db.query needs a SELECT or WITH statement")
+        else:
+            if first in ("INSERT", "UPDATE", "DELETE"):
+                pass
+            elif first in ("CREATE", "DROP") and len(words) > 1 \
+                    and words[1].upper() in ("TABLE", "INDEX"):
+                pass
+            else:
+                raise _Denied(
+                    "db.exec needs a write or DDL statement")
+        return sql, params
+
+    def _db_query(self, *args, **kwargs):
+        sql, params = self._prepare_db_call("query", args, kwargs)
+        try:
+            cursor = self._db_conn.execute(sql) if params is None \
+                else self._db_conn.execute(sql, params)
+        except (sqlite3.Error, sqlite3.Warning) as exc:
+            raise _Denied(_sqlite_error(exc)) from None
+        try:
+            columns = [info[0] for info in cursor.description] \
+                if cursor.description else []
+            out = []
+            for index, row in enumerate(cursor):
+                self._tick()
+                record = dict(zip(columns, row, strict=False))
+                self._charge(64 + 72 * len(record))
+                for value in record.values():
+                    self._charge_value(value)
+                out.append(record)
+                if (index & 63) == 63:
+                    self._check_wall()
+        except (_Halt, _UserError):
+            raise
+        except (sqlite3.Error, sqlite3.Warning) as exc:
+            raise _Denied(_sqlite_error(exc)) from None
+        except Exception:
+            raise _Denied("operation failed") from None
+        return out
+
+    def _db_exec(self, *args, **kwargs):
+        sql, params = self._prepare_db_call("exec", args, kwargs)
+        try:
+            cursor = self._db_conn.execute(sql) if params is None \
+                else self._db_conn.execute(sql, params)
+        except (sqlite3.Error, sqlite3.Warning) as exc:
+            self._db_rollback()
+            raise _Denied(_sqlite_error(exc)) from None
+        try:
+            self._db_conn.commit()
+        except (sqlite3.Error, sqlite3.Warning) as exc:
+            self._db_rollback()
+            raise _Denied(_sqlite_error(exc)) from None
+        affected = cursor.rowcount
+        result = {"rows_affected": affected if affected >= 0 else 0}
+        self._charge(64 + 72)
+        return result
+
     # -- whitelisted methods -----------------------------------------------
     def _call_method(self, bound, args, kwargs):
         obj, name = bound.obj, bound.name
+        if isinstance(obj, _Db):
+            if name not in ("query", "exec"):
+                raise _Denied(f"attribute '{name}' is not allowed")
+            try:
+                return getattr(obj, name)(*args, **kwargs)
+            except (_Halt, _UserError):
+                raise
+            except _ALLOWED_EXC_TYPES as exc:
+                raise _UserError(exc) from None
+            except Exception:
+                raise _Denied("operation failed") from None
         allowed = _METHODS.get(type(obj))
         if not allowed or name not in allowed:
             raise _Denied(f"attribute '{name}' is not allowed")
@@ -1839,13 +2156,22 @@ def evaluate(code, variables=None, files=None, limits=None):
         except (_Denied, _Budget) as exc:
             return _fail(str(exc))
         try:
-            runner = _Interpreter(clean_vars, files, merged)
+            scratch = _open_scratch_db()
+        except (_Denied, _Budget) as exc:
+            return _fail(str(exc))
+        try:
+            runner = _Interpreter(clean_vars, files, merged, scratch)
             result = runner.run(tree)
             runner._check_wall()
         except (_Denied, _Budget) as exc:
             return _fail(str(exc))
         except _UserError as exc:
             return _fail(f"{type(exc.exc).__name__}: {exc.exc}")
+        finally:
+            try:
+                scratch.close()
+            except Exception:
+                pass
         try:
             serialized = json.dumps(result, allow_nan=False)
         except (TypeError, ValueError):
