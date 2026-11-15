@@ -723,7 +723,7 @@ def test_str_case_methods_work():
 
 
 def test_str_whitelist_stays_exact():
-    for code in ["'a'.title()", "'a'.casefold()", "'a'.zfill(3)",
+    for code in ["'a'.casefold()", "'a'.zfill(3)",
                  "'a'.__class__", "'a'.__dict__"]:
         assert evaluate(code)["ok"] is False
 
@@ -807,6 +807,39 @@ def test_new_surface_rejects_bad_shapes():
     for code in ["'a'.count()", "'a'.find(1)", "'a'.partition('')",
                  "'a'.isdigit(1)", "[1].count(1, 2)",
                  "isinstance(1, 1)", "isinstance(1)",
-                 "reversed(1)", "reversed()", "divmod(1)", "divmod(1, 0)",
-                 "'a'.title()", "'a'.rpartition(',')"]:
+                 "reversed(1)", "reversed()", "divmod(1)", "divmod(1, 0)"]:
+        assert evaluate(code)["ok"] is False
+
+
+def test_str_title_rfind_rpartition_index_work():
+    assert evaluate("'hello world'.title()") == {
+        "ok": True, "value": "Hello World"}
+    assert evaluate("'hello'.rfind('l')") == {"ok": True, "value": 3}
+    assert evaluate("'hello'.rfind('z')") == {"ok": True, "value": -1}
+    assert evaluate("'a,b,c'.rpartition(',')") == {
+        "ok": True, "value": ("a,b", ",", "c")}
+    assert evaluate("'hello'.index('l')") == {"ok": True, "value": 2}
+
+
+def test_list_index_setdefault_any_all_work():
+    assert evaluate("[1, 2, 1].index(1)") == {"ok": True, "value": 0}
+    assert evaluate("[1, 2, 1].index(1, 1)") == {"ok": True, "value": 2}
+    assert evaluate("d = {'a': 1}\nv = d.setdefault('a', 99)\n(v, d)") == {
+        "ok": True, "value": (1, {"a": 1})}
+    assert evaluate("d = {}\nv = d.setdefault('k')\n(v, d)") == {
+        "ok": True, "value": (None, {"k": None})}
+    assert evaluate("any([0, '', 1])") == {"ok": True, "value": True}
+    assert evaluate("all([1, 'a', [0]])") == {"ok": True, "value": True}
+    assert evaluate("any([])") == {"ok": True, "value": False}
+    assert evaluate("all([])") == {"ok": True, "value": True}
+
+
+def test_task10_rejects_bad_shapes():
+    for code in ["'a'.title(1)", "'a'.rfind()", "'a'.rfind(1, 2, 3, 4)",
+                 "'a'.rpartition()", "'a'.rpartition(',', 'x')",
+                 "'a'.rpartition('')", "'a'.index('z')",
+                 "[1].index()", "[1].index(2)", "{}.setdefault()",
+                 "{}.setdefault('k', 'v', 'x')", "any()", "any(1)",
+                 "all([1], 2)", "type(1)", "'a'.rindex('a')",
+                 "'a'.capitalize()"]:
         assert evaluate(code)["ok"] is False

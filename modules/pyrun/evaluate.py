@@ -121,7 +121,7 @@ _BUILTIN_NAMES = frozenset({
     "len", "range", "sum", "min", "max", "sorted", "abs", "round",
     "enumerate", "zip", "str", "int", "float", "bool",
     "list", "dict", "set", "tuple",
-    "isinstance", "reversed", "divmod",
+    "isinstance", "reversed", "divmod", "any", "all",
 })
 
 # Host-side data helpers. Plain value-only functions injected into the
@@ -136,9 +136,11 @@ _METHODS = {
     str: frozenset({"split", "join", "strip", "replace", "startswith",
                     "endswith", "format", "lower", "upper", "lstrip",
                     "rstrip", "splitlines", "count", "find", "partition",
-                    "isdigit", "isnumeric"}),
-    list: frozenset({"append", "extend", "sort", "count"}),
-    dict: frozenset({"get", "items", "keys", "values", "update"}),
+                    "isdigit", "isnumeric", "title", "rfind",
+                    "rpartition", "index"}),
+    list: frozenset({"append", "extend", "sort", "count", "index"}),
+    dict: frozenset({"get", "items", "keys", "values", "update",
+                     "setdefault"}),
 }
 
 # Sealed SQLite scratchpad: one throwaway `:memory:` DB per run.
@@ -1806,6 +1808,24 @@ class _Interpreter:
             self._charge_value(value)
         return checked
 
+    def _bi_any(self, *args, **kwargs):
+        self._no_kwargs("any", kwargs)
+        self._checked_args("any", args, 1, 1)
+        for item in self._safe_iter(args[0]):
+            self._tick()
+            if item:
+                return True
+        return False
+
+    def _bi_all(self, *args, **kwargs):
+        self._no_kwargs("all", kwargs)
+        self._checked_args("all", args, 1, 1)
+        for item in self._safe_iter(args[0]):
+            self._tick()
+            if not item:
+                return False
+        return True
+
     # -- host data helpers (parse_json / parse_csv / rows) -------------------
     def _check_delimiter(self, delimiter):
         if not isinstance(delimiter, str) or len(delimiter) != 1:
@@ -2336,7 +2356,7 @@ class _Interpreter:
             result = obj.format(*args, **kwargs)
             self._charge(40 + len(result))
             return result
-        if name in ("lower", "upper"):
+        if name in ("lower", "upper", "title"):
             self._no_kwargs(name, kwargs)
             self._checked_args(name, args, 0, 0)
             result = getattr(obj, name)()
@@ -2359,7 +2379,7 @@ class _Interpreter:
             self._charge(56 + 8 * len(parts)
                          + sum(len(p) for p in parts))
             return parts
-        if name in ("count", "find"):
+        if name in ("count", "find", "rfind", "index"):
             self._no_kwargs(name, kwargs)
             self._checked_args(name, args, 1, 3)
             if not isinstance(args[0], str):
@@ -2378,6 +2398,17 @@ class _Interpreter:
             if args[0] == "":
                 raise _UserError(ValueError("empty separator"))
             result = obj.partition(args[0])
+            self._charge(56 + 8 * len(result)
+                         + sum(len(p) for p in result))
+            return result
+        if name == "rpartition":
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 1, 1)
+            if not isinstance(args[0], str):
+                raise _UserError(TypeError("rpartition needs a str"))
+            if args[0] == "":
+                raise _UserError(ValueError("empty separator"))
+            result = obj.rpartition(args[0])
             self._charge(56 + 8 * len(result)
                          + sum(len(p) for p in result))
             return result
@@ -2429,6 +2460,11 @@ class _Interpreter:
             self._checked_args(name, args, 1, 1)
             self._tick(len(obj))
             return self._guard(obj.count, args[0])
+        if name == "index":
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 1, 3)
+            self._tick(len(obj))
+            return self._guard(obj.index, *args)
         raise _Denied(f"attribute '{name}' is not allowed")
 
     def _dict_method(self, obj, name, args, kwargs):
@@ -2467,6 +2503,16 @@ class _Interpreter:
                 obj[self._guard(_hashable, key)] = value
             self._charge(72 * len(pairs))
             return None
+        if name == "setdefault":
+            self._no_kwargs("setdefault", kwargs)
+            self._checked_args("setdefault", args, 1, 2)
+            key = self._guard(_hashable, args[0])
+            if len(args) == 1:
+                result = self._guard(obj.setdefault, key)
+            else:
+                result = self._guard(obj.setdefault, key, args[1])
+            self._charge(72)
+            return result
         raise _Denied(f"attribute '{name}' is not allowed")
 
 
