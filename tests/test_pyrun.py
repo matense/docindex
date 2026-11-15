@@ -726,3 +726,28 @@ def test_str_whitelist_stays_exact():
     for code in ["'a'.title()", "'a'.casefold()", "'a'.zfill(3)",
                  "'a'.__class__", "'a'.__dict__"]:
         assert evaluate(code)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 7: in-place list.sort with interpreter-bridged key
+# ---------------------------------------------------------------------------
+
+
+def test_list_sort_works():
+    assert evaluate("l = [3, 1, 2]\nl.sort()\nl") == {
+        "ok": True, "value": [1, 2, 3]}
+    assert evaluate("l = ['bb', 'a', 'ccc']\nl.sort(key=len)\nl") == {
+        "ok": True, "value": ["a", "bb", "ccc"]}
+    assert evaluate("l = [3, 1, 2]\ndef k(x):\n return -x\nl.sort(key=k)\nl") == {
+        "ok": True, "value": [3, 2, 1]}
+    assert evaluate("l = [1, 2, 3]\nl.sort(reverse=True)\nl") == {
+        "ok": True, "value": [3, 2, 1]}
+    assert evaluate("l = [2, 1]\nr = l.sort()\nr") == {
+        "ok": True, "value": None}
+
+
+def test_list_sort_rejects_bad_shapes():
+    for code in ["l = [1]\nl.sort(1)",
+                 "l = [1]\nl.sort(key=1)",
+                 "l = [1, 'a']\nl.sort()\nl"]:
+        assert evaluate(code)["ok"] is False

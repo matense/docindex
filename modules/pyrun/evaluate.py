@@ -134,7 +134,7 @@ _METHODS = {
     str: frozenset({"split", "join", "strip", "replace", "startswith",
                     "endswith", "format", "lower", "upper", "lstrip",
                     "rstrip", "splitlines"}),
-    list: frozenset({"append", "extend"}),
+    list: frozenset({"append", "extend", "sort"}),
     dict: frozenset({"get", "items", "keys", "values", "update"}),
 }
 
@@ -2321,6 +2321,26 @@ class _Interpreter:
                 items.append(item)
             self._charge(8 * len(items))
             obj.extend(items)
+            return None
+        if name == "sort":
+            self._checked_args("sort", args, 0, 0)
+            key = kwargs.pop("key", None)
+            reverse = kwargs.pop("reverse", False)
+            if kwargs:
+                raise _UserError(TypeError(
+                    "sort takes only 'key'/'reverse' as keywords"))
+            if key is not None and not isinstance(
+                    key, (_Function, _Lambda, _Builtin)):
+                raise _UserError(TypeError("'key' is not callable"))
+            self._tick(len(obj))
+            if key is not None:
+                def sort_key(item):
+                    return self._call_value(key, [item], {})
+                self._guard(obj.sort, key=sort_key,
+                            reverse=bool(reverse))
+            else:
+                self._guard(obj.sort, reverse=bool(reverse))
+            self._charge(8 * len(obj))
             return None
         raise _Denied(f"attribute '{name}' is not allowed")
 
