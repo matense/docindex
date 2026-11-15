@@ -132,7 +132,8 @@ _HOST_HELPERS = frozenset({"parse_json", "parse_csv", "rows"})
 # Per-type method whitelist: exactly the spec'd data-work surface.
 _METHODS = {
     str: frozenset({"split", "join", "strip", "replace", "startswith",
-                    "endswith", "format"}),
+                    "endswith", "format", "lower", "upper", "lstrip",
+                    "rstrip", "splitlines"}),
     list: frozenset({"append", "extend"}),
     dict: frozenset({"get", "items", "keys", "values", "update"}),
 }
@@ -2279,6 +2280,29 @@ class _Interpreter:
             result = obj.format(*args, **kwargs)
             self._charge(40 + len(result))
             return result
+        if name in ("lower", "upper"):
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 0, 0)
+            result = getattr(obj, name)()
+            self._charge(40 + len(result))
+            return result
+        if name in ("lstrip", "rstrip"):
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 0, 1)
+            chars = args[0] if args else None
+            if chars is not None and not isinstance(chars, str):
+                raise _UserError(TypeError(f"{name} chars must be str"))
+            result = getattr(obj, name)(chars)
+            self._charge(40 + len(result))
+            return result
+        if name == "splitlines":
+            self._no_kwargs(name, kwargs)
+            self._checked_args(name, args, 0, 0)
+            parts = obj.splitlines()
+            self._tick(len(parts))
+            self._charge(56 + 8 * len(parts)
+                         + sum(len(p) for p in parts))
+            return parts
         raise _Denied(f"attribute '{name}' is not allowed")
 
     def _list_method(self, obj, name, args, kwargs):

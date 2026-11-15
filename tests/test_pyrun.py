@@ -706,3 +706,23 @@ def test_sqlite_tool_error_has_retry_hint(app, user):
     # empty scratch DB has no t0 — must be a safe retry-shaped error
     assert out["ok"] is False and out.get("retry_hint")
     assert "traceback" not in out.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 6: pure str helpers the agent reaches for
+# ---------------------------------------------------------------------------
+
+
+def test_str_case_methods_work():
+    assert evaluate("'AbC'.lower()") == {"ok": True, "value": "abc"}
+    assert evaluate("'AbC'.upper()") == {"ok": True, "value": "ABC"}
+    assert evaluate("'  x  '.lstrip()") == {"ok": True, "value": "x  "}
+    assert evaluate("'  x  '.rstrip()") == {"ok": True, "value": "  x"}
+    out = evaluate("'a\\nb\\nc'.splitlines()")
+    assert out == {"ok": True, "value": ["a", "b", "c"]}
+
+
+def test_str_whitelist_stays_exact():
+    for code in ["'a'.title()", "'a'.casefold()", "'a'.zfill(3)",
+                 "'a'.__class__", "'a'.__dict__"]:
+        assert evaluate(code)["ok"] is False
