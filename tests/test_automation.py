@@ -2958,6 +2958,44 @@ def test_table_compute_bad_formula_errors(app, user):
                 {"new_column": "x", "formula": "price *"}), app, user)
 
 
+def test_table_compute_rejects_dunder_formula(app, user):
+    fid = _make_file(app, user, "p.csv", "price,qty\n10,2\n5,4\n")
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError,
+                           match="could not be evaluated"):
+            _execute(_table_file_graph(
+                fid, "transform.table_compute",
+                {"new_column": "x",
+                 "formula": "price.__class__.__name__"}), app, user)
+
+
+def test_table_compute_rejects_hostile_formulas(app, user):
+    fid = _make_file(app, user, "p.csv", "price,qty\n10,2\n5,4\n")
+    hostile = [
+        "price.__class__.__name__",
+        "price.tolist().__class__.__base__.__subclasses__()",
+        "__import__('os').system('id')",
+        "open('/etc/passwd').read()",
+        "eval('1')",
+    ]
+    with app.app_context():
+        for formula in hostile:
+            with pytest.raises(engine.WorkflowError,
+                               match="could not be evaluated"):
+                _execute(_table_file_graph(
+                    fid, "transform.table_compute",
+                    {"new_column": "x", "formula": formula}), app, user)
+
+
+def test_table_compute_allows_arithmetic(app, user):
+    fid = _make_file(app, user, "ab.csv", "a,b\n1,2\n3,4\n")
+    with app.app_context():
+        outputs, _, _ = _execute(_table_file_graph(
+            fid, "transform.table_compute",
+            {"new_column": "total", "formula": "a + b * 2"}), app, user)
+        assert [r[2] for r in outputs["t"]["out"]["data"]["rows"]] == [5, 11]
+
+
 def test_save_table_csv_creates_file(auth_client, app, user, enabled):
     drive_id = _drive(app, user)
     fid = _make_file(app, user, "t.csv", "a,b\n1,2\n")
