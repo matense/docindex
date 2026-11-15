@@ -3383,3 +3383,59 @@ def test_chat_hidden_workflow_adds_no_context_note(
     assert not [m for m in messages
                 if m["role"] == "system"
                 and "automation workflow" in m["content"]]
+
+
+# --- S3: input.http enforces the strict (public-only) SSRF guard. ---
+#
+# Hostnames are resolved and EVERY address must be public; there is no
+# loopback carve-out here. The fetch itself is stubbed to explode so the
+# tests prove the refusal happens before any network touch.
+
+def _http_dns(monkeypatch):
+    import socket
+    real = socket.getaddrinfo
+    table = {
+        "169.254.169.254.nip.io": ["169.254.169.254"],
+        "internal.example": ["10.9.8.7"],
+        "example.com": ["93.184.216.34"],
+    }
+
+    def fake(host, port, *args, **kwargs):
+        if host in table:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                     (ip, 0)) for ip in table[host]]
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+def _http_no_fetch(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("input.http must not fetch a rejected URL")
+    monkeypatch.setattr("requests.get", _boom)
+
+
+def test_input_http_rejects_nonpublic_hosts(monkeypatch):
+    _http_dns(monkeypatch)
+    _http_no_fetch(monkeypatch)
+    for url in ["http://localhost:11434/v1",
+                "http://127.0.0.1:11434/v1",
+                "http://169.254.169.254.nip.io/latest",
+                "http://internal.example/data"]:
+        with pytest.raises(engine.WorkflowError, match="non-public|resolve"):
+            nodes._exec_http_get({}, {"url": url}, {}, {})
+
+
+def test_input_http_allows_public_host(monkeypatch):
+    import requests
+    _http_dns(monkeypatch)
+
+    class _Resp:
+        status_code = 200
+        text = "hello"
+        headers = {"Content-Type": "text/plain"}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+    out = nodes._exec_http_get({}, {"url": "https://example.com/data"},
+                               {}, {})
+    assert engine.as_text(out) == "hello"

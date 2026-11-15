@@ -32,6 +32,7 @@ from ..models import (
     User,
 )
 from ..services import ai_service, indexing_service, module_service
+from ..services.ssrf import url_block_reason as _ssrf_block_reason
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 
@@ -89,36 +90,21 @@ def _get_owned(conn_id):
     return conn
 
 
-def _valid_base_url(url):
-    """Basic SSRF guard for AI base URLs: http(s) only, no private/link-local.
+def _valid_base_url(url, allow_loopback=False):
+    """SSRF guard for AI base URLs: http(s) only, and the host must resolve
+    (via getaddrinfo, fail closed) exclusively to public IPs — IPv4-mapped
+    IPv6 is unwrapped first so obfuscated loopback/link-local forms cannot
+    slip through.
 
-    Local Ollama/LM Studio (localhost) stays allowed — self-hosted users need
-    it — but metadata-IP (169.254.x.x) and non-http schemes are rejected.
+    Local Ollama/LM Studio is a flagship flow, so the settings routes pass
+    ``allow_loopback=True``: the URL is typed in by the account owner
+    (admin-configured), which keeps loopback working there while every
+    other context stays strict.
     """
-    import ipaddress
-    from urllib.parse import urlparse
-    try:
-        p = urlparse((url or "").strip())
-    except Exception:
-        return False, "Invalid base URL."
-    if p.scheme not in ("http", "https"):
-        return False, "Base URL must start with http:// or https://."
-    host = (p.hostname or "").lower()
-    if not host:
-        return False, "Base URL must include a host."
-    # Block cloud metadata + non-http schemes; localhost stays allowed.
-    if host in ("169.254.169.254", "metadata.google.internal"):
-        return False, "That host is not allowed."
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_link_local or ip.is_multicast or ip.is_reserved:
-            return False, "That IP address is not allowed."
-        # Private LAN allowed only for http (local Ollama/LM Studio); never
-        # exfiltrate keys to private hosts over plain http? keep permissive
-        # for self-hosting but block metadata above.
-    except ValueError:
-        pass  # hostname, not IP — allow (DNS)
-    return True, ""
+    reason = _ssrf_block_reason(url, allow_loopback=allow_loopback)
+    if reason is None:
+        return True, ""
+    return False, reason
 
 
 def _clamp_int(value, lo, hi):
@@ -525,7 +511,7 @@ def ai_edit(conn_id):
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
@@ -571,7 +557,7 @@ def ai_add():
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings"))
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings"))
@@ -666,7 +652,7 @@ def ai_test():
     api_key = (data.get("api_key") or "").strip()
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(base_url, api_key)
@@ -699,7 +685,7 @@ def ai_models():
             api_key = ai_service.decrypt_api_key(conn.api_key or "")
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok_url, url_msg = _valid_base_url(base_url)
+    ok_url, url_msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok_url:
         return jsonify({"ok": False, "message": url_msg}), 400
     try:
