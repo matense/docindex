@@ -3318,6 +3318,78 @@ def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
     assert seen["files"] == {}  # no attachments → empty files map
 
 
+def test_kpi_view_sign_classes_and_pager_hooks():
+    """KPI/table view polish: delta sign classes branch in viewKpiHTML,
+    pager renders with page-size 50, CSS carries the KPI treatment."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "kpiDeltaClass" in src
+    assert "dash-kpi-d-pos" in src and "dash-kpi-d-neg" in src
+    assert "TABLE_PAGE_SIZE = 50" in src
+    assert "data-tpage-btn" in src and "dash-pager-info" in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert "clamp(36px, 4vw, 56px)" in css
+    assert "dash-kpi-d-pos" in css and "dash-kpi-d-neg" in css
+    assert ".dash-pager" in css
+
+
+def test_script_value_dict_coerces_to_kpi():
+    """Script cards: a returned {"value", "label"?, "delta"?} dict takes
+    the KPI big-number path (viewKpiHTML), not the text fallback — this
+    is how script KPIs get the big-number rendering."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "kpi", {"value": "3.509,5 kWh",
+                "label": "3.509.549,78 Wh"}) == {
+        "kpi": {"value": "3.509,5 kWh", "label": "3.509.549,78 Wh"}}
+    assert dash_engine._parse_script_result(
+        "kpi", {"value": "410,0 kWh", "label": "mar/2026"}) == {
+        "kpi": {"value": "410,0 kWh", "label": "mar/2026"}}
+
+
+def test_script_table_dict_coerces_to_snapshot():
+    """Script cards: {"headers", "rows"} dicts coerce into the table
+    snapshot (same caps/guards as the pipe path); ragged rows pad/cut."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "table", {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026"],
+                           ["mar/2026", "377,8", "EXTRA"]]}) == {
+        "table": {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026", ""],
+                           ["mar/2026", "377,8"]]},
+        "total_rows": 3, "truncated_rows": False}
+
+
+def test_script_row_list_coerces_to_snapshot():
+    """Script cards: a bare list of row dicts (db.query passthrough)
+    coerces with headers from the key union in first-seen order."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "table", [{"Mês": "jan/2026", "kWh": "410,0"},
+                  {"Mês": "fev/2026"}]) == {
+        "table": {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026", ""]]},
+        "total_rows": 2, "truncated_rows": False}
+
+
+def test_script_table_caps_rows_and_flags():
+    """Script tables cap at 500 rows with total + truncated flag."""
+    dash_engine = _engine()
+    rows = [[str(i)] for i in range(600)]
+    out = dash_engine._parse_script_result(
+        "table", {"headers": ["n"], "rows": rows})
+    assert out["total_rows"] == 600
+    assert out["truncated_rows"] is True
+    assert len(out["table"]["rows"]) == 500
+
+
 def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
     """Task A2 (amended, script-card bugfix): the pyrun files map is
     positional in card attachment order — files_map["f{pos}"] only, each a

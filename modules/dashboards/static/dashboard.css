@@ -389,10 +389,27 @@ dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; 
 
 /* KPI cells */
 .dash-kpis { display: flex; gap: 18px; flex-wrap: wrap; }
-.dash-kpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.dash-kpi-v { font-size: 30px; font-weight: 800; line-height: 1.1; }
-.dash-kpi-l { font-size: 12px; opacity: .65; }
-.dash-kpi-d { font-size: 12.5px; font-weight: 700; color: var(--dok); }
+.dash-kpi {
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    border-left: 3px solid var(--dkpi); padding-left: 12px;
+}
+.dash-kpi-v {
+    font-size: clamp(36px, 4vw, 56px); font-weight: 800; line-height: 1.05;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+.dash-kpi-l { font-size: 13.5px; font-weight: 600; opacity: .8; }
+.dash-kpi-d { font-size: 13px; font-weight: 700; color: var(--dok); }
+.dash-kpi-d-pos { color: var(--dok); }
+.dash-kpi-d-neg { color: var(--derr, #ef4444); }
+
+/* View table pager */
+.dash-pager {
+    display: flex; align-items: center; gap: 10px; margin-top: 8px;
+    font-size: 12px;
+}
+.dash-pager-info { opacity: .65; font-weight: 600; white-space: nowrap; }
+.dash-pager .btn[disabled] { opacity: .35; }
 
 /* View tables: sticky header, zebra, compact */
 .dash-vtable-wrap { overflow: auto; border-radius: 10px; max-width: 100%; }

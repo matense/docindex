@@ -268,15 +268,83 @@ def _parse_script_result(card_type, value):
     """Coerce a pyrun value through the card's prompt-result contract.
 
     Non-string values serialize first (JSON for dict/list, str otherwise),
-    then the existing per-type parsing applies — one new line, no new
-    type contracts. None maps to "" (never a literal "None" snapshot).
+    then the existing per-type parsing applies — except table cards, where
+    structured values ({"headers", "rows"} or a bare row list, the natural
+    db.query shapes) coerce directly into the table snapshot with the same
+    caps as the pipe path. None maps to "" (never a literal "None"
+    snapshot).
     """
     if value is None:
         value = ""
+    if card_type == "table" and isinstance(value, (dict, list)):
+        table = _parse_script_table(value)
+        if table is not None:
+            return table
     if not isinstance(value, str):
         value = (json.dumps(value) if isinstance(value, (dict, list))
                  else str(value))
     return _parse_prompt_result(card_type, value)
+
+
+def _parse_script_table(value):
+    """Table snapshot from a script value, or None (→ text fallback).
+
+    Shapes: {"headers": [...], "rows": [[...]|{...}, ...]} or a bare list
+    of row dicts (headers = key union, first-seen) / row lists (first
+    row = header, mirroring the pipe convention). Cells stringify
+    (nested objects as JSON), ragged rows pad/cut to the header width,
+    fully-empty rows drop. Caps mirror the pipe path: 50 columns,
+    500 rows; over-cap snapshots keep the first 500 with total_rows and
+    truncated_rows set for the pager.
+    """
+    headers, raw = None, None
+    if isinstance(value, dict):
+        if not isinstance(value.get("headers"), list) or not isinstance(
+                value.get("rows"), list):
+            return None
+        headers, raw = value["headers"], value["rows"]
+    elif isinstance(value, list):
+        if not value:
+            return None
+        if all(isinstance(r, dict) for r in value):
+            union = []
+            for r in value:
+                for k in r:
+                    if k not in union:
+                        union.append(k)
+            headers, raw = union, value
+        elif all(isinstance(r, list) for r in value):
+            headers, raw = value[0], value[1:]
+        else:
+            return None
+    else:
+        return None
+    headers = list(headers)[:_TABLE_MAX_COLS]
+    width = len(headers)
+    if not width:
+        return None
+    str_headers = [str(h) for h in headers]
+
+    def _cell(v):
+        if isinstance(v, (dict, list)):
+            return json.dumps(v)
+        return str(v)
+
+    data = []
+    for row in raw:
+        cells = ([_cell(c) for c in row[:width]]
+                 if isinstance(row, list)
+                 else [_cell(row.get(h, "")) for h in headers])
+        cells += [""] * (width - len(cells))
+        if any(cells):
+            data.append(cells)
+    if not data:
+        return None
+    total = len(data)
+    return {"table": {"headers": str_headers,
+                      "rows": data[:_TABLE_MAX_ROWS]},
+            "total_rows": total,
+            "truncated_rows": total > _TABLE_MAX_ROWS}
 
 
 class MissingInputError(ValueError):

@@ -2638,6 +2638,7 @@
             bodyEl.innerHTML = viewKpiHTML(res, text) + trunc;
         } else if (card.type === "table") {
             bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
+            wireTablePager(bodyEl, res, text);
         } else if (card.type === "list") {
             bodyEl.innerHTML = viewListHTML(res, text) + trunc;
         } else if (card.type === "chart") {
@@ -2668,7 +2669,7 @@
         if (hasValue) {
             h += '<div class="dash-kpi"><span class="dash-kpi-v">' + esc(k.value) + "</span>";
             if (k.label) h += '<span class="dash-kpi-l">' + esc(k.label) + "</span>";
-            if (k.delta) h += '<span class="dash-kpi-d">' + esc(k.delta) + "</span>";
+            if (k.delta) h += '<span class="' + kpiDeltaClass(k.delta) + '">' + esc(k.delta) + "</span>";
             h += "</div>";
         }
         var extra = Array.isArray(k.cells) ? k.cells.slice(0, 4) : [];
@@ -2677,7 +2678,7 @@
             h += '<div class="dash-kpi"><span class="dash-kpi-v">' +
                 esc(c.value === undefined ? "" : c.value) + "</span>";
             if (c.label) h += '<span class="dash-kpi-l">' + esc(c.label) + "</span>";
-            if (c.delta) h += '<span class="dash-kpi-d">' + esc(c.delta) + "</span>";
+            if (c.delta) h += '<span class="' + kpiDeltaClass(c.delta) + '">' + esc(c.delta) + "</span>";
             h += "</div>";
         });
         h += "</div>";
@@ -2688,13 +2689,62 @@
         return h;
     }
 
+    function kpiDeltaClass(delta) {
+        var s = String(delta === undefined || delta === null ? "" : delta).trim();
+        if (/^[+＋]/.test(s)) return "dash-kpi-d dash-kpi-d-pos";
+        if (/^[-−—]/.test(s)) return "dash-kpi-d dash-kpi-d-neg";
+        return "dash-kpi-d";
+    }
+
+    var TABLE_PAGE_SIZE = 50;
+
+    function tablePagedHTML(res, text, page) {
+        var headers = res.table.headers || res.table.columns || [];
+        var rows = res.table.rows || [];
+        if (!Array.isArray(headers) || !Array.isArray(rows) || !headers.length) return null;
+        var total = (typeof res.total_rows === "number" && res.total_rows >= rows.length)
+            ? res.total_rows : rows.length;
+        var pages = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE));
+        page = Math.max(0, Math.min(pages - 1, page | 0));
+        var slice = rows.slice(page * TABLE_PAGE_SIZE, (page + 1) * TABLE_PAGE_SIZE);
+        var h = '<div data-ttable data-tpage="' + page + '">' +
+            viewTableHTML(headers.map(String), slice) +
+            '<div class="dash-pager">' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="-1"' +
+            (page <= 0 ? " disabled" : "") + ' aria-label="Previous table page">' +
+            '<i class="fas fa-chevron-left"></i></button>' +
+            '<span class="dash-pager-info">Page ' + (page + 1) + " of " + pages +
+            " · " + total + " rows" +
+            (res.truncated_rows ? " (showing first " + rows.length + ")" : "") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="+1"' +
+            (page >= pages - 1 ? " disabled" : "") + ' aria-label="Next table page">' +
+            '<i class="fas fa-chevron-right"></i></button>' +
+            "</div></div>";
+        return h;
+    }
+
+    function wireTablePager(bodyEl, res, text) {
+        var wrap = bodyEl.querySelector("[data-ttable]");
+        if (!wrap) return;
+        wrap.querySelectorAll("[data-tpage-btn]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var next = parseInt(wrap.getAttribute("data-tpage"), 10) +
+                    parseInt(btn.getAttribute("data-tpage-btn"), 10);
+                var fresh = tablePagedHTML(res, text, next);
+                if (fresh === null) return;
+                var tmp = document.createElement("div");
+                tmp.innerHTML = fresh;
+                var node = tmp.firstChild;
+                wrap.parentNode.replaceChild(node, wrap);
+                wireTablePager(bodyEl, res, text);
+            });
+        });
+    }
+
     function viewTableResultHTML(res, text) {
         if (res.table && typeof res.table === "object") {
-            var headers = res.table.headers || res.table.columns || [];
-            var rows = res.table.rows || [];
-            if (Array.isArray(headers) && Array.isArray(rows) && headers.length) {
-                return viewTableHTML(headers.map(String), rows);
-            }
+            var html = tablePagedHTML(res, text, 0);
+            if (html !== null) return html;
         }
         if (res.workflow && Array.isArray(res.workflow.results)) {
             var t = objectsToTable(res.workflow.results);
