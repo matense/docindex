@@ -1891,10 +1891,12 @@
                     ? "0 -3px 0 0 oklch(var(--p))"
                     : "0 3px 0 0 oklch(var(--p))";
             });
-            wrap.addEventListener("dragleave", () => {
+            wrap.addEventListener("dragleave", (e) => {
+                if (wrap.contains(e.relatedTarget)) return;
                 wrap.style.boxShadow = "";
             });
             wrap.addEventListener("drop", (e) => {
+                if (!e.dataTransfer.types.includes("text/nb-cell")) return;
                 e.preventDefault();
                 wrap.style.boxShadow = "";
                 const from = parseInt(e.dataTransfer.getData("text/nb-cell"), 10);
@@ -3052,6 +3054,24 @@
                 body.appendChild(list);
                 return;
             }
+            // Progress badge: done/total (pct).
+            const badge = el("div", "text-xs opacity-60 mb-1");
+            const paintBadge = () => {
+                const done = items.filter((it) => it.done).length;
+                const pct = items.length
+                    ? Math.round((done / items.length) * 100) : 0;
+                badge.textContent =
+                    done + "/" + items.length + " (" + pct + "%)";
+            };
+            paintBadge();
+            body.appendChild(badge);
+            const focusTodoAt = (idx) => {
+                const fields = body.closest(".nb-cell")
+                    .querySelectorAll(".nb-todo-text");
+                const target = fields[Math.max(0,
+                    Math.min(idx, fields.length - 1))];
+                if (target) target.focus();
+            };
             const list = el("div", "flex flex-col gap-1");
             items.forEach((item, i) => {
                 const row = el("div", "flex items-center gap-2");
@@ -3062,16 +3082,35 @@
                     item.done = box.checked;
                     text.classList.toggle("line-through", item.done);
                     text.classList.toggle("opacity-50", item.done);
+                    paintBadge();
                     scheduleSave();
                 });
                 const text = el("input",
-                    "input input-ghost input-sm flex-1" +
+                    "input input-ghost input-sm flex-1 nb-todo-text" +
                     (item.done ? " line-through opacity-50" : ""));
                 text.value = item.text;
                 text.placeholder = "Task…";
                 text.addEventListener("input", () => {
                     item.text = text.value;
                     scheduleSave();
+                });
+                text.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        pushUndo("add todo item");
+                        items.splice(i + 1, 0, { text: "", done: false });
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                        focusTodoAt(i + 1);
+                    } else if (e.key === "Backspace" && text.value === "" &&
+                            items.length > 1) {
+                        e.preventDefault();
+                        pushUndo("remove todo item");
+                        items.splice(i, 1);
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                        focusTodoAt(i - 1);
+                    }
                 });
                 const del = el("button", "btn btn-ghost btn-xs btn-square text-error");
                 del.innerHTML = '<i class="fas fa-xmark"></i>';
@@ -3145,12 +3184,69 @@
                         row[ci] = input.value;
                         scheduleSave();
                     });
+                    input.addEventListener("paste", (e) => {
+                        const clip = e.clipboardData || window.clipboardData;
+                        const text = clip ? clip.getData("text") : "";
+                        if (!text || (text.indexOf("\t") === -1 &&
+                                text.indexOf("\n") === -1 &&
+                                text.indexOf("\r") === -1)) return;
+                        e.preventDefault();
+                        pushUndo("paste table cells");
+                        const lines = text.replace(/\r\n?/g, "\n").split("\n");
+                        if (lines.length &&
+                            lines[lines.length - 1] === "") lines.pop();
+                        const grid = lines.map((line) => line.split("\t"));
+                        let widest = 0;
+                        grid.forEach((r) => {
+                            widest = Math.max(widest, r.length);
+                        });
+                        while (meta.headers.length < ci + widest) {
+                            meta.headers.push(
+                                "Column " + (meta.headers.length + 1));
+                            meta.rows.forEach((r) => r.push(""));
+                        }
+                        grid.forEach((prow, dr) => {
+                            const rr = ri + dr;
+                            while (meta.rows.length <= rr) {
+                                meta.rows.push(meta.headers.map(() => ""));
+                            }
+                            prow.forEach((val, dc) => {
+                                meta.rows[rr][ci + dc] = val;
+                            });
+                        });
+                        meta.rows.forEach((r) => {
+                            while (r.length < meta.headers.length) r.push("");
+                        });
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                    });
                     td.appendChild(input);
                     tr.appendChild(td);
                 });
                 tbody.appendChild(tr);
             });
             table.appendChild(tbody);
+            // Keyboard nav: Tab/Shift+Tab between columns, Enter/ArrowDown/
+            // ArrowUp between rows (header row participates as row 0).
+            const navInputs = Array.from(table.querySelectorAll("input"));
+            navInputs.forEach((input, idx) => {
+                input.addEventListener("keydown", (e) => {
+                    const ncols = meta.headers.length;
+                    let target = null;
+                    if (e.key === "Tab") {
+                        target = navInputs[idx + (e.shiftKey ? -1 : 1)];
+                    } else if (e.key === "Enter" ||
+                            e.key === "ArrowDown") {
+                        target = navInputs[idx + ncols];
+                    } else if (e.key === "ArrowUp") {
+                        target = navInputs[idx - ncols];
+                    }
+                    if (target) {
+                        e.preventDefault();
+                        target.focus();
+                    }
+                });
+            });
             const wrap = el("div", "nb-tablewrap");
             wrap.appendChild(table);
             body.appendChild(wrap);
@@ -3189,6 +3285,22 @@
                     renderCellBody(body.closest(".nb-cell"), cell);
                     scheduleSave();
                 }
+            }));
+            bar.appendChild(mkBar("Export CSV", () => {
+                const esc = (v) => {
+                    v = String(v == null ? "" : v);
+                    return /[",\n]/.test(v)
+                        ? '"' + v.replace(/"/g, '""') + '"' : v;
+                };
+                const lines = [meta.headers.map(esc).join(",")].concat(
+                    meta.rows.map((r) => meta.headers.map(
+                        (_, ci) => esc(r[ci])).join(",")));
+                const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = "table.csv";
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
             }));
             body.appendChild(bar);
         }

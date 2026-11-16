@@ -1705,3 +1705,55 @@ def test_slash_file_option_is_undoable():
     assert "pushUndo(" in file_branch
     assert file_branch.index("pushUndo(") < file_branch.index(
         "area.value = before")
+
+
+def test_table_paste_expands_without_loss():
+    """N5: table TSV paste auto-expands rows/columns without loss; Export
+    CSV button present; drop guard verified before preventDefault."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Export CSV" in src or "export-csv" in src
+    assert 'text/nb-cell' in src  # guarded drop
+    body = _js_fn_body(src, "renderTableCell")
+    # Key contracts: Tab/Shift+Tab between columns, Enter/arrows between rows.
+    assert "keydown" in body
+    assert "Tab" in body and "Enter" in body
+    assert "ArrowDown" in body and "ArrowUp" in body
+    # TSV paste: detected, expanded (rows + columns), undoable.
+    assert "paste" in body
+    assert "\\t" in body
+    assert "pushUndo(" in body
+
+
+def test_todo_enter_backspace_and_progress_badge():
+    """N5: todo Enter inserts a row below / Backspace on an empty row
+    removes it and focuses the previous one (both undoable); a done/total
+    (pct) progress badge is shown."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "renderTodoCell")
+    assert "keydown" in body
+    assert "Enter" in body and "Backspace" in body
+    assert "pushUndo(" in body
+    assert "%" in body
+
+
+def test_drag_drop_flicker_free_guards():
+    """N5: dragleave ignores moves inside the cell (no flicker); the cell
+    drop handler verifies the payload type BEFORE preventDefault."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    dl_start = src.index('addEventListener("dragleave"')
+    dl_chunk = src[dl_start:dl_start + 300]
+    assert "relatedTarget" in dl_chunk
+    assert "contains(" in dl_chunk
+    # Anchor on the cell drop handler (the image-uploader drop above is a
+    # different listener) and require guard-before-preventDefault order.
+    getdata = src.index('getData("text/nb-cell")')
+    seg_start = src.rindex('addEventListener("drop"', 0, getdata)
+    guard = src.index('types.includes("text/nb-cell")', seg_start)
+    prevented = src.index("preventDefault", seg_start)
+    assert guard < prevented < getdata
