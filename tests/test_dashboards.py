@@ -3219,3 +3219,338 @@ console.log(JSON.stringify(checks));
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [True] * 5
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A1: card schema (script_enabled + script)
+# ---------------------------------------------------------------------------
+
+def test_script_fields_default_off():
+    card = dash_doc.new_card("kpi")
+    assert card["script_enabled"] is False and card["script"] == ""
+
+
+def test_workflow_card_rejects_script_toggle():
+    card = dash_doc.new_card("workflow")
+    card["script_enabled"] = True
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)
+
+
+def test_script_size_cap():
+    card = dash_doc.new_card("table")
+    card["script_enabled"] = True
+    card["script"] = "x" * (dash_doc.SCRIPT_MAX_CHARS + 1)
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A2: engine (_run_script_card + run_card)
+# ---------------------------------------------------------------------------
+
+def _script_card(app, fid, cid, script="res = 1\nres"):
+    """A script-mode card dict (in-memory; run_card takes the card directly,
+    so no save round-trip is needed — resolve against the live doc)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        return card
+
+
+def test_script_card_fails_closed_without_pyrun(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: pyrun disabled → run_card raises ValueError naming pyrun
+    (the route settle path turns it into the card error state); the prompt
+    path must not run instead (no AI steps for script cards)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled",
+                        lambda name: name != "pyrun")
+
+    def boom_agent(user, prompt, drive=None, max_steps=None):
+        raise AssertionError("prompt path must not run for script cards")
+
+    def boom_complete(user, messages):
+        raise AssertionError("prompt path must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", boom_complete)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    card = _script_card(app, fid, cid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        with pytest.raises(ValueError, match="pyrun"):
+            dash_engine.run_card(stored, card, user)
+
+
+def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
+    """Task A2: a prose script value coerces through the card's contract —
+    never an error state; (result, [], []) contract holds."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["files"] = files
+        return {"ok": True, "value": "some prose"}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    card = _script_card(app, fid, cid,
+                          script="res = 'some prose'\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, artifacts, trace = dash_engine.run_card(stored, card, user)
+    assert result.get("text") == "some prose"  # never an error state
+    assert artifacts == [] and trace == []
+    assert seen["files"] == {}  # no attachments → empty files map
+
+
+def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
+    """Task A2: the pyrun files map mirrors notebooks run-cell — positional
+    in card attachment order, files_map["f"] + files_map["f{pos}"], each a
+    [read_text_content] chunk list."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["call"] = (code, files)
+        return {"ok": True, "value": {"value": "3", "label": "rows"}}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"v\n1\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"v\n2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(app, fid, cid,
+                          script="res = len(rows('f'))\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    code, files = seen["call"]
+    assert code == "res = len(rows('f'))\nres"
+    assert set(files) == {"f", "f0", "f1"}
+    assert files["f"] == files["f0"] != files["f1"]
+    assert all(isinstance(chunks, list) and len(chunks) == 1
+               for chunks in files.values())
+    assert "v" in files["f"][0] and "v" in files["f1"][0]
+    assert result == {"kpi": {"value": "3", "label": "rows"}}
+
+
+def test_script_card_rejects_foreign_attachment(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: an attachment entry pointing at another user's file →
+    MissingInputError (ownership is re-checked at run time, never silent)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        asset = db.session.get(StoredFile, att["fileId"])
+        asset.user_id = bob.id  # entry now points at another user's file
+        db.session.commit()
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = "res = 1\nres"
+        with pytest.raises(dash_engine.MissingInputError):
+            dash_engine.run_card(stored, card, user)
+
+
+# ---------------------------------------------------------------------------
+# Task A3: AI tools accept script card fields
+# ---------------------------------------------------------------------------
+
+def test_add_card_accepts_script_fields(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        outcome = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "script_enabled": True, "script": "res = 1\nres"},
+            None)
+        assert outcome["card"]["script_enabled"] is True
+        assert outcome["card"]["script"] == "res = 1\nres"
+
+
+def test_update_card_sets_script(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nested = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script_enabled": True,
+                                 "script": "res = 1\nres"}}, None)
+        assert nested["card"]["script_enabled"] is True
+        assert nested["card"]["script"] == "res = 1\nres"
+        flat = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": "res = 2\nres",
+                        "card": {"script": "res = 9\nres"}}, None)
+        assert flat["card"]["script"] == "res = 2\nres"
+
+
+# ---------------------------------------------------------------------------
+# Task A4: builder toggle + editor, immediate run, stream branch
+# ---------------------------------------------------------------------------
+
+def test_script_builder_hooks():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'data-f="script_enabled"' in src and 'data-f="script"' in src
+    assert "dash-script" in src
+    assert 'data-f="promptwrap"' in src and 'data-f="scriptwrap"' in src
+    i = src.find("dash-script-toggle")
+    assert i >= 0 and "workflow" in src[max(0, i - 200):i + 200]
+
+
+def _script_card_persisted(app, fid, cid, script="res = 1\nres"):
+    """Flip a saved card to script mode (the stream/classic routes read the
+    stored doc, so the toggle must be persisted, not just in-memory)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = next(c for c in doc["cards"] if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        dash_doc.save_document(stored, doc)
+
+
+def _stub_no_agent(monkeypatch, evaluate=None):
+    """pyrun on, every AI seam rigged to blow: any agent use fails the test."""
+    from app.services import module_service
+    dash_engine = _engine()
+    outcome = {"ok": True, "value": "seven"} if evaluate is None else evaluate
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate",
+                        lambda code, files: outcome,
+                        raising=False)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("agent must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom)
+    monkeypatch.setattr(dash_engine, "complete_once", boom)
+    monkeypatch.setattr("app.services.agent_service.run_agent_events", boom)
+
+
+def test_script_run_needs_no_prompt(app, auth_client, user, enabled,
+                                    monkeypatch):
+    """Task A4 run-immediately contract: the existing Refresh POST runs a
+    script card with an empty prompt — no prompt required, no AI steps."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    assert _run_and_finish(app, auth_client, fid, cid) == {"text": "seven"}
+
+
+def test_script_stream_runs_script(app, auth_client, user, enabled,
+                                   monkeypatch):
+    """Task A4: a script-enabled card via /run/stream executes the script
+    through run_card — the done frame carries the coerced script result and
+    the card settles done with zero agent calls."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "seven" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "seven"}
+
+
+def test_script_stream_error_settles_error(app, auth_client, user, enabled,
+                                           monkeypatch):
+    """Fix wave: a failing script via /run/stream emits the normal done
+    frame carrying the error and settles the card error — zero agent calls."""
+    _stub_no_agent(monkeypatch,
+                   evaluate={"ok": False, "error": "boom"})
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "boom" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert card["result"] == {"error": "boom"}
+
+
+def test_update_card_normalizes_script(app, user, enabled):
+    """Fix wave: the update path normalizes script like the add path
+    (str(...), None → "")."""
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nulled = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script": None}}, None)
+        assert nulled["card"]["script"] == ""
+        coerced = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": 123}, None)
+        assert coerced["card"]["script"] == "123"
+
+
+def test_parse_script_result_maps_none_to_empty():
+    """Fix wave: a None script value coerces to "" — never a literal
+    "None" snapshot."""
+    assert _engine()._parse_script_result("kpi", None) == {"text": ""}

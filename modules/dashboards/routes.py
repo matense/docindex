@@ -655,7 +655,12 @@ def _settle_stream_card(stored_id, card_id, status, result, trace,
 
 @bp.post("/<int:file_id>/run/stream")
 def run_card_stream(file_id):
-    """Run one prompt card, streaming agent step frames as SSE.
+    """Run one card, streaming agent step frames as SSE.
+
+    Dispatch: workflow cards and script-enabled cards run through
+    ``engine_service.run_card`` and emit a single ``done`` frame (script
+    cards never touch the agent); other prompt cards stream agent step
+    frames (tools on) or run the single LLM call (tools off).
 
     Same guards and settle shape as ``run_cards``. Frames are
     ``data: {"t": "step"|"thinking"|"done", ...}``; the client renders
@@ -721,6 +726,27 @@ def run_card_stream(file_id):
                 "workflow") or {}
             if card_snapshot.get("type") == "workflow" or \
                     workflow_ref.get("workflow_id"):
+                trace, artifact_ids = [], []
+                try:
+                    result, artifact_ids, trace = engine_service.run_card(
+                        live, card_snapshot, live_user.id)
+                    _settle_stream_card(stored_id, card_id, "done",
+                                        result, trace, artifact_ids)
+                except engine_service.MissingInputError as exc:
+                    result = {"error": str(exc)}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                except Exception as exc:  # noqa: BLE001
+                    db.session.rollback()
+                    result = {"error": (str(exc) or "The run failed.")[:500]}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": trace},
+                    default=str) + "\n\n"
+                return
+            if card_snapshot.get("script_enabled") and \
+                    card_snapshot.get("type") != "workflow":
                 trace, artifact_ids = [], []
                 try:
                     result, artifact_ids, trace = engine_service.run_card(

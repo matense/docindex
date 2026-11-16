@@ -264,6 +264,21 @@ def _parse_prompt_result(card_type, answer):
     return {"text": answer}
 
 
+def _parse_script_result(card_type, value):
+    """Coerce a pyrun value through the card's prompt-result contract.
+
+    Non-string values serialize first (JSON for dict/list, str otherwise),
+    then the existing per-type parsing applies — one new line, no new
+    type contracts. None maps to "" (never a literal "None" snapshot).
+    """
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        value = (json.dumps(value) if isinstance(value, (dict, list))
+                 else str(value))
+    return _parse_prompt_result(card_type, value)
+
+
 class MissingInputError(ValueError):
     """A card input is gone: trashed/moved/deleted file or workflow."""
 
@@ -435,6 +450,12 @@ def start_workflow_run(workflow, user, params):
                              params=params or None)
 
 
+def _pyrun_evaluate(code, files):
+    """Evaluate a script in the pyrun sandbox (stubbed in tests)."""
+    from docindex_module_pyrun.evaluate import evaluate
+    return evaluate(code, files=files)
+
+
 # ---------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------
@@ -534,6 +555,12 @@ def run_card(stored, card, user_id):
         result, artifact_ids = _run_workflow_card(stored, doc, card, user,
                                                  workflow_ref, files)
         return result, artifact_ids, []
+    if card.get("script_enabled") and card.get("type") != "workflow":
+        from app.services import module_service
+        if not module_service.is_enabled("pyrun"):
+            raise ValueError("The pyrun module is disabled — enable pyrun "
+                             "to run script cards.")
+        return _run_script_card(stored, doc, card, user, files), [], []
     return _run_prompt_card(stored, doc, card, user, files)
 
 
@@ -573,6 +600,41 @@ def _run_prompt_card(stored, doc, card, user, files):
         result = dict(result, truncated=True)
     # Single LLM call: no tool steps, so the trace stays empty.
     return result, [], []
+
+
+def _run_script_card(stored, doc, card, user, files):
+    """Execute a script card in the pyrun sandbox, no prompt, no AI steps.
+
+    Attachments map to pyrun files positionally in card attachment order
+    (mirroring notebooks run-cell): the first id is addressable as 'f'
+    (and 'f0'), the rest as 'f1', 'f2', ... — each a [read_text_content]
+    chunk list, so CSV/XLSX attachments seed scratch tables inside pyrun
+    exactly like notebook cells. The value coerces into the card type's
+    snapshot contract; script errors raise ValueError for the card's
+    visible error state.
+    """
+    del stored, doc, user  # ownership/files resolved by the caller
+    script = card.get("script") or ""
+    if not script.strip():
+        raise ValueError("Script card has no script — add one or turn "
+                         "the toggle off.")
+    refs = (card.get("inputs") or {}).get("attachments") or []
+    files_map = {}
+    for pos, ref in enumerate(refs):
+        target = files[ref]
+        try:
+            chunks = [file_service.read_text_content(target)]
+        except OSError as exc:
+            raise MissingInputError(
+                f"Attachment '{target.name}' cannot be read ({exc}).")
+        if pos == 0:
+            files_map["f"] = chunks
+        files_map[f"f{pos}"] = chunks
+    outcome = _pyrun_evaluate(script, files_map)
+    if not isinstance(outcome, dict) or not outcome.get("ok"):
+        error = outcome.get("error") if isinstance(outcome, dict) else None
+        raise ValueError(error or "Script run failed.")
+    return _parse_script_result(card.get("type"), outcome.get("value"))
 
 
 def _run_workflow_card(stored, doc, card, user, workflow_ref, files):
