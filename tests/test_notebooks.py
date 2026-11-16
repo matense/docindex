@@ -1676,8 +1676,9 @@ def test_toc_layout_and_badges():
     with open(html_path, encoding="utf-8") as fh:
         html = fh.read()
     assert "nb-body-layout" in html
-    assert "lg:sticky" in html and "lg:top-20" in html
-    assert "lg:w-56" in html and "overflow-y-auto" in html
+    assert "xl:sticky" in html and "xl:top-20" in html
+    assert "xl:w-56" in html and "overflow-y-auto" in html
+    assert "xl:flex-row" in html and "xl:max-w-" in html
     path = os.path.join(_NB_DIR, "static", "notebook.js")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
