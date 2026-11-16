@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Notebooks{% endblock %}
+{# Wider page on very large screens so the sticky index never squeezes the cells #}
+{% block page_container_class %}p-6 pb-64 min-h-full xl:max-w-[calc(95%+15rem)]{% endblock %}
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="nb-root">
 
@@ -65,9 +67,9 @@
     </div>
 
     <!-- Sticky outline (left) + cells (right) on wide screens -->
-    <div class="nb-body-layout flex flex-col lg:flex-row items-start gap-4">
+    <div class="nb-body-layout flex flex-col xl:flex-row items-start gap-4">
         <!-- Document index (headings) — toggled by the Index button -->
-        <div id="nb-toc" class="glass-panel rounded-2xl px-5 py-4 hidden lg:sticky lg:top-20 lg:w-56 flex-shrink-0 max-h-[calc(100vh-6rem)] overflow-y-auto">
+        <div id="nb-toc" class="glass-panel rounded-2xl px-5 py-4 hidden xl:sticky xl:top-20 xl:w-56 flex-shrink-0 max-h-[calc(100vh-6rem)] overflow-y-auto">
             <div class="text-xs font-semibold opacity-50 uppercase tracking-wide mb-2">
                 <i class="fas fa-list mr-1"></i> Index
             </div>
