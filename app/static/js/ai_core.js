@@ -484,8 +484,11 @@
             }
         }
         function attachFile(id, name) {
-            if (attachments.some(a => a.id === id)) return;
-            attachments.push({ id, name });
+            // Server ids arrive as numbers, DOM ids as strings — normalize
+            // so the same file never chips twice (?conv=2.7-style mismatch).
+            const key = String(id);
+            if (attachments.some(a => String(a.id) === key)) return;
+            attachments.push({ id: key, name });
             renderChips();
         }
         function fmtPeekSize(n) {
@@ -972,7 +975,8 @@
         }
         function restoreContext(c) {
             attachments = (c && c.file_ids || []).map((id, i) => ({
-                id, name: (c.file_names || [])[i] || ('file #' + id),
+                id: String(id),
+                name: (c.file_names || [])[i] || ('file #' + id),
             }));
             driveRefs = (c && c.drive_ids || []).map((id, i) => ({
                 id, name: (c.drive_names || [])[i] || ('drive #' + id),
@@ -1440,7 +1444,8 @@
                     });
                 }
                 if (captured.context_file_name
-                        && !attachments.some(a => a.id === captured.context_file_id)) {
+                        && !attachments.some(a => String(a.id)
+                            === String(captured.context_file_id))) {
                     chip('badge-secondary', 'fa-eye', captured.context_file_name,
                          'Open on screen when the task started — ' + fixedTitle);
                 }
@@ -1454,7 +1459,8 @@
                          captured.context_cell.file_name + ' › cell', fixedTitle);
                 }
                 (captured.file_names || []).forEach((name, i) => {
-                    if (attachments.some(a => a.id === capFileIds[i])) return;
+                    if (attachments.some(a => String(a.id)
+                        === String(capFileIds[i]))) return;
                     chip('badge-primary', 'fa-paperclip', name, fixedTitle);
                 });
                 if (captured.persona && !personaRef) {
@@ -1528,7 +1534,8 @@
                 // Removable chip showing the open file shared as context.
                 if (window.currentFile
                         && window.currentFile.id !== contextDismissedId
-                        && !attachments.some(a => a.id === window.currentFile.id)) {
+                        && !attachments.some(a => String(a.id)
+                            === String(window.currentFile.id))) {
                     chip('badge-secondary', 'fa-eye', window.currentFile.name,
                          'Open on screen — the AI knows this is your current context',
                          () => {

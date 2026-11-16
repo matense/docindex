@@ -179,7 +179,7 @@
     try {
         const convParam = new URLSearchParams(window.location.search).get('conv');
         const id = Number(convParam);
-        if (Number.isFinite(id) && id > 0) sess.loadConversation(id);
+        if (Number.isInteger(id) && id > 0) sess.loadConversation(id);
     } catch { /* bad ?conv= — ignore */ }
 
     input.focus();

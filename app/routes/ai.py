@@ -547,7 +547,8 @@ def branch_conversation(conv_id):
     if anchor is None:
         return jsonify({"error": "Not found"}), 404
     branched = ChatConversation(user_id=current_user.id,
-                                title=f"{conv.title} (branch)",
+                                # String(255) column: clamp the 9-char suffix.
+                                title=(conv.title or "")[:246] + " (branch)",
                                 context=conv.context)
     db.session.add(branched)
     db.session.flush()

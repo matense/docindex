@@ -838,7 +838,8 @@ def test_dock_persist_after_load_awaits():
 
 def test_conv_param_validated():
     src = _read_template("app/static/js/ai_page.js")
-    assert "Number.isFinite" in src
+    # Floats (?conv=2.7) must not slip through to a non-matching route.
+    assert "Number.isInteger" in src
 
 
 # Reviewer Important 3: attachNotebookCell must reject empty strings too.
@@ -1110,3 +1111,45 @@ def test_listeners_cleaned_up():
     chat = _read_template("app/static/js/ai_chat.js")
     assert "onMoreDocClick" in chat
     assert "removeEventListener('click', onMoreDocClick)" in chat
+
+
+# ------------------------------------------------- final-review hardening
+# branch title clamp (String(255)), ?conv= integer-only, attachFile id
+# type dedupe, token-meter clamp pin.
+
+
+def test_branch_title_clamped_to_255(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        conv = db.session.get(ChatConversation, conv_id)
+        conv.title = "T" * 250
+        db.session.commit()
+        up_to = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                 .order_by(ChatMessage.id).first().id)
+    r = auth_client.post(f"/ai/conversations/{conv_id}/branch",
+                         json={"up_to_message_id": up_to})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["title"].endswith(" (branch)")
+    assert len(data["title"]) <= 255
+
+
+def test_attach_file_dedupes_across_id_types():
+    src = _read_template("app/static/js/ai_core.js")
+    start = src.index("function attachFile(id, name)")
+    body = src[start:start + 500]
+    # Number vs string ids (server int vs DOM string) must dedupe.
+    assert "String(" in body
+    assert body.count("String(") >= 2
+
+
+def test_token_meter_clamps():
+    src = _read_template("app/static/js/ai_core.js")
+    body = src.split("function updateTokenMeter")[1].split(
+        "\n        function ")[0]
+    # Huge history caps at 100; NaN/negative coerce to a 0-100 width.
+    assert "Math.min(100" in body
+    assert "Math.max(0" in body
+    assert "Number(estimate)" in body
+    assert "max > 0" in body
+    assert "fill.style.width" in body
