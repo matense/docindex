@@ -1481,18 +1481,50 @@ def test_large_notebook_with_synced_history_loads_whole(app, user):
 
 def test_pasted_and_dropped_images_upload_instead_of_base64():
     """Paste/drop of an image into a rich-text cell must route through the
-    assets upload (opts.assetsUrl) — never baked into the cell as a
-    data: URL (one screenshot would bloat the .pdocnb past the load cap)."""
+    shared assets uploader — never baked into the cell as a data: URL (one
+    screenshot would bloat the .pdocnb past the load cap).
+
+    Interception runs on the holder in the capture phase (before Quill's own
+    root listeners — Quill 2.0.3 embeds pasted/dropped files as base64 via
+    FileReader, and its drop listener has no defaultPrevented check, so
+    bubble-phase preventDefault would be too late AND duplicate).
+    """
     path = os.path.join(_NB_DIR, "static", "notebook.js")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
-    # Clipboard screenshots arrive as file items; file drops arrive via
-    # dataTransfer — both intercepted on the Quill root and uploaded.
-    assert 'quill.root.addEventListener("paste"' in src
-    assert 'quill.root.addEventListener("drop"' in src
-    assert "clipboardData" in src
-    # HTML-fragment pastes (copy from a page) carry <img src="data:...">
-    # with no file item — swept and uploaded after insert.
-    assert 'src^="data:"' in src
-    # All three image paths (toolbar, paste, drop) share the assets upload.
+    body = _js_fn_body(src, "wireImageUploads")
+    # Capture-phase interception on the holder (ancestor of quill.root),
+    # never on the root itself where Quill's listeners would run first.
+    assert 'ctx.holder.addEventListener("paste"' in body
+    assert 'ctx.holder.addEventListener("drop"' in body
+    assert body.count(", true)") >= 2  # capture flags
+    assert 'quill.root.addEventListener("paste"' not in src
+    assert 'quill.root.addEventListener("drop"' not in src
+    # One shared uploader: def + paste + drop + sweep call sites here, plus
+    # the toolbar call site outside.
+    assert body.count("uploadImageFile(") == 4
+    assert src.count("uploadImageFile(") == 5
+    # Every insert path embeds the uploaded URL — never a data: URL.
+    assert 'insertEmbed(range.index, "image", url, "user")' in body
+    assert 'img.setAttribute("src", url)' in body
+    # The Critical guarantee, pinned statically: src is replaced only on
+    # success, so the original is never cleared up front.
+    assert 'removeAttribute("src")' not in body
+    assert "data-nb-uploading" in body  # in-flight guard, cleared on settle
+    # Mixed paste keeps its text (no preventDefault); HTML drags and late
+    # (FileReader-delayed) embeds are covered by sweep + observer.
+    assert '"files"' in body  # image-only detection (case-insensitive)
+    assert "stopPropagation" in body  # drop: Quill has no prevented-check
+    assert "MutationObserver" in body
+    assert 'src^="data:"' in body
     assert "opts.assetsUrl" in src
+
+
+def test_image_upload_wiring_behavior():
+    """Node harness drives the SHIPPED wireImageUploads with fakes:
+    image-only paste / mixed paste / failed upload (src preserved) /
+    file drop / file-less drop / observer backstop."""
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "notebook_image_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

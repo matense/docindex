@@ -719,6 +719,173 @@
         return true;
     }
 
+    // Image paste/drop wiring for one Quill instance — factored to module
+    // scope so the node harness (tests/notebook_image_harness.js) can drive
+    // the shipped logic, failure injection included, with fakes.
+    //
+    // Why this shape (verified against the vendored Quill 2.0.3 source):
+    // - Quill's Clipboard listens for "paste" on quill.root (bubble) and
+    //   bails when defaultPrevented; its Uploader listens for "drop" on
+    //   quill.root (bubble) with NO defaultPrevented check and embeds
+    //   PNG/JPEG files as base64 via FileReader (async — the <img> appears
+    //   after event handlers return). A bubble-phase preventDefault would
+    //   therefore be too late AND duplicate (Quill's base64 + our upload).
+    // - Our listeners attach to `holder` (an ancestor of the editor root)
+    //   in the CAPTURE phase, so they run before Quill's own. Image-only
+    //   pastes and file-image drops are preventDefaulted (plus
+    //   stopPropagation for drop, which Quill would otherwise also consume)
+    //   and uploaded; everything else flows to Quill untouched.
+    // - Whatever Quill still embeds as data: (mixed HTML pastes, HTML
+    //   drags with no files, legacy base64 reopened in the editor) is
+    //   caught by the MutationObserver + explicit sweep and converted the
+    //   same way.
+    // - An upload NEVER destroys the original: img.src is replaced only on
+    //   success; every failure path leaves the image in place and surfaces
+    //   an error status only.
+    function wireImageUploads(quill, ctx) {
+        const defer = ctx.defer || ((fn) => setTimeout(fn, 0));
+        const doFetch = ctx.fetchFn
+            || (typeof fetch === "function" ? fetch : null);
+        const doApiFetch = ctx.apiFetch
+            || (typeof window !== "undefined" ? window.apiFetch : null);
+
+        function uploadImageFile(file, onOk, onErr) {
+            const fd = new FormData();
+            const name = (file && file.name)
+                || ("pasted-image-" + Date.now() + ".png");
+            fd.append("file", file, name);
+            doApiFetch(ctx.assetsUrl, { method: "POST", body: fd },
+                { silent: true })
+                .then((d) => {
+                    if (d && d.ok) {
+                        onOk(d.url);
+                    } else {
+                        ctx.setStatus("error",
+                            (d && d.error) || "image upload failed");
+                        if (onErr) onErr(d);
+                    }
+                })
+                .catch(() => {
+                    ctx.setStatus("error", "image upload failed");
+                    if (onErr) onErr(null);
+                });
+        }
+
+        function insertImageUrl(url) {
+            const range = quill.getSelection(true);
+            quill.insertEmbed(range.index, "image", url, "user");
+        }
+
+        // Upload one data: image in place. src is replaced ONLY on success;
+        // every failure path leaves the original src untouched (and clears
+        // the in-flight flag so a later sweep may retry).
+        function replaceWithUpload(img) {
+            if (!img || img.getAttribute("data-nb-uploading")) return;
+            const src = img.getAttribute("src");
+            if (!src || src.indexOf("data:") !== 0) return;
+            img.setAttribute("data-nb-uploading", "1");
+            const settle = (url) => {
+                img.removeAttribute("data-nb-uploading");
+                if (url) {
+                    img.setAttribute("src", url);
+                    ctx.cell.content = quill.root.innerHTML;
+                    ctx.scheduleSave();
+                }
+            };
+            if (!doFetch) {
+                ctx.setStatus("error", "image upload failed");
+                settle(null);
+                return;
+            }
+            doFetch(src).then((r) => r.blob()).then(
+                (blob) => uploadImageFile(blob, settle,
+                    () => settle(null)),
+                () => {
+                    ctx.setStatus("error", "image upload failed");
+                    settle(null);
+                });
+        }
+
+        function sweepDataUrlImages() {
+            quill.root.querySelectorAll('img[src^="data:"]')
+                .forEach(replaceWithUpload);
+        }
+
+        // Capture on the holder (ancestor of the editor root): runs before
+        // Quill's own bubble listeners on quill.root.
+        ctx.holder.addEventListener("paste", (e) => {
+            const items = (e.clipboardData
+                && e.clipboardData.items) || [];
+            const images = [];
+            for (const item of items) {
+                if (item.kind === "file"
+                        && (item.type || "").indexOf("image/") === 0) {
+                    const f = item.getAsFile();
+                    if (f) images.push(f);
+                }
+            }
+            if (!images.length) {
+                // Plain or HTML paste: Quill inserts it; the observer (and
+                // this sweep) convert any embedded data: image.
+                defer(sweepDataUrlImages);
+                return;
+            }
+            const types = (e.clipboardData
+                && e.clipboardData.types) || [];
+            const imageOnly = !types.some(
+                (t) => String(t).toLowerCase() !== "files");
+            if (!imageOnly) {
+                // Mixed paste (image + text/HTML): never preventDefault —
+                // that would drop the pasted text. Quill inserts the
+                // fragment; the observer converts the image(s).
+                defer(sweepDataUrlImages);
+                return;
+            }
+            e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+            images.forEach((f) => uploadImageFile(f, insertImageUrl));
+        }, true);
+
+        ctx.holder.addEventListener("drop", (e) => {
+            const dt = e.dataTransfer;
+            const images = [];
+            if (dt && dt.files) {
+                for (const f of dt.files) {
+                    if ((f.type || "").indexOf("image/") === 0) {
+                        images.push(f);
+                    }
+                }
+            }
+            if (!images.length) {
+                // HTML drag (e.g. an image from a web page) carries no
+                // file — let it insert, then sweep (no preventDefault: the
+                // drop must land).
+                defer(sweepDataUrlImages);
+                return;
+            }
+            e.preventDefault();
+            // Required, not belt-and-braces: Quill's own drop listener has
+            // no defaultPrevented check and would ALSO embed the file as
+            // base64 (duplicate + bloat).
+            if (e.stopPropagation) e.stopPropagation();
+            images.forEach((f) => uploadImageFile(f, insertImageUrl));
+        }, true);
+
+        if (typeof MutationObserver === "function") {
+            const observer = new MutationObserver(() => {
+                sweepDataUrlImages();
+            });
+            observer.observe(quill.root,
+                { childList: true, subtree: true, attributes: true,
+                  attributeFilter: ["src"] });
+        } else {
+            defer(sweepDataUrlImages);
+        }
+
+        return { uploadImageFile: uploadImageFile,
+                 sweepDataUrlImages: sweepDataUrlImages };
+    }
+
     function mount(root, opts) {
         // Re-mount safety (SPA revisits): tear down the previous instance
         // first — its listeners/timers would otherwise outlive its DOM.
@@ -1902,27 +2069,10 @@
             loadQuill(() => {
                 if (!document.body.contains(holder)) return;  // page swapped away
                 let quill;
-                // Image bytes live as real files next to the notebook (same
-                // drive/folder, embedded by URL) — never baked into the cell
-                // as base64 data: URLs. One pasted screenshot would otherwise
-                // bloat the .pdocnb until the notebook no longer loads.
-                // Shared by the toolbar button, clipboard paste and drag-drop.
-                function uploadImageFile(file, onOk) {
-                    const fd = new FormData();
-                    const name = (file && file.name)
-                        || ("pasted-image-" + Date.now() + ".png");
-                    fd.append("file", file, name);
-                    apiFetch(opts.assetsUrl, { method: "POST", body: fd }, { silent: true })
-                        .then((d) => {
-                            if (d && d.ok) {
-                                onOk(d.url);
-                            } else {
-                                setStatus("error",
-                                    (d && d.error) || "image upload failed");
-                            }
-                        })
-                        .catch(() => setStatus("error", "image upload failed"));
-                }
+                // Shared image uploader (paste/drop/sweep wiring below) —
+                // assigned synchronously after Quill construction, before
+                // any click can reach the toolbar.
+                let uploadImageFile = null;
                 const handlers = {
                     // Images are uploaded as real files next to the notebook
                     // (same drive/folder) and embedded by URL.
@@ -1971,67 +2121,17 @@
                     cell.content = quill.root.innerHTML;
                     scheduleSave();
                 });
-                // Clipboard screenshots arrive as file items and file drags
-                // as dataTransfer files — Quill would bake both in as base64
-                // data: URLs, so intercept and upload instead.
-                quill.root.addEventListener("paste", (e) => {
-                    const items = (e.clipboardData
-                        && e.clipboardData.items) || [];
-                    const images = [];
-                    for (const item of items) {
-                        if (item.kind === "file"
-                                && (item.type || "").indexOf("image/") === 0) {
-                            const f = item.getAsFile();
-                            if (f) images.push(f);
-                        }
-                    }
-                    if (!images.length) {
-                        // HTML-fragment paste (copy from a page) carries
-                        // <img src="data:..."> with no file item — sweep
-                        // after Quill inserts the fragment.
-                        setTimeout(sweepDataUrlImages, 0);
-                        return;
-                    }
-                    e.preventDefault();
-                    images.forEach((f) => uploadImageFile(f, (url) => {
-                        const range = quill.getSelection(true);
-                        quill.insertEmbed(range.index, "image", url, "user");
-                    }));
+                // Pasted/dropped images become real files via the shared
+                // uploader (capture-phase interception + data: sweep +
+                // observer backstop) — see wireImageUploads.
+                const imgUp = wireImageUploads(quill, {
+                    holder: holder,
+                    assetsUrl: opts.assetsUrl,
+                    setStatus: setStatus,
+                    scheduleSave: scheduleSave,
+                    cell: cell,
                 });
-                quill.root.addEventListener("drop", (e) => {
-                    const dt = e.dataTransfer;
-                    const images = [];
-                    if (dt && dt.files) {
-                        for (const f of dt.files) {
-                            if ((f.type || "").indexOf("image/") === 0) {
-                                images.push(f);
-                            }
-                        }
-                    }
-                    if (!images.length) return;
-                    e.preventDefault();
-                    if (e.stopPropagation) e.stopPropagation();
-                    images.forEach((f) => uploadImageFile(f, (url) => {
-                        const range = quill.getSelection(true);
-                        quill.insertEmbed(range.index, "image", url, "user");
-                    }));
-                });
-                // Replace in-page data: images with uploaded file URLs.
-                function sweepDataUrlImages() {
-                    quill.root.querySelectorAll('img[src^="data:"]')
-                        .forEach((img) => {
-                            const src = img.getAttribute("src");
-                            img.removeAttribute("src");
-                            fetch(src).then((r) => r.blob()).then(
-                                (blob) => uploadImageFile(blob, (url) => {
-                                    img.setAttribute("src", url);
-                                    cell.content = quill.root.innerHTML;
-                                    scheduleSave();
-                                }),
-                                () => setStatus("error",
-                                    "image upload failed"));
-                        });
-                }
+                uploadImageFile = imgUp.uploadImageFile;
                 // NOTE: don't exit edit mode on blur — Quill's pickers blur
                 // the editor root while opening, which would destroy the
                 // editor mid-click. Blur just saves; the pencil header
@@ -2724,5 +2824,6 @@
         mount: mount,
         unmount: () => { if (currentUnmount) currentUnmount(); },
         flushedContentConfirmed: flushedContentConfirmed,
+        wireImageUploads: wireImageUploads,
     };
 })();
