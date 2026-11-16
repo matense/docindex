@@ -344,6 +344,7 @@ def extract(stored_file):
 def get_board(file_id, user_id):
     return (StoredFile.query
             .filter_by(id=file_id, user_id=user_id, extension=EXTENSION)
+            .filter(StoredFile.deleted_at.is_(None))
             .first())
 
 

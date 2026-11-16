@@ -472,6 +472,23 @@ def test_create_route_and_lock_toggle(auth_client, app, user, enabled):
 # --- AI tools ---------------------------------------------------------------
 
 
+def test_trashed_whiteboard_not_openable(auth_client, app, user, enabled):
+    from app.services import file_service
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Trash me")
+    with app.app_context():
+        file_service.delete_file(db.session.get(StoredFile, fid))
+    with app.app_context():
+        assert wb.get_board(fid, user) is None
+    assert auth_client.get(f"/m/whiteboards/{fid}").status_code == 404
+    assert auth_client.get(
+        f"/m/whiteboards/api/{fid}/scene").status_code == 404
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "not found" in wb_tools._tool_get_scene(
+            user_obj, {"file_id": fid}, None)["error"].lower()
+
+
 def test_ai_tools_end_to_end(app, user, enabled):
     _drive(app, user)
     user_obj = _user(app, user)
