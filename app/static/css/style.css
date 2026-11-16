@@ -2934,6 +2934,8 @@ figure.nb-figure figcaption {
 .ai-token-meter:not(.hidden) {
     display: inline-flex;
     align-items: center;
+    gap: 7px;
+    padding: 3px 8px;
 }
 
 /* Corner send: the submit button floats over the composer's bottom-right

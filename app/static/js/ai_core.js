@@ -2022,8 +2022,8 @@
                 meter.innerHTML = '';
                 const bar = document.createElement('span');
                 bar.className = 'ai-token-bar';
-                bar.style.cssText = 'display:inline-block;width:44px;height:4px;'
-                    + 'border-radius:2px;background:rgba(127,127,127,.35);'
+                bar.style.cssText = 'display:inline-block;width:72px;height:6px;'
+                    + 'border-radius:3px;background:rgba(127,127,127,.35);'
                     + 'overflow:hidden;vertical-align:middle;';
                 fill = document.createElement('span');
                 fill.className = 'ai-token-fill';
