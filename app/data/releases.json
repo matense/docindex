@@ -1,6 +1,31 @@
 {
   "releases": [
     {
+      "version": "0.1.20",
+      "date": "2026-11-16",
+      "title": "Argon: chat + notebooks UI redesign",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Chat composer rebuilt: context strip, larger input, send inside the box, mid-string #/$// mentions with keyboard navigation, and a live token meter backed by the token-estimate endpoint.",
+            "Chat layout switcher: floating, split and full-page modes with a full-page sidebar, pop-out, minimized dock pills and session persistence, plus reasoning summary badges, grouped history, quick-peek file citations and message actions (copy, edit-resend, conversation branching, insert into notebook).",
+            "Notebooks editing pass: inline title synced with the filename, 30-step undo/redo with shortcuts, sticky index of headings with active highlight, inline slash menu, and table/to-do ergonomics with flicker-free drag-and-drop.",
+            "Notebooks AI and code cells: per-cell Ask AI with split view, executable code/SQL cells via pyrun with save-result-as-table, and per-cell restore from history."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "Pyrun text results render verbatim with real line breaks in a scrollable block (truncated at 5000 chars with a note) instead of escaped JSON; the notebook index only docks beside the cells on very wide screens and the page widens to compensate so cells keep their width.",
+            "Chat token meter spacing widened for readability; Tailwind bundle rebuilt with the new utilities plus a safelist for dynamic alert classes; drive sync, duplicate-script and listener-cleanup hardening in the chat shell."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.19",
       "date": "2026-11-16",
       "title": "Argon: security hardening, no data loss, reliability fixes",
