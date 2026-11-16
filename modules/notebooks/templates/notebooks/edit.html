@@ -29,6 +29,14 @@
                 onclick="document.getElementById('nb-help-modal').showModal()">
             <i class="fas fa-circle-question"></i> <span class="hidden sm:inline">Help</span>
         </button>
+        <button id="nb-undo-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Undo (Ctrl+Z)" disabled>
+            <i class="fas fa-undo"></i>
+        </button>
+        <button id="nb-redo-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Redo (Ctrl+Y)" disabled>
+            <i class="fas fa-redo"></i>
+        </button>
         <button id="nb-checkpoint-btn" class="btn btn-ghost btn-sm gap-1"
                 title="Save a restorable checkpoint now (Ctrl+S)">
             <i class="fas fa-bookmark"></i> Checkpoint

@@ -1131,6 +1131,22 @@
                 e.preventDefault();
                 save(true);
             }
+            // Undo/redo: yield to native history inside text inputs —
+            // hijacking Ctrl+Z there would break typing undo.
+            if ((e.ctrlKey || e.metaKey) && !e.altKey
+                    && (e.code === "KeyZ" || e.code === "KeyY")) {
+                const t = e.target;
+                const tag = t && t.tagName;
+                if (tag === "INPUT" || tag === "TEXTAREA"
+                        || (t && (t.isContentEditable
+                            || (t.closest && t.closest(
+                                "[contenteditable='true'], .ql-editor"))))) {
+                    return;
+                }
+                e.preventDefault();
+                if (e.code === "KeyZ" && !e.shiftKey) undo();
+                else redo();
+            }
         }
         function detach() {
             window.removeEventListener("beforeunload", onBeforeUnload);
@@ -1144,6 +1160,10 @@
         if (checkpointBtn) {
             checkpointBtn.addEventListener("click", () => save(true));
         }
+        const undoBtn = root.querySelector("#nb-undo-btn");
+        if (undoBtn) undoBtn.addEventListener("click", undo);
+        const redoBtn = root.querySelector("#nb-redo-btn");
+        if (redoBtn) redoBtn.addEventListener("click", redo);
         const indexBtn = root.querySelector("#nb-index-btn");
         if (indexBtn && tocEl) {
             indexBtn.addEventListener("click", () => {
@@ -1296,6 +1316,47 @@
         }
         checkPendingConflict();
 
+        // --- Undo/redo: 30 lightweight doc.cells snapshots -------------
+        // pushUndo() runs BEFORE every structural mutation (cell
+        // delete/move/insert, table row/col add/remove, todo add/remove,
+        // AI remote apply) so Ctrl+Z restores the pre-change state.
+        let undoStack = [];
+        let redoStack = [];
+        function snapshotCells() {
+            return JSON.parse(JSON.stringify(doc.cells));
+        }
+        function updateUndoButtons() {
+            const u = root.querySelector("#nb-undo-btn");
+            const r = root.querySelector("#nb-redo-btn");
+            if (u) u.disabled = !undoStack.length;
+            if (r) r.disabled = !redoStack.length;
+        }
+        function pushUndo(label) {
+            undoStack.push(snapshotCells());
+            if (undoStack.length > 30) undoStack.shift();
+            redoStack = [];
+            updateUndoButtons();
+        }
+        function undo() {
+            if (!undoStack.length) return;
+            redoStack.push(snapshotCells());
+            if (redoStack.length > 30) redoStack.shift();
+            doc.cells = undoStack.pop();
+            render();
+            scheduleSave();
+            updateUndoButtons();
+        }
+        function redo() {
+            if (!redoStack.length) return;
+            undoStack.push(snapshotCells());
+            if (undoStack.length > 30) undoStack.shift();
+            doc.cells = redoStack.pop();
+            render();
+            scheduleSave();
+            updateUndoButtons();
+        }
+        updateUndoButtons();
+
         function activeCellIds() {
             const ids = new Set();
             doc.cells.forEach((c) => { if (c._editing) ids.add(c.id); });
@@ -1322,6 +1383,10 @@
             if (!remoteDoc || !Array.isArray(remoteDoc.cells)) {
                 return { diverged: false, keptLocal: false };
             }
+            // An AI (or other-tab) edit landing here is itself undoable —
+            // snapshot first. The 409 rebase path (keepAllLocal) only
+            // rearranges already-tracked local state, so it pushes nothing.
+            if (!keepAllLocal) pushUndo("AI edit");
             const baseById = new Map(
                 (baseDoc.cells || []).map((c) => [c.id, c]));
             const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));
@@ -1497,6 +1562,7 @@
         const addType = root.querySelector("#nb-add-type");
         if (addBtn && addType) {
             addBtn.addEventListener("click", () => {
+                pushUndo("add cell");
                 doc.cells.push(newCell(addType.value));
                 render();
                 scheduleSave();
@@ -1591,6 +1657,7 @@
         }
 
         function insertCell(type, index) {
+            pushUndo("insert cell");
             const cell = newCell(type);
             if (["markdown", "code", "richtext", "heading", "chart"]
                     .includes(type)) {
@@ -1699,6 +1766,7 @@
                 // re-rendering, so never trust the render-time closure.
                 const i = doc.cells.indexOf(cell);
                 if (i > 0) {
+                    pushUndo("move cell");
                     doc.cells.splice(i, 1);
                     doc.cells.splice(i - 1, 0, cell);
                     render(); scheduleSave();
@@ -1707,6 +1775,7 @@
             actions.appendChild(mkBtn("fa-arrow-down", "Move down", () => {
                 const i = doc.cells.indexOf(cell);
                 if (i >= 0 && i < doc.cells.length - 1) {
+                    pushUndo("move cell");
                     doc.cells.splice(i, 1);
                     doc.cells.splice(i + 1, 0, cell);
                     render(); scheduleSave();
@@ -1718,7 +1787,10 @@
                     : Promise.resolve(window.confirm("Delete this cell?")));
                 if (!ok) return;
                 const i = doc.cells.indexOf(cell);
-                if (i >= 0) doc.cells.splice(i, 1);
+                if (i >= 0) {
+                    pushUndo("delete cell");
+                    doc.cells.splice(i, 1);
+                }
                 render(); scheduleSave();
             }, true));
             head.appendChild(actions);
@@ -1753,6 +1825,7 @@
                 let to = doc.cells.indexOf(cell)
                     + (wrap.dataset.dropPos === "after" ? 1 : 0);
                 if (to === from || to === from + 1) return;  // dropped in place
+                pushUndo("move cell");
                 const moved = doc.cells.splice(from, 1)[0];
                 if (from < to) to -= 1;
                 doc.cells.splice(to, 0, moved);
@@ -2754,6 +2827,7 @@
                 const del = el("button", "btn btn-ghost btn-xs btn-square text-error");
                 del.innerHTML = '<i class="fas fa-xmark"></i>';
                 del.addEventListener("click", () => {
+                    pushUndo("remove todo item");
                     items.splice(i, 1);
                     renderCellBody(body.closest(".nb-cell"), cell);
                     scheduleSave();
@@ -2764,6 +2838,7 @@
             const add = el("button", "btn btn-ghost btn-xs gap-1 self-start mt-1");
             add.innerHTML = '<i class="fas fa-plus"></i> Add task';
             add.addEventListener("click", () => {
+                pushUndo("add todo item");
                 items.push({ text: "", done: false });
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
@@ -2838,23 +2913,28 @@
                 return b;
             };
             bar.appendChild(mkBar("+ Row", () => {
+                pushUndo("add table row");
                 meta.rows.push(meta.headers.map(() => ""));
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("+ Column", () => {
+                pushUndo("add table column");
                 meta.headers.push("Column " + (meta.headers.length + 1));
                 meta.rows.forEach((r) => r.push(""));
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("− Row", () => {
-                if (meta.rows.length) meta.rows.pop();
+                if (!meta.rows.length) return;
+                pushUndo("remove table row");
+                meta.rows.pop();
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("− Column", () => {
                 if (meta.headers.length > 1) {
+                    pushUndo("remove table column");
                     meta.headers.pop();
                     meta.rows.forEach((r) => r.pop());
                     renderCellBody(body.closest(".nb-cell"), cell);

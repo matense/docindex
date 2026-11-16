@@ -1594,3 +1594,35 @@ def test_title_rename_sync_both_ways(app, auth_client, user, enabled):
         stored = db.session.get(StoredFile, fid)
         assert stored.name == "segundo.pdocnb"
         assert nb_doc.load(stored)["title"] == "segundo"
+
+
+def test_undo_scope_is_structural():
+    """N2: 30-entry doc.cells snapshot stacks, pushUndo before every
+    structural mutation, toolbar buttons, guarded Ctrl+Z/Ctrl+Y."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    # Stacks + push discipline + toolbar buttons + bound.
+    assert "undoStack" in src and "redoStack" in src
+    assert "pushUndo" in src
+    assert "nb-undo-btn" in html and "nb-redo-btn" in html
+    assert "nb-undo-btn" in src and "nb-redo-btn" in src
+    assert "30" in src  # bounded stack per spec
+    # Push before every structural mutation (def + delete/move/drop/
+    # insert/table row-col/todo add-remove/AI-apply call sites).
+    assert src.count("pushUndo(") >= 10
+    # Undo/redo restore snapshots, re-render and autosave.
+    undo_body = _js_fn_body(src, "undo")
+    assert "redoStack" in undo_body and "render(" in undo_body
+    assert "scheduleSave" in undo_body
+    redo_body = _js_fn_body(src, "redo")
+    assert "undoStack" in redo_body and "render(" in redo_body
+    assert "scheduleSave" in redo_body
+    # Shortcuts guarded off native-history inputs.
+    assert "KeyZ" in src and "KeyY" in src
+    key_body = _js_fn_body(src, "onKeydown")
+    assert "INPUT" in key_body and "TEXTAREA" in key_body
