@@ -848,3 +848,37 @@ def test_remove_synced_drive_drops_embeddings(auth_client, app, local_folder):
     with app.app_context():
         assert FileEmbedding.query.count() == 0
     assert os.path.exists(os.path.join(local_folder, "hello.txt"))
+
+
+# --- B5 (argon P1): single-pass os.walk in sync_drive ---
+
+def test_sync_walks_once(auth_client, app, local_folder, monkeypatch):
+    """sync_drive must enumerate the tree with a single os.walk (no
+    separate _count_files pre-pass) and produce the identical result."""
+    import os as _os
+
+    real_walk = _os.walk
+    roots = []
+
+    def counting_walk(top, *args, **kwargs):
+        roots.append(_os.path.realpath(top))
+        yield from real_walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(sync_service.os, "walk", counting_walk)
+    _sync_create(auth_client, local_folder)
+
+    expected_root = _os.path.realpath(local_folder)
+    sync_walks = [r for r in roots if r == expected_root]
+    assert len(sync_walks) == 1
+
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        names = {f.name for f in
+                 StoredFile.query.filter_by(drive_id=drive.id).all()}
+        assert names == {"hello.txt", "notes.md", "inner.txt"}
+        # progress reporting still works: total known, fully processed
+        status = sync_service.get_status(drive.id)
+        assert status["state"] == "done"
+        assert status["percent"] == 100
+        assert status["total"] == status["processed"] == 3
+

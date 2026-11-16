@@ -469,28 +469,6 @@ def _index_batch(file_ids, app):
         indexing_service.index_file(file_id, app)
 
 
-def _count_files(root):
-    """Fast pre-pass: how many files will be scanned (for the % progress)."""
-    total = 0
-    blocked = _blocked_dirs()
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        # Never descend into a blocked dir (or a dir shielding one).
-        dirnames[:] = [name for name in dirnames
-                       if name != ".git"
-                       and not _shields_blocked(os.path.join(dirpath, name),
-                                                blocked)]
-        for filename in filenames:
-            path = os.path.join(dirpath, filename)
-            if os.path.islink(path):
-                continue
-            try:
-                if _allowed(filename, os.path.getsize(path)):
-                    total += 1
-            except OSError:
-                continue
-    return total
-
-
 def _notebook_doc_module():
     """Notebooks doc module, or None when the module is disabled."""
     import importlib
@@ -629,9 +607,6 @@ def sync_drive(drive, job=None):
     stats.setdefault("versions", 0)
     root = drive.source_path
 
-    if job:
-        job.total = _count_files(root)
-
     # Existing state, keyed by path relative to the root (read-only).
     # Trashed rows and ignored paths are invisible to the scan: a trashed
     # file whose real file is still on disk must not be re-added, and
@@ -651,11 +626,14 @@ def sync_drive(drive, job=None):
     for folder in Folder.query.filter_by(drive_id=drive.id).all():
         existing_folders[_folder_rel_path(folder)] = folder
 
-    # -- Phase 1: scan the disk. Nothing is written to the DB here, so the
-    # slow parts (sha256 of every file, thumbnail generation) run without
-    # holding the write lock.
+    # -- Single pass: enumerate the tree once. Allowed files (with their
+    # stat) are collected here; job.total grows as they are found so
+    # progress has a denominator, and the heavy per-file work in phase 1
+    # advances job.processed to match it. Skipped files (symlinks,
+    # disallowed, unreadable) never touch the progress counters.
     seen_files, needed_dirs = set(), set()
     adds, updates, thumbnails = [], [], []
+    pending = []  # (rel, rel_dir, filename, path, size)
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # Never descend into a blocked dir (or a dir shielding one).
@@ -668,6 +646,8 @@ def sync_drive(drive, job=None):
             needed_dirs.add(rel_dir)
         for filename in filenames:
             path = os.path.join(dirpath, filename)
+            if job:
+                job.checkpoint()
             if os.path.islink(path):
                 stats["skipped"] += 1
                 continue
@@ -679,62 +659,69 @@ def sync_drive(drive, job=None):
             if not _allowed(filename, size, drive):
                 stats["skipped"] += 1
                 continue
-
             rel = os.path.normpath(os.path.join(rel_dir, filename))
+            pending.append((rel, rel_dir, filename, path, size))
             if job:
-                job.checkpoint()
-                job.current = rel
+                job.total += 1
 
-            if rel in ignored or rel in trashed_paths:
+    # -- Phase 1: scan the collected entries. Nothing is written to the DB
+    # here, so the slow parts (sha256 of every file, thumbnail generation)
+    # run without holding the write lock.
+    for rel, rel_dir, filename, path, size in pending:
+        if job:
+            job.checkpoint()
+            job.current = rel
+
+        if rel in ignored or rel in trashed_paths:
+            if job:
+                job.processed += 1
+            continue
+        seen_files.add(rel)
+        stored = existing_files.get(rel)
+        if stored is None:
+            stored = StoredFile(
+                name=filename,
+                stored_name=f"{uuid.uuid4().hex}.{file_service.get_extension(filename)}",
+                extension=file_service.get_extension(filename),
+                mime_type=None,
+                size=size,
+                checksum=_sha256_of(path),
+                user_id=drive.user_id,
+                drive_id=drive.id,
+                source_path=os.path.abspath(path),
+            )
+            adds.append((rel, rel_dir, stored))
+            if stored.is_image:
+                thumbnails.append((path, stored.stored_name))
+            stats["added"] += 1
+        else:
+            # Size-first: same size + known checksum = assume unchanged
+            # (avoids re-hashing 10k files every sync; content changes
+            # with identical size are rare and caught on next size change
+            # or reindex).
+            if size == stored.size and stored.checksum:
                 if job:
                     job.processed += 1
                 continue
-            seen_files.add(rel)
-            stored = existing_files.get(rel)
-            if stored is None:
-                stored = StoredFile(
-                    name=filename,
-                    stored_name=f"{uuid.uuid4().hex}.{file_service.get_extension(filename)}",
-                    extension=file_service.get_extension(filename),
-                    mime_type=None,
-                    size=size,
-                    checksum=_sha256_of(path),
-                    user_id=drive.user_id,
-                    drive_id=drive.id,
-                    source_path=os.path.abspath(path),
-                )
-                adds.append((rel, rel_dir, stored))
-                if stored.is_image:
-                    thumbnails.append((path, stored.stored_name))
-                stats["added"] += 1
-            else:
-                # Size-first: same size + known checksum = assume unchanged
-                # (avoids re-hashing 10k files every sync; content changes
-                # with identical size are rare and caught on next size change
-                # or reindex).
-                if size == stored.size and stored.checksum:
+            checksum = _sha256_of(path)
+            if checksum != stored.checksum or size != stored.size:
+                if (drive.is_shared and stored.extension == "pdocnb"
+                        and not _remote_notebook_valid(path)):
+                    # Corrupt remote notebook: quarantine it — keep the
+                    # local content, log, and skip (never adopt garbage).
+                    current_app.logger.warning(
+                        "Shared sync: remote notebook %s failed "
+                        "validation — kept local content.", rel)
+                    stats["skipped"] += 1
                     if job:
                         job.processed += 1
                     continue
-                checksum = _sha256_of(path)
-                if checksum != stored.checksum or size != stored.size:
-                    if (drive.is_shared and stored.extension == "pdocnb"
-                            and not _remote_notebook_valid(path)):
-                        # Corrupt remote notebook: quarantine it — keep the
-                        # local content, log, and skip (never adopt garbage).
-                        current_app.logger.warning(
-                            "Shared sync: remote notebook %s failed "
-                            "validation — kept local content.", rel)
-                        stats["skipped"] += 1
-                        if job:
-                            job.processed += 1
-                        continue
-                    updates.append((stored, checksum, size))
-                    if stored.is_image:
-                        thumbnails.append((path, stored.stored_name))
-                    stats["updated"] += 1
-            if job:
-                job.processed += 1
+                updates.append((stored, checksum, size))
+                if stored.is_image:
+                    thumbnails.append((path, stored.stored_name))
+                stats["updated"] += 1
+        if job:
+            job.processed += 1
 
     for path, stored_name in thumbnails:
         file_service._make_thumbnail(path, stored_name)
