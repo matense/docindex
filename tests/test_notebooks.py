@@ -1257,6 +1257,129 @@ def test_delete_vs_edit_conflicts(app, auth_client, user, enabled):
     assert loaded["cells"][0]["content"] == "AI rewrite"
 
 
+def test_repeated_conflicts_eventually_converge(app, auth_client, user,
+                                                 enabled):
+    """The server never locks a retrying editor out: after two consecutive
+    409s (a writer landing between 409 and retry), a rebase against the
+    latest base still converges. Client-side this pairs with the retry
+    counter reset (see the JS test): every fresh attempt gets fair merges."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race repeated",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI one"}, None)["ok"] is True
+    stale_doc["cells"][0]["content"] = "user rewrite"
+
+    def rebase_keep_user(server_doc):
+        rebased = copy.deepcopy(server_doc)
+        for cell in rebased["cells"]:
+            if cell["id"] == cell_id:
+                cell["content"] = "user rewrite"
+        return rebased
+
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    c1_doc, c1_checksum = (resp.get_json()["doc"],
+                           resp.get_json()["checksum"])
+    # A second writer lands before the user retries.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI two"}, None)["ok"] is True
+    retry1 = _post_save(auth_client, fid, rebase_keep_user(c1_doc),
+                        c1_checksum, c1_doc)
+    assert retry1.status_code == 409  # stale again — but never locked out
+    c2_doc, c2_checksum = (retry1.get_json()["doc"],
+                           retry1.get_json()["checksum"])
+    retry2 = _post_save(auth_client, fid, rebase_keep_user(c2_doc),
+                        c2_checksum, c2_doc)
+    assert retry2.status_code == 200
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+        assert loaded["cells"][0]["content"] == "user rewrite"
+        # AI one (1) + AI two (1, new run) + two conflict guards (2):
+        # every pre-retry state stays restorable.
+        assert len(db.session.get(StoredFile, fid).versions) == 4
+
+
+def test_dirty_unload_flush_merges_without_wipe(app, auth_client, user,
+                                                enabled):
+    """Important 2 (server half): a dirty editor never polls, so its unload
+    flush can carry a base the server has already moved past. The
+    flush-shaped save must still merge — never blind-write the AI cell."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race unload merge",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    stale_doc["cells"][0]["content"] = "unsent user edit"
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    # Same shape as the keepalive flush: doc + base, no response read.
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    assert resp.get_json()["merged"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    contents = [c.get("content") for c in loaded["cells"]]
+    assert "unsent user edit" in contents and "AI wrote this" in contents
+
+
+def test_dirty_unload_flush_conflict_never_wipes(app, auth_client, user,
+                                                 enabled):
+    """Important 2 (server half): when the unseen concurrent edit truly
+    overlaps, the unload flush 409s (guard-snapshotted) instead of wiping —
+    the only unknown left is delivery itself, which the client flags."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race unload conflict",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)["ok"] is True
+        before = len(db.session.get(StoredFile, fid).versions)
+    stale_doc["cells"][0]["content"] = "unsent user edit"
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert nb_doc.load(stored)["cells"][0]["content"] == "AI rewrite"
+        assert len(stored.versions) == before + 1  # guard snapshot
+
+
+def test_notebook_conflict_counter_and_unload_flag():
+    # JS-level round-2 findings: fresh user intent must re-arm the bounded
+    # 409 retry (counter reset in scheduleSave), and every dirty keepalive
+    # flush must version-flag the next load (no silent unknown outcome).
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    sched_body = _js_fn_body(src, "scheduleSave")
+    assert "conflictRetries = 0" in sched_body  # Important 1
+    flush_body = _js_fn_body(src, "flushSync")
+    # Important 2: no known-stale-only gate — every dirty flush flags, and
+    # the flag carries the attempted checksum for a versioned next-load
+    # clear (no wolf-cries when the server provably matches our base).
+    assert "if (saveBase !== lastChecksum)" not in flush_body
+    assert "flagPendingConflict()" in flush_body
+    assert "pending.checksum" in src
+    assert "checkPendingConflict" in src
+
+
 def test_ai_edit_reaches_open_editor_without_wipe():
     # JS-level: remote changes arrive as a consumed UI event and only the
     # affected .nb-cell nodes are patched — the active editor is never

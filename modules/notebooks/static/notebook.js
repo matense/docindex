@@ -728,22 +728,40 @@
         // next successful save says so instead of going silently.
         let keptLocalNote = false;
         // Unload-time saves are fire-and-forget (keepalive responses are
-        // unreadable). A known-stale flush — or an exhausted 409 — flags
-        // the next load to verify, instead of failing silently.
+        // unreadable), and a dirty editor never polls so it cannot know it
+        // is stale. Every dirty flush — and every exhausted 409 — flags
+        // the next load to verify, versioned with the attempted checksum
+        // so a provably-clean load clears it silently.
         const pendingConflictKey = "nb_pending_conflict_" + opts.fileId;
         function flagPendingConflict() {
+            // Versioned with the attempted base: a next load whose server
+            // state still matches it can clear the flag without crying wolf.
             try {
-                localStorage.setItem(pendingConflictKey,
-                    JSON.stringify({ at: Date.now() }));
+                localStorage.setItem(pendingConflictKey, JSON.stringify({
+                    at: Date.now(), checksum: saveBase || "",
+                }));
             } catch (err) { /* private mode etc. — best effort */ }
         }
         function clearPendingConflict() {
             try { localStorage.removeItem(pendingConflictKey); }
             catch (err) { /* best effort */ }
         }
-        function hasPendingConflict() {
-            try { return !!localStorage.getItem(pendingConflictKey); }
-            catch (err) { return false; }
+        function checkPendingConflict() {
+            let pending = null;
+            try {
+                pending = JSON.parse(
+                    localStorage.getItem(pendingConflictKey) || "null");
+            } catch (err) { pending = null; }
+            if (!pending) return;
+            if (pending.checksum
+                    && pending.checksum === (opts.checksum || "")) {
+                // The server provably still matches what the flagged flush
+                // (or exhausted 409) was based on — nothing could be pending.
+                clearPendingConflict();
+                return;
+            }
+            setStatus("error", "previous session may have closed with unsynced"
+                + " changes — verify against History, then keep editing");
         }
 
         // ------------------------------------------------------------------
@@ -769,6 +787,7 @@
         function scheduleSave() {
             dirty = true;
             saveHold = false;  // fresh user intent always retries
+            conflictRetries = 0;  // ...and re-arms the bounded 409 retry
             setStatus("dirty");
             clearTimeout(timer);
             timer = setTimeout(() => save(false), 800);
@@ -857,9 +876,10 @@
             try {
                 // keepalive is fire-and-forget: the response (including a
                 // 409) can never be read. Non-conflicting unloads still
-                // merge server-side via the base; a known-stale flush flags
-                // the next load to verify. Best effort by browser design.
-                if (saveBase !== lastChecksum) flagPendingConflict();
+                // merge server-side via the base; every dirty flush flags
+                // the next load to verify (versioned — a provably-clean
+                // load clears it). Best effort by browser design.
+                flagPendingConflict();
                 fetch(opts.saveUrl, {
                     method: "POST", keepalive: true,
                     headers: { "Content-Type": "application/json" },
@@ -978,10 +998,7 @@
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
-        if (hasPendingConflict()) {
-            setStatus("error", "previous session closed with unsynced changes"
-                + " — verify against History, then keep editing");
-        }
+        checkPendingConflict();
 
         // Editor UI state (_editing) is not content — it must not count
         // as a remote change (or a conflict) when reconciling.
