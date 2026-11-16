@@ -3704,3 +3704,31 @@ def test_example_use_without_module_shows_error_not_500(auth_client, app, user,
     # template context).
     r = auth_client.post("/m/automation/examples/summarize-to-notebook/use")
     assert r.status_code in (200, 302, 400) and b"notebooks" in r.data.lower()
+
+
+# ---------------------------------------------------------------------------
+# B1: list page + file picker fixes (static pins)
+# ---------------------------------------------------------------------------
+
+def read(rel):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, rel), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_list_counts_direct_children_only():
+    html = read("modules/automation/templates/automation/list.html")
+    assert ":scope > summary .auto-count" in html
+    assert ":scope > div > [data-wf-id]" in html
+
+
+def test_single_background_menu_with_folder_selector():
+    html = read("modules/automation/templates/automation/list.html")
+    assert html.count("function openBackgroundMenu") == 1
+    assert "details.auto-folder" in html
+    assert "details.automation-tree" not in html
+
+
+def test_run_form_up_navigates_parent():
+    src = read("modules/automation/static/run_form.js")
+    assert "crumbs[crumbs.length - 2]" in src
