@@ -12,7 +12,7 @@ import pytest
 
 from app.extensions import db
 from app.models import Drive, FileIndex, ModuleState, StoredFile, User
-from app.services import indexing_service, search_service
+from app.services import file_service, indexing_service, search_service
 
 # Load the module package directly (it lives outside the app package).
 _NB_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -1419,3 +1419,80 @@ def test_ai_edit_reaches_open_editor_without_wipe():
     # focused cell: base-aware rule mirrored from the server merge.
     rebase_body = _js_fn_body(src, "rebaseLocalToServer")
     assert "baseDoc" in rebase_body
+
+
+# ---------------------------------------------------------------------------
+# D2: oversized notebooks + pasted-image uploads (P0 dataloss)
+# ---------------------------------------------------------------------------
+
+def _big_cells(n, size):
+    """Real-world-shaped bulk: many markdown cells, each ~`size` chars."""
+    return [nb_doc.new_cell("markdown", f"cell {i} " + "x" * size)
+            for i in range(n)]
+
+
+def test_large_notebook_loads_whole(app, user):
+    """A .pdocnb bigger than MAX_TEXT_CHARS must load whole — never a
+    mid-JSON slice that parses as corrupt."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Big", cells=_big_cells(700, 1000))
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert (os.path.getsize(file_service.file_path(stored))
+                > indexing_service.MAX_TEXT_CHARS)
+        doc = nb_doc.load(stored)
+        assert len(doc["cells"]) == 700
+        assert doc["cells"][0]["content"].startswith("cell 0 ")
+        assert doc["cells"][699]["content"].startswith("cell 699 ")
+
+
+def test_large_notebook_doc_endpoint_serves_whole(app, auth_client, user,
+                                                  enabled):
+    """The editor's /doc fetch of an oversized notebook is 200 with every
+    cell — not a 400 'Corrupt notebook file'."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Big route",
+                  cells=_big_cells(700, 1000))
+    resp = auth_client.get(f"/m/notebooks/{fid}/doc")
+    assert resp.status_code == 200
+    assert len(resp.get_json()["doc"]["cells"]) == 700
+
+
+def test_large_notebook_with_synced_history_loads_whole(app, user):
+    """Full-history notebooks embed prior versions in synced_history — the
+    whole file (cells + history tail) must load, history intact."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "BigHist",
+                  cells=_big_cells(400, 1000))
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = nb_doc.load(stored)
+        doc["full_history"] = True
+        nb_doc.save_document(stored, doc, force_checkpoint=True)
+        assert (os.path.getsize(file_service.file_path(stored))
+                > indexing_service.MAX_TEXT_CHARS)
+        loaded = nb_doc.load(stored)
+        assert len(loaded["cells"]) == 400
+        history = loaded.get("synced_history")
+        assert isinstance(history, list) and history
+        assert history[-1]["doc"]["cells"][0]["content"].startswith(
+            "cell 0 ")
+
+
+def test_pasted_and_dropped_images_upload_instead_of_base64():
+    """Paste/drop of an image into a rich-text cell must route through the
+    assets upload (opts.assetsUrl) — never baked into the cell as a
+    data: URL (one screenshot would bloat the .pdocnb past the load cap)."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    # Clipboard screenshots arrive as file items; file drops arrive via
+    # dataTransfer — both intercepted on the Quill root and uploaded.
+    assert 'quill.root.addEventListener("paste"' in src
+    assert 'quill.root.addEventListener("drop"' in src
+    assert "clipboardData" in src
+    # HTML-fragment pastes (copy from a page) carry <img src="data:...">
+    # with no file item — swept and uploaded after insert.
+    assert 'src^="data:"' in src
+    # All three image paths (toolbar, paste, drop) share the assets upload.
+    assert "opts.assetsUrl" in src

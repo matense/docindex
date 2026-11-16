@@ -189,8 +189,19 @@ def parse(text):
 
 
 def load(stored):
-    return parse(file_service.read_text_content(
-        stored, max_chars=indexing_service.MAX_TEXT_CHARS))
+    """Load the full notebook document — never a truncated slice.
+
+    Notebooks are JSON: any mid-document character cap parses as corrupt
+    (P0 dataloss for large notebooks), so the whole file is read. The
+    embedded synced_history tail stays in the returned doc — stripping it
+    here would make the next editor save drop that history, and paging it
+    would need a new API; a full parse is correct at any size Python can
+    hold. (The MAX_TEXT_CHARS cap still applies where it belongs: the
+    search-index excerpt in indexing_service.)
+    """
+    path = file_service.file_path(stored)
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return parse(fh.read())
 
 
 def _sha256_file(path):

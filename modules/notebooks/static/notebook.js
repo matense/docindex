@@ -1902,6 +1902,27 @@
             loadQuill(() => {
                 if (!document.body.contains(holder)) return;  // page swapped away
                 let quill;
+                // Image bytes live as real files next to the notebook (same
+                // drive/folder, embedded by URL) — never baked into the cell
+                // as base64 data: URLs. One pasted screenshot would otherwise
+                // bloat the .pdocnb until the notebook no longer loads.
+                // Shared by the toolbar button, clipboard paste and drag-drop.
+                function uploadImageFile(file, onOk) {
+                    const fd = new FormData();
+                    const name = (file && file.name)
+                        || ("pasted-image-" + Date.now() + ".png");
+                    fd.append("file", file, name);
+                    apiFetch(opts.assetsUrl, { method: "POST", body: fd }, { silent: true })
+                        .then((d) => {
+                            if (d && d.ok) {
+                                onOk(d.url);
+                            } else {
+                                setStatus("error",
+                                    (d && d.error) || "image upload failed");
+                            }
+                        })
+                        .catch(() => setStatus("error", "image upload failed"));
+                }
                 const handlers = {
                     // Images are uploaded as real files next to the notebook
                     // (same drive/folder) and embedded by URL.
@@ -1912,20 +1933,11 @@
                         input.onchange = () => {
                             const file = input.files && input.files[0];
                             if (!file) return;
-                            const fd = new FormData();
-                            fd.append("file", file);
-                            apiFetch(opts.assetsUrl, { method: "POST", body: fd }, { silent: true })
-                                .then((d) => {
-                                    if (d && d.ok) {
-                                        const range = quill.getSelection(true);
-                                        quill.insertEmbed(range.index, "image",
-                                            d.url, "user");
-                                    } else {
-                                        setStatus("error",
-                                            (d && d.error) || "image upload failed");
-                                    }
-                                })
-                                .catch(() => setStatus("error", "image upload failed"));
+                            uploadImageFile(file, (url) => {
+                                const range = quill.getSelection(true);
+                                quill.insertEmbed(range.index, "image",
+                                    url, "user");
+                            });
                         };
                         input.click();
                     },
@@ -1959,6 +1971,67 @@
                     cell.content = quill.root.innerHTML;
                     scheduleSave();
                 });
+                // Clipboard screenshots arrive as file items and file drags
+                // as dataTransfer files — Quill would bake both in as base64
+                // data: URLs, so intercept and upload instead.
+                quill.root.addEventListener("paste", (e) => {
+                    const items = (e.clipboardData
+                        && e.clipboardData.items) || [];
+                    const images = [];
+                    for (const item of items) {
+                        if (item.kind === "file"
+                                && (item.type || "").indexOf("image/") === 0) {
+                            const f = item.getAsFile();
+                            if (f) images.push(f);
+                        }
+                    }
+                    if (!images.length) {
+                        // HTML-fragment paste (copy from a page) carries
+                        // <img src="data:..."> with no file item — sweep
+                        // after Quill inserts the fragment.
+                        setTimeout(sweepDataUrlImages, 0);
+                        return;
+                    }
+                    e.preventDefault();
+                    images.forEach((f) => uploadImageFile(f, (url) => {
+                        const range = quill.getSelection(true);
+                        quill.insertEmbed(range.index, "image", url, "user");
+                    }));
+                });
+                quill.root.addEventListener("drop", (e) => {
+                    const dt = e.dataTransfer;
+                    const images = [];
+                    if (dt && dt.files) {
+                        for (const f of dt.files) {
+                            if ((f.type || "").indexOf("image/") === 0) {
+                                images.push(f);
+                            }
+                        }
+                    }
+                    if (!images.length) return;
+                    e.preventDefault();
+                    if (e.stopPropagation) e.stopPropagation();
+                    images.forEach((f) => uploadImageFile(f, (url) => {
+                        const range = quill.getSelection(true);
+                        quill.insertEmbed(range.index, "image", url, "user");
+                    }));
+                });
+                // Replace in-page data: images with uploaded file URLs.
+                function sweepDataUrlImages() {
+                    quill.root.querySelectorAll('img[src^="data:"]')
+                        .forEach((img) => {
+                            const src = img.getAttribute("src");
+                            img.removeAttribute("src");
+                            fetch(src).then((r) => r.blob()).then(
+                                (blob) => uploadImageFile(blob, (url) => {
+                                    img.setAttribute("src", url);
+                                    cell.content = quill.root.innerHTML;
+                                    scheduleSave();
+                                }),
+                                () => setStatus("error",
+                                    "image upload failed"));
+                        });
+                }
                 // NOTE: don't exit edit mode on blur — Quill's pickers blur
                 // the editor root while opening, which would destroy the
                 // editor mid-click. Blur just saves; the pencil header
