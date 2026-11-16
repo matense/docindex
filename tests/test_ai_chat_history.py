@@ -750,6 +750,21 @@ def test_conversation_token_estimate_counts_active_only(auth_client, app, user):
     assert data["max_prompt_tokens"] == 60000
 
 
+def test_token_meter_affordance_gated_on_host_control():
+    # The meter must only advertise click-to-summarize (role/cursor/title)
+    # when the host actually has a summarize control; on hosts without one
+    # (full page) it renders as a plain indicator.
+    src = _read_template("app/static/js/ai_core.js")
+    body = src.split("function updateTokenMeter")[1].split("\n        function ")[0]
+    assert "querySelector('.acw-summarize, #aip-summarize')" in body
+    assert "if (host)" in body
+    assert "removeAttribute('role')" in body  # plain indicator when no host
+    assert "meter.style.cursor = ''" in body
+    # The click-affordance title appears exactly once, inside the
+    # host-present branch — never unconditionally.
+    assert body.count("Click to Summarize") == 1
+
+
 def test_composer_structure_full_page():
     html = _read_template("app/templates/search/ai.html")
     assert "ai-ctx-strip" in html and "ai-token-meter" in html

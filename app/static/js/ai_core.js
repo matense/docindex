@@ -1734,7 +1734,9 @@
         // (token_estimate / max_prompt_tokens on the conversation payload).
         // Label reads "14.2k tok"/"850 tok", the fill width is clamped to
         // 0-100% and turns amber past 75%. Clicking delegates to the host's
-        // Summarize control, i.e. the existing summarizeConversation flow.
+        // Summarize control, i.e. the existing summarizeConversation flow —
+        // but only on hosts that have one; elsewhere (full page) the meter
+        // is a plain, non-clickable indicator with no click affordance.
         function updateTokenMeter(estimate, maxTokens) {
             const meter = rootEl ? rootEl.querySelector('.ai-token-meter') : null;
             if (!meter) return;
@@ -1767,13 +1769,25 @@
                 meter.appendChild(label);
                 meter.appendChild(document.createTextNode(' '));
                 meter.appendChild(icon);
+            }
+            // Gate the click affordance per call: only hosts with a Summarize
+            // control get role/cursor/click-title; the rest keep a plain label.
+            const host = rootEl.querySelector('.acw-summarize, #aip-summarize');
+            if (host) {
+                if (!meter.dataset.summarizeBound) {
+                    meter.dataset.summarizeBound = '1';
+                    meter.addEventListener('click', () => {
+                        const h = rootEl.querySelector('.acw-summarize, #aip-summarize');
+                        if (h) h.click();
+                    });
+                }
                 meter.title = 'Estimated prompt memory used · Click to Summarize & reset';
                 meter.setAttribute('role', 'button');
                 meter.style.cursor = 'pointer';
-                meter.addEventListener('click', () => {
-                    const host = rootEl.querySelector('.acw-summarize, #aip-summarize');
-                    if (host) host.click();
-                });
+            } else {
+                meter.title = 'Estimated prompt memory used';
+                meter.removeAttribute('role');
+                meter.style.cursor = '';
             }
             fill.style.width = pct + '%';
             fill.style.background = pct > 75 ? '#f59e0b' : 'currentColor';
