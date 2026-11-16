@@ -928,3 +928,33 @@ def test_pyrun_db_seeds_lazily(monkeypatch):
     assert len(calls) == 1
     assert evaluate("rows('f')", files=files)["ok"] is True
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Task S8 fix round 1: nested shared-ref multiplicity + collected output cap
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_nested_shared_ref_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\ninner = [s]\nL = [inner] * 1000\nlen(L)")
+    assert out["ok"] is False  # nested sharing must trip like the flat form
+
+
+def test_pyrun_written_out_shared_refs_charged():
+    code = "s = 'a' * 1000000\nL = [" + ", ".join(["s"] * 60) + "]\nlen(L)"
+    out = evaluate(code)
+    assert out["ok"] is False  # per-slot cost applies to literals too
+
+
+def test_pyrun_oversized_collected_output_rejected(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x' * 10000000",
+                                   "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    assert "output budget" in out["error"].lower()
+    assert "must match" in out.get("retry_hint", "")  # outputs-hint mapping
+
+
+def test_pyrun_small_shared_structure_still_passes():
+    out = evaluate("s = 'hello'\ninner = [s, s]\nL = [inner, inner]\nlen(L)")
+    assert out == {"ok": True, "value": 2}

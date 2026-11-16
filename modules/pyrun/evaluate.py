@@ -769,28 +769,38 @@ class _Interpreter:
             self._charge_referenced(value)
 
     def _charge_referenced(self, container):
-        """Charge bytes a container's members reference, per slot.
+        """Charge bytes a container's members reference, per reference path.
 
-        ``[s] * 1000`` holds 1000 references to one string: serializing
-        or copying the list expands every slot, so every slot counts —
-        counting each reference is what trips the amplification instead
-        of OOMing later in ``json.dumps``. The walk is dedupe-aware:
-        container identities are visited once, so shared substructures
-        are not re-walked and reference cycles terminate.
+        ``[s] * 1000`` and ``[inner] * 1000`` hold 1000 references each:
+        serializing or copying the list expands every slot, so the cost
+        of a shared subtree counts once per path (multiplicity) — that is
+        what trips the amplification instead of OOMing later in
+        ``json.dumps``. Cycles terminate via the current-path ancestry
+        stack (a back edge charges a small constant instead of
+        recursing), not via a global visited set: a global dedupe would
+        visit shared subtrees once and undercharge every path but one.
         """
-        seen = {id(container)}
-        stack = [container]
+        if isinstance(container, dict):
+            members = list(container.keys()) + list(container.values())
+        else:
+            members = list(container)
+        stack = [(members, (id(container),))]
         while stack:
-            item = stack.pop()
-            if isinstance(item, dict):
-                members = list(item.keys()) + list(item.values())
-            else:
-                members = list(item)
-            for member in members:
+            pending, ancestry = stack.pop()
+            for member in pending:
                 if isinstance(member, (list, tuple, set, dict)):
-                    if id(member) not in seen:
-                        seen.add(id(member))
-                        stack.append(member)
+                    if id(member) in ancestry:
+                        self._charge(16)
+                        continue
+                    if isinstance(member, dict):
+                        self._charge(64 + 72 * len(member))
+                        stack.append((
+                            list(member.keys()) + list(member.values()),
+                            ancestry + (id(member),)))
+                    else:
+                        self._charge(56 + 8 * len(member))
+                        stack.append((list(member),
+                                      ancestry + (id(member),)))
                 else:
                     self._charge_value(member)
 
@@ -1219,6 +1229,7 @@ class _Interpreter:
             else:
                 flat.append(item)
         self._charge(56 + 8 * len(flat))
+        self._charge_referenced(flat)
         return flat
 
     def _ev_Tuple(self, node):
@@ -1230,6 +1241,7 @@ class _Interpreter:
                 items.append(self._ev(elt))
         result = tuple(items)
         self._charge(56 + 8 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_Set(self, node):
@@ -1241,6 +1253,7 @@ class _Interpreter:
                 items.append(self._ev(elt))
         result = self._guard(set, items)
         self._charge(200 + 32 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_Dict(self, node):
@@ -1255,6 +1268,7 @@ class _Interpreter:
             else:
                 result[self._ev(key_node)] = self._ev(val_node)
         self._charge(64 + 72 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_ListComp(self, node):
@@ -2688,6 +2702,23 @@ def evaluate(code, variables=None, files=None, limits=None, collect=None):
                 except _UserError as exc:
                     return {"ok": False,
                             "error": f"{type(exc.exc).__name__}: {exc.exc}",
+                            "collect_failed": True}
+            if want:
+                # The old second-evaluate probe enforced the output budget
+                # on collected artifacts; check here so oversized outputs
+                # fail with the outputs-hint mapping instead of sailing
+                # through with a multi-MB artifact.
+                try:
+                    collected_text = json.dumps(collected, allow_nan=False)
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "error": "result is not JSON-serializable",
+                            "collect_failed": True}
+                if len(collected_text) > merged["max_output_chars"]:
+                    return {"ok": False,
+                            "error": f"result exceeds output budget "
+                                     f"({len(collected_text)} chars, cap "
+                                     f"{merged['max_output_chars']})",
                             "collect_failed": True}
             runner._check_wall()
         except (_Denied, _Budget) as exc:
