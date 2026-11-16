@@ -3243,3 +3243,141 @@ def test_script_size_cap():
     card["script"] = "x" * (dash_doc.SCRIPT_MAX_CHARS + 1)
     with pytest.raises(ValueError):
         dash_doc._validate_card(card)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A2: engine (_run_script_card + run_card)
+# ---------------------------------------------------------------------------
+
+def _script_card(app, fid, cid, script="res = 1\nres"):
+    """A script-mode card dict (in-memory; run_card takes the card directly,
+    so no save round-trip is needed — resolve against the live doc)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        return card
+
+
+def test_script_card_fails_closed_without_pyrun(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: pyrun disabled → run_card raises ValueError naming pyrun
+    (the route settle path turns it into the card error state); the prompt
+    path must not run instead (no AI steps for script cards)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled",
+                        lambda name: name != "pyrun")
+
+    def boom_agent(user, prompt, drive=None, max_steps=None):
+        raise AssertionError("prompt path must not run for script cards")
+
+    def boom_complete(user, messages):
+        raise AssertionError("prompt path must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", boom_complete)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    card = _script_card(app, fid, cid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        with pytest.raises(ValueError, match="pyrun"):
+            dash_engine.run_card(stored, card, user)
+
+
+def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
+    """Task A2: a prose script value coerces through the card's contract —
+    never an error state; (result, [], []) contract holds."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["files"] = files
+        return {"ok": True, "value": "some prose"}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    card = _script_card(app, fid, cid,
+                          script="res = 'some prose'\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, artifacts, trace = dash_engine.run_card(stored, card, user)
+    assert result.get("text") == "some prose"  # never an error state
+    assert artifacts == [] and trace == []
+    assert seen["files"] == {}  # no attachments → empty files map
+
+
+def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
+    """Task A2: the pyrun files map mirrors notebooks run-cell — positional
+    in card attachment order, files_map["f"] + files_map["f{pos}"], each a
+    [read_text_content] chunk list."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["call"] = (code, files)
+        return {"ok": True, "value": {"value": "3", "label": "rows"}}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"v\n1\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"v\n2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(app, fid, cid,
+                          script="res = len(rows('f'))\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    code, files = seen["call"]
+    assert code == "res = len(rows('f'))\nres"
+    assert set(files) == {"f", "f0", "f1"}
+    assert files["f"] == files["f0"] != files["f1"]
+    assert all(isinstance(chunks, list) and len(chunks) == 1
+               for chunks in files.values())
+    assert "v" in files["f"][0] and "v" in files["f1"][0]
+    assert result == {"kpi": {"value": "3", "label": "rows"}}
+
+
+def test_script_card_rejects_foreign_attachment(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: an attachment entry pointing at another user's file →
+    MissingInputError (ownership is re-checked at run time, never silent)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        asset = db.session.get(StoredFile, att["fileId"])
+        asset.user_id = bob.id  # entry now points at another user's file
+        db.session.commit()
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = "res = 1\nres"
+        with pytest.raises(dash_engine.MissingInputError):
+            dash_engine.run_card(stored, card, user)
