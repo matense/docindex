@@ -1531,48 +1531,66 @@ def test_image_upload_wiring_behavior():
 
 
 # ---------------------------------------------------------------------------
-# N0 reconciliation pins: the P0-DONE items above (truncation load, checksum
-# merge, image-upload paste/drop) are already pinned by passing tests, so
-# they are NOT re-tested here. The three items below are TODO (owned by N9):
-# marked xfail so the suite stays green; run with --runxfail to see the RED
-# proof. N9: transcribe these into real tests and drop the markers.
+# N9 residual pins (transcribed from N0's xfail TODOs — markers dropped,
+# assertions kept verbatim and extended with the event legs they need).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    reason="N0 verdict TODO -> N9: global window.marked.use pollutes chat; "
-           "no isolated instance",
-    strict=False)
 def test_marked_isolation_from_chat():
     path = os.path.join(_NB_DIR, "static", "notebook.js")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
     assert "new window.marked.Marked" in src or "new Marked" in src
     assert "window.marked.use(" not in src
+    # The global must not be used for parsing either — every render goes
+    # through the isolated instance, so the chat's global stays pristine.
+    assert "window.marked.parse" not in src
 
 
-@pytest.mark.xfail(
-    reason="N0 verdict TODO -> N9: no .ai-live-flash reconcile animation on "
-           "AI-changed cells",
-    strict=False)
 def test_live_flash_on_ai_edit_pin():
     path = os.path.join(_NB_DIR, "static", "notebook.js")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
     assert "ai-live-flash" in src
     assert "Reverter" in src
+    # Event leg (§2.1): AI tool saves only change server state; the editor
+    # learns of them through the docindex-ui-action notebook_changed event.
+    assert "docindex-ui-action" in src
+    assert "notebook_changed" in src
 
 
-@pytest.mark.xfail(
-    reason="N0 verdict TODO -> N9: focusout handlers close the cell even "
-           "when focus moves to the chat window",
-    strict=False)
+def test_live_flash_ui_emission_from_ai_tool(app, user, enabled):
+    """AI cell mutations emit the ui payload the editor's docindex-ui-action
+    listener consumes (type notebook_changed + file/cell ids)."""
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(user_obj, {"name": "AI flash"}, None)
+        fid = result["created"]["id"]
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI was here"}, None)
+        assert added["ok"] is True
+        ui = added.get("ui") or {}
+        assert ui.get("type") == "notebook_changed"
+        assert ui.get("file_id") == fid
+        assert ui.get("cell_id") == added["cell"]["id"]
+        updated = nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": added["cell"]["id"],
+                       "content": "AI rewrote this"}, None)
+        assert (updated.get("ui") or {}).get("type") == "notebook_changed"
+        deleted = nb_tools._tool_delete_cell(
+            user_obj, {"file_id": fid, "cell_id": added["cell"]["id"]},
+            None)
+        assert (deleted.get("ui") or {}).get("type") == "notebook_changed"
+
+
 def test_keep_open_on_chat_click_pin():
     path = os.path.join(_NB_DIR, "static", "notebook.js")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
     parts = src.split('addEventListener("focusout"')
     assert len(parts) > 1  # focusout handlers exist
-    assert any("relatedTarget" in chunk[:1500] for chunk in parts[1:])
+    assert all("relatedTarget" in chunk[:1500] for chunk in parts[1:])
 
 
 def test_title_rename_sync_both_ways(app, auth_client, user, enabled):

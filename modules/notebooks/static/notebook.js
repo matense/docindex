@@ -28,7 +28,19 @@
 
     // --- Rich markdown extensions (mirror server Python-Markdown set) -----
 
+    // Isolated marked instance for notebook renders (§1.4): the shared
+    // global marked singleton belongs to the AI chat — registering our
+    // extensions or parsing on it would pollute chat rendering. Every
+    // notebook parse below goes through this instance instead.
+    let _nbMarked = null;
     let _markedExtensionsRegistered = false;
+
+    function nbMarked() {
+        if (_nbMarked) return _nbMarked;
+        if (!window.marked || !window.marked.Marked) return null;
+        _nbMarked = new window.marked.Marked();
+        return _nbMarked;
+    }
 
     function escapeHtml(text) {
         return text.replace(/[&<>"']/g, (m) => ({
@@ -127,9 +139,11 @@
 
     function renderFootnotesSection() {
         if (!NB_FOOTNOTE_ORDER.length) return "";
+        const inst = nbMarked();
+        if (!inst) return "";
         const items = NB_FOOTNOTE_ORDER.map((label) => {
             const text = NB_FOOTNOTE_DEFS.get(label.toLowerCase()) || "";
-            const body = window.marked.parseInline(text);
+            const body = inst.parseInline(text);
             return `<li id="fn:${escapeHtml(label)}">${body} `
                 + `<a href="#fnref:${escapeHtml(label)}" `
                 + `class="footnote-backref">↩</a></li>`;
@@ -138,7 +152,8 @@
     }
 
     function ensureMarkedExtensions() {
-        if (_markedExtensionsRegistered || !window.marked) return;
+        const inst = nbMarked();
+        if (!inst || _markedExtensionsRegistered) return;
 
         const admonitionExtension = {
             name: "admonition",
@@ -159,7 +174,7 @@
                 };
             },
             renderer(token) {
-                const body = window.marked.parse(token.text, { breaks: true });
+                const body = inst.parse(token.text, { breaks: true });
                 return `<div class="admonition ${token.adType}">\n`
                     + `<p class="admonition-title">${escapeHtml(token.title)}</p>\n`
                     + `${body}\n</div>`;
@@ -197,8 +212,8 @@
             },
             renderer(token) {
                 const dds = token.defs.map((d) =>
-                    `<dd>${window.marked.parseInline(d)}</dd>`).join("\n");
-                return `<dl>\n<dt>${window.marked.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
+                    `<dd>${inst.parseInline(d)}</dd>`).join("\n");
+                return `<dl>\n<dt>${inst.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
             }
         };
 
@@ -250,7 +265,7 @@
             }
         };
 
-        window.marked.use({
+        inst.use({
             hooks: {
                 preprocess(src) {
                     _markdownNestDepth++;
@@ -371,7 +386,8 @@
     }
 
     function renderMarkdown(text) {
-        if (!window.marked) return null;
+        const inst = nbMarked();
+        if (!inst) return null;
         ensureMarkedExtensions();
         _markdownNestDepth = 0;
         resetFootnotes();
@@ -380,7 +396,13 @@
         const linked = protectedMath.marked.replace(
             /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view">$1</a>');
-        const parsed = sanitizeHtml(window.marked.parse(linked, { breaks: true }));
+        let parsed;
+        try {
+            parsed = sanitizeHtml(inst.parse(linked, { breaks: true }));
+        } finally {
+            // A throwing parse must not poison the nesting guard (§1.4).
+            _markdownNestDepth = 0;
+        }
         return restoreMath(parsed, protectedMath.map);
     }
 
@@ -692,6 +714,17 @@
     function cellSig(cell) {
         return JSON.stringify(cell, (k, v) =>
             (k === "_editing" ? undefined : v));
+    }
+
+    // §2.2 keep-open: a focusout landing outside #nb-cells (AI chat
+    // window, toolbar, index, file picker...) must not close the cell
+    // editor — the user is still working on this cell. Only focus moving
+    // to another cell closes it (alongside the Edit toggle / read mode).
+    function focusMovedOutsideCells(target) {
+        if (!target || !target.closest) return false;
+        const cells = document.getElementById("nb-cells");
+        if (cells && cells.contains(target)) return false;
+        return true;
     }
 
     // Plain-text preview of any cell type for the Ask-AI payload —
@@ -1175,6 +1208,7 @@
             window.removeEventListener("beforeunload", onBeforeUnload);
             document.removeEventListener("keydown", onKeydown);
             window.removeEventListener("notebook_changed", onNotebookChanged);
+            window.removeEventListener("docindex-ui-action", onDocIndexUiAction);
             window.removeEventListener("scroll", onTocScroll);
         }
         window.addEventListener("beforeunload", onBeforeUnload);
@@ -1596,17 +1630,30 @@
             };
             const nextCells = [];
             const seen = new Set();
+            // Cells adopted from the remote (AI) side — flashed after the
+            // DOM patch, with a per-cell Reverter (§2.1). Cells the user is
+            // editing keep local content and are never flashed.
+            const aiChanged = [];
+            const snapCell = (c) => JSON.parse(JSON.stringify(c));
             remoteDoc.cells.forEach((rc) => {
                 const id = rc.id;
                 seen.add(id);
                 const b = baseById.get(id);
                 const l = localById.get(id);
-                if (!l) { nextCells.push(rc); return; }
+                if (!l) {
+                    nextCells.push(rc);
+                    aiChanged.push({ id: id, before: null });
+                    return;
+                }
                 if (cellSig(l) === cellSig(rc)) { nextCells.push(rc); return; }
                 // A focused/editing cell keeps its local content so the
                 // model always matches what the (preserved) editor shows.
                 if (active.has(id)) { nextCells.push(keepAside(l)); return; }
-                if (!keepAllLocal) { nextCells.push(rc); return; }
+                if (!keepAllLocal) {
+                    aiChanged.push({ id: id, before: snapCell(l) });
+                    nextCells.push(rc);
+                    return;
+                }
                 if (!b) { nextCells.push(keepAside(l)); return; }
                 if (cellSig(b) === cellSig(rc)) {
                     diverged = true;  // only local changed → keep it
@@ -1614,7 +1661,9 @@
                     return;
                 }
                 if (cellSig(b) === cellSig(l)) {
-                    nextCells.push(rc);  // only server changed → adopt
+                    // only server changed → adopt + flash.
+                    aiChanged.push({ id: id, before: snapCell(l) });
+                    nextCells.push(rc);
                     return;
                 }
                 nextCells.push(keepAside(l));  // both changed → local wins
@@ -1659,6 +1708,7 @@
             }));
             patchCellNodes();
             renderToc();
+            flashAiChangedCells(aiChanged);
             return { diverged: diverged, keptLocal: keptLocal };
         }
 
@@ -1704,6 +1754,82 @@
             cellsEl.appendChild(frag);
         }
 
+        // --- AI live flash + per-cell revert (§2.1) ---------------------
+        // Cells adopted from a remote (AI) edit flash briefly with a
+        // "Reverter edição da IA" button restoring this cell's pre-AI
+        // content only (a cell the AI added is removed instead). The
+        // animation style is injected here so the effect ships with this
+        // module — no template change needed. Snapshots live in a side map,
+        // never on the cell objects, so the save payload stays clean.
+        const AI_FLASH_MS = 10000;
+        let aiFlashStyleInjected = false;
+        function ensureAiFlashStyle() {
+            if (aiFlashStyleInjected) return;
+            aiFlashStyleInjected = true;
+            const st = document.createElement("style");
+            st.textContent = ".ai-live-flash{animation:nb-ai-flash 1.1s"
+                + " ease-in-out 3;outline:2px solid oklch(var(--p));"
+                + "outline-offset:2px;border-radius:.75rem}"
+                + "@keyframes nb-ai-flash{0%,100%{box-shadow:0 0 0 0"
+                + " oklch(var(--p)/0)}50%{box-shadow:0 0 0 4px"
+                + " oklch(var(--p)/.45)}}";
+            document.head.appendChild(st);
+        }
+        // cellId -> pre-AI cell snapshot (null = the AI added this cell).
+        const aiRevertSnapshots = new Map();
+        function flashAiChangedCells(changed) {
+            if (!changed || !changed.length) return;
+            ensureAiFlashStyle();
+            changed.forEach((item) => {
+                aiRevertSnapshots.set(item.id, item.before || null);
+                const node = document.getElementById("nb-cell-" + item.id);
+                if (!node || !node.isConnected) return;
+                node.classList.add("ai-live-flash");
+                const head = node.querySelector(".nb-cell-head");
+                if (head && !head.querySelector(".nb-ai-revert")) {
+                    const btn = el("button",
+                        "btn btn-ghost btn-xs gap-1 nb-ai-revert");
+                    btn.type = "button";
+                    btn.innerHTML = '<i class="fas fa-undo"></i>'
+                        + " Reverter edição da IA";
+                    btn.title = "Reverter edição da IA nesta célula";
+                    btn.addEventListener("click",
+                        () => revertAiCell(item.id));
+                    head.appendChild(btn);
+                }
+                setTimeout(() => { clearAiFlash(item.id); }, AI_FLASH_MS);
+            });
+        }
+        function clearAiFlash(id) {
+            aiRevertSnapshots.delete(id);
+            const node = document.getElementById("nb-cell-" + id);
+            if (!node) return;
+            node.classList.remove("ai-live-flash");
+            const b = node.querySelector(".nb-ai-revert");
+            if (b) b.remove();
+        }
+        function revertAiCell(id) {
+            if (!aiRevertSnapshots.has(id)) return;
+            const before = aiRevertSnapshots.get(id);
+            pushUndo("revert AI edit");
+            const i = doc.cells.findIndex((c) => c.id === id);
+            // The user may have started editing the flashed cell after it
+            // arrived: a full render then, so no editor shows stale content.
+            const wasEditing = i >= 0 && !!doc.cells[i]._editing;
+            if (before === null) {
+                if (i >= 0) doc.cells.splice(i, 1);
+            } else if (i >= 0) {
+                doc.cells[i] = before;
+            } else {
+                doc.cells.push(before);
+            }
+            clearAiFlash(id);
+            if (wasEditing) render();
+            else patchCellNodes();
+            renderToc();
+            scheduleSave();
+        }
+
         // Conflict resolution after a 409: adopt the server document like a
         // poll would, but keep EVERY local change (base-aware 3-way, not
         // just the focused cells) and always advance the save base — the
@@ -1742,8 +1868,10 @@
 
         // External-change watch: when the AI (or another tab) edits this
         // notebook, patch only the affected cells — unsaved local edits win.
-        async function pollRemote() {
-            if (!alive()) { clearInterval(pollTimer); return; }
+        // Shared fetch-and-adopt leg for the poll timer and the
+        // docindex-ui-action push below (§2.1).
+        async function refreshFromServer() {
+            if (!alive()) return;
             const data = await apiFetch(opts.docUrl, null, { silent: true });
             if (!data || !data.ok || !data.checksum) return;
             try {
@@ -1752,7 +1880,22 @@
                 applyRemoteDoc(data.doc, data.checksum);
             } catch (err) { /* malformed payload — try again next tick */ }
         }
+        async function pollRemote() {
+            if (!alive()) { clearInterval(pollTimer); return; }
+            await refreshFromServer();
+        }
         const pollTimer = setInterval(pollRemote, 5000);
+        // Push leg (§2.1): AI tool saves emit notebook_changed (agent
+        // service ui_action → ai_core.js docindex-ui-action), so refresh
+        // at once instead of waiting for the next poll tick.
+        function onDocIndexUiAction(e) {
+            const d = e && e.detail;
+            if (!d || d.type !== "notebook_changed") return;
+            const fid = d.file_id !== undefined ? d.file_id : d.fileId;
+            if (fid !== opts.fileId) return;
+            refreshFromServer();
+        }
+        window.addEventListener("docindex-ui-action", onDocIndexUiAction);
         const addBtn = root.querySelector("#nb-add-btn");
         const addType = root.querySelector("#nb-add-type");
         if (addBtn && addType) {
@@ -2456,7 +2599,14 @@
 
             area.addEventListener("input", updatePreview);
 
-            wrap.addEventListener("focusout", () => {
+            wrap.addEventListener("focusout", (e) => {
+                // Keep-open on chat click (§2.2): focus leaving #nb-cells
+                // (chat, toolbar, index) keeps the editor + saves behind.
+                if (focusMovedOutsideCells(e.relatedTarget)) {
+                    cell._editing = true;
+                    scheduleSave();
+                    return;
+                }
                 setTimeout(() => {
                     if (!wrap.isConnected || wrap.contains(document.activeElement)) return;
                     cell._editing = false;
@@ -3198,7 +3348,14 @@
                 wireSlashMenu(area, wrap, cell);
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
-                wrap.addEventListener("focusout", () => {
+                // Keep-open on chat click (§2.2): focus leaving #nb-cells
+                // keeps the editor + saves in the background.
+                wrap.addEventListener("focusout", (e) => {
+                    if (focusMovedOutsideCells(e.relatedTarget)) {
+                        cell._editing = true;
+                        scheduleSave();
+                        return;
+                    }
                     setTimeout(() => {
                         const active = document.activeElement;
                         if (!wrap.isConnected || wrap.contains(active)) return;
@@ -3255,11 +3412,18 @@
                 // Exit edit mode only when focus leaves the cell controls
                 // entirely. Clicking the language select opens a native
                 // popup and the focusout comes with relatedTarget = null,
-                // so defer and check where focus actually landed.
+                // so defer and check where focus actually landed. Keep-open
+                // on chat click (§2.2): focus leaving #nb-cells keeps the
+                // editor + saves in the background.
                 const wrap = el("div", "flex flex-col");
                 wrap.appendChild(lang);
                 wrap.appendChild(area);
-                wrap.addEventListener("focusout", () => {
+                wrap.addEventListener("focusout", (e) => {
+                    if (focusMovedOutsideCells(e.relatedTarget)) {
+                        cell._editing = true;
+                        scheduleSave();
+                        return;
+                    }
                     setTimeout(() => {
                         if (!wrap.isConnected
                                 || wrap.contains(document.activeElement)) return;
