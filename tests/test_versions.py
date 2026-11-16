@@ -1,7 +1,10 @@
 """Tests for file version history and the AI merge review flow."""
 
+import contextlib
 import io
 import os
+
+import pytest
 
 from app.extensions import db
 from app.models import FileVersion, Folder, StoredFile, User
@@ -264,3 +267,67 @@ def test_merge_preview_returns_diff(auth_client, app):
     assert resp.status_code == 200
     diff = resp.get_json()["diff"]
     assert any(line.startswith("+beta content") for line in diff)
+
+
+# --- B6: locked atomic snapshots ---
+
+def test_snapshot_inside_lock_and_atomic_write(auth_client, app, monkeypatch):
+    """The version snapshot must run inside file_lock, and the overwrite
+    must be an atomic temp-file + os.replace (a failed swap keeps the old
+    content instead of leaving a torn file)."""
+    _upload(auth_client, "notes.txt", b"original content")
+    fid = _file_id(app)
+    with app.app_context():
+        real_lock = file_service.file_lock
+        real_snapshot = file_service.snapshot_version
+        state = {"held": False}
+        seen = {}
+
+        @contextlib.contextmanager
+        def spy_lock(file_id, *args, **kwargs):
+            with real_lock(file_id, *args, **kwargs):
+                state["held"] = True
+                try:
+                    yield True
+                finally:
+                    state["held"] = False
+
+        def spy_snapshot(stored_file, *args, **kwargs):
+            seen["held"] = state["held"]
+            return real_snapshot(stored_file, *args, **kwargs)
+
+        monkeypatch.setattr(file_service, "file_lock", spy_lock)
+        monkeypatch.setattr(file_service, "snapshot_version", spy_snapshot)
+        stored = db.session.get(StoredFile, fid)
+        file_service.update_file_content(stored, "edited content", source="edit")
+        assert seen.get("held") is True  # snapshot ran inside the lock
+        assert len(stored.versions) == 1
+
+        # Atomic swap: a failed rename must leave the previous content intact.
+        def boom_replace(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os, "replace", boom_replace)
+        stored = db.session.get(StoredFile, fid)
+        with pytest.raises(OSError):
+            file_service.update_file_content(stored, "lost content", source="edit")
+        assert file_service.read_text_content(stored) == "edited content"
+
+
+def test_restore_version_refreshes_shadow_once(auth_client, app, monkeypatch):
+    _upload(auth_client, "notes.txt", b"original content")
+    fid = _file_id(app)
+    auth_client.post(f"/file/{fid}/edit", data={"content": "edited content"})
+    with app.app_context():
+        real = file_service.refresh_shadow
+        calls = []
+
+        def spy(stored):
+            calls.append(stored.id)
+            return real(stored)
+
+        monkeypatch.setattr(file_service, "refresh_shadow", spy)
+        stored = db.session.get(StoredFile, fid)
+        v1 = FileVersion.query.filter_by(file_id=fid, version=1).one()
+        file_service.restore_version(stored, v1)
+        assert calls == [fid]

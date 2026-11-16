@@ -1,5 +1,7 @@
 import io
 
+import pytest
+
 from app.extensions import db
 from app.models import Drive, StoredFile
 
@@ -523,3 +525,82 @@ def test_upload_rejects_cross_drive_folder(auth_client, app):
     assert resp.status_code in (400, 403)
     with app.app_context():
         assert StoredFile.query.filter_by(name="sneaky.txt").count() == 0
+
+
+# --- B6: batch-matched drive trash/restore, committed once ---
+
+def test_trash_restore_roundtrip_matches(auth_client, app, user):
+    """Trash stamps the drive and its files with one batch timestamp;
+    restore brings back exactly that batch (pre-trashed files stay) and
+    leaves no orphan timestamps behind."""
+    from app.models import StoredFile as _SF
+    from app.models import User as _U
+    from app.services import drive_service as _ds
+    from app.services import file_service as _fs
+
+    _upload(auth_client, "keep1.txt", b"one")
+    _upload(auth_client, "keep2.txt", b"two")
+    _upload(auth_client, "doomed.txt", b"doomed")
+    with app.app_context():
+        user_obj = db.session.get(_U, user)
+        drive = Drive.query.filter_by(user_id=user).one()
+        wid = drive.id
+        doomed = _SF.query.filter_by(name="doomed.txt").one()
+        # Trash one file on its own first: it must survive the roundtrip.
+        _fs.delete_file(doomed)
+        doomed_stamp = db.session.get(_SF, doomed.id).deleted_at
+        assert doomed_stamp is not None
+
+        _ds.trash_drive(user_obj, wid)
+        drive = db.session.get(Drive, wid)
+        batch = drive.deleted_at
+        assert batch is not None
+        batch_files = _SF.query.filter_by(drive_id=wid,
+                                          deleted_at=batch).all()
+        assert {f.name for f in batch_files} == {"keep1.txt", "keep2.txt"}
+        # The earlier file keeps its own stamp (not the batch one).
+        assert db.session.get(_SF, doomed.id).deleted_at == doomed_stamp
+
+        _ds.restore_drive(user_obj, wid)
+        assert db.session.get(Drive, wid).deleted_at is None
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="keep1.txt").one().deleted_at is None
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="keep2.txt").one().deleted_at is None
+        assert db.session.get(_SF, doomed.id).deleted_at is not None
+        # No orphans: nothing still carries the batch stamp.
+        assert _SF.query.filter_by(drive_id=wid,
+                                   deleted_at=batch).count() == 0
+
+
+def test_failed_drive_trash_leaves_nothing_behind(auth_client, app, user,
+                                                  monkeypatch):
+    """A mid-loop failure must not leave a half-trashed drive: the whole
+    batch is committed once, so an error rolls everything back."""
+    from app.models import User as _U
+    from app.services import drive_service as _ds
+    from app.services import search_service as _ss
+
+    _upload(auth_client, "a.txt", b"aaa")
+    _upload(auth_client, "b.txt", b"bbb")
+    with app.app_context():
+        user_obj = db.session.get(_U, user)
+        drive = Drive.query.filter_by(user_id=user).one()
+        wid = drive.id
+        real = _ss.fts_delete
+        calls = {"n": 0}
+
+        def flaky(file_id, commit=True):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise ValueError("boom mid-loop")
+            return real(file_id, commit=commit)
+
+        monkeypatch.setattr(_ss, "fts_delete", flaky)
+        with pytest.raises(ValueError):
+            _ds.trash_drive(user_obj, wid)
+        db.session.rollback()
+        assert db.session.get(Drive, wid).deleted_at is None
+        assert StoredFile.query.filter(
+            StoredFile.drive_id == wid,
+            StoredFile.deleted_at.isnot(None)).count() == 0
