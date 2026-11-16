@@ -2689,6 +2689,176 @@
             area.dispatchEvent(new Event("input", { bubbles: true }));
         }
 
+        // Inline slash menu (`/`): typing `/` (+ filter letters) on an
+        // otherwise empty Markdown line opens a cursor-positioned
+        // `.nb-slash-popup`. Arrow keys move, Enter applies, Esc closes.
+        // Empty cells convert in place; cells that already hold text keep
+        // it and get the new cell inserted below. `/file` opens the drive
+        // picker and inserts `[name](file://ID)` at the caret.
+        const SLASH_OPTIONS = [
+            { cmd: "/table", label: "Table", type: "table" },
+            { cmd: "/todo", label: "To-do", type: "todo" },
+            { cmd: "/code", label: "Code", type: "code" },
+            { cmd: "/chart", label: "Chart", type: "chart" },
+            { cmd: "/h1", label: "Heading", type: "heading" },
+            { cmd: "/sep", label: "Separator", type: "separator" },
+            { cmd: "/file", label: "File", type: "file" },
+        ];
+
+        function slashLineQuery(value, pos) {
+            const lineStart = value.lastIndexOf("\n", pos - 1) + 1;
+            const line = value.slice(lineStart, pos);
+            const m = line.match(/^\s*\/([a-z]*)$/i);
+            if (!m) return null;
+            return { query: m[1].toLowerCase(), lineStart: lineStart };
+        }
+
+        function applySlashOption(cell, area, opt, trig) {
+            const value = area.value;
+            const pos = area.selectionStart == null
+                ? value.length : area.selectionStart;
+            const before = value.slice(0, trig.lineStart);
+            const after = value.slice(pos);
+            if (opt.type === "file") {
+                area.value = before + after;
+                area.setSelectionRange(before.length, before.length);
+                area.dispatchEvent(new Event("input", { bubbles: true }));
+                area.focus();
+                pickFile((f) => {
+                    const at = area.selectionStart == null
+                        ? area.value.length : area.selectionStart;
+                    const link = "[" + f.name + "](file://" + f.file_id
+                        + ")";
+                    area.value = area.value.slice(0, at) + link
+                        + area.value.slice(at);
+                    area.focus();
+                    area.setSelectionRange(at + link.length,
+                        at + link.length);
+                    area.dispatchEvent(new Event("input", { bubbles: true }));
+                });
+                return;
+            }
+            pushUndo("slash " + opt.cmd);
+            const rest = (before + after).trim();
+            const editable = ["markdown", "code", "richtext", "heading",
+                "chart"];
+            if (!rest) {
+                const fresh = newCell(opt.type);
+                cell.type = opt.type;
+                cell.meta = fresh.meta;
+                cell.content = "";
+                if (opt.type === "heading") cell.meta.level = 1;
+                cell._editing = editable.includes(opt.type);
+                render();
+            } else {
+                const fresh = newCell(opt.type);
+                if (opt.type === "heading") fresh.meta.level = 1;
+                fresh._editing = editable.includes(opt.type);
+                cell.content = before + after;
+                doc.cells.splice(doc.cells.indexOf(cell) + 1, 0, fresh);
+                render();
+            }
+            scheduleSave();
+        }
+
+        function wireSlashMenu(area, wrap, cell) {
+            wrap.style.position = "relative";
+            let popup = null;
+            let options = [];
+            let selIndex = 0;
+            let trig = null;
+
+            function close() {
+                if (popup) popup.remove();
+                popup = null;
+                options = [];
+                trig = null;
+            }
+
+            function place() {
+                if (!popup) return;
+                const lh = parseFloat(
+                    window.getComputedStyle(area).lineHeight) || 18;
+                const caret = area.selectionStart == null
+                    ? area.value.length : area.selectionStart;
+                const lines = area.value.slice(0, caret)
+                    .split("\n").length - 1;
+                popup.style.top = (area.offsetTop + (lines + 1) * lh + 4)
+                    + "px";
+                popup.style.left = "8px";
+            }
+
+            function paint() {
+                if (!popup) return;
+                popup.innerHTML = "";
+                options.forEach((opt, i) => {
+                    const b = el("button",
+                        "btn btn-ghost btn-xs w-full justify-start gap-2"
+                        + (i === selIndex ? " btn-active" : ""));
+                    b.type = "button";
+                    b.textContent = opt.cmd + "  " + opt.label;
+                    b.addEventListener("mousedown", (e) => e.preventDefault());
+                    b.addEventListener("click", () => {
+                        const t = trig;
+                        close();
+                        applySlashOption(cell, area, opt, t);
+                    });
+                    popup.appendChild(b);
+                });
+                place();
+            }
+
+            function refresh() {
+                const caret = area.selectionStart == null
+                    ? area.value.length : area.selectionStart;
+                const hit = slashLineQuery(area.value, caret);
+                if (!hit) { close(); return; }
+                trig = hit;
+                options = SLASH_OPTIONS.filter((o) =>
+                    o.cmd.slice(1).startsWith(hit.query));
+                if (!options.length) { close(); return; }
+                selIndex = 0;
+                if (!popup) {
+                    popup = el("div",
+                        "nb-slash-popup glass-panel rounded-xl p-1 "
+                        + "flex flex-col gap-0.5");
+                    popup.style.cssText += "position:absolute;z-index:30;"
+                        + "min-width:12rem;";
+                    wrap.appendChild(popup);
+                }
+                paint();
+            }
+
+            area.addEventListener("input", refresh);
+            area.addEventListener("keydown", (e) => {
+                if (!popup) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    selIndex = (selIndex + 1) % options.length;
+                    paint();
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    selIndex = (selIndex + options.length - 1)
+                        % options.length;
+                    paint();
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    const opt = options[selIndex];
+                    const t = trig;
+                    close();
+                    applySlashOption(cell, area, opt, t);
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            });
+            area.addEventListener("blur", () => {
+                // Popup clicks never blur (mousedown is prevented); a
+                // stray open menu must not linger after real blurs.
+                setTimeout(() => { if (popup) close(); }, 150);
+            });
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
@@ -2774,6 +2944,7 @@
                     renderMarkdownPreview(preview, cell);
                     fitTextarea(area);
                 });
+                wireSlashMenu(area, wrap, cell);
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
                 wrap.addEventListener("focusout", () => {

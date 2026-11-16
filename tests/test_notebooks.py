@@ -1668,3 +1668,25 @@ def test_toc_layout_and_badges():
     assert '"RT"' in src or "'RT'" in src
     assert "smooth" in src
     assert "nb-toc-active" in src
+
+
+def test_slash_menu_contract():
+    """N4: empty-line `/` trigger opens a cursor-positioned .nb-slash-popup
+    with /table /todo /code /chart /h1 /sep /file, keyboard nav
+    (arrows/Enter/Esc); /file inserts [name](file://ID) via the picker."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "nb-slash-popup" in src
+    for opt in ["/table", "/todo", "/code", "/chart", "/h1", "/sep",
+                "/file"]:
+        assert opt in src
+    wire_body = _js_fn_body(src, "wireSlashMenu")
+    # Empty-line trigger: the caret line holds only the slash query.
+    trig_body = _js_fn_body(src, "slashLineQuery")
+    assert r"/^\s*\/" in trig_body
+    # Keyboard nav lives in the menu wiring, not elsewhere.
+    assert "ArrowDown" in wire_body and "ArrowUp" in wire_body
+    assert "Enter" in wire_body and "Escape" in wire_body
+    apply_body = _js_fn_body(src, "applySlashOption")
+    assert "pickFile" in apply_body and "file://" in apply_body
