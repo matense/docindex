@@ -218,7 +218,23 @@ export default function App() {
         } catch {
           elements = scene.elements || [];
         }
-        api.updateScene({ elements, appState: scene.appState || {} });
+        try {
+          api.updateScene({ elements, appState: scene.appState || {} });
+        } catch {
+          // Programmatic apply failed: never in sync, so drop the guard
+          // (a stale flag would misclassify the next real user edit as an
+          // echo and lose its save) and leave the version alone — the next
+          // poll retries.
+          remoteApplyRef.current = false;
+          return;
+        }
+        // Fallback clear: if Excalidraw never fires the echo onChange
+        // (identical scene, unmounted, API change), the flag must not stay
+        // armed to poison the next real edit. Normal path unaffected: the
+        // echo consumes the flag first, making this a no-op.
+        setTimeout(() => {
+          remoteApplyRef.current = false;
+        }, 1000);
         snapshotRef.current = {
           elements,
           appState: scene.appState || {},

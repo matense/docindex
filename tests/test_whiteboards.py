@@ -489,6 +489,36 @@ def test_trashed_whiteboard_not_openable(auth_client, app, user, enabled):
             user_obj, {"file_id": fid}, None)["error"].lower()
 
 
+def test_trashed_whiteboard_rejects_save_and_ai_edit(
+        auth_client, app, user, enabled):
+    from app.services import file_service
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Trash save", elements=[
+        {"type": "text", "x": 0, "y": 0, "text": "keep me"}])
+    with app.app_context():
+        before = wb.load(db.session.get(StoredFile, fid))
+    with app.app_context():
+        file_service.delete_file(db.session.get(StoredFile, fid))
+    # Editor PUT save to a trashed board: clean 404, never 500.
+    put = auth_client.put(f"/m/whiteboards/api/{fid}/scene",
+                          json={"elements": []})
+    assert put.status_code == 404
+    # AI edit (write) tool on a trashed board: clean "not found"-style
+    # error, never 500 and never a successful write.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        res = wb_tools._tool_add(
+            user_obj, {"file_id": fid, "elements": [
+                {"type": "text", "x": 1, "y": 1, "text": "ai"}]}, None)
+    assert "error" in res
+    assert "not found" in res["error"].lower()
+    # Nothing was written through either path: restore and compare.
+    with app.app_context():
+        file_service.restore_file(db.session.get(StoredFile, fid))
+        after = wb.load(db.session.get(StoredFile, fid))
+    assert after == before
+
+
 def test_ai_tools_end_to_end(app, user, enabled):
     _drive(app, user)
     user_obj = _user(app, user)
