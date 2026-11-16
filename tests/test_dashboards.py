@@ -2699,3 +2699,102 @@ console.log(JSON.stringify(checks));
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [True] * 8
+
+
+# ---------------------------------------------------------------------------
+# Task D5: dashboard_lock released during run_cards execution
+# ---------------------------------------------------------------------------
+
+def test_parallel_runcards_do_not_serialize(monkeypatch, tmp_path):
+    """D5: two runs admitted under the cap must overlap in the LLM wait —
+    the dashboard lock must be released during execution and re-acquired
+    per card to settle (run_card_stream shape), with a per-card run-id
+    guard so a stale settle never clobbers a newer run."""
+    import threading
+    import time
+
+    from app import create_app
+    from config import TestConfig
+
+    class RaceConfig(TestConfig):
+        SQLALCHEMY_DATABASE_URI = "sqlite:///" + str(tmp_path / "race.sqlite")
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "connect_args": {"check_same_thread": False, "timeout": 30}}
+
+    race_app = create_app(RaceConfig)
+    with race_app.app_context():
+        db.create_all()
+        owner = User(username="alice", email="alice@example.com")
+        owner.set_password("password123")
+        db.session.add(owner)
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+        uid = owner.id
+    drive_id = _drive(race_app, uid)
+    fid = _create(race_app, uid, drive_id)
+    first = _add_card(race_app, fid, title="One")
+    second = _add_card(race_app, fid, title="Two")
+    with race_app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["concurrency"] = 2
+        dash_doc.save_document(stored, doc)
+
+    entered, exited = {}, {}
+    both_in = threading.Event()
+    guard = threading.Lock()
+    state = {"inflight": 0, "peak": 0}
+
+    def fake_run_card(stored, card, user_id):
+        entered[card["id"]] = time.monotonic()
+        with guard:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+        if len(entered) == 2:
+            both_in.set()
+        both_in.wait(timeout=10)  # serial execution never lets both in
+        exited[card["id"]] = time.monotonic()
+        with guard:
+            state["inflight"] -= 1
+        return ({"text": "ok"}, [], [])
+
+    dash_engine = _engine()
+    monkeypatch.setattr(dash_engine, "run_card", fake_run_card)
+
+    clients = []
+    for _ in range(2):
+        client = race_app.test_client()
+        assert client.post("/login", data={"username": "alice",
+                                           "password": "password123"}
+                           ).status_code in (200, 302)
+        clients.append(client)
+
+    results, errors = {}, {}
+
+    def hit(slot, client, card_id):
+        try:
+            results[slot] = client.post(f"/m/dashboards/{fid}/run",
+                                        json={"card_id": card_id})
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            errors[slot] = exc
+
+    threads = [threading.Thread(target=hit, args=(i, clients[i], cid))
+               for i, cid in enumerate((first, second))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert all(t.is_alive() is False for t in threads)
+    assert results[0].status_code == 200, results[0].data
+    assert results[1].status_code == 200, results[1].data
+    # Both runs were inside the LLM wait at the same time.
+    assert len(entered) == 2 and len(exited) == 2
+    assert state["peak"] == 2
+    assert max(entered.values()) <= min(exited.values())
+    # ... and both settled correctly: neither completion clobbered the other.
+    for cid in (first, second):
+        card = _card(race_app, fid, cid)
+        assert card["status"] == "done"
+        assert card["result"] == {"text": "ok"}
+        assert card["ranAt"]

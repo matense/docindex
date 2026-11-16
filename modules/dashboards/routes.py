@@ -522,10 +522,13 @@ def _fresh_card(stored, card_id):
 @bp.post("/<int:file_id>/run")
 def run_cards(file_id):
     """Run one card (``{"card_id": ...}``) or the whole dashboard
-    (``{"all": true}``). Cards execute sequentially through the dashboard's
-    concurrency cap; returns ``{"accepted": [run_ids]}``. A run targeting a
-    card that is already running (or exceeding the cap) is rejected with
-    409 + ``already_running`` instead of queueing."""
+    (``{"all": true}``). Admission (cap check + mark running) holds the
+    dashboard lock; the lock is released for the LLM/workflow wait and
+    re-acquired per card to settle, so runs admitted under the cap overlap
+    instead of blocking on the whole execution. Returns
+    ``{"accepted": [run_ids]}``. A run targeting a card that is already
+    running (or exceeding the cap) is rejected with 409 + ``already_running``
+    instead of queueing."""
     stored = _get_dashboard(file_id)
     _guard_writable(stored)
     payload = request.get_json(silent=True) or {}
@@ -547,6 +550,11 @@ def run_cards(file_id):
                         "error": f"Unknown card(s): "
                                  f"{', '.join(unknown)}."}), 404
 
+    # Admission (cap check + mark running) holds the lock; the lock is
+    # released for the LLM/workflow wait and re-acquired per card to settle
+    # (run_card_stream shape), so admitted runs overlap. Settle sections
+    # stay serialized by the lock and guarded by run-id, so concurrent
+    # completions never clobber each other.
     with engine_service.dashboard_lock(stored.id):
         doc = doc_service.load(stored)
         cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
@@ -566,28 +574,34 @@ def run_cards(file_id):
             card["runId"] = run_id
             accepted.append(run_id)
         doc_service.save_document(stored, doc)
-
-        for target, run_id in zip(targets, accepted):
+        for run_id in accepted:
             doc_service.run_started(stored.id, run_id)
-            started = time.monotonic()
-            try:
-                card = _fresh_card(stored, target)
-                result, artifact_ids, trace = engine_service.run_card(
-                    stored, card, current_user.id)
-                status = "done"
-            except engine_service.MissingInputError as exc:
-                result, artifact_ids, trace, status = (
-                    {"error": str(exc)}, [], [], "error")
-            except Exception as exc:  # noqa: BLE001 - errors surface on card
-                db.session.rollback()
-                result, artifact_ids, trace, status = (
-                    {"error": (str(exc) or "The run failed.")[:500]},
-                    [], [], "error")
-            finally:
-                doc_service.run_finished(stored.id, run_id)
+
+    for target, run_id in zip(targets, accepted):
+        started = time.monotonic()
+        try:
+            card = _fresh_card(stored, target)
+            result, artifact_ids, trace = engine_service.run_card(
+                stored, card, current_user.id)
+            status = "done"
+        except engine_service.MissingInputError as exc:
+            result, artifact_ids, trace, status = (
+                {"error": str(exc)}, [], [], "error")
+        except Exception as exc:  # noqa: BLE001 - errors surface on card
+            db.session.rollback()
+            result, artifact_ids, trace, status = (
+                {"error": (str(exc) or "The run failed.")[:500]},
+                [], [], "error")
+        finally:
+            doc_service.run_finished(stored.id, run_id)
+        with engine_service.dashboard_lock(stored.id):
             fresh = doc_service.load(stored)
-            card = next(c for c in fresh["cards"]
-                        if c.get("id") == target)
+            card = next((c for c in fresh["cards"]
+                         if c.get("id") == target), None)
+            if card is None or card.get("runId") != run_id:
+                # Superseded by a newer run, or removed while we ran: a
+                # newer writer owns this card now — never clobber it.
+                continue
             card["status"] = status
             card["result"] = result
             card["trace"] = trace
