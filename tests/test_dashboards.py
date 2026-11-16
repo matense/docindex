@@ -3219,3 +3219,27 @@ console.log(JSON.stringify(checks));
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [True] * 5
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A1: card schema (script_enabled + script)
+# ---------------------------------------------------------------------------
+
+def test_script_fields_default_off():
+    card = dash_doc.new_card("kpi")
+    assert card["script_enabled"] is False and card["script"] == ""
+
+
+def test_workflow_card_rejects_script_toggle():
+    card = dash_doc.new_card("workflow")
+    card["script_enabled"] = True
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)
+
+
+def test_script_size_cap():
+    card = dash_doc.new_card("table")
+    card["script_enabled"] = True
+    card["script"] = "x" * (dash_doc.SCRIPT_MAX_CHARS + 1)
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)

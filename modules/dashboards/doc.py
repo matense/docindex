@@ -6,6 +6,7 @@ a JSON document::
     {"version": 1, "title": "...", "cards": [
         {"id": "...", "type": "kpi|table|list|chart|markdown|workflow",
          "title": "...", "w": 6, "h": 3, "prompt": "...", "tools": True,
+         "script_enabled": False, "script": "...",
          "inputs": {"attachments": [<attId>, ...]}, "result": {...},
          "status": "idle|running|done|error", "ranAt": None}]",
      "attachments": [{"id": "...", "fileId": 12, "name": "incidents.csv",
@@ -71,6 +72,7 @@ DEFAULT_SIZE = {
 
 TITLE_MAX_CHARS = 255
 PROMPT_MAX_CHARS = 20000
+SCRIPT_MAX_CHARS = 20000
 CARD_STATUSES = ("idle", "running", "done", "error", "interrupted")
 ATTACHMENT_ORIGINS = ("upload", "link")
 
@@ -99,6 +101,7 @@ def new_card(type="kpi", title="", prompt=""):
     card = {"id": uuid.uuid4().hex[:12], "type": type,
             "title": title or "", "w": w, "h": h,
             "prompt": prompt or "", "tools": True, "maxSteps": None,
+            "script_enabled": False, "script": "",
             "inputs": {"attachments": []},
             "result": None, "status": "idle", "ranAt": None}
     return _validate_card(card)
@@ -157,6 +160,19 @@ def _validate_card(card, attachment_ids=None):
         raise ValueError("Card maxSteps must be an integer 1..128 or null.")
     else:
         card["maxSteps"] = max_steps
+    script_enabled = bool(card.get("script_enabled", False))
+    card["script_enabled"] = script_enabled
+    script = card.get("script", "")
+    if script is None:
+        script = ""
+    if not isinstance(script, str):
+        raise ValueError("Card script must be text.")
+    if len(script) > SCRIPT_MAX_CHARS:
+        raise ValueError(f"Card script exceeds the {SCRIPT_MAX_CHARS} "
+                         f"character cap.")
+    card["script"] = script
+    if card["type"] == "workflow" and script_enabled:
+        raise ValueError("Workflow cards do not support script mode.")
     inputs = card.get("inputs")
     card["inputs"] = inputs if isinstance(inputs, dict) else {}
     refs = card["inputs"].get("attachments", [])
