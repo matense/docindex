@@ -44,6 +44,20 @@ def _get_config_with_modules(directory=None, x_arg=None, opts=None):
 migrate.get_config = _get_config_with_modules
 
 
+def _skip_startup_tasks():
+    """True inside the one-shot migration CLI process (see Dockerfile).
+
+    `flask --app run.py db upgrade heads` imports run.py, which calls
+    create_app() at module level. Without this guard the import itself
+    would run auto_upgrade (a second `alembic upgrade heads` before the
+    explicit command) plus queue recovery and the janitor thread in a
+    process that exits immediately. The flag is set only for the migrate
+    command, so the normal server path is unchanged.
+    """
+    return os.environ.get(
+        "DOCINDEX_SKIP_STARTUP_TASKS", "").lower() in ("1", "true", "yes")
+
+
 def format_duration(seconds):
     """Human duration: '420 ms', '3.25s', '1m 05.34s', '1h 02m 03s'.
 
@@ -182,8 +196,10 @@ def create_app(config_class=Config):
     # `flask db upgrade` would otherwise get "no such column" 500s on every
     # page. Alembic's upgrade is a no-op when the DB is already at head, and
     # unknown revisions are reported without rewriting migration stamps.
-    # Skipped in tests (they build the schema with db.create_all()).
-    if not app.config.get("TESTING"):
+    # Skipped in tests (they build the schema with db.create_all()) and in
+    # the migration CLI process (it runs `db upgrade` explicitly; the
+    # import-time auto_upgrade would be a duplicate migration).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import db_maintenance
         try:
             db_maintenance.auto_upgrade(app)
@@ -217,7 +233,8 @@ def create_app(config_class=Config):
 
     # Resume any indexing work left over from a previous run (crash/restart):
     # "running" jobs go back to "pending" and drainers pick them up.
-    if app.config.get("INDEX_ASYNC", True):
+    # Skipped in the migration CLI process (no worker threads there).
+    if app.config.get("INDEX_ASYNC", True) and not _skip_startup_tasks():
         from .services import indexing_service
         try:
             indexing_service.recover_interrupted(app)
@@ -225,8 +242,9 @@ def create_app(config_class=Config):
             app.logger.exception("Index queue recovery failed")
 
     # Long-horizon AI tasks left queued/running by a previous process are
-    # marked "interrupted" (their threads died with it).
-    if not app.config.get("TESTING"):
+    # marked "interrupted" (their threads died with it). Skipped in the
+    # migration CLI process (short-lived: no recovery writes there).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import ai_task_service
         try:
             ai_task_service.recover_interrupted(app)
@@ -234,8 +252,9 @@ def create_app(config_class=Config):
             app.logger.exception("AI task recovery failed")
 
     # Trash janitor: hourly pass purging items older than 30 days for users
-    # who opted into automatic purge (default off).
-    if not app.config.get("TESTING"):
+    # who opted into automatic purge (default off). Skipped in the migration
+    # CLI process (no janitor thread in a process that exits immediately).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import trash_service
         try:
             trash_service.start_auto_purge(app)
