@@ -696,3 +696,29 @@ def test_chat_persists_compaction_notice(auth_client, app, user):
         conv = ChatConversation.query.one()
         notices = [m for m in conv.messages if m.role == "notice"]
         assert notices and "compacted" in notices[0].content.lower()
+
+
+# ---------------------------------------------------- composer restructure
+
+
+def _read_template(rel):
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent / rel).read_text(
+        encoding="utf-8")
+
+
+def test_composer_structure_unified():
+    html = _read_template("app/templates/components/ai_chat.html")
+    assert "ai-ctx-strip" in html and "ai-token-meter" in html
+    assert 'class="acw-form ai-composer relative"' in html
+    assert "ai-send-btn" in html
+
+
+def test_composer_structure_full_page():
+    html = _read_template("app/templates/search/ai.html")
+    assert "ai-ctx-strip" in html and "ai-token-meter" in html
+    assert "ai-composer" in html and "relative" in html
+    assert "ai-send-btn" in html
+    # Full-page composer keeps its own hooks (no behavior change).
+    assert 'id="aip-form"' in html and 'id="aip-input"' in html
+    assert 'id="aip-send"' in html and 'id="aip-plus"' in html

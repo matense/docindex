@@ -2908,6 +2908,47 @@ figure.nb-figure figcaption {
     overflow-y: auto;
 }
 
+/* Unified composer context strip: [+] button, context chips, token meter.
+   Visibility of the chips/meter is driven by Tailwind's .hidden — these
+   rules never set display unconditionally (same reason as the
+   .ai-jump-pill note above); the visible state opts in via :not(.hidden). */
+.ai-ctx-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem 0;
+}
+
+.ctx-plus-btn {
+    flex-shrink: 0;
+}
+
+/* Token meter content/visibility is wired in C2; the hook lives here. */
+.ai-token-meter {
+    margin-left: auto;
+    font-size: 10px;
+    font-family: ui-monospace, monospace;
+    opacity: 0.45;
+    white-space: nowrap;
+}
+.ai-token-meter:not(.hidden) {
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Corner send: the submit button floats over the composer's bottom-right
+   corner (the composer form itself carries .relative). */
+.ai-composer .ai-send-btn {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+}
+
+/* Keep typed text clear of the corner send button. */
+.ai-composer textarea.ai-input {
+    padding-right: 3.25rem;
+}
+
 /* Header toggles in the "on" state (auto-scroll) */
 .ai-toggle-on {
     color: oklch(var(--p)) !important;

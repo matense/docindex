@@ -90,8 +90,6 @@
         <button type="button" class="acw-jump ai-jump-pill hidden">
             <i class="fas fa-arrow-down"></i> New messages
         </button>
-        <!-- Attachment chips -->
-        <div class="acw-attachments hidden flex-wrap gap-1 px-3 pt-2"></div>
         <!-- Persona picker popup -->
         <div class="acw-persona-popup hidden absolute bottom-full left-3 right-3 mb-1 glass-menu z-10 flex flex-col max-h-72">
             <div class="p-2 border-b border-base-content/10">
@@ -134,19 +132,24 @@
             </button>
         </div>
 
+        <!-- Context strip: [+] button, context chips, token meter -->
+        <div class="ai-ctx-strip">
+            <button type="button" class="ctx-plus-btn ai-plus-btn acw-plus" title="Attach &amp; options">
+                <i class="fas fa-plus"></i>
+            </button>
+            <!-- Attachment chips -->
+            <div class="acw-attachments hidden flex-wrap gap-1"></div>
+            <!-- Token meter (content wired in C2) -->
+            <span class="ai-token-meter acw-token-meter hidden" aria-hidden="true"></span>
+        </div>
+
         <!-- Composer -->
-        <form class="acw-form ai-composer" data-no-spa>
-            <textarea rows="1" placeholder="Ask about your files… (Shift+Enter for a new line)"
+        <form class="acw-form ai-composer relative" data-no-spa>
+            <textarea rows="3" placeholder="Ask about your files… (Shift+Enter for a new line)"
                       class="acw-input ai-input w-full bg-transparent focus:outline-none text-sm px-4 pt-3 pb-2" autocomplete="off"></textarea>
-            <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
-                <button type="button" class="ai-plus-btn acw-plus" title="Attach &amp; options">
-                    <i class="fas fa-plus"></i>
-                </button>
-                <span class="flex-1"></span>
-                <button type="submit" class="ai-send-btn acw-send" title="Send">
-                    <i class="fas fa-paper-plane"></i>
-                </button>
-            </div>
+            <button type="submit" class="ai-send-btn acw-send" title="Send">
+                <i class="fas fa-paper-plane"></i>
+            </button>
         </form>
     </div>
 
