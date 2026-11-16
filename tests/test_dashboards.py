@@ -3381,3 +3381,46 @@ def test_script_card_rejects_foreign_attachment(app, user, enabled,
         card["script"] = "res = 1\nres"
         with pytest.raises(dash_engine.MissingInputError):
             dash_engine.run_card(stored, card, user)
+
+
+# ---------------------------------------------------------------------------
+# Task A3: AI tools accept script card fields
+# ---------------------------------------------------------------------------
+
+def test_add_card_accepts_script_fields(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        outcome = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "script_enabled": True, "script": "res = 1\nres"},
+            None)
+        assert outcome["card"]["script_enabled"] is True
+        assert outcome["card"]["script"] == "res = 1\nres"
+
+
+def test_update_card_sets_script(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nested = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script_enabled": True,
+                                 "script": "res = 1\nres"}}, None)
+        assert nested["card"]["script_enabled"] is True
+        assert nested["card"]["script"] == "res = 1\nres"
+        flat = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": "res = 2\nres",
+                        "card": {"script": "res = 9\nres"}}, None)
+        assert flat["card"]["script"] == "res = 2\nres"
