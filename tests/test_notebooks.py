@@ -1865,3 +1865,58 @@ def test_pyrun_run_button_and_output_contract():
         assert lang in src
     assert "nb-pyrun-output" in src
     assert "+ Save as Table cell" in src
+
+
+# ---------------------------------------------------------------------------
+# N8: per-cell restore in history
+# ---------------------------------------------------------------------------
+
+_N8_APP = None  # stashed by the fixture so load_doc(fid) stays single-arg
+
+
+@pytest.fixture()
+def version_with_extra_cell(app, user, notebook):
+    """A version snapshot whose 'target' cell reads 'old target' while the
+    live doc reads 'new target'; neighbors 'keep-a'/'keep-b' match."""
+    global _N8_APP
+    _N8_APP = app
+    with app.app_context():
+        stored = db.session.get(StoredFile, notebook)
+        historic_cells = []
+        for cid, content in (("keep-a", "keep A"),
+                             ("target", "old target"),
+                             ("keep-b", "keep B")):
+            cell = nb_doc.new_cell("markdown", content)
+            cell["id"] = cid
+            historic_cells.append(cell)
+        nb_doc.save_document(
+            stored, {"version": 1, "title": "Cell restore",
+                     "cells": historic_cells},
+            force_checkpoint=True)
+        current = nb_doc.load(stored)
+        for cell in current["cells"]:
+            if cell["id"] == "target":
+                cell["content"] = "new target"
+        nb_doc.save_document(stored, current, force_checkpoint=True)
+        # Latest snapshot first: versions[0] is the pre-rewrite state with
+        # 'old target'.
+        return stored.versions[0].id
+
+
+def load_doc(fid):
+    with _N8_APP.app_context():
+        return nb_doc.load(db.session.get(StoredFile, fid))
+
+
+def neighbors_unchanged(before, after, except_id):
+    before_nb = [c for c in before["cells"] if c.get("id") != except_id]
+    after_nb = [c for c in after["cells"] if c.get("id") != except_id]
+    return before_nb == after_nb
+
+
+def test_restore_cell_preserves_neighbors(auth_client, notebook, version_with_extra_cell):
+    before = load_doc(notebook)
+    r = auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                         json={"cell_id": "target"})
+    assert load_doc(notebook)["cells"] != before["cells"]
+    assert neighbors_unchanged(before, load_doc(notebook), except_id="target")

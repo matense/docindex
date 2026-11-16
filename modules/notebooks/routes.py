@@ -456,6 +456,7 @@ def _cell_diff(old_doc, new_doc):
         if prev is None:
             added += 1
             entries.append({"kind": "added", "label": label,
+                            "cell_id": cell.get("id"),
                             "rows": _side_by_side_rows("", _cell_text(cell))})
             continue
         _old_i, old_cell = prev
@@ -470,13 +471,15 @@ def _cell_diff(old_doc, new_doc):
             # markers have no "cls" — they stand for unchanged lines.
             rows = [{"left": "~ cell settings changed",
                      "right": "~ cell settings changed", "cls": "same"}]
-        entries.append({"kind": "changed", "label": label, "rows": rows})
+        entries.append({"kind": "changed", "label": label,
+                        "cell_id": cell.get("id"), "rows": rows})
     removed = 0
     for old_i, old_cell in old_by_id.values():
         removed += 1
         entries.append({"kind": "removed",
                         "label": f"{old_cell.get('type', '?')} · "
                                  f"was cell {old_i + 1}",
+                        "cell_id": old_cell.get("id"),
                         "rows": _side_by_side_rows(
                             _cell_text(old_cell), "")})
     summary = {"added": added, "changed": changed, "removed": removed,
@@ -510,4 +513,45 @@ def history_restore(file_id, version_id):
         abort(404)
     file_service.restore_version(stored, version)
     indexing_service.enqueue_index([stored.id])
+    return redirect(url_for("notebooks.editor", file_id=stored.id))
+
+
+@bp.post("/<int:file_id>/history/<int:version_id>/restore-cell")
+def history_restore_cell(file_id, version_id):
+    """Restore a single cell from a past version, leaving every other cell
+    untouched. A missing-in-current cell is re-inserted at its original
+    position. Saves through save_document, so the pre-restore state stays
+    a restorable snapshot (no history rewrite)."""
+    stored = _get_notebook(file_id)
+    _guard_writable(stored)
+    version = next((v for v in stored.versions if v.id == version_id), None)
+    if version is None:
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    cell_id = payload.get("cell_id") or request.form.get("cell_id")
+    if not cell_id:
+        abort(400, "cell_id is required.")
+    with open(file_service.version_path(version),
+              encoding="utf-8", errors="replace") as fh:
+        old_doc = doc_service.parse(fh.read())
+    historic = next((c for c in old_doc.get("cells", [])
+                     if c.get("id") == cell_id), None)
+    if historic is None:
+        abort(404)
+    try:
+        current = doc_service.load(stored)
+    except ValueError as exc:
+        abort(400, str(exc))
+    ids = [c.get("id") for c in current.get("cells", [])]
+    if cell_id in ids:
+        current["cells"][ids.index(cell_id)] = historic
+    else:
+        position = next((i for i, c in enumerate(old_doc.get("cells", []))
+                         if c.get("id") == cell_id),
+                        len(current["cells"]))
+        current["cells"].insert(min(position, len(current["cells"])),
+                               historic)
+    doc_service.save_document(
+        stored, current, force_checkpoint=True,
+        note=f"Before restore cell to v{version.version}")
     return redirect(url_for("notebooks.editor", file_id=stored.id))

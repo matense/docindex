@@ -66,6 +66,17 @@
             {% elif e.kind == 'changed' %}<i class="fas fa-pen"></i> Changed
             {% else %}<i class="fas fa-minus"></i> Removed{% endif %}
             <span class="font-normal opacity-70">· {{ e.label }}</span>
+            {% if e.kind == 'changed' or e.kind == 'removed' %}
+            <form method="POST" class="ml-auto"
+                  action="{{ url_for('notebooks.history_restore_cell', file_id=file.id, version_id=version.id) }}"
+                  data-confirm="Restore just this cell? The current content is saved as a new version first.">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="cell_id" value="{{ e.cell_id }}">
+                <button type="submit" class="btn btn-ghost btn-xs gap-1" title="Restore just this cell">
+                    <i class="fas fa-history"></i> Restore just this cell
+                </button>
+            </form>
+            {% endif %}
         </div>
 
         {% if e.rows %}
