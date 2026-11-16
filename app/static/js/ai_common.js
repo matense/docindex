@@ -12,7 +12,8 @@
 
     function linkCitations(text) {
         return String(text || "").replace(/\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
-            '<a href="/file/$2/view" class="link link-primary">$1</a>');
+            '<a href="/file/$2/view" class="ai-cite-chip" data-cite-file-id="$2">' +
+            '<i class="fas fa-file-lines"></i> $1 <i class="fas fa-eye text-[9px] opacity-60"></i></a>');
     }
 
     function renderMarkdown(text) {

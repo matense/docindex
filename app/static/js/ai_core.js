@@ -407,6 +407,75 @@
             attachments.push({ id, name });
             renderChips();
         }
+        function fmtPeekSize(n) {
+            n = Number(n) || 0;
+            if (n < 1024) return n + ' B';
+            if (n < 1048576) return (n / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+            return (n / 1048576).toFixed(1).replace(/\.0$/, '') + ' MB';
+        }
+        let peekPop = null;
+        function closePeekPopover() {
+            if (peekPop) { peekPop.remove(); peekPop = null; }
+        }
+        // Quick-peek (spec §4.2): a citation pill opens a preview card
+        // immediately above the composer — name/drive/size, the snippet
+        // escaped with escapeHtml, + Anexar (attachments + renderChips),
+        // Abrir (view_url via spaNavigate), × to close.
+        async function openPeekPopover(fileId) {
+            closePeekPopover();
+            const esc = (window.DocIndex && window.DocIndex.escapeHtml)
+                || function (s) {
+                    return String(s == null ? '' : s)
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                };
+            const pop = document.createElement('div');
+            pop.className = 'ai-peek-popover';
+            pop.innerHTML = '<div class="ai-peek-loading">Loading preview…</div>';
+            const host = menuAnchor || (form && form.parentNode) || document.body;
+            if (host !== document.body) host.style.position = 'relative';
+            host.appendChild(pop);
+            peekPop = pop;
+            let data = null;
+            try {
+                const resp = await fetch('/ai/files/' + fileId + '/peek',
+                    { headers: { 'Accept': 'application/json' } });
+                if (resp.ok) data = await resp.json();
+            } catch { /* network trouble: the error state below covers it */ }
+            if (peekPop !== pop) return;  // closed while loading
+            if (!data || typeof data !== 'object') {
+                pop.innerHTML = '<div class="ai-peek-head">' +
+                    '<span class="ai-peek-title">Preview unavailable</span>' +
+                    '<button type="button" class="ai-peek-close" title="Close">×</button></div>';
+                pop.querySelector('.ai-peek-close').addEventListener('click', closePeekPopover);
+                return;
+            }
+            const meta = [];
+            if (data.drive_name) meta.push(data.drive_name);
+            meta.push(fmtPeekSize(data.size));
+            pop.innerHTML =
+                '<div class="ai-peek-head">' +
+                '<i class="fas fa-file-lines"></i> ' +
+                '<span class="ai-peek-title">' + esc(data.name) + '</span>' +
+                '<span class="ai-peek-meta">' + esc(meta.join(' · ')) + '</span>' +
+                '<button type="button" class="ai-peek-close" title="Close">×</button></div>' +
+                '<pre class="ai-peek-snippet">' + esc(data.snippet || '(no preview available)') + '</pre>' +
+                '<div class="ai-peek-actions">' +
+                '<button type="button" class="ai-peek-attach">+ Anexar</button>' +
+                '<button type="button" class="ai-peek-open">Abrir ↗</button></div>';
+            pop.querySelector('.ai-peek-close').addEventListener('click', closePeekPopover);
+            pop.querySelector('.ai-peek-attach').addEventListener('click', () => {
+                attachFile(data.id, data.name);
+                closePeekPopover();
+                if (input) input.focus();
+            });
+            pop.querySelector('.ai-peek-open').addEventListener('click', () => {
+                const url = data.view_url;
+                closePeekPopover();
+                if (window.spaNavigate) window.spaNavigate(url);
+                else window.location.href = url;
+            });
+        }
         function behaviorRow(b) {
             const row = document.createElement('button');
             row.type = 'button';
@@ -2382,6 +2451,16 @@
             if (messagesEl) messagesEl.addEventListener('scroll', () => {
                 asPaused = !asAtBottom();
                 renderAutoScroll();
+            });
+            // Quick-peek: citation pills open the preview popover instead
+            // of navigating away (plain click only — middle-click / open
+            // in new tab still follows the /file/<id>/view href).
+            if (messagesEl) messagesEl.addEventListener('click', (ev) => {
+                const chip = ev.target && ev.target.closest
+                    ? ev.target.closest('.ai-cite-chip[data-cite-file-id]') : null;
+                if (!chip || !messagesEl.contains(chip)) return;
+                ev.preventDefault();
+                openPeekPopover(chip.getAttribute('data-cite-file-id'));
             });
             if (messagesEl && window.MutationObserver && !messagesEl._pauseSync) {
                 // Layout settles without scrolling (late images, font

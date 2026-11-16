@@ -1,4 +1,6 @@
 import json
+
+import pytest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -859,3 +861,76 @@ def test_reasoning_badges_and_grouping():
     assert "flushHistoryReasoning" in src  # single-<details> grouping on history load
     css = _read_template("app/static/css/style.css")
     assert "ai-reasoning-badges" in css
+
+
+# ------------------------------------------------- C6 quick-peek (endpoint)
+
+
+@pytest.fixture()
+def owned_file(app, user):
+    """A plain text file owned by the user, longer than the peek window."""
+    from app.models import Drive
+    from app.services import file_service
+
+    class FakeStorage:
+        filename = "peek-notes.txt"
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                for i in range(60):
+                    fh.write(f"peek line {i:03d}: lorem ipsum dolor sit amet\n".encode())
+
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user, source_path=None)
+        db.session.add(drive)
+        db.session.commit()
+        stored = file_service.save_upload(
+            FakeStorage(), db.session.get(User, user))
+        stored.drive_id = drive.id
+        db.session.commit()
+        return stored.id
+
+
+@pytest.fixture()
+def hidden_file(app, user):
+    """An AI-hidden notebook: the peek endpoint must refuse it (403)."""
+    return _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "secret",
+         "meta": {}}], hidden=True)
+
+
+@pytest.fixture()
+def trashed_file(app, user):
+    """A soft-deleted file: the peek endpoint must 404, never leak."""
+    from app.models import Drive, StoredFile
+    from app.services import file_service
+
+    class FakeStorage:
+        filename = "trashed.txt"
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                fh.write(b"trashed content")
+
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user, source_path=None)
+        db.session.add(drive)
+        db.session.commit()
+        stored = file_service.save_upload(
+            FakeStorage(), db.session.get(User, user))
+        stored.drive_id = drive.id
+        stored.deleted_at = datetime.now(UTC)
+        db.session.commit()
+        return stored.id
+
+
+def test_peek_returns_snippet(auth_client, owned_file):
+    r = auth_client.get(f"/ai/files/{owned_file}/peek")
+    assert r.status_code == 200 and len(r.get_json()["snippet"]) <= 600
+
+
+def test_peek_denies_hidden_and_trashed(auth_client, hidden_file, trashed_file):
+    assert auth_client.get(f"/ai/files/{hidden_file}/peek").status_code == 403
+    assert auth_client.get(f"/ai/files/{trashed_file}/peek").status_code == 404

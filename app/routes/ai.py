@@ -960,3 +960,54 @@ def task_stream(task_id):
 
     return Response(stream_with_context(generate()),
                     mimetype="application/x-ndjson")
+
+
+# Binary/indexed formats serve the pre-extracted index text; everything
+# else is read straight off disk (first 600 chars either way).
+_PEEK_INDEXED_EXTS = {"pdf", "docx", "xls", "xlsx"}
+
+_PEEK_SNIPPET_CHARS = 600
+
+
+@bp.route("/files/<int:file_id>/peek")
+@login_required
+def file_peek(file_id):
+    """Quick-peek preview for a citation chip: the file's first 600 chars
+    plus the metadata the popover shows (name, drive, size, view link).
+
+    Ownership first (foreign/missing ids 404), then the trash check
+    (trashed files 404, never leak), then the AI file guards (hidden
+    files 403) — the same order the agent's own read tool applies."""
+    from ..services import agent_service, file_service
+
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=current_user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return jsonify({"error": "Not found"}), 404
+    guarded = agent_service._file_guard_error(current_user, stored)
+    if guarded:
+        return jsonify({"error": guarded}), 403
+    ext = (stored.extension or "").lower()
+    snippet = ""
+    if ext in _PEEK_INDEXED_EXTS:
+        index = stored.index
+        snippet = ((index.extracted_text or "")[:_PEEK_SNIPPET_CHARS]
+                   if index else "")
+    else:
+        try:
+            snippet = file_service.read_text_content(
+                stored, max_chars=_PEEK_SNIPPET_CHARS)
+        except OSError:
+            snippet = ""
+    drive = stored.drive
+    return jsonify({
+        "id": stored.id,
+        "name": stored.name,
+        "extension": stored.extension,
+        "size": stored.size,
+        "drive_name": drive.name if drive else None,
+        "snippet": snippet,
+        "view_url": f"/file/{stored.id}/view",
+    })
