@@ -525,9 +525,20 @@ def branch_conversation(conv_id):
     if not conv:
         return jsonify({"error": "Not found"}), 404
     data = request.get_json(silent=True) or {}
-    try:
-        up_to = int(data.get("up_to_message_id") or 0)
-    except (TypeError, ValueError):
+    # Strict id shape: int or integer-valued string only. Floats must
+    # never truncate to a neighbouring anchor (fail closed with 400);
+    # bools are ints in Python, so exclude them explicitly.
+    raw = data.get("up_to_message_id")
+    if isinstance(raw, bool):
+        return jsonify({"error": "Invalid message id."}), 400
+    if isinstance(raw, int):
+        up_to = raw
+    elif isinstance(raw, str):
+        try:
+            up_to = int(raw, 10)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid message id."}), 400
+    else:
         return jsonify({"error": "Invalid message id."}), 400
     if not up_to:
         return jsonify({"error": "up_to_message_id is required."}), 400

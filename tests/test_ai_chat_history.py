@@ -978,6 +978,27 @@ def test_branch_rejects_bad_message_id(auth_client, app, user):
         json={"up_to_message_id": 1}).status_code == 404
 
 
+def test_branch_rejects_non_integer_message_id(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        msg_id = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                  .order_by(ChatMessage.id).first().id)
+    # Float, bool and non-integer payloads fail closed (400) — a float
+    # anchor must never truncate to a neighbouring message id.
+    for bad in (2.7, float(msg_id), True, False, "abc", "2.7",
+                None, [msg_id], {"id": msg_id}):
+        assert auth_client.post(
+            f"/ai/conversations/{conv_id}/branch",
+            json={"up_to_message_id": bad}).status_code == 400
+    # Int and integer-valued string still work.
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": msg_id}).status_code == 200
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": str(msg_id)}).status_code == 200
+
+
 def test_branch_rejects_foreign_message_id(auth_client, app, user):
     conv_a = _make_conversation(app, n_pairs=1)
     conv_b = _make_conversation(app, n_pairs=1)
