@@ -795,9 +795,9 @@ def _fts_count(app, file_id):
 
 
 def test_sync_vanish_cleans_index_rows(auth_client, app, local_folder):
-    """A file deleted on disk must leave no orphan FTS or embedding rows
-    after sync_drive removes its DB row."""
-    from app.models import FileEmbedding
+    """A file deleted on disk must leave no orphan FTS, embedding or
+    index-job rows after sync_drive removes its DB row."""
+    from app.models import FileEmbedding, IndexJob
     _sync_create(auth_client, local_folder)
     with app.app_context():
         hello = StoredFile.query.filter_by(name="hello.txt").one()
@@ -805,6 +805,7 @@ def test_sync_vanish_cleans_index_rows(auth_client, app, local_folder):
         db.session.add(FileEmbedding(
             file_id=fid, chunk_index=0, text="t", text_hash="h",
             embedding=b"\x00\x01", model="t", dims=1))
+        db.session.add(IndexJob(file_id=fid, status="pending"))
         db.session.commit()
         drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
         drive_id = drive.id
@@ -822,6 +823,7 @@ def test_sync_vanish_cleans_index_rows(auth_client, app, local_folder):
     with app.app_context():
         assert db.session.get(StoredFile, fid) is None
         assert FileEmbedding.query.filter_by(file_id=fid).count() == 0
+        assert IndexJob.query.filter_by(file_id=fid).count() == 0
         assert _fts_count(app, fid) == 0
 
 

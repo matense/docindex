@@ -797,7 +797,7 @@ def sync_drive(drive, job=None):
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).
-    # FileEmbedding and file_fts rows have no cascade — remove them
+    # FileEmbedding, IndexJob and file_fts rows have no cascade — remove them
     # explicitly or they orphan (purge_file would also delete the real blob,
     # so it must not be used here).
     from ..models import FileEmbedding
@@ -819,6 +819,13 @@ def sync_drive(drive, job=None):
     if vanished_ids:
         from . import search_service
         search_service.fts_delete_many(vanished_ids, commit=False)
+        # Queued index jobs have the same plain-FK orphan problem as
+        # FileEmbedding — same batched delete as remove_synced_drive.
+        from ..models import IndexJob
+        for i in range(0, len(vanished_ids), 500):
+            chunk = vanished_ids[i:i + 500]
+            IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
+                synchronize_session=False)
 
     # Folders that vanished from disk (deepest first so children go first).
     for rel in sorted(set(existing_folders) - seen_folders,

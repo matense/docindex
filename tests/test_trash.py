@@ -293,3 +293,41 @@ def test_folder_delete_purges_trashed_file_artifacts(auth_client, app):
         vers = StoredFile.query.filter_by(name="vers.txt").one()
         assert vers.deleted_at is not None
         assert len(vers.versions) == 1
+
+
+def test_folder_delete_purges_thumbnail_and_caption(auth_client, app):
+    """Trashed image in a deleted folder: purge_file removes the generated
+    thumbnail blob and the caption-bearing index row with everything else."""
+    import io as _io
+    import os as _os
+
+    from PIL import Image as _Image
+
+    from app.models import FileIndex, Folder
+    auth_client.post("/folder/create", data={"name": "pics"},
+                     follow_redirects=True)
+    with app.app_context():
+        folder_id = Folder.query.filter_by(name="pics").one().id
+    buf = _io.BytesIO()
+    _Image.new("RGB", (10, 10), "red").save(buf, format="PNG")
+    auth_client.post("/upload", data={
+        "folder_id": str(folder_id),
+        "files": (_io.BytesIO(buf.getvalue()), "red.png"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+    with app.app_context():
+        stored = StoredFile.query.filter_by(name="red.png").one()
+        fid = stored.id
+        thumb = file_service.thumbnail_path(stored)
+        assert _os.path.exists(thumb)  # generated at upload
+        stored.index.caption = "a red square"
+        db.session.commit()
+        search_service.fts_upsert(fid)
+
+    auth_client.post(f"/file/{fid}/delete", follow_redirects=True)
+    auth_client.post(f"/folder/{folder_id}/delete", follow_redirects=True)
+
+    with app.app_context():
+        assert db.session.get(StoredFile, fid) is None
+        assert not _os.path.exists(thumb)
+        assert FileIndex.query.filter_by(file_id=fid).count() == 0
