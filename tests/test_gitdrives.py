@@ -5,7 +5,7 @@ import os
 import pytest
 
 from app.extensions import db
-from app.models import Drive, ModuleState, StoredFile
+from app.models import Drive, ModuleState, StoredFile, User
 from app.services import drive_service
 
 
@@ -74,7 +74,7 @@ def test_clone_creates_mirror_drive(auth_client, app, gitrepo, enabled):
             "hello git drive"
 
 
-def test_pull_picks_up_new_commits(auth_client, app, gitrepo, enabled):
+def test_pull_picks_up_new_commits(auth_client, app, user, gitrepo, enabled):
     from dulwich import porcelain
 
     _create(auth_client, gitrepo)
@@ -87,12 +87,47 @@ def test_pull_picks_up_new_commits(auth_client, app, gitrepo, enabled):
     porcelain.add(gitrepo, paths=["second.txt"])
     porcelain.commit(gitrepo, message=b"second",
                      author=b"T <t@t>", committer=b"T <t@t>")
+    # POST /drives/<id>/sync is admin-only: promote the owner so pull runs.
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
     resp = auth_client.post(f"/drives/{did}/sync",
                             follow_redirects=True)
     assert b"Sync complete" in resp.data
     with app.app_context():
         names = {f.name for f in StoredFile.query.filter_by(drive_id=did)}
         assert names == {"readme.md", "second.txt"}
+
+
+def test_gitdrive_sync_now_refuses_non_admin(auth_client, app, user,
+                                             monkeypatch):
+    """POST /drives/<id>/sync is admin-only: a non-admin owner gets 403
+    and no sync is started (plain refusal pin for gitdrive rows)."""
+    from types import SimpleNamespace
+
+    from app.services import sync_service
+
+    calls = []
+
+    def fake_start_sync(drive, app=None):
+        calls.append(drive.id)
+        return SimpleNamespace(state="done", stats={"added": 0, "updated": 0,
+                                                    "removed": 0,
+                                                    "skipped": 0})
+
+    monkeypatch.setattr(sync_service, "start_sync", fake_start_sync)
+    with app.app_context():
+        db.session.get(User, user).is_admin = False
+        db.session.commit()
+        drive = Drive(name="Git", user_id=user, source_kind="git",
+                      repo_url="https://github.com/o/r.git",
+                      source_path="/tmp/gitdrive-test-cache")
+        db.session.add(drive)
+        db.session.commit()
+        did = drive.id
+    resp = auth_client.post(f"/drives/{did}/sync")
+    assert resp.status_code == 403
+    assert calls == []  # the route's only sync path is start_sync
 
 
 def test_git_drive_is_read_only(auth_client, app, gitrepo, enabled):
