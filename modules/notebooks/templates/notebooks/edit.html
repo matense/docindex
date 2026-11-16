@@ -8,7 +8,7 @@
         <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
            title="All notebooks"><i class="fas fa-arrow-left"></i></a>
         <div class="flex-1 min-w-0 nb-toolbar-doc">
-            <h1 class="font-bold truncate">{{ doc.title }}</h1>
+            <h1 id="nb-title" class="font-bold truncate cursor-pointer" title="Click to rename">{{ doc.title }}</h1>
             <p class="text-xs opacity-40">
                 {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
             </p>
@@ -489,6 +489,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     const opts = {
         fileId: {{ file.id }},
         saveUrl: {{ url_for('notebooks.save', file_id=file.id)|tojson }},
+        renameUrl: {{ url_for('notebooks.rename', file_id=file.id)|tojson }},
         docUrl: {{ url_for('notebooks.document_json', file_id=file.id)|tojson }},
         assetsUrl: {{ url_for('notebooks.upload_asset', file_id=file.id)|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
@@ -502,7 +503,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     // editor script on demand — it stays cached in window after first load.
     if (window.NotebookEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=12')|tojson }};
+    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=13')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

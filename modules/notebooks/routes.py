@@ -252,6 +252,16 @@ def rename(file_id):
         abort(400, "Name is required.")
     if not name.lower().endswith(f".{doc_service.EXTENSION}"):
         name = f"{name}.{doc_service.EXTENSION}"
+    # Single-source rule: the file name and doc["title"] stay in sync both
+    # ways — a rename writes the stripped title into the document as well.
+    # The file name is assigned AFTER save_document: it refreshes the row
+    # inside its write lock, which would discard an unflushed name change.
+    try:
+        document = doc_service.load(stored)
+    except ValueError as exc:
+        abort(400, str(exc))
+    document["title"] = name[: -(len(doc_service.EXTENSION) + 1)]
+    doc_service.save_document(stored, document)
     stored.name = name
     db.session.commit()
     from app.services import search_service

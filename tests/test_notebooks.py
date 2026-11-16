@@ -1573,3 +1573,24 @@ def test_keep_open_on_chat_click_pin():
     parts = src.split('addEventListener("focusout"')
     assert len(parts) > 1  # focusout handlers exist
     assert any("relatedTarget" in chunk[:1500] for chunk in parts[1:])
+
+
+def test_title_rename_sync_both_ways(app, auth_client, user, enabled):
+    """N1: the file name and doc["title"] stay in sync both ways through
+    POST /m/notebooks/<id>/rename."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    # Direction 1: rename updates the file name AND doc["title"].
+    auth_client.post(f"/m/notebooks/{fid}/rename", data={"name": "novo"})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "novo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "novo"
+    # Direction 2: a title edit through the same path updates the file name
+    # (extension added, whitespace stripped) and doc["title"] together.
+    auth_client.post(f"/m/notebooks/{fid}/rename",
+                     data={"name": "  segundo  "})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "segundo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "segundo"

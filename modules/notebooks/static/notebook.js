@@ -1230,6 +1230,70 @@
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
+        // --- Inline title edit: click the h1 to rename --------------------
+        // Commits through the same rename route as the list page, so the
+        // file name and doc["title"] stay in sync both ways. Enter or blur
+        // commits, Esc cancels.
+        const titleEl = root.querySelector("#nb-title");
+        async function commitTitle(value, original) {
+            const fd = new FormData();
+            fd.append("name", value);
+            let resp = null;
+            try {
+                resp = await fetch(opts.renameUrl,
+                    { method: "POST", body: fd });
+            } catch (err) { resp = null; }
+            if (!resp || !resp.ok) {
+                titleEl.textContent = original;
+                setStatus("error", "rename failed");
+                return;
+            }
+            doc.title = value;
+            baseDoc.title = value;
+            titleEl.textContent = value;
+            if (window.currentFile) {
+                window.currentFile.name =
+                    value.toLowerCase().endsWith(".pdocnb")
+                        ? value : value + ".pdocnb";
+            }
+        }
+        if (titleEl && opts.renameUrl) {
+            titleEl.addEventListener("click", () => {
+                if (titleEl.querySelector("input")) return;  // already editing
+                const original = doc.title || "";
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = original;
+                input.className = "input input-bordered input-sm w-full";
+                input.setAttribute("aria-label", "Notebook title");
+                titleEl.textContent = "";
+                titleEl.appendChild(input);
+                input.focus();
+                input.select();
+                let done = false;
+                const finish = (commit) => {
+                    if (done) return;
+                    done = true;
+                    const value = (input.value || "").trim() || original;
+                    if (!commit || value === original) {
+                        titleEl.textContent = original;
+                        return;
+                    }
+                    titleEl.textContent = value;
+                    commitTitle(value, original);
+                };
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        finish(true);
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        finish(false);
+                    }
+                });
+                input.addEventListener("blur", () => finish(true));
+            });
+        }
         checkPendingConflict();
 
         function activeCellIds() {
