@@ -2,7 +2,7 @@ import io
 from unittest.mock import patch
 
 from app.extensions import db
-from app.models import StoredFile, User
+from app.models import FileEmbedding, StoredFile, User
 from app.services import embedding_service, hashtag_service, search_service
 
 
@@ -273,3 +273,102 @@ def test_similar_files_endpoint(auth_client, app, user):
     names = [f["name"] for f in resp.get_json()["files"]]
     assert "tomcat.txt" in names
     assert "kitten.txt" not in names
+
+
+# --------------------------------------- B1: zero-copy scan, winners text ---
+
+
+_B1_DIMS = 8
+_B1_TEXT_PAD = "x" * 4000
+
+
+def _b1_seed(app, user, n_files=6, chunks=4):
+    """Deterministic fixture: file 0 chunks match the query; rest do not."""
+    import math
+    with app.app_context():
+        u = _user(app, user)
+        qv = [1.0] + [0.0] * (_B1_DIMS - 1)
+        for f in range(n_files):
+            stored = StoredFile(name=f"b1-{f}.txt", stored_name=f"b1-{f}",
+                                extension="txt", size=10, user_id=user)
+            db.session.add(stored)
+            db.session.flush()
+            for c in range(chunks):
+                if f == 0:
+                    vec = list(qv)
+                else:
+                    vec = [0.0] * _B1_DIMS
+                    vec[(f + c) % _B1_DIMS] = 1.0
+                    if (f + c) % _B1_DIMS == 0:
+                        vec[1] = 1.0
+                        vec[0] = 0.0
+                    n = math.sqrt(sum(x * x for x in vec))
+                    vec = [x / n for x in vec]
+                db.session.add(FileEmbedding(
+                    file_id=stored.id, chunk_index=c,
+                    text=f"winner-text-f{f}-c{c} " + _B1_TEXT_PAD,
+                    text_hash="h", embedding=embedding_service._pack(vec),
+                    model="m", dims=_B1_DIMS))
+        db.session.commit()
+        return u.id
+
+
+def _b1_query(app, uid, **kw):
+    from app.models import User as _U
+    u = db.session.get(_U, uid)
+    return embedding_service.semantic_search(u, "query", **kw)
+
+
+def test_semantic_search_topk_stable(app, user):
+    uid = _b1_seed(app, user)
+    qv = [[1.0] + [0.0] * (_B1_DIMS - 1)]
+    with app.app_context():
+        with patch.object(embedding_service, "embed_texts",
+                          return_value=qv):
+            before = _b1_query(app, uid, limit=5, with_text=True)
+            after = _b1_query(app, uid, limit=5, with_text=True)
+    assert [fid for fid, _, _ in before] == [fid for fid, _, _ in after]
+    assert [s for _, s, _ in before] == [s for _, s, _ in after]
+    assert [t for _, _, t in before] == [t for _, _, t in after]
+    # Planted winner ranks first with a perfect score; winners carry text.
+    assert before[0][1] == 1.0
+    assert before[0][2].startswith("winner-text-f0-")
+    assert all(t.startswith("winner-text-") for _, _, t in before)
+
+
+def test_semantic_search_bounds_scan(app, user):
+    from sqlalchemy import event as _event
+    uid = _b1_seed(app, user)
+    qv = [[1.0] + [0.0] * (_B1_DIMS - 1)]
+    stmts = []
+    with app.app_context():
+        engine = db.session.get_bind()
+
+        def _capture(conn, cur, s, params, ctx, many):
+            stmts.append(s)
+
+        _event.listen(engine, "before_cursor_execute", _capture)
+        try:
+            with patch.object(embedding_service, "embed_texts",
+                              return_value=qv):
+                _b1_query(app, uid, limit=5, with_text=True)
+        finally:
+            _event.remove(engine, "before_cursor_execute", _capture)
+    scans = [s for s in stmts
+             if "file_embeddings" in s
+             and s.strip().upper().startswith("SELECT")
+             and "EXISTS" not in s.upper()
+             and "files" in s]
+    assert scans, "expected a scan over file_embeddings joined to files"
+    for s in scans:
+        cols = s.split("FROM")[0].lower()
+        assert "text" not in cols, \
+            f"scan streams full rows incl. text: {s[:200]}"
+    # No struct.unpack list round-trip on the scan path.
+    with app.app_context():
+        with patch.object(embedding_service, "embed_texts",
+                          return_value=qv), \
+             patch.object(embedding_service, "_unpack",
+                          side_effect=AssertionError("_unpack used")):
+            res = _b1_query(app, uid, limit=5, with_text=True)
+    assert len(res) == 5
