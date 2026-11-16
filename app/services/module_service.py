@@ -194,9 +194,27 @@ def load_all(app):
     return _discovered
 
 
+def _module_state_map():
+    """name -> ModuleState row, fetched with one query and cached in
+    flask.g for the current request (re-fetched when outside a request,
+    so ad-hoc app contexts always see fresh state)."""
+    try:
+        from flask import g, has_request_context
+        if has_request_context():
+            cached = g.get("_docindex_module_states", None)
+            if cached is None:
+                cached = {s.name: s for s in ModuleState.query.all()}
+                g._docindex_module_states = cached
+            return cached
+    except Exception:  # noqa: BLE001 - cache must never break lookups
+        pass
+    return {s.name: s for s in ModuleState.query.all()}
+
+
 def is_enabled(name):
-    """True when the module is enabled (DB lookup, per request)."""
-    return ModuleState.is_enabled(name)
+    """True when the module is enabled (ModuleState rows cached per request)."""
+    row = _module_state_map().get(name)
+    return bool(row and row.enabled)
 
 
 def list_modules():
@@ -205,7 +223,7 @@ def list_modules():
 
     modules = []
     for name, manifest in sorted(_discovered.items()):
-        state = db.session.get(ModuleState, name)
+        state = _module_state_map().get(name)
         enabled_by = None
         if state and state.enabled_by:
             user = db.session.get(User, state.enabled_by)
@@ -270,6 +288,12 @@ def set_enabled(name, enabled, user):
         state.enabled_by = user.id
     db.session.commit()
     try:
+        from flask import g, has_request_context
+        if has_request_context():
+            g.pop("_docindex_module_states", None)
+    except Exception:  # noqa: BLE001 - cache reset must never break toggle
+        pass
+    try:
         from . import agent_service
         cache = getattr(agent_service, "_active_tools_cache", None)
         if isinstance(cache, dict):
@@ -300,6 +324,19 @@ def _bust_tool_cache():
         pass
 
 
+def _tool_specs(module):
+    """TOOL_SPECS from the loader's canonical module object.
+
+    Modules are imported exactly once as ``docindex_module_<name>``; reading
+    the specs off that object (instead of a second ``modules.<name>.tools``
+    import) keeps a single module object per module.
+    """
+    mod = sys.modules.get(f"docindex_module_{module}")
+    tools_mod = getattr(mod, "tools", None) if mod is not None else None
+    specs = getattr(tools_mod, "TOOL_SPECS", [])
+    return specs if isinstance(specs, list) else []
+
+
 def get_tool_toggles(module):
     """Disabled tool selections for a module: {"sections": [...],
     "tools": [...]} (short tool names, category names). Empty when the
@@ -322,12 +359,7 @@ def set_tool_toggles(module, sections, tools):
     TOOL_SPECS when it exposes one) and bust the agent tool cache."""
     sections = [s for s in (sections or []) if isinstance(s, str)]
     tools = [t for t in (tools or []) if isinstance(t, str)]
-    try:
-        import importlib
-        specs = getattr(importlib.import_module(f"modules.{module}.tools"),
-                        "TOOL_SPECS", [])
-    except (ImportError, AttributeError):
-        specs = []
+    specs = _tool_specs(module)
     if specs:
         known_sections = {s.get("category") for s in specs}
         known_tools = {s.get("name") for s in specs}
@@ -348,12 +380,7 @@ def disabled_tool_names(module):
     toggles = get_tool_toggles(module)
     if not toggles["sections"] and not toggles["tools"]:
         return set()
-    try:
-        import importlib
-        specs = getattr(importlib.import_module(f"modules.{module}.tools"),
-                        "TOOL_SPECS", [])
-    except (ImportError, AttributeError):
-        specs = []
+    specs = _tool_specs(module)
     out = set()
     for spec in specs:
         short = spec.get("name") or ""
