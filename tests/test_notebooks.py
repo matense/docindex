@@ -1647,3 +1647,24 @@ def test_undo_covers_conflict_rebase_path():
     # The inaccurate comment (rebase "only rearranges already-tracked
     # local state") must be gone.
     assert "only rearranges already-tracked local state" not in src
+
+
+def test_toc_layout_and_badges():
+    """N3: sticky TOC side layout; renderToc indexes heading cells plus
+    in-cell markdown (#/##/###) and richtext (<h1-3>) headers with MD/RT
+    badges, smooth scroll and active-section highlight."""
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    assert "nb-body-layout" in html
+    assert "lg:sticky" in html and "lg:top-20" in html
+    assert "lg:w-56" in html and "overflow-y-auto" in html
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "^#{1,3}" in src or "#{1,3}" in src
+    assert '"MD"' in src or "'MD'" in src
+    assert '"RT"' in src or "'RT'" in src
+    assert "smooth" in src
+    assert "nb-toc-active" in src

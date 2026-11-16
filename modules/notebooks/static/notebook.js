@@ -1152,9 +1152,11 @@
             window.removeEventListener("beforeunload", onBeforeUnload);
             document.removeEventListener("keydown", onKeydown);
             window.removeEventListener("notebook_changed", onNotebookChanged);
+            window.removeEventListener("scroll", onTocScroll);
         }
         window.addEventListener("beforeunload", onBeforeUnload);
         document.addEventListener("keydown", onKeydown);
+        window.addEventListener("scroll", onTocScroll, { passive: true });
 
         const checkpointBtn = root.querySelector("#nb-checkpoint-btn");
         if (checkpointBtn) {
@@ -1627,33 +1629,107 @@
             return head;
         }
 
-        // Document index: titles and subtitles with scroll-to links.
+        // Document index: heading cells plus in-cell markdown (#/##/###)
+        // and richtext (<h1>-<h3>) headers, with MD/RT badges, smooth
+        // scroll-to-cell links and scroll-spy active highlight.
         function renderToc() {
             if (!tocListEl) return;
             tocListEl.innerHTML = "";
-            const entries = doc.cells.filter(
-                (c) => c.type === "heading" && c.content.trim());
+            const entries = [];
+            (doc.cells || []).forEach((cell) => {
+                if (cell.type === "heading"
+                        && (cell.content || "").trim()) {
+                    entries.push({ cellId: cell.id,
+                        level: (cell.meta && cell.meta.level === 2) ? 2 : 1,
+                        text: cell.content.trim(), badge: null });
+                } else if (cell.type === "markdown"
+                        && typeof cell.content === "string") {
+                    cell.content.split("\n").forEach((line) => {
+                        const m = line.match(/^#{1,3}\s+(.+)$/);
+                        if (m && m[1].trim()) {
+                            entries.push({ cellId: cell.id,
+                                level: line.match(/^#+/)[0].length,
+                                text: m[1].trim(), badge: "MD" });
+                        }
+                    });
+                } else if (cell.type === "richtext"
+                        && typeof cell.content === "string") {
+                    const re = /<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi;
+                    let m;
+                    while ((m = re.exec(cell.content)) !== null) {
+                        const text = m[2].replace(/<[^>]+>/g, "").trim();
+                        if (text) {
+                            entries.push({ cellId: cell.id,
+                                level: parseInt(m[1], 10),
+                                text: text, badge: "RT" });
+                        }
+                    }
+                }
+            });
             if (!entries.length) {
                 tocListEl.appendChild(el("span", "text-xs opacity-40",
                     "No headings yet — add a Heading cell to structure the notebook."));
                 return;
             }
-            entries.forEach((cell) => {
+            entries.forEach((entry) => {
                 const a = el("a",
-                    (cell.meta && cell.meta.level === 2)
-                        ? "nb-toc-subtitle" : "nb-toc-title",
-                    cell.content);
+                    entry.level === 1 ? "nb-toc-title" : "nb-toc-subtitle");
                 a.href = "#";
+                a.dataset.tocCell = entry.cellId;
+                a.appendChild(document.createTextNode(entry.text));
+                if (entry.badge) {
+                    a.appendChild(document.createTextNode(" "));
+                    a.appendChild(el("span", "nb-toc-badge", entry.badge));
+                }
                 a.addEventListener("click", (e) => {
                     e.preventDefault();
-                    const target = document.getElementById("nb-cell-" + cell.id);
-                    if (target) {
-                        target.scrollIntoView({ behavior: "smooth", block: "start" });
-                        target.classList.add("ring", "ring-primary/40");
-                        setTimeout(() => target.classList.remove("ring", "ring-primary/40"), 1200);
-                    }
+                    scrollToTocEntry(entry.cellId);
                 });
                 tocListEl.appendChild(a);
+            });
+            updateTocActive();
+        }
+
+        function scrollToTocEntry(cellId) {
+            const target = document.getElementById("nb-cell-" + cellId);
+            if (target) {
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+                target.classList.add("ring", "ring-primary/40");
+                setTimeout(() => target.classList.remove(
+                    "ring", "ring-primary/40"), 1200);
+            }
+            markTocActive(cellId);
+        }
+
+        function markTocActive(cellId) {
+            if (!tocListEl) return;
+            tocListEl.querySelectorAll("a").forEach((a) => {
+                a.classList.toggle("nb-toc-active",
+                    a.dataset.tocCell === cellId);
+            });
+        }
+
+        // Scroll-spy: highlight the entry of the last cell at/above the
+        // viewport top (rAF-throttled; no-op while the index is empty).
+        let tocSpyQueued = false;
+        function updateTocActive() {
+            if (!tocListEl) return;
+            if (!tocListEl.querySelectorAll("a").length) return;
+            let current = null;
+            (doc.cells || []).forEach((cell) => {
+                const node = document.getElementById("nb-cell-" + cell.id);
+                if (node && node.getBoundingClientRect().top <= 120) {
+                    current = cell.id;
+                }
+            });
+            if (current) markTocActive(current);
+        }
+        function onTocScroll() {
+            if (tocSpyQueued) return;
+            tocSpyQueued = true;
+            requestAnimationFrame(() => {
+                tocSpyQueued = false;
+                updateTocActive();
             });
         }
 
