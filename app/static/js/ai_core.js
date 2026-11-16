@@ -66,6 +66,34 @@
         return 'fa-wrench';
     }
 
+    // Reasoning badges: per-turn tool-call categories (spec §4.1). Exact
+    // tool-name lists — the brief's values win on any conflict. `.read`
+    // entries win over the `notebooks.`/`dashboards.` edit prefix below.
+    const REASONING_SEARCH_TOOLS = ['search_files', 'grep_file', 'list_files'];
+    const REASONING_READ_TOOLS = ['read_file', 'get_file_info', 'view_image',
+        'notebooks.read', 'dashboards.read'];
+    const REASONING_COMPUTE_TOOLS = ['pyrun.compute'];
+
+    function toolCategory(name) {
+        if (!name) return null;
+        if (REASONING_SEARCH_TOOLS.indexOf(name) !== -1) return 'search';
+        if (REASONING_READ_TOOLS.indexOf(name) !== -1) return 'read';
+        if (REASONING_COMPUTE_TOOLS.indexOf(name) !== -1) return 'compute';
+        if (name.startsWith('notebooks.') || name.startsWith('dashboards.') ||
+            name.startsWith('automation.') || name.startsWith('whiteboards.')) return 'edit';
+        return null;
+    }
+
+    // Badge contract: `[🔍 N search] [📄 N read] [🐍 pyrun SQL] [✨ N edit]`.
+    function reasoningBadgesText(counts) {
+        const bits = [];
+        if (counts.search > 0) bits.push('[🔍 ' + counts.search + ' search]');
+        if (counts.read > 0) bits.push('[📄 ' + counts.read + ' read]');
+        if (counts.compute > 0) bits.push('[🐍 pyrun SQL]');
+        if (counts.edit > 0) bits.push('[✨ ' + counts.edit + ' edit]');
+        return bits.join(' ');
+    }
+
     function iconFor(ext, isImage) {
         if (isImage) return 'fa-image text-secondary';
         const map = { pdf: 'fa-file-pdf text-error', txt: 'fa-file-lines', md: 'fa-file-lines', py: 'fa-file-code', js: 'fa-file-code', html: 'fa-file-code', json: 'fa-file-code', docx: 'fa-file-word text-info', xlsx: 'fa-file-excel text-success', pdocnb: 'fa-book-open text-amber-500' };
@@ -123,6 +151,8 @@
         let liveBubble = null;
         let toolChipEl = null;
         let toolElapsedTimer = null;
+        let toolCategoryCounts = null;
+        let reasoningStartedAt = 0;
         let thinkBuf = '';
         let answerBuf = '';
         let rafScheduled = false;
@@ -132,6 +162,9 @@
         let mentionTimer = null;
         let mentionHideTimer = null;
         let mentionToken = 0;
+        let mentionActiveIdx = 0;
+        let mentionStartIdx = 0;
+        let mentionEndIdx = 0;
         let lastUserQuestion = null;
         let lastAssistantDiv = null;
 
@@ -155,6 +188,8 @@
         let deepMode = false;
         let composerBound = false;
         let chromeBound = false;
+        let onDocClick = null;
+        let onDriveChanged = null;
         let pendingSummaries = {};
         let personaCache = null;
         let taskMode = null;
@@ -172,8 +207,29 @@
                             '<span>History compacted — messages above are out of context</span>';
             messagesEl.appendChild(div);
         }
-        function addBubbleActions(div, role, content) {
+        // Cross-module gating: the dashboards nav entry only renders
+        // when the module is enabled — no nav entry means off (fail closed).
+        function dashboardsEnabled() {
+            return !!document.querySelector('a[href^="/m/dashboards"]');
+        }
+        function insertInNotebook(content) {
+            copyWithToast(content || '');  // payload ready in the clipboard
+            const f = window.currentFile;
+            if (f && f.id && /\.pdocnb$/i.test(f.name || '')) {
+                if (window.spaNavigate) window.spaNavigate('/file/' + f.id + '/view');
+            } else if (window.spaNavigate) {
+                window.spaNavigate('/m/notebooks/');
+            }
+            if (window.uiToast) window.uiToast('Answer copied — paste it as a new cell in the notebook.', 'info');
+        }
+        function pinToDashboard(content) {
+            copyWithToast(content || '');  // payload ready in the clipboard
+            if (window.spaNavigate) window.spaNavigate('/m/dashboards/');
+            if (window.uiToast) window.uiToast('Answer copied — create a card from it in the dashboard.', 'info');
+        }
+        function addBubbleActions(div, role, content, meta) {
             div._rawContent = content;
+            const msgId = meta && meta.id ? meta.id : null;
             const bar = document.createElement('div');
             bar.className = 'ai-msg-actions';
             const copy = document.createElement('button');
@@ -184,6 +240,42 @@
             copy.innerHTML = '<i class="fas fa-copy"></i>';
             copy.addEventListener('click', () => copyWithToast(div._rawContent || ''));
             bar.appendChild(copy);
+            if (role === 'user') {
+                const edit = document.createElement('button');
+                edit.type = 'button';
+                edit.className = 'ai-msg-btn';
+                edit.title = 'Edit & Resend — load this message back into the composer';
+                edit.setAttribute('aria-label', 'Edit and resend message');
+                edit.innerHTML = '<i class="fas fa-pen"></i>';
+                edit.addEventListener('click', () => {
+                    if (!input) return;
+                    input.value = (div._rawContent || '').replace(/\n\n📎 [^\n]*$/, '');
+                    growInput();
+                    input.focus();
+                });
+                bar.appendChild(edit);
+                const branch = document.createElement('button');
+                branch.type = 'button';
+                branch.className = 'ai-msg-btn';
+                branch.title = 'Branch — fork the conversation up to this message';
+                branch.setAttribute('aria-label', 'Branch conversation here');
+                branch.innerHTML = '<i class="fas fa-code-branch"></i>';
+                branch.addEventListener('click', () => {
+                    if (!msgId || !conversationId) {
+                        if (window.uiToast) window.uiToast('Reopen the conversation to branch from here.', 'info');
+                        return;
+                    }
+                    apiFetch('/ai/conversations/' + conversationId + '/branch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
+                        body: JSON.stringify({ up_to_message_id: msgId }),
+                    }, { silent: true }).then(res => {
+                        if (res && res.id) loadConversation(res.id);
+                        else if (window.uiToast) window.uiToast('Could not create the branch.', 'error');
+                    });
+                });
+                bar.appendChild(branch);
+            }
             if (role === 'assistant') {
                 const regen = document.createElement('button');
                 regen.type = 'button';
@@ -193,6 +285,28 @@
                 regen.innerHTML = '<i class="fas fa-rotate-right"></i>';
                 regen.addEventListener('click', regenerateLast);
                 bar.appendChild(regen);
+                const nb = document.createElement('button');
+                nb.type = 'button';
+                nb.className = 'ai-msg-btn';
+                nb.title = 'Insert in Notebook — copy this answer and open the notebook';
+                nb.setAttribute('aria-label', 'Insert in Notebook');
+                nb.innerHTML = '<i class="fas fa-book-open"></i>';
+                nb.addEventListener('click', () => insertInNotebook(div._rawContent || ''));
+                bar.appendChild(nb);
+                const pin = document.createElement('button');
+                pin.type = 'button';
+                pin.className = 'ai-msg-btn';
+                pin.innerHTML = '<i class="fas fa-thumbtack"></i>';
+                if (dashboardsEnabled()) {
+                    pin.title = 'Pin to Dashboard — copy this answer and open dashboards';
+                    pin.setAttribute('aria-label', 'Pin to Dashboard');
+                    pin.addEventListener('click', () => pinToDashboard(div._rawContent || ''));
+                } else {
+                    pin.disabled = true;
+                    pin.title = 'Pin to Dashboard (dashboards module is disabled)';
+                    pin.setAttribute('aria-label', 'Pin to Dashboard (unavailable)');
+                }
+                bar.appendChild(pin);
                 if (lastAssistantDiv) {
                     lastAssistantDiv.querySelector('.ai-msg-regen')?.remove();
                 }
@@ -208,7 +322,7 @@
                 div.innerHTML = '<div class="chat-bubble chat-bubble-primary whitespace-pre-line"></div>';
                 div.querySelector('.chat-bubble').textContent = content;
                 addMetaFooter(div, meta);
-                addBubbleActions(div, role, content);
+                addBubbleActions(div, role, content, meta);
             } else if (role === 'thinking') {
                 const det = document.createElement('details');
                 det.className = 'ai-reasoning rounded-xl';
@@ -251,7 +365,7 @@
                 bubble.innerHTML = renderMarkdown(content);
                 enhanceBubble(bubble);
                 addMetaFooter(div, meta);
-                addBubbleActions(div, 'assistant', content);
+                addBubbleActions(div, 'assistant', content, meta);
             }
             messagesEl.appendChild(div);
             scrollDown(role === 'user');  // always follow your own message
@@ -370,9 +484,81 @@
             }
         }
         function attachFile(id, name) {
-            if (attachments.some(a => a.id === id)) return;
-            attachments.push({ id, name });
+            // Server ids arrive as numbers, DOM ids as strings — normalize
+            // so the same file never chips twice (?conv=2.7-style mismatch).
+            const key = String(id);
+            if (attachments.some(a => String(a.id) === key)) return;
+            attachments.push({ id: key, name });
             renderChips();
+        }
+        function fmtPeekSize(n) {
+            n = Number(n) || 0;
+            if (n < 1024) return n + ' B';
+            if (n < 1048576) return (n / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+            return (n / 1048576).toFixed(1).replace(/\.0$/, '') + ' MB';
+        }
+        let peekPop = null;
+        function closePeekPopover() {
+            if (peekPop) { peekPop.remove(); peekPop = null; }
+        }
+        // Quick-peek (spec §4.2): a citation pill opens a preview card
+        // immediately above the composer — name/drive/size, the snippet
+        // escaped with escapeHtml, + Anexar (attachments + renderChips),
+        // Abrir (view_url via spaNavigate), × to close.
+        async function openPeekPopover(fileId) {
+            closePeekPopover();
+            const esc = (window.DocIndex && window.DocIndex.escapeHtml)
+                || function (s) {
+                    return String(s == null ? '' : s)
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                };
+            const pop = document.createElement('div');
+            pop.className = 'ai-peek-popover';
+            pop.innerHTML = '<div class="ai-peek-loading">Loading preview…</div>';
+            const host = menuAnchor || (form && form.parentNode) || document.body;
+            if (host !== document.body) host.style.position = 'relative';
+            host.appendChild(pop);
+            peekPop = pop;
+            let data = null;
+            try {
+                const resp = await fetch('/ai/files/' + fileId + '/peek',
+                    { headers: { 'Accept': 'application/json' } });
+                if (resp.ok) data = await resp.json();
+            } catch { /* network trouble: the error state below covers it */ }
+            if (peekPop !== pop) return;  // closed while loading
+            if (!data || typeof data !== 'object') {
+                pop.innerHTML = '<div class="ai-peek-head">' +
+                    '<span class="ai-peek-title">Preview unavailable</span>' +
+                    '<button type="button" class="ai-peek-close" title="Close">×</button></div>';
+                pop.querySelector('.ai-peek-close').addEventListener('click', closePeekPopover);
+                return;
+            }
+            const meta = [];
+            if (data.drive_name) meta.push(data.drive_name);
+            meta.push(fmtPeekSize(data.size));
+            pop.innerHTML =
+                '<div class="ai-peek-head">' +
+                '<i class="fas fa-file-lines"></i> ' +
+                '<span class="ai-peek-title">' + esc(data.name) + '</span>' +
+                '<span class="ai-peek-meta">' + esc(meta.join(' · ')) + '</span>' +
+                '<button type="button" class="ai-peek-close" title="Close">×</button></div>' +
+                '<pre class="ai-peek-snippet">' + esc(data.snippet || '(no preview available)') + '</pre>' +
+                '<div class="ai-peek-actions">' +
+                '<button type="button" class="ai-peek-attach">+ Anexar</button>' +
+                '<button type="button" class="ai-peek-open">Abrir ↗</button></div>';
+            pop.querySelector('.ai-peek-close').addEventListener('click', closePeekPopover);
+            pop.querySelector('.ai-peek-attach').addEventListener('click', () => {
+                attachFile(data.id, data.name);
+                closePeekPopover();
+                if (input) input.focus();
+            });
+            pop.querySelector('.ai-peek-open').addEventListener('click', () => {
+                const url = data.view_url;
+                closePeekPopover();
+                if (window.spaNavigate) window.spaNavigate(url);
+                else window.location.href = url;
+            });
         }
         function behaviorRow(b) {
             const row = document.createElement('button');
@@ -410,6 +596,8 @@
             lastThinkingSpan = null;
             liveBubble = null;
             toolChipEl = null;
+            toolCategoryCounts = null;
+            reasoningStartedAt = 0;
             thinkBuf = '';
             answerBuf = '';
             lastAssistantDiv = null;
@@ -432,7 +620,11 @@
         }
         function collapseReasoningBox() {
             settleToolChip(); // a still-running tool never got its result
-            if (reasoningBox) reasoningBox.open = false;
+            if (reasoningBox) {
+                renderReasoningBadges(reasoningBox, toolCategoryCounts,
+                    reasoningStartedAt);
+                reasoningBox.open = false;
+            }
             reasoningBox = null;
             reasoningBody = null;
             lastThinkingSpan = null;
@@ -441,6 +633,31 @@
             // the "New messages" pill doesn't stick around.
             if (asAtBottom()) asPaused = false;
             renderAutoScroll();
+        }
+        // Summary badges: per-turn category counts + total elapsed, visible
+        // even with the box closed. Rendered once (guard: collapse runs on
+        // every answer/error/reconcile).
+        function renderReasoningBadges(box, counts, startedAt) {
+            const summary = box.querySelector('summary');
+            if (!summary || !counts) return;
+            if (summary.querySelector('.ai-reasoning-badges')) return;
+            const text = reasoningBadgesText(counts);
+            if (!text) return;
+            const badges = document.createElement('span');
+            badges.className = 'ai-reasoning-badges';
+            badges.textContent = text;
+            const elapsed = document.createElement('span');
+            elapsed.className = 'ai-reasoning-elapsed mono';
+            elapsed.textContent =
+                ((Date.now() - (startedAt || Date.now())) / 1000).toFixed(1) + 's';
+            const chev = summary.querySelector('.ai-reasoning-chevron');
+            if (chev) {
+                summary.insertBefore(elapsed, chev);
+                summary.insertBefore(badges, chev);
+            } else {
+                summary.appendChild(badges);
+                summary.appendChild(elapsed);
+            }
         }
         function convGroupHeader(label) {
             const div = document.createElement('div');
@@ -500,11 +717,20 @@
                 '<div class="ai-reasoning-body"></div>';
             reasoningBody = reasoningBox.querySelector('.ai-reasoning-body');
             messagesEl.appendChild(reasoningBox);
+            toolCategoryCounts = { search: 0, read: 0, compute: 0, edit: 0 };
+            reasoningStartedAt = Date.now();
             scrollDown();
         }
         function ensureToolChip(label, name) {
             ensureReasoningBox();
             settleToolChip();
+            const cat = toolCategory(name);
+            if (cat) {
+                if (!toolCategoryCounts) {
+                    toolCategoryCounts = { search: 0, read: 0, compute: 0, edit: 0 };
+                }
+                toolCategoryCounts[cat]++;
+            }
             const chip = document.createElement('div');
             chip.className = 'ai-tool-line';
             chip.dataset.status = 'running';
@@ -664,20 +890,35 @@
         function pickDrive(d) {
             if (!driveRefs.some(r => r.id === d.id))
                 driveRefs.push({ id: d.id, name: d.name });
-            if (mentionToken) {
-                input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
-            }
+            input.value = input.value.slice(0, mentionStartIdx) + input.value.slice(mentionEndIdx);
+            input.setSelectionRange(mentionStartIdx, mentionStartIdx);
             hideMentions();
             renderChips();
             input.focus();
         }
         function pickMention(id, name) {
             attachFile(id, name);
-            if (mentionToken) {
-                input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
-            }
+            input.value = input.value.slice(0, mentionStartIdx) + input.value.slice(mentionEndIdx);
+            input.setSelectionRange(mentionStartIdx, mentionStartIdx);
             hideMentions();
             input.focus();
+        }
+        function pickWorkflow(wf) {
+            const insert = '/' + wf.name + ' ';
+            input.value = input.value.slice(0, mentionStartIdx) + insert + input.value.slice(mentionEndIdx);
+            const caret = mentionStartIdx + insert.length;
+            input.setSelectionRange(caret, caret);
+            hideMentions();
+            input.focus();
+        }
+        function refreshMentionHighlight() {
+            const rows = mentionEl.querySelectorAll('.cursor-pointer');
+            rows.forEach((row, i) => {
+                const on = i === mentionActiveIdx;
+                row.classList.toggle('bg-primary/15', on);
+                row.classList.toggle('text-primary', on);
+                row.classList.toggle('font-semibold', on);
+            });
         }
         function refreshSendKeyHint() {
             const base = deepMode ? deepPlaceholder : basePlaceholder;
@@ -734,7 +975,8 @@
         }
         function restoreContext(c) {
             attachments = (c && c.file_ids || []).map((id, i) => ({
-                id, name: (c.file_names || [])[i] || ('file #' + id),
+                id: String(id),
+                name: (c.file_names || [])[i] || ('file #' + id),
             }));
             driveRefs = (c && c.drive_ids || []).map((id, i) => ({
                 id, name: (c.drive_names || [])[i] || ('drive #' + id),
@@ -789,13 +1031,12 @@
                             row.className = 'flex items-center gap-2 px-3 py-2 hover:bg-primary/10 cursor-pointer text-sm';
                             row.innerHTML = '<i class="fas ' + iconFor(r.extension, r.is_image) + ' w-4 text-center"></i>';
                             row.appendChild(document.createTextNode(r.name));
-                            row.addEventListener('mousedown', (e) => {
-                                e.preventDefault();
-                                pickMention(r.file_id, r.name);
-                            });
+                            row.addEventListener('click', () => pickMention(r.file_id, r.name));
                             mentionEl.appendChild(row);
                         });
                     }
+                    mentionActiveIdx = 0;
+                    refreshMentionHighlight();
                     mentionEl.classList.remove('hidden');
                 });
         }
@@ -870,15 +1111,42 @@
                             tag.textContent = 'synced';
                             row.appendChild(tag);
                         }
-                        row.addEventListener('mousedown', (e) => {
-                            e.preventDefault(); // keep input focus
-                            pickDrive(d);
-                        });
+                        row.addEventListener('click', () => pickDrive(d));
                         mentionEl.appendChild(row);
                     });
                 }
+                mentionActiveIdx = 0;
+                refreshMentionHighlight();
                 mentionEl.classList.remove('hidden');
             });
+        }
+        function showWorkflowMentions(q) {
+            apiFetch('/m/automation/api/attachable',
+                { headers: { 'Accept': 'application/json' } },
+                { silent: true })
+                .then(data => {
+                    if (!mentionToken) return; // user moved on meanwhile
+                    const query = (q || '').toLowerCase();
+                    const wfs = ((data && data.workflows) || [])
+                        .filter(w => w && w.name
+                            && (!query || w.name.toLowerCase().includes(query)));
+                    mentionEl.innerHTML = '';
+                    if (!wfs.length) {
+                        mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No workflows found</div>';
+                    } else {
+                        wfs.slice(0, 12).forEach(wf => {
+                            const row = document.createElement('div');
+                            row.className = 'flex items-center gap-2 px-3 py-2 hover:bg-primary/10 cursor-pointer text-sm';
+                            row.innerHTML = '<i class="fas fa-diagram-project w-4 text-center text-emerald-400"></i>';
+                            row.appendChild(document.createTextNode(wf.name));
+                            row.addEventListener('click', () => pickWorkflow(wf));
+                            mentionEl.appendChild(row);
+                        });
+                    }
+                    mentionActiveIdx = 0;
+                    refreshMentionHighlight();
+                    mentionEl.classList.remove('hidden');
+                });
         }
         function showDropOverlay(show) {
             dropOverlay.classList.toggle('hidden', !show);
@@ -1176,7 +1444,8 @@
                     });
                 }
                 if (captured.context_file_name
-                        && !attachments.some(a => a.id === captured.context_file_id)) {
+                        && !attachments.some(a => String(a.id)
+                            === String(captured.context_file_id))) {
                     chip('badge-secondary', 'fa-eye', captured.context_file_name,
                          'Open on screen when the task started — ' + fixedTitle);
                 }
@@ -1190,7 +1459,8 @@
                          captured.context_cell.file_name + ' › cell', fixedTitle);
                 }
                 (captured.file_names || []).forEach((name, i) => {
-                    if (attachments.some(a => a.id === capFileIds[i])) return;
+                    if (attachments.some(a => String(a.id)
+                        === String(capFileIds[i]))) return;
                     chip('badge-primary', 'fa-paperclip', name, fixedTitle);
                 });
                 if (captured.persona && !personaRef) {
@@ -1264,7 +1534,8 @@
                 // Removable chip showing the open file shared as context.
                 if (window.currentFile
                         && window.currentFile.id !== contextDismissedId
-                        && !attachments.some(a => a.id === window.currentFile.id)) {
+                        && !attachments.some(a => String(a.id)
+                            === String(window.currentFile.id))) {
                     chip('badge-secondary', 'fa-eye', window.currentFile.name,
                          'Open on screen — the AI knows this is your current context',
                          () => {
@@ -1591,6 +1862,11 @@
             conversationId = null;
             lastConvSig = null;
             pendingConvId = null;
+            const meter = rootEl ? rootEl.querySelector('.ai-token-meter') : null;
+            if (meter) {
+                meter.classList.add('hidden');
+                meter.setAttribute('aria-hidden', 'true');
+            }
             attachments = [];
             cellRef = null;
             driveRefs = [];
@@ -1725,6 +2001,110 @@
             if (stats.tokens) bits.push('↑↓ ' + fmtTokens(stats.tokens));
             return ' · ' + bits.join(' · ');
         }
+        // Token meter: estimated prompt memory reported by the server
+        // (token_estimate / max_prompt_tokens on the conversation payload).
+        // Label reads "14.2k tok"/"850 tok", the fill width is clamped to
+        // 0-100% and turns amber past 75%. Clicking delegates to the host's
+        // Summarize control, i.e. the existing summarizeConversation flow —
+        // but only on hosts that have one; elsewhere (full page) the meter
+        // is a plain, non-clickable indicator with no click affordance.
+        function updateTokenMeter(estimate, maxTokens) {
+            const meter = rootEl ? rootEl.querySelector('.ai-token-meter') : null;
+            if (!meter) return;
+            const max = Number(maxTokens) > 0 ? Number(maxTokens) : 0;
+            const est = Math.max(0, Number(estimate) || 0);
+            const pct = max > 0
+                ? Math.min(100, Math.max(0, Math.round((est / max) * 100)))
+                : 0;
+            let fill = meter.querySelector('.ai-token-fill');
+            let label = meter.querySelector('.ai-token-label');
+            if (!fill || !label) {
+                meter.innerHTML = '';
+                const bar = document.createElement('span');
+                bar.className = 'ai-token-bar';
+                bar.style.cssText = 'display:inline-block;width:44px;height:4px;'
+                    + 'border-radius:2px;background:rgba(127,127,127,.35);'
+                    + 'overflow:hidden;vertical-align:middle;';
+                fill = document.createElement('span');
+                fill.className = 'ai-token-fill';
+                fill.style.cssText = 'display:block;height:100%;width:0%;'
+                    + 'background:currentColor;';
+                bar.appendChild(fill);
+                label = document.createElement('span');
+                label.className = 'ai-token-label';
+                const icon = document.createElement('i');
+                icon.className = 'fas fa-compress';
+                icon.style.cssText = 'font-size:9px;';
+                meter.appendChild(bar);
+                meter.appendChild(document.createTextNode(' '));
+                meter.appendChild(label);
+                meter.appendChild(document.createTextNode(' '));
+                meter.appendChild(icon);
+            }
+            // Gate the click affordance per call: only hosts with a Summarize
+            // control get role/cursor/click-title; the rest keep a plain label.
+            const host = rootEl.querySelector('.acw-summarize, #aip-summarize');
+            if (host) {
+                if (!meter.dataset.summarizeBound) {
+                    meter.dataset.summarizeBound = '1';
+                    meter.addEventListener('click', () => {
+                        const h = rootEl.querySelector('.acw-summarize, #aip-summarize');
+                        if (h) h.click();
+                    });
+                }
+                meter.title = 'Estimated prompt memory used · Click to Summarize & reset';
+                meter.setAttribute('role', 'button');
+                meter.style.cursor = 'pointer';
+            } else {
+                meter.title = 'Estimated prompt memory used';
+                meter.removeAttribute('role');
+                meter.style.cursor = '';
+            }
+            fill.style.width = pct + '%';
+            fill.style.background = pct > 75 ? '#f59e0b' : 'currentColor';
+            label.textContent = fmtTokens(est) + ' tok';
+            meter.classList.remove('hidden');
+            meter.setAttribute('aria-hidden', 'false');
+        }
+        // History grouping: one closed box per consecutive thinking/step run.
+        // Persisted steps are "label: detail" text (no tool names survive),
+        // so no category badges here — but the elapsed span still shows.
+        function historyElapsed(items) {
+            const t = items.map(m => {
+                if (!m.created_at) return NaN;
+                const iso = m.created_at;
+                return Date.parse(/Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
+            }).filter(v => !isNaN(v));
+            if (t.length < 2) return null;
+            return ((Math.max.apply(null, t) - Math.min.apply(null, t)) / 1000).toFixed(1) + 's';
+        }
+        function renderHistoryReasoning(items) {
+            if (emptyEl) emptyEl.remove();
+            const det = document.createElement('details');
+            det.className = 'ai-reasoning rounded-xl';
+            if (items.length && items.every(m => m.archived)) det.classList.add('ai-archived');
+            const elapsed = historyElapsed(items);
+            det.innerHTML =
+                '<summary><i class="fas fa-brain text-secondary"></i> ' +
+                '<span class="ai-reasoning-title">Reasoning</span>' +
+                (elapsed ? '<span class="ai-reasoning-elapsed mono">' + elapsed + '</span>' : '') +
+                '<i class="fas fa-chevron-down ai-reasoning-chevron"></i></summary>' +
+                '<div class="ai-reasoning-body"></div>';
+            const body = det.querySelector('.ai-reasoning-body');
+            items.forEach(m => {
+                const line = document.createElement('div');
+                if (m.role === 'thinking') {
+                    line.className = 'flex items-start gap-2 text-sm italic opacity-80';
+                    line.innerHTML = '<i class="fas fa-brain text-secondary mt-0.5 flex-shrink-0"></i><span class="whitespace-pre-wrap"></span>';
+                } else {
+                    line.className = 'text-xs opacity-60 flex items-center gap-2';
+                    line.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
+                }
+                line.querySelector('span').textContent = m.content;
+                body.appendChild(line);
+            });
+            messagesEl.appendChild(det);
+        }
         function loadConversation(id) {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             pendingConvId = id;  // rapid repeated opens focus, never clone
@@ -1733,6 +2113,7 @@
                     if (!conv) { pendingConvId = null; return; }
                     conversationId = conv.id;
                     pendingConvId = null;
+                    updateTokenMeter(conv.token_estimate, conv.max_prompt_tokens);
                     // Skip no-op re-renders (e.g. reconcile after Stop found
                     // nothing new): a full parse+highlight of a long history
                     // is the most expensive DOM op on this page.
@@ -1744,7 +2125,28 @@
                         lastConvSig = sig;
                         clearMessages();
                         let seenArchived = false;
+                        // Consecutive thinking/step lines collapse into one
+                        // closed <details class="ai-reasoning"> (spec §4.1) —
+                        // history never shows a stack of solo boxes.
+                        let pendingReasoning = [];
+                        const flushHistoryReasoning = () => {
+                            if (!pendingReasoning.length) return;
+                            const items = pendingReasoning;
+                            pendingReasoning = [];
+                            renderHistoryReasoning(items);
+                        };
                         conv.messages.forEach(m => {
+                            if (m.role === 'thinking' || m.role === 'step') {
+                                if (!m.archived && seenArchived) {
+                                    flushHistoryReasoning();
+                                    addArchiveDivider();
+                                    seenArchived = false;
+                                }
+                                pendingReasoning.push(m);
+                                if (m.archived) seenArchived = true;
+                                return;
+                            }
+                            flushHistoryReasoning();
                             if (!m.archived && seenArchived) {
                                 addArchiveDivider();
                                 seenArchived = false;
@@ -1760,6 +2162,7 @@
                                 if (el) el.classList.add('ai-archived');
                             }
                         });
+                        flushHistoryReasoning();
                     }
                     if (opts.taskMode && conv.task) {
                         // Task-owned conversation: banner + frozen context
@@ -1890,32 +2293,62 @@
                     return;
                 }
                 // $query — drive mention autocomplete (scopes the answer).
-                const dm = val.match(/\$(\S*)$/);
-                if (dm) {
-                    mentionToken = dm[0];
-                    showDriveMentions(dm[1]);
+                const cursor = input.selectionStart || 0;
+                const before = input.value.slice(0, cursor);
+                const driveMatch = before.match(/(?:^|\s)\$(\S*)$/);
+                const fileMatch = before.match(/(?:^|\s)#(\S*)$/);
+                const wfMatch = before.match(/(?:^|\s)\/(\S*)$/);
+                if (driveMatch) {
+                    mentionToken = '$' + driveMatch[1];
+                    mentionStartIdx = cursor - driveMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    showDriveMentions(driveMatch[1]);
                     return;
                 }
                 // #query — quick file-search autocomplete.
-                const m = val.match(/#(\S*)$/);
-                if (m) {
-                    mentionToken = m[0];
+                if (fileMatch) {
+                    mentionToken = '#' + fileMatch[1];
+                    mentionStartIdx = cursor - fileMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    const tok = mentionToken;
                     clearTimeout(mentionTimer);
-                    mentionTimer = setTimeout(() => searchMentions(m[1]), 250);
-                } else {
-                    hideMentions();
+                    mentionTimer = setTimeout(() => {
+                        if (mentionToken === tok) searchMentions(fileMatch[1]);
+                    }, 250);
+                    return;
                 }
+                // /query — workflow autocomplete.
+                if (wfMatch) {
+                    mentionToken = '/' + wfMatch[1];
+                    mentionStartIdx = cursor - wfMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    showWorkflowMentions(wfMatch[1]);
+                    return;
+                }
+                hideMentions();
             });
             input.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && !mentionEl.classList.contains('hidden')) {
+                const open = !mentionEl.classList.contains('hidden');
+                if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                    const rows = Array.from(mentionEl.querySelectorAll('.cursor-pointer'));
+                    if (!rows.length) return;
+                    e.preventDefault();
+                    mentionActiveIdx = e.key === 'ArrowDown'
+                        ? (mentionActiveIdx + 1) % rows.length
+                        : (mentionActiveIdx - 1 + rows.length) % rows.length;
+                    refreshMentionHighlight();
+                } else if (open && (e.key === 'Enter' || e.key === 'Tab')) {
+                    const rows = Array.from(mentionEl.querySelectorAll('.cursor-pointer'));
+                    if (rows.length) {
+                        e.preventDefault();
+                        rows[mentionActiveIdx].click();
+                    }
+                } else if (e.key === 'Escape' && open) {
                     hideMentions();
                     e.stopPropagation();
-                } else if (e.key === 'Enter' && !mentionEl.classList.contains('hidden')) {
-                    const first = mentionEl.querySelector('[class*="cursor-pointer"]');
-                    if (first) {
-                        e.preventDefault();
-                        first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-                    }
                 } else if (e.key === 'Enter' && e.shiftKey === document.body.classList.contains('shift-enter-send')) {
                     // Default: Enter sends, Shift+Enter newline. The profile
                     // "Shift + Enter" send-key preference swaps the two roles.
@@ -2107,6 +2540,19 @@
                 asPaused = !asAtBottom();
                 renderAutoScroll();
             });
+            // Quick-peek: a plain primary click on a citation pill opens
+            // the preview popover instead of navigating away. Modified or
+            // non-primary clicks keep their native behavior (new tab /
+            // window) via the plain /file/<id>/view href — there is no
+            // auxclick listener, so middle-click is never intercepted.
+            if (messagesEl) messagesEl.addEventListener('click', (ev) => {
+                const chip = ev.target && ev.target.closest
+                    ? ev.target.closest('.ai-cite-chip[data-cite-file-id]') : null;
+                if (!chip || !messagesEl.contains(chip)) return;
+                if (ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+                ev.preventDefault();
+                openPeekPopover(chip.getAttribute('data-cite-file-id'));
+            });
             if (messagesEl && window.MutationObserver && !messagesEl._pauseSync) {
                 // Layout settles without scrolling (late images, font
                 // swaps, collapses): if that lands us back at the bottom,
@@ -2192,7 +2638,7 @@
                 }
             });
             if (personaSearch) personaSearch.addEventListener('input', filterPersonaList);
-            document.addEventListener('click', (ev) => {
+            onDocClick = (ev) => {
                 if (personaPopup && !personaPopup.classList.contains('hidden')
                         && !personaPopup.contains(ev.target)
                         && !(attachPersona && attachPersona.contains(ev.target))) {
@@ -2204,7 +2650,10 @@
                     togglePlusMenu(false);
                 }
                 if (opts.onDocumentClick) opts.onDocumentClick(ev);
-            });
+            };
+            document.addEventListener('click', onDocClick);
+            onDriveChanged = () => renderChips();
+            window.addEventListener('drive:changed', onDriveChanged);
             if (deepToggle) {
                 deepToggle.addEventListener('click', () => {
                     setDeepMode(!deepMode);
@@ -2304,6 +2753,8 @@
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
+            if (onDocClick) { document.removeEventListener('click', onDocClick); onDocClick = null; }
+            if (onDriveChanged) { window.removeEventListener('drive:changed', onDriveChanged); onDriveChanged = null; }
         }
 
         const api = {
@@ -2330,7 +2781,7 @@
             addSummaryCard, convGroupLabel, convGroupHeader,
             loadConnections, newConversation, renderChips,
             // Conversations, streaming, tasks, workflows
-            loadConversation, handleStreamEvent, readNdjson, watchTask,
+            loadConversation, updateTokenMeter, handleStreamEvent, readNdjson, watchTask,
             pollTaskEnd, uploadDeviceFiles, runWorkflowWithFile,
             startWorkflowRun, ensureRunForm, postWorkflowRun,
             fmtTaskDur, taskStatsLine, renderTaskBanner, renameTaskTitle,
