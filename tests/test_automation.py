@@ -3508,3 +3508,94 @@ def test_input_http_allows_public_host(monkeypatch):
     out = nodes._exec_http_get({}, {"url": "https://example.com/data"},
                                {}, {})
     assert engine.as_text(out) == "hello"
+
+
+# ---------------------------------------------------------------------------
+# D8: custom node IDs + template-ref traversal + preview dry-run stubs
+# ---------------------------------------------------------------------------
+
+def _automation_js_source():
+    import pathlib
+    return pathlib.Path(os.path.join(
+        _AUTO_DIR, "static", "automation.js")).read_text(encoding="utf-8")
+
+
+def test_upstream_helpers_respect_custom_ids():
+    # JS-shape test (no DOM harness exists): the canvas helpers must
+    # resolve custom graph ids through the exportIds map instead of
+    # hardcoding the 'n' + dfId convention, and ancestorsOf must walk
+    # template refs as well as wires.
+    src = _automation_js_source()
+    assert "exportIds[dfId]" in src
+    assert "refDfId(edge.from)" in src  # upstreamFileId maps graph->canvas
+    assert "exportIds[nodeId]" in src  # fetchUpstreamColumns + ref pickers
+    assert "scanRefs(n.config" in src  # ancestorsOf walks {{ }} refs
+    assert "refDfId(String(nid" in src  # nodeCard maps graph id->canvas
+
+
+def test_automation_js_syntax():
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    js = os.path.join(_AUTO_DIR, "static", "automation.js")
+    subprocess.run([node, "--check", js], check=True)
+
+
+def test_run_up_to_node_via_template_ref(auth_client, app, user, enabled):
+    # The fragment a template-aware ancestorsOf sends for a template-only
+    # dependency: both nodes, no wire between them.
+    graph = {"nodes": [
+        {"id": "src", "type": "input.text",
+         "config": {"content": "hello", "format": "text"}},
+        {"id": "tpl", "type": "transform.template",
+         "config": {"template": "v={{ src }}"}},
+        {"id": "out", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "tpl", "from_port": "out", "to": "out", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": graph, "dry_run": True})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["outputs"]["tpl"]["out"] == "v=hello"
+    # ...while the target alone (what a wire-only ancestorsOf would send)
+    # fails: the template ancestor must be part of the fragment.
+    lone = {"nodes": [n for n in graph["nodes"] if n["id"] != "src"],
+            "edges": graph["edges"]}
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": lone, "dry_run": True})
+    assert resp.status_code == 400
+
+
+def test_preview_stubs_params_and_copy_nodes(auth_client, app, user, enabled):
+    # Dry-run preview of a fragment with run inputs and a file mover:
+    # placeholders for the answers, no files relocated.
+    fid = _make_file(app, user, "preview-src.png", "fake png bytes")
+    src = _drive(app, user, name="Src")
+    dst = _drive(app, user, name="Dst")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.commit()
+        before = StoredFile.query.filter_by(user_id=user).count()
+    graph = {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "p1", "type": "input.param",
+         "config": {"param": "q", "kind": "text", "ask": "yes"}},
+        {"id": "tpl", "type": "transform.template",
+         "config": {"template": "Q={{ p1 }} + {{ t }}"}},
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "m", "type": "output.copy_file",
+         "config": {"drive_id": str(dst)}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "m", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": graph, "dry_run": True})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+    with app.app_context():
+        assert StoredFile.query.filter_by(user_id=user).count() == before

@@ -801,7 +801,8 @@ def diagnose(workflow_id):
 def preview(workflow_id):
     """Execute a graph fragment (e.g. a node and its ancestors) without
     persisting a run — the editor's right-click "run up to this node".
-    With dry_run=true, save/output nodes are stubbed (no files written)."""
+    With dry_run=true, save/output nodes are stubbed (no files written),
+    run inputs fall back to placeholders, and copy/move nodes are no-ops."""
     _owned_workflow(workflow_id)  # ownership check only
     data = request.get_json(silent=True) or {}
     raw = data.get("graph")
@@ -834,6 +835,45 @@ def preview(workflow_id):
                     spec = node_types[tname]["spec"]
                     node_types[tname] = {"spec": spec,
                                          "executor": _dry_save(tname),
+                                         "module": node_types[tname]["module"]}
+            # Stub run inputs so a fragment previews without answers, and
+            # no-op the file movers so nothing is relocated on dry runs.
+            def _dry_param(ctx, config, inputs):
+                name = (config.get("param") or "").strip() or "param"
+                kind = config.get("kind") or "text"
+                if kind == "file":
+                    ctx["log"](f"[dry run] run input '{name}' (file) skipped")
+                    return engine.p_files([])
+                value = (config.get("default") or "[dry run]").strip() \
+                    or "[dry run]"
+                ctx["log"](f"[dry run] run input '{name}' → '{value}'")
+                return engine.p_text(value)
+
+            def _dry_drive(ctx, config, inputs):
+                name = (config.get("param") or "").strip() or "drive"
+                ctx["log"](f"[dry run] drive input '{name}' skipped")
+                return engine.p_drive(0, "[dry run]")
+
+            def _dry_trigger(ctx, config, inputs):
+                ctx["log"]("[dry run] trigger input skipped")
+                return engine.p_text("[dry run trigger]")
+
+            def _dry_transfer(kind):
+                def _run(ctx, config, inputs):
+                    ctx["log"](f"[dry run] would {kind} (no files touched)")
+                    if "in" in inputs:
+                        return inputs["in"]
+                    return engine.p_text(f"[dry run] {kind}")
+                return _run
+            for tname, stub in (
+                    ("input.param", _dry_param),
+                    ("input.drive", _dry_drive),
+                    ("input.trigger", _dry_trigger),
+                    ("output.copy_file", _dry_transfer("copy")),
+                    ("output.move_file", _dry_transfer("move"))):
+                if tname in node_types:
+                    spec = node_types[tname]["spec"]
+                    node_types[tname] = {"spec": spec, "executor": stub,
                                          "module": node_types[tname]["module"]}
         outputs, results, created = engine.execute_graph(
             graph, {"user": current_user, "app": current_app},
