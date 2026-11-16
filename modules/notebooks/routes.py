@@ -536,6 +536,9 @@ def history_restore_cell(file_id, version_id):
     if version is None:
         abort(404)
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False,
+                        "error": "Request body must be a JSON object."}), 400
     cell_id = payload.get("cell_id") or request.form.get("cell_id")
     if not cell_id:
         abort(400, "cell_id is required.")

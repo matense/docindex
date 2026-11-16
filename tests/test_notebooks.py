@@ -2025,6 +2025,16 @@ def test_run_cell_with_list_body_returns_400(auth_client, notebook):
     assert r.status_code == 400
 
 
+def test_restore_cell_with_list_body_returns_400(
+        auth_client, notebook, version_with_extra_cell):
+    """restore-cell shares run-cell's get_json shape: a JSON list body must
+    400, not 500 on .get."""
+    r = auth_client.post(
+        f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+        data="[1, 2, 3]", content_type="application/json")
+    assert r.status_code == 400
+
+
 def test_ask_ai_clipboard_fallback_handles_denial():
     """Finding 3 (static pin, explicitly labeled): the Ask-AI fallback's
     clipboard write stays silent when permission is denied — a `.catch`
