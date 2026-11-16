@@ -5,6 +5,7 @@ import importlib.util
 import copy
 import io
 import os
+import subprocess
 import sys
 
 import pytest
@@ -1361,6 +1362,17 @@ def test_dirty_unload_flush_conflict_never_wipes(app, auth_client, user,
         assert len(stored.versions) == before + 1  # guard snapshot
 
 
+def test_unload_flag_decision_table():
+    """Round-3 (a)(b)(c): the node harness drives the SHIPPED
+    flushedContentConfirmed through lost-in-transit / exhausted-409 /
+    clean-merge / delete / flag / legacy cases. The flag may clear silently
+    ONLY on proof the flushed content landed."""
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "notebook_flag_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_notebook_conflict_counter_and_unload_flag():
     # JS-level round-2 findings: fresh user intent must re-arm the bounded
     # 409 retry (counter reset in scheduleSave), and every dirty keepalive
@@ -1376,8 +1388,13 @@ def test_notebook_conflict_counter_and_unload_flag():
     # clear (no wolf-cries when the server provably matches our base).
     assert "if (saveBase !== lastChecksum)" not in flush_body
     assert "flagPendingConflict()" in flush_body
-    assert "pending.checksum" in src
     assert "checkPendingConflict" in src
+    # Round 3: the silent clear must be proof-of-landing (content confirmed
+    # present), never base equality (which proves nothing for a dirty flush).
+    assert "pending.checksum === (opts.checksum" not in src
+    assert "flushedContentConfirmed" in src
+    flag_body = _js_fn_body(src, "flagPendingConflict")
+    assert "changed" in flag_body and "deleted" in flag_body
 
 
 def test_ai_edit_reaches_open_editor_without_wipe():

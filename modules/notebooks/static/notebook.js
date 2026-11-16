@@ -687,6 +687,38 @@
 
     let currentUnmount = null;
 
+    // Editor UI state (_editing) is not content — it must not count
+    // as a remote change (or a conflict) when reconciling.
+    function cellSig(cell) {
+        return JSON.stringify(cell, (k, v) =>
+            (k === "_editing" ? undefined : v));
+    }
+
+    // Pure decision: does the live document provably contain everything a
+    // flagged unload flush attempted? Only a YES clears the flag silently.
+    // A base match alone proves nothing for a dirty flush (the flush may
+    // never have arrived), so it banners like anything unproven. Exposed on
+    // NotebookEditor for the node harness (round-3 decision table).
+    function flushedContentConfirmed(pending, liveDoc) {
+        if (!pending || pending.unverifiable) return false;
+        if (pending.base === undefined) return false;  // pre-round-3 flag
+        const liveById = new Map();
+        ((liveDoc && liveDoc.cells) || []).forEach((c) =>
+            liveById.set(c.id, cellSig(c)));
+        for (const ch of (pending.changed || [])) {
+            if (liveById.get(ch.id) !== ch.sig) return false;
+        }
+        for (const id of (pending.deleted || [])) {
+            if (liveById.has(id)) return false;
+        }
+        const flags = pending.flags || {};
+        for (const k of Object.keys(flags)) {
+            if (JSON.stringify((liveDoc || {})[k])
+                    !== JSON.stringify(flags[k])) return false;
+        }
+        return true;
+    }
+
     function mount(root, opts) {
         // Re-mount safety (SPA revisits): tear down the previous instance
         // first — its listeners/timers would otherwise outlive its DOM.
@@ -734,12 +766,43 @@
         // so a provably-clean load clears it silently.
         const pendingConflictKey = "nb_pending_conflict_" + opts.fileId;
         function flagPendingConflict() {
-            // Versioned with the attempted base: a next load whose server
-            // state still matches it can clear the flag without crying wolf.
+            // Versioned with WHAT we attempted: the base plus every content
+            // change vs that base, so the next load can PROVE landing (all
+            // changed content present) instead of guessing from base
+            // equality — which proves nothing for a dirty flush, since the
+            // flush may never have arrived. Oversized payloads fall back to
+            // always-banner (safe direction).
             try {
-                localStorage.setItem(pendingConflictKey, JSON.stringify({
-                    at: Date.now(), checksum: saveBase || "",
-                }));
+                const baseSigs = new Map(
+                    (baseDoc.cells || []).map((c) => [c.id, cellSig(c)]));
+                const localIds = new Set();
+                const changed = [];
+                (doc.cells || []).forEach((c) => {
+                    localIds.add(c.id);
+                    if (cellSig(c) !== baseSigs.get(c.id)) {
+                        changed.push({ id: c.id, sig: cellSig(c) });
+                    }
+                });
+                const deleted = (baseDoc.cells || []).map((c) => c.id)
+                    .filter((id) => !localIds.has(id));
+                const flags = {};
+                ["title", "ai_lock", "ai_hidden", "full_history"]
+                    .forEach((k) => {
+                        if (JSON.stringify(doc[k])
+                                !== JSON.stringify(baseDoc[k])) {
+                            flags[k] = doc[k];
+                        }
+                    });
+                const payload = { at: Date.now(), base: saveBase || "",
+                    changed: changed, deleted: deleted, flags: flags };
+                if (JSON.stringify(payload).length > 200000) {
+                    localStorage.setItem(pendingConflictKey,
+                        JSON.stringify({ at: Date.now(),
+                            base: saveBase || "", unverifiable: true }));
+                } else {
+                    localStorage.setItem(pendingConflictKey,
+                        JSON.stringify(payload));
+                }
             } catch (err) { /* private mode etc. — best effort */ }
         }
         function clearPendingConflict() {
@@ -753,10 +816,12 @@
                     localStorage.getItem(pendingConflictKey) || "null");
             } catch (err) { pending = null; }
             if (!pending) return;
-            if (pending.checksum
-                    && pending.checksum === (opts.checksum || "")) {
-                // The server provably still matches what the flagged flush
-                // (or exhausted 409) was based on — nothing could be pending.
+            // Clear silently ONLY on proof the flagged content landed: every
+            // changed cell/flag present with flushed content, every flushed
+            // delete absent. A base match alone proves nothing (a lost
+            // flush leaves the server exactly at the base), so unproven
+            // flags banner until the next successful save verifies.
+            if (flushedContentConfirmed(pending, opts.doc)) {
                 clearPendingConflict();
                 return;
             }
@@ -999,13 +1064,6 @@
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
         checkPendingConflict();
-
-        // Editor UI state (_editing) is not content — it must not count
-        // as a remote change (or a conflict) when reconciling.
-        function cellSig(cell) {
-            return JSON.stringify(cell, (k, v) =>
-                (k === "_editing" ? undefined : v));
-        }
 
         function activeCellIds() {
             const ids = new Set();
@@ -2592,5 +2650,6 @@
     window.NotebookEditor = {
         mount: mount,
         unmount: () => { if (currentUnmount) currentUnmount(); },
+        flushedContentConfirmed: flushedContentConfirmed,
     };
 })();
