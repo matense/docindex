@@ -714,7 +714,41 @@ def test_composer_structure_unified():
     assert "ai-send-btn" in html
 
 
-# ------------------------------------------------------- token meter (C2)
+# ------------------------------------------------- mention mid-string (C3)
+
+
+def pick_region(src):
+    """The mention pick handlers: splice discipline lives here (C3)."""
+    start = src.index("function pickDrive")
+    end = src.index("function refreshSendKeyHint")
+    return src[start:end]
+
+
+def test_mention_splice_preserves_trailing_text():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "selectionStart" in src and "mentionStartIdx" in src
+    assert "lastIndexOf" not in pick_region(src)  # must not truncate after cursor
+
+
+def test_mention_detection_anchored_at_cursor():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "selectionStart" in src
+    assert r"(?:^|\s)\$(\S*)$" in src
+    assert r"(?:^|\s)#(\S*)$" in src
+    assert r"(?:^|\s)\/(\S*)$" in src
+    assert "mentionStartIdx" in src and "mentionEndIdx" in src
+    assert "setSelectionRange" in src
+
+
+def test_mention_keyboard_navigation():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "mentionActiveIdx" in src
+    assert "(mentionActiveIdx + 1) % rows.length" in src
+    assert "(mentionActiveIdx - 1 + rows.length) % rows.length" in src
+    assert "rows[mentionActiveIdx].click()" in src
+    assert "bg-primary/15" in src
+    assert "ArrowDown" in src and "ArrowUp" in src
+    assert "'Tab'" in src
 
 
 def test_conversation_returns_token_estimate(auth_client, app, user):

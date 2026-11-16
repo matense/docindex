@@ -132,6 +132,9 @@
         let mentionTimer = null;
         let mentionHideTimer = null;
         let mentionToken = 0;
+        let mentionActiveIdx = 0;
+        let mentionStartIdx = 0;
+        let mentionEndIdx = 0;
         let lastUserQuestion = null;
         let lastAssistantDiv = null;
 
@@ -664,20 +667,35 @@
         function pickDrive(d) {
             if (!driveRefs.some(r => r.id === d.id))
                 driveRefs.push({ id: d.id, name: d.name });
-            if (mentionToken) {
-                input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
-            }
+            input.value = input.value.slice(0, mentionStartIdx) + input.value.slice(mentionEndIdx);
+            input.setSelectionRange(mentionStartIdx, mentionStartIdx);
             hideMentions();
             renderChips();
             input.focus();
         }
         function pickMention(id, name) {
             attachFile(id, name);
-            if (mentionToken) {
-                input.value = input.value.slice(0, input.value.lastIndexOf(mentionToken));
-            }
+            input.value = input.value.slice(0, mentionStartIdx) + input.value.slice(mentionEndIdx);
+            input.setSelectionRange(mentionStartIdx, mentionStartIdx);
             hideMentions();
             input.focus();
+        }
+        function pickWorkflow(wf) {
+            const insert = '/' + wf.name + ' ';
+            input.value = input.value.slice(0, mentionStartIdx) + insert + input.value.slice(mentionEndIdx);
+            const caret = mentionStartIdx + insert.length;
+            input.setSelectionRange(caret, caret);
+            hideMentions();
+            input.focus();
+        }
+        function refreshMentionHighlight() {
+            const rows = mentionEl.querySelectorAll('.cursor-pointer');
+            rows.forEach((row, i) => {
+                const on = i === mentionActiveIdx;
+                row.classList.toggle('bg-primary/15', on);
+                row.classList.toggle('text-primary', on);
+                row.classList.toggle('font-semibold', on);
+            });
         }
         function refreshSendKeyHint() {
             const base = deepMode ? deepPlaceholder : basePlaceholder;
@@ -789,13 +807,12 @@
                             row.className = 'flex items-center gap-2 px-3 py-2 hover:bg-primary/10 cursor-pointer text-sm';
                             row.innerHTML = '<i class="fas ' + iconFor(r.extension, r.is_image) + ' w-4 text-center"></i>';
                             row.appendChild(document.createTextNode(r.name));
-                            row.addEventListener('mousedown', (e) => {
-                                e.preventDefault();
-                                pickMention(r.file_id, r.name);
-                            });
+                            row.addEventListener('click', () => pickMention(r.file_id, r.name));
                             mentionEl.appendChild(row);
                         });
                     }
+                    mentionActiveIdx = 0;
+                    refreshMentionHighlight();
                     mentionEl.classList.remove('hidden');
                 });
         }
@@ -870,15 +887,42 @@
                             tag.textContent = 'synced';
                             row.appendChild(tag);
                         }
-                        row.addEventListener('mousedown', (e) => {
-                            e.preventDefault(); // keep input focus
-                            pickDrive(d);
-                        });
+                        row.addEventListener('click', () => pickDrive(d));
                         mentionEl.appendChild(row);
                     });
                 }
+                mentionActiveIdx = 0;
+                refreshMentionHighlight();
                 mentionEl.classList.remove('hidden');
             });
+        }
+        function showWorkflowMentions(q) {
+            apiFetch('/m/automation/api/attachable',
+                { headers: { 'Accept': 'application/json' } },
+                { silent: true })
+                .then(data => {
+                    if (!mentionToken) return; // user moved on meanwhile
+                    const query = (q || '').toLowerCase();
+                    const wfs = ((data && data.workflows) || [])
+                        .filter(w => w && w.name
+                            && (!query || w.name.toLowerCase().includes(query)));
+                    mentionEl.innerHTML = '';
+                    if (!wfs.length) {
+                        mentionEl.innerHTML = '<div class="px-3 py-2 text-xs opacity-50">No workflows found</div>';
+                    } else {
+                        wfs.slice(0, 12).forEach(wf => {
+                            const row = document.createElement('div');
+                            row.className = 'flex items-center gap-2 px-3 py-2 hover:bg-primary/10 cursor-pointer text-sm';
+                            row.innerHTML = '<i class="fas fa-diagram-project w-4 text-center text-emerald-400"></i>';
+                            row.appendChild(document.createTextNode(wf.name));
+                            row.addEventListener('click', () => pickWorkflow(wf));
+                            mentionEl.appendChild(row);
+                        });
+                    }
+                    mentionActiveIdx = 0;
+                    refreshMentionHighlight();
+                    mentionEl.classList.remove('hidden');
+                });
         }
         function showDropOverlay(show) {
             dropOverlay.classList.toggle('hidden', !show);
@@ -1961,32 +2005,62 @@
                     return;
                 }
                 // $query — drive mention autocomplete (scopes the answer).
-                const dm = val.match(/\$(\S*)$/);
-                if (dm) {
-                    mentionToken = dm[0];
-                    showDriveMentions(dm[1]);
+                const cursor = input.selectionStart || 0;
+                const before = input.value.slice(0, cursor);
+                const driveMatch = before.match(/(?:^|\s)\$(\S*)$/);
+                const fileMatch = before.match(/(?:^|\s)#(\S*)$/);
+                const wfMatch = before.match(/(?:^|\s)\/(\S*)$/);
+                if (driveMatch) {
+                    mentionToken = '$' + driveMatch[1];
+                    mentionStartIdx = cursor - driveMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    showDriveMentions(driveMatch[1]);
                     return;
                 }
                 // #query — quick file-search autocomplete.
-                const m = val.match(/#(\S*)$/);
-                if (m) {
-                    mentionToken = m[0];
+                if (fileMatch) {
+                    mentionToken = '#' + fileMatch[1];
+                    mentionStartIdx = cursor - fileMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    const tok = mentionToken;
                     clearTimeout(mentionTimer);
-                    mentionTimer = setTimeout(() => searchMentions(m[1]), 250);
-                } else {
-                    hideMentions();
+                    mentionTimer = setTimeout(() => {
+                        if (mentionToken === tok) searchMentions(fileMatch[1]);
+                    }, 250);
+                    return;
                 }
+                // /query — workflow autocomplete.
+                if (wfMatch) {
+                    mentionToken = '/' + wfMatch[1];
+                    mentionStartIdx = cursor - wfMatch[1].length - 1;
+                    mentionEndIdx = cursor;
+                    mentionActiveIdx = 0;
+                    showWorkflowMentions(wfMatch[1]);
+                    return;
+                }
+                hideMentions();
             });
             input.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && !mentionEl.classList.contains('hidden')) {
+                const open = !mentionEl.classList.contains('hidden');
+                if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                    const rows = Array.from(mentionEl.querySelectorAll('.cursor-pointer'));
+                    if (!rows.length) return;
+                    e.preventDefault();
+                    mentionActiveIdx = e.key === 'ArrowDown'
+                        ? (mentionActiveIdx + 1) % rows.length
+                        : (mentionActiveIdx - 1 + rows.length) % rows.length;
+                    refreshMentionHighlight();
+                } else if (open && (e.key === 'Enter' || e.key === 'Tab')) {
+                    const rows = Array.from(mentionEl.querySelectorAll('.cursor-pointer'));
+                    if (rows.length) {
+                        e.preventDefault();
+                        rows[mentionActiveIdx].click();
+                    }
+                } else if (e.key === 'Escape' && open) {
                     hideMentions();
                     e.stopPropagation();
-                } else if (e.key === 'Enter' && !mentionEl.classList.contains('hidden')) {
-                    const first = mentionEl.querySelector('[class*="cursor-pointer"]');
-                    if (first) {
-                        e.preventDefault();
-                        first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-                    }
                 } else if (e.key === 'Enter' && e.shiftKey === document.body.classList.contains('shift-enter-send')) {
                     // Default: Enter sends, Shift+Enter newline. The profile
                     // "Shift + Enter" send-key preference swaps the two roles.
