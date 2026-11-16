@@ -2798,3 +2798,192 @@ def test_parallel_runcards_do_not_serialize(monkeypatch, tmp_path):
         assert card["status"] == "done"
         assert card["result"] == {"text": "ok"}
         assert card["ranAt"]
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix wave: save-vs-settle lock (item 1) + stale run targets
+# (item 3). Item 2 (save_document_ai base-unaware) is closed by ruling
+# (tracked follow-up P0-FU1) — verified + documented in task-D3-report.md,
+# no code change.
+# ---------------------------------------------------------------------------
+
+def test_builder_save_races_run_settle_both_survive(monkeypatch, tmp_path):
+    """Item 1: Builder save holds dashboard_lock across load-merge-write, so
+    a run settling mid-save blocks until the save lands — both survive
+    (mirrors D1's third-writer test: the interleaving writer is never
+    lost). Pre-fix the settle slips through mid-save and the save wipes
+    it (RED)."""
+    import threading
+    import time
+
+    from app import create_app
+    from config import TestConfig
+
+    class RaceConfig(TestConfig):
+        SQLALCHEMY_DATABASE_URI = "sqlite:///" + str(tmp_path / "saverace.sqlite")
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "connect_args": {"check_same_thread": False, "timeout": 30}}
+
+    race_app = create_app(RaceConfig)
+    with race_app.app_context():
+        db.create_all()
+        owner = User(username="alice", email="alice@example.com")
+        owner.set_password("password123")
+        db.session.add(owner)
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+        uid = owner.id
+    drive_id = _drive(race_app, uid)
+    fid = _create(race_app, uid, drive_id)
+    cid = _add_card(race_app, fid, title="One")
+    import copy
+    with race_app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        stale_doc = copy.deepcopy(dash_doc.load(stored))
+        base_checksum = stored.checksum
+    stale_doc["cards"][0]["title"] = "Builder title"
+
+    dash_engine = _engine()
+    entered = threading.Event()
+    attempted = threading.Event()
+    release = threading.Event()
+    orig_merge = dash_doc.merge_run_owned
+
+    def blocking_merge(current, incoming, union_cards=False):
+        entered.set()
+        assert release.wait(timeout=30)
+        return orig_merge(current, incoming, union_cards=union_cards)
+
+    monkeypatch.setattr(dash_doc, "merge_run_owned", blocking_merge)
+
+    clients = []
+    for _ in range(2):
+        client = race_app.test_client()
+        assert client.post("/login", data={"username": "alice",
+                                           "password": "password123"}
+                           ).status_code in (200, 302)
+        clients.append(client)
+
+    save_out, settle_out = {}, {}
+
+    def do_save():
+        try:
+            save_out["resp"] = clients[0].post(
+                f"/m/dashboards/{fid}/save",
+                json={"doc": stale_doc, "base_checksum": base_checksum})
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            save_out["error"] = exc
+
+    def do_settle():
+        try:
+            attempted.set()
+            # The real settle shape (routes.run_cards): lock, fresh load,
+            # run-id-guarded write — never clobbers a newer writer.
+            with dash_engine.dashboard_lock(fid):
+                with race_app.app_context():
+                    stored = db.session.get(StoredFile, fid)
+                    fresh = dash_doc.load(stored)
+                    card = next(c for c in fresh["cards"]
+                                if c.get("id") == cid)
+                    card["status"] = "done"
+                    card["result"] = {"text": "settled"}
+                    card["ranAt"] = "2026-11-16T12:00:00+00:00"
+                    dash_doc.save_document(stored, fresh)
+            settle_out["done"] = True
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            settle_out["error"] = exc
+
+    save_thread = threading.Thread(target=do_save)
+    save_thread.start()
+    try:
+        assert entered.wait(timeout=30), "save never reached merge"
+        settle_thread = threading.Thread(target=do_settle)
+        settle_thread.start()
+        assert attempted.wait(timeout=30), "settle never started"
+        time.sleep(1.0)
+        # The save holds the lock across load-merge-write: the settle must
+        # still be blocked (pre-fix it slips through and is wiped below).
+        assert settle_out.get("done") is not True, \
+            "settle slipped through mid-save (lock not held)"
+        assert settle_thread.is_alive(), \
+            "settle slipped through mid-save (lock not held)"
+        release.set()
+        settle_thread.join(timeout=60)
+        save_thread.join(timeout=60)
+    finally:
+        release.set()
+    assert not save_thread.is_alive() and not settle_thread.is_alive()
+    assert settle_out.get("done") is True, settle_out
+    assert "error" not in save_out, save_out
+    assert save_out["resp"].status_code == 200, save_out["resp"].data
+    card = _card(race_app, fid, cid)
+    assert card["title"] == "Builder title"  # save side kept
+    assert card["result"] == {"text": "settled"}  # settle side kept
+    assert card["status"] == "done"
+    assert card["ranAt"] == "2026-11-16T12:00:00+00:00"
+
+
+def test_run_cards_stale_single_target_returns_404(app, auth_client, user,
+                                                   enabled, monkeypatch):
+    """Item 3: a card deleted between the pre-lock check and the in-lock
+    reload must 404, never StopIteration-500. Pre-fix this raises
+    StopIteration (RED)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    gone = _add_card(app, fid, title="Gone")
+    orig_load = dash_doc.load
+    calls = {"n": 0}
+
+    def interleaving_load(stored):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # A concurrent writer deletes the card after the pre-lock
+            # check but before the admission reload.
+            fresh = orig_load(stored)
+            fresh["cards"] = [c for c in fresh["cards"]
+                              if c["id"] != gone]
+            dash_doc.save_document(stored, fresh)
+        return orig_load(stored)
+
+    monkeypatch.setattr(dash_doc, "load", interleaving_load)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": gone})
+    assert resp.status_code == 404
+    assert "unknown" in resp.get_json()["error"].lower()
+
+
+def test_run_cards_stale_all_target_skips_missing(app, auth_client, user,
+                                                  enabled, monkeypatch,
+                                                  fake_ai):
+    """Item 3: run-all with one card deleted mid-admission must not crash
+    the whole run — the missing card is skipped, the rest proceed. Pre-fix
+    this raises StopIteration (RED)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    keep = _add_card(app, fid, title="Keep")
+    gone = _add_card(app, fid, title="Gone")
+    orig_load = dash_doc.load
+    calls = {"n": 0}
+
+    def interleaving_load(stored):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            fresh = orig_load(stored)
+            fresh["cards"] = [c for c in fresh["cards"]
+                              if c["id"] != gone]
+            dash_doc.save_document(stored, fresh)
+        return orig_load(stored)
+
+    monkeypatch.setattr(dash_doc, "load", interleaving_load)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run", json={"all": True})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["ok"] is True
+    assert len(body["accepted"]) == 1
+    card = _card(app, fid, keep)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "3 open incidents"}
+    with app.app_context():
+        ids = [c["id"] for c in dash_doc.load(
+            db.session.get(StoredFile, fid))["cards"]]
+    assert gone not in ids

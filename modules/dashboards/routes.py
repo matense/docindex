@@ -184,19 +184,23 @@ def save(file_id):
         # user-edited and card membership (incl. user deletes) stands.
         # A corrupt live blob skips the merge — the save overwrites it as
         # before.
+        # The load + merge + write section holds the dashboard lock (same
+        # shape as the run_cards admission lock below): a run settling
+        # between the load and the write would otherwise be wiped.
         base_checksum = payload.get("base_checksum")
-        try:
-            current = doc_service.load(stored)
-        except (ValueError, OSError):
-            current = None
-        if current is not None:
-            document = doc_service.merge_run_owned(
-                current, document,
-                union_cards=(base_checksum is not None
-                             and base_checksum != stored.checksum))
-        doc_service.save_document(
-            stored, document,
-            force_checkpoint=bool(payload.get("force_checkpoint")))
+        with engine_service.dashboard_lock(stored.id):
+            try:
+                current = doc_service.load(stored)
+            except (ValueError, OSError):
+                current = None
+            if current is not None:
+                document = doc_service.merge_run_owned(
+                    current, document,
+                    union_cards=(base_checksum is not None
+                                 and base_checksum != stored.checksum))
+            doc_service.save_document(
+                stored, document,
+                force_checkpoint=bool(payload.get("force_checkpoint")))
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True,
@@ -557,6 +561,18 @@ def run_cards(file_id):
     # completions never clobber each other.
     with engine_service.dashboard_lock(stored.id):
         doc = doc_service.load(stored)
+        # Re-validate targets against the reloaded doc: a card deleted
+        # between the pre-lock check and this reload is gone — a single
+        # missing target 404s (same shape as above); a run-all simply
+        # skips the missing cards so the rest still proceed (never a
+        # bare next() StopIteration 500).
+        live = {c.get("id") for c in doc.get("cards", [])}
+        missing = [t for t in targets if t not in live]
+        if missing and not payload.get("all"):
+            return jsonify({"ok": False,
+                            "error": f"Unknown card(s): "
+                                     f"{', '.join(missing)}."}), 404
+        targets = [t for t in targets if t in live]
         cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
         running = [c.get("id") for c in doc.get("cards", [])
                    if c.get("status") == "running"]
@@ -665,6 +681,12 @@ def run_card_stream(file_id):
 
     with engine_service.dashboard_lock(stored.id):
         doc = doc_service.load(stored)
+        # Same stale-target guard as run_cards: a card deleted between
+        # the pre-lock check and this reload 404s instead of raising
+        # StopIteration on the bare next() below.
+        if card_id not in {c.get("id") for c in doc.get("cards", [])}:
+            return jsonify({"ok": False,
+                            "error": f"Unknown card '{card_id}'."}), 404
         cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
         running = [c.get("id") for c in doc.get("cards", [])
                    if c.get("status") == "running"]
