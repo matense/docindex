@@ -294,6 +294,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 doc: S.doc,
+                base_checksum: S.checksum || null,
                 force_checkpoint: !!forceCheckpoint,
                 note: forceCheckpoint ? "Manual checkpoint" : ""
             })
@@ -330,7 +331,8 @@
             fetch(S.opts.saveUrl, {
                 method: "POST", keepalive: true,
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ doc: S.doc })
+                body: JSON.stringify({ doc: S.doc,
+                    base_checksum: S.checksum || null })
             });
             S.dirty = false;
         } catch (e) { /* best effort */ }
@@ -365,8 +367,15 @@
 
     // D3: fold newer background-run state into the Builder's local doc.
     // Pure merge (node-testable): for each card on both sides the newer
-    // side's run-owned keys win; structural keys (title, prompt, sizes,
-    // inputs) always stay local (user intent). createdFileIds unions.
+    // side's run-owned keys win as a unit (card-level, not field-level —
+    // the settle path writes them atomically); structural keys (title,
+    // prompt, sizes, inputs) always stay local (user intent).
+    // Both sides running with different runIds means the local snapshot
+    // belongs to an older run — remote wins; same runId falls back to
+    // ranAt (tie keeps local: same run or neither ever ran). The ranAt
+    // string compare relies on the server's identical utcnow().isoformat()
+    // format. createdFileIds unions (append-only; cleared only via the
+    // dedicated endpoint, never through full-doc saves).
     // Never touches S.checksum — the caller takes it from the doc fetch.
     function mergeRunOwned(S, remote) {
         var byId = {};
@@ -377,11 +386,13 @@
         (S.doc.cards || []).forEach(function (card) {
             var rc = byId[card.id];
             if (!rc) return;
-            var remoteRunning = rc.status === "running" &&
-                card.status !== "running";
+            var bothRunning = rc.status === "running" &&
+                card.status === "running";
+            var remoteRunWins = (bothRunning && rc.runId !== card.runId) ||
+                (rc.status === "running" && card.status !== "running");
             var remoteNewer = !!rc.ranAt &&
                 (!card.ranAt || rc.ranAt > card.ranAt);
-            if (remoteRunning || remoteNewer) {
+            if (remoteRunWins || remoteNewer) {
                 ["result", "status", "ranAt", "trace",
                     "runId", "ranSecs"].forEach(function (k) {
                     if (rc[k] !== undefined) {
@@ -402,9 +413,13 @@
     }
 
     // D3: the Builder subscribes to the card-change channel (aggregate
-    // status poll, View precedent). On change the full doc is re-read and
-    // only run-owned fields merge in — local structural edits are never
-    // clobbered and footers update in place (no re-render: focus stays).
+    // status poll, View precedent; statusUrl/docUrl arrive via edit.html
+    // opts and VIEW_STATUS_MS shares this IIFE scope). On change the full
+    // doc is re-read and only run-owned fields merge in — local structural
+    // edits are never clobbered and footers update in place (no re-render:
+    // focus stays). Out of scope by design: cards added/removed elsewhere
+    // do NOT propagate through this channel (unknown/removed ids never
+    // trigger a doc fetch) — they appear/disappear on reload or save.
     function startBuilderStatusPoll(S) {
         if (!S.opts.statusUrl) return;
         S.pollTimer = setInterval(function () {
@@ -3070,6 +3085,8 @@
 
     window.DashboardEditor = {
         mount: mount,
+        mergeRunOwned: mergeRunOwned,
+        startBuilderStatusPoll: startBuilderStatusPoll,
         CARD_TYPES: CARD_TYPES,
         TYPE_META: TYPE_META,
         WIDTH_STEPS: WIDTH_STEPS,

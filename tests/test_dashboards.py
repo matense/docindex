@@ -2500,6 +2500,154 @@ def test_builder_save_spares_live_run(app, auth_client, user, enabled):
     assert card["runId"] == run_id
 
 
+# ---------------------------------------------------------------------------
+# Argon P0-D3 fix round 1: reviewer findings 1, 2, 4
+# ---------------------------------------------------------------------------
+
+def test_builder_save_both_running_preserves_live_run_id(app, auth_client,
+                                                         user, enabled):
+    """Fix-1: both sides `running` used to fall through to the `ranAt`
+    compare — with both `ranAt` null the stale snapshot's `runId`
+    overwrote the live `runId`. Server wins when `runId`s differ."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    live_run = f"{fid}:live123"
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        live = next(c for c in doc["cards"] if c["id"] == cid)
+        live["status"] = "running"
+        live["runId"] = live_run
+        dash_doc.save_document(stored, doc)
+        dash_doc.run_started(fid, live_run)
+    try:
+        # Stale snapshot taken during an older run of the same card.
+        stale["cards"][0]["status"] = "running"
+        stale["cards"][0]["runId"] = f"{fid}:stale999"
+        save = auth_client.post(f"/m/dashboards/{fid}/save",
+                                json={"doc": stale})
+        assert save.status_code == 200
+    finally:
+        dash_doc.run_finished(fid, live_run)
+    card = _card(app, fid, cid)
+    assert card["status"] == "running"
+    assert card["runId"] == live_run
+
+
+def test_merge_run_owned_same_run_falls_back_to_ran_at():
+    """Fix-1 unit pin: both `running` with the SAME `runId` falls back to
+    the `ranAt` compare (newer server run still wins; ties keep incoming,
+    which is the same run either way)."""
+    base = {"id": "c1", "status": "running", "runId": "9:r1", "ranAt": None,
+            "result": None, "trace": None}
+    # Same run, nothing newer anywhere: incoming untouched.
+    incoming = dict(base, title="local")
+    out = dash_doc.merge_run_owned({"cards": [dict(base)], "createdFileIds": []},
+                                    {"cards": [incoming], "createdFileIds": []})
+    assert out["cards"][0]["runId"] == "9:r1"
+    assert out["cards"][0]["title"] == "local"
+    # Same run, server ranAt newer (settle raced the snapshot): server wins.
+    server = dict(base, status="done", ranAt="2026-11-16T12:00:00+00:00",
+                  result={"text": "newer"})
+    incoming2 = dict(base, ranAt="2026-01-01T00:00:00+00:00",
+                     result={"text": "older"}, title="local")
+    out2 = dash_doc.merge_run_owned(
+        {"cards": [server], "createdFileIds": []},
+        {"cards": [incoming2], "createdFileIds": []})
+    assert out2["cards"][0]["result"] == {"text": "newer"}
+
+
+def test_builder_save_preserves_server_added_card(app, auth_client, user,
+                                                  enabled):
+    """Fix-2: a card added server-side (AI/another tab) while the Builder
+    snapshot was stale must survive the Builder save — union-preserved at
+    its live position — while the stale structural edit still applies. The
+    Builder sends its base checksum; the mismatch (no run need have
+    landed) triggers the union. Without the checksum the save behaves as
+    before."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    snap = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()
+    stale, base = snap["doc"], snap["checksum"]
+    # Concurrent change: a card is added server-side (no run lands).
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        fresh["cards"].append(dash_doc.new_card("table", title="AI rows"))
+        added_id = fresh["cards"][-1]["id"]
+        dash_doc.save_document(stored, fresh)
+    stale["cards"][0]["title"] = "Builder title"
+    save = auth_client.post(f"/m/dashboards/{fid}/save",
+                            json={"doc": stale, "base_checksum": base})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert [c["id"] for c in doc["cards"]] == [cid, added_id]
+    assert doc["cards"][0]["title"] == "Builder title"
+    assert doc["cards"][1]["title"] == "AI rows"
+
+
+def test_builder_save_without_checksum_skips_card_union(
+        app, auth_client, user, enabled):
+    """Fix-2: a save with no base checksum carries no evidence of
+    concurrency — membership follows the incoming save (legacy/unknown
+    clients behave exactly as before the fix)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        fresh["cards"].append(dash_doc.new_card("table", title="AI rows"))
+        dash_doc.save_document(stored, fresh)
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert len(doc["cards"]) == 1  # no evidence, no union
+
+
+def test_builder_save_card_delete_stands_without_concurrent_run(
+        app, auth_client, user, enabled):
+    """Fix-2 gate pin: with NO concurrent background write (checksums
+    match), card membership follows the incoming save — a user card
+    deletion is not resurrected. (Union is gated on checksum mismatch;
+    unconditional union would break Builder deletes.)"""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _add_card(app, fid, type="kpi", title="Keep",
+                      prompt="Count open")
+    _add_card(app, fid, type="table", title="Drop", prompt="List rows")
+    snap = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()
+    stale, base = snap["doc"], snap["checksum"]
+    assert len(stale["cards"]) == 2
+    # User deletes the second card in the Builder; nothing else changed.
+    stale["cards"] = [c for c in stale["cards"] if c["id"] == first]
+    stale["cards"][0]["title"] = "Kept renamed"
+    save = auth_client.post(f"/m/dashboards/{fid}/save",
+                            json={"doc": stale, "base_checksum": base})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert [c["id"] for c in doc["cards"]] == [first]
+    assert doc["cards"][0]["title"] == "Kept renamed"
+
+
+def test_builder_status_poll_behavior():
+    """Fix-4: node harness drives the SHIPPED Builder poll wiring with
+    fakes — status fetch, run-field merge, footer update, timer teardown,
+    and the add/remove scope boundary (no doc fetch for those)."""
+    import subprocess
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "dashboard_builder_poll_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_builder_merges_run_owned_without_clobbering_local_edits():
     """D3 (live update): the Builder merges remote run-owned fields into
     its local doc — local structural edits survive, newer remote results
@@ -2518,6 +2666,14 @@ def test_builder_merges_run_owned_without_clobbering_local_edits():
     assert "startBuilderStatusPoll" in src
     assert re.search(r"function startBuilderStatusPoll\(S\)", src)
     assert "S.opts.statusUrl" in src
+    # Fix-2: both save paths send the last-seen checksum so the server can
+    # gate the card union on real concurrency evidence.
+    for fn in ("save", "flushSync"):
+        body = re.search(r"function %s\(S(?:,.*?)?\) \{(.*?)\n    \}" % fn,
+                         src, re.S)
+        assert body, "%s helper missing" % fn
+        assert "base_checksum" in body.group(1), \
+            "%s must send base_checksum" % fn
     if shutil.which("node") is None:
         pytest.skip("node not available")
     probe = (match.group(0) + """

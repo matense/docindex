@@ -177,15 +177,23 @@ def save(file_id):
         return jsonify({"ok": False, "error": "Missing document."}), 400
     try:
         # A stale Builder snapshot must not wipe background-run state that
-        # landed after the snapshot (D3 per-field merge, newer wins).
+        # landed after the snapshot (D3 per-field merge, newer wins). The
+        # Builder sends the checksum it last saw; a mismatch proves someone
+        # else wrote since, so concurrently added cards union in too (D1
+        # precedent) — matching checksums mean the snapshot is merely
+        # user-edited and card membership (incl. user deletes) stands.
         # A corrupt live blob skips the merge — the save overwrites it as
         # before.
+        base_checksum = payload.get("base_checksum")
         try:
             current = doc_service.load(stored)
         except (ValueError, OSError):
             current = None
         if current is not None:
-            document = doc_service.merge_run_owned(current, document)
+            document = doc_service.merge_run_owned(
+                current, document,
+                union_cards=(base_checksum is not None
+                             and base_checksum != stored.checksum))
         doc_service.save_document(
             stored, document,
             force_checkpoint=bool(payload.get("force_checkpoint")))

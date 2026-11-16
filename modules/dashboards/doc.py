@@ -736,27 +736,41 @@ def _server_run_wins(server, incoming):
     """Whether the live card's run-owned fields beat the incoming snapshot.
 
     A live running state always beats a non-running snapshot (the status
-    poll and run-status endpoint read it mid-run); otherwise the newer
-    ranAt wins, per field-merge. A strictly newer incoming ranAt wins for
-    the incoming side (symmetric newer-wins; unreachable from the Builder
-    today, which only ever holds older snapshots).
+    poll and run-status endpoint read it mid-run). Both sides running with
+    different runIds means the snapshot belongs to an older run — the live
+    run wins. Same runId on both sides falls through to the ranAt compare.
+    Intent: the decision is card-level, not field-level — run fields are
+    written atomically by the settle path, so they move as a unit. A
+    strictly newer incoming ranAt wins for the incoming side (symmetric
+    newer-wins; unreachable from the Builder today, which only ever holds
+    older snapshots). An exact ranAt tie falls to incoming (same run or
+    neither side ever ran — nothing newer to protect).
     """
-    if (server.get("status") == "running"
-            and incoming.get("status") != "running"):
-        return True
+    if server.get("status") == "running":
+        if incoming.get("status") != "running":
+            return True
+        if server.get("runId") != incoming.get("runId"):
+            return True
     return _ran_at_newer(server.get("ranAt"), incoming.get("ranAt"))
 
 
-def merge_run_owned(current_doc, incoming_doc):
+def merge_run_owned(current_doc, incoming_doc, union_cards=False):
     """Fold newer background-run state into a stale full-doc save.
 
     For each card present on both sides, the newer side's run-owned keys
     (result, status, ranAt, trace, runId, ranSecs) win; structural keys
     (title, prompt, sizes, inputs, ...) always follow the incoming save
-    (user intent). Cards only on one side are untouched. createdFileIds
-    is an append-only registry — unioned (incoming order first), since a
-    stale snapshot can only lack newer ids, never intentionally remove
-    them (clearing goes through clear_artifacts, not full-doc saves).
+    (user intent). createdFileIds is an append-only registry — unioned
+    (incoming order first), since a stale snapshot can only lack newer
+    ids, never intentionally remove them (clearing goes only through
+    clear_artifacts, never through full-doc saves).
+
+    Server-only cards (added concurrently, e.g. by an AI tool or another
+    tab) are union-preserved at their live positions (D1 cells precedent)
+    when union_cards is True. The caller sets it only on checksum mismatch
+    — proof someone else wrote since the snapshot — so plain user card
+    deletions (checksums match) stand. A missing base checksum means no
+    evidence either way: membership follows the incoming save.
     """
     server_by_id = {c.get("id"): c for c in current_doc.get("cards", [])}
     for card in incoming_doc.get("cards", []):
@@ -769,6 +783,14 @@ def merge_run_owned(current_doc, incoming_doc):
                     card[key] = copy.deepcopy(server[key])
                 else:
                     card.pop(key, None)
+    if union_cards:
+        present = {c.get("id") for c in incoming_doc.get("cards", [])}
+        merged = list(incoming_doc.get("cards", []))
+        for index, card in enumerate(current_doc.get("cards", [])):
+            if card.get("id") not in present:
+                merged.insert(min(index, len(merged)), copy.deepcopy(card))
+                present.add(card.get("id"))
+        incoming_doc["cards"] = merged
     seen, merged_ids = set(), []
     for fid in (list(incoming_doc.get("createdFileIds", []))
                 + list(current_doc.get("createdFileIds", []))):
