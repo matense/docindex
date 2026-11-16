@@ -241,7 +241,13 @@ def sync_create():
 @bp.route("/drives/<int:drive_id>/sync", methods=["POST"])
 @login_required
 def sync_now(drive_id):
-    """On-demand re-sync of a synced drive (runs in the background)."""
+    """On-demand re-sync of a synced drive (runs in the background).
+
+    Admin only (same decision as S2's admin-only sync-create): a legacy
+    drive rooted at `/` or `C:\\` still syncs everything outside blocked
+    subtrees, so ownership alone must not authorize a walk."""
+    if not current_user.is_admin:
+        abort(403)
     drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
     if not drive or not drive.is_synced:
         abort(404)

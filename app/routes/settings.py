@@ -706,6 +706,11 @@ def ai_test_existing(conn_id):
     conn = _get_owned(conn_id)
     if not conn:
         return jsonify({"ok": False, "message": "Connection not found."}), 404
+    ok, msg = _valid_base_url(conn.base_url, allow_loopback=True)
+    if not ok:
+        # Stored before the S3 lockdown (e.g. a metadata/nip.io URL):
+        # refuse without fetching — the row stays a working SSRF oracle.
+        return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(
         conn.base_url, ai_service.decrypt_api_key(conn.api_key or ""))
     return jsonify({"ok": ok, "message": message})

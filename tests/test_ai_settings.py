@@ -382,3 +382,24 @@ def test_ssrf_public_provider_still_allowed(monkeypatch):
     _ssrf_dns(monkeypatch)
     ok, _msg = _valid_base_url("https://api.openai.com/v1")
     assert ok is True
+
+
+def test_test_existing_connection_revalidates_stored_url(auth_client, app,
+                                                         user):
+    """A row stored before the S3 lockdown (e.g. a metadata/nip.io URL) is
+    re-validated: the stored non-public URL is refused with 4xx and no
+    fetch is ever attempted."""
+    from app.services import ai_service
+    with app.app_context():
+        conn = AIConnection(user_id=user, name="Legacy",
+                            base_url="http://169.254.169.254/v1",
+                            api_key=ai_service.encrypt_api_key("sk-test"),
+                            model="m")
+        db.session.add(conn)
+        db.session.commit()
+        cid = conn.id
+    with patch("app.services.ai_service.requests.get") as mock_get:
+        resp = auth_client.post(f"/settings/ai/{cid}/test")
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+    mock_get.assert_not_called()

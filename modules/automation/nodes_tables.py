@@ -26,6 +26,10 @@ from .registry import register_node_type
 _AGG_FUNCS = {"sum": "sum", "count": "count", "avg": "mean",
               "min": "min", "max": "max"}
 
+# Compute-column row cap: each row is a full pyrun interpreter run, so the
+# ceiling sits an order of magnitude below the 100k iteration budget.
+_TABLE_COMPUTE_MAX_ROWS = 10000
+
 
 def _require_column(df, name, node_label):
     if name not in df.columns:
@@ -227,6 +231,11 @@ def _exec_table_compute(ctx, config, inputs):
         raise WorkflowError("Configure the new column name and its formula.")
     if new_column in df.columns:
         raise WorkflowError(f"Column '{new_column}' already exists.")
+    if len(df) > _TABLE_COMPUTE_MAX_ROWS:
+        raise WorkflowError(
+            f"Compute column: the table has {len(df)} rows, which exceeds "
+            f"the limit of {_TABLE_COMPUTE_MAX_ROWS} rows per run — "
+            "slice the table to fewer rows first and run again.")
     mapping = _formula_column_map(list(df.columns))
     rewritten = _rewrite_formula(formula, mapping)
     columns = [str(c) for c in df.columns]

@@ -2996,6 +2996,37 @@ def test_table_compute_allows_arithmetic(app, user):
         assert [r[2] for r in outputs["t"]["out"]["data"]["rows"]] == [5, 11]
 
 
+def test_table_compute_refuses_over_cap_table_without_running_rows(
+        monkeypatch):
+    """An over-cap table fails closed BEFORE the per-row loop: the error
+    tells the user to slice the table, and no interpreter run happens."""
+    nodes_tables = importlib.import_module(
+        "docindex_module_automation.nodes_tables")
+    over = nodes_tables._TABLE_COMPUTE_MAX_ROWS + 1
+    payload = {"kind": "table", "data": {"columns": ["n"],
+                                         "rows": [[i] for i in range(over)]}}
+    calls = []
+
+    def fake_evaluate(expr, variables=None):
+        calls.append(1)
+        return {"ok": True, "value": 0}
+
+    monkeypatch.setattr(nodes_tables, "_pyrun_evaluate", fake_evaluate)
+    ctx = {"log": lambda *a: None, "_outputs": {}}
+    with pytest.raises(engine.WorkflowError, match="slice the table"):
+        nodes_tables._exec_table_compute(
+            ctx, {"new_column": "total", "formula": "n * 2"},
+            {"in": payload})
+    assert calls == []
+    # Boundary: exactly at the cap still runs (fail-closed, not off-by-one).
+    at_cap = {"kind": "table", "data": {
+        "columns": ["n"],
+        "rows": [[i] for i in range(nodes_tables._TABLE_COMPUTE_MAX_ROWS)]}}
+    nodes_tables._exec_table_compute(
+        ctx, {"new_column": "total", "formula": "n * 2"}, {"in": at_cap})
+    assert len(calls) == nodes_tables._TABLE_COMPUTE_MAX_ROWS
+
+
 def test_save_table_csv_creates_file(auth_client, app, user, enabled):
     drive_id = _drive(app, user)
     fid = _make_file(app, user, "t.csv", "a,b\n1,2\n")

@@ -754,3 +754,32 @@ def test_sync_walk_skips_blocked_dirs(auth_client, app, local_folder,
         sync_service.sync_drive(drive)
     with app.app_context():
         assert StoredFile.query.filter_by(name="evil.txt").count() == 0
+
+
+def test_sync_now_refuses_non_admin_on_legacy_root_drive(auth_client, app,
+                                                         user, monkeypatch):
+    """A legacy drive rooted at `/` (creatable before S2) must not sync for
+    a non-admin: sync_now is admin-only, so no walk is ever started.
+    start_sync is stubbed so this test never touches the real filesystem
+    (it also proves the refusal happens before any sync attempt)."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    def fake_start_sync(drive, app=None):
+        calls.append(drive.id)
+        return SimpleNamespace(state="done", stats={"added": 0, "updated": 0,
+                                                    "removed": 0,
+                                                    "skipped": 0})
+
+    monkeypatch.setattr(sync_service, "start_sync", fake_start_sync)
+    with app.app_context():
+        db.session.get(User, user).is_admin = False
+        db.session.commit()
+        drive = Drive(name="legacy-root", user_id=user, source_path="/")
+        db.session.add(drive)
+        db.session.commit()
+        did = drive.id
+    resp = auth_client.post(f"/drives/{did}/sync")
+    assert resp.status_code == 403
+    assert calls == []  # the route's only sync path is start_sync
