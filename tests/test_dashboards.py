@@ -3437,6 +3437,8 @@ def test_script_builder_hooks():
     assert 'data-f="script_enabled"' in src and 'data-f="script"' in src
     assert "dash-script" in src
     assert 'data-f="promptwrap"' in src and 'data-f="scriptwrap"' in src
+    i = src.find("dash-script-toggle")
+    assert i >= 0 and "workflow" in src[max(0, i - 200):i + 200]
 
 
 def _script_card_persisted(app, fid, cid, script="res = 1\nres"):
@@ -3451,13 +3453,14 @@ def _script_card_persisted(app, fid, cid, script="res = 1\nres"):
         dash_doc.save_document(stored, doc)
 
 
-def _stub_no_agent(monkeypatch):
+def _stub_no_agent(monkeypatch, evaluate=None):
     """pyrun on, every AI seam rigged to blow: any agent use fails the test."""
     from app.services import module_service
     dash_engine = _engine()
+    outcome = {"ok": True, "value": "seven"} if evaluate is None else evaluate
     monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
     monkeypatch.setattr(dash_engine, "_pyrun_evaluate",
-                        lambda code, files: {"ok": True, "value": "seven"},
+                        lambda code, files: outcome,
                         raising=False)
 
     def boom(*args, **kwargs):
@@ -3500,3 +3503,54 @@ def test_script_stream_runs_script(app, auth_client, user, enabled,
     card = _card(app, fid, cid)
     assert card["status"] == "done"
     assert card["result"] == {"text": "seven"}
+
+
+def test_script_stream_error_settles_error(app, auth_client, user, enabled,
+                                           monkeypatch):
+    """Fix wave: a failing script via /run/stream emits the normal done
+    frame carrying the error and settles the card error — zero agent calls."""
+    _stub_no_agent(monkeypatch,
+                   evaluate={"ok": False, "error": "boom"})
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "boom" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert card["result"] == {"error": "boom"}
+
+
+def test_update_card_normalizes_script(app, user, enabled):
+    """Fix wave: the update path normalizes script like the add path
+    (str(...), None → "")."""
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nulled = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script": None}}, None)
+        assert nulled["card"]["script"] == ""
+        coerced = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": 123}, None)
+        assert coerced["card"]["script"] == "123"
+
+
+def test_parse_script_result_maps_none_to_empty():
+    """Fix wave: a None script value coerces to "" — never a literal
+    "None" snapshot."""
+    assert _engine()._parse_script_result("kpi", None) == {"text": ""}

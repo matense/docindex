@@ -760,8 +760,10 @@
             '<div class="dash-prompt-label">Script <span class="opacity-60">— runs instead of the prompt</span></div>' +
             '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="4" ' +
             'placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
-            '<label class="dash-script-toggle"><input type="checkbox" data-f="script_enabled"' +
-            (card.script_enabled ? " checked" : "") + '> Script card</label>' +
+            '<label class="dash-script-toggle"' + (card.type === "workflow" ? ' style="display:none"' : "") + '>' +
+            '<input type="checkbox" data-f="script_enabled"' +
+            (card.script_enabled ? " checked" : "") + (card.type === "workflow" ? " disabled" : "") +
+            '> Script card</label>' +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
             wfBlock +
             '<div class="dash-tools"><b>tools</b>' +

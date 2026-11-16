@@ -343,9 +343,12 @@ def _tool_update_card(user, args, drive):
             if new_type not in doc_service.CARD_TYPES:
                 raise ValueError(f"Unknown card type '{new_type}'.")
             card["type"] = new_type
-        for key in ("title", "prompt", "script_enabled", "script"):
+        for key in ("title", "prompt", "script_enabled"):
             if key in args or key in data:
                 card[key] = args.get(key, data.get(key))
+        if "script" in args or "script" in data:
+            script = args.get("script", data.get("script"))
+            card["script"] = str(script) if script is not None else ""
         if "tools" in args or "tools" in data:
             card["tools"] = args.get("tools", data.get("tools"))
         for key in ("w", "h", "x", "y"):

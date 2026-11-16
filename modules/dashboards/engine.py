@@ -269,8 +269,10 @@ def _parse_script_result(card_type, value):
 
     Non-string values serialize first (JSON for dict/list, str otherwise),
     then the existing per-type parsing applies — one new line, no new
-    type contracts.
+    type contracts. None maps to "" (never a literal "None" snapshot).
     """
+    if value is None:
+        value = ""
     if not isinstance(value, str):
         value = (json.dumps(value) if isinstance(value, (dict, list))
                  else str(value))

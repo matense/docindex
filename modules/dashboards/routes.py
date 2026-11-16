@@ -655,7 +655,12 @@ def _settle_stream_card(stored_id, card_id, status, result, trace,
 
 @bp.post("/<int:file_id>/run/stream")
 def run_card_stream(file_id):
-    """Run one prompt card, streaming agent step frames as SSE.
+    """Run one card, streaming agent step frames as SSE.
+
+    Dispatch: workflow cards and script-enabled cards run through
+    ``engine_service.run_card`` and emit a single ``done`` frame (script
+    cards never touch the agent); other prompt cards stream agent step
+    frames (tools on) or run the single LLM call (tools off).
 
     Same guards and settle shape as ``run_cards``. Frames are
     ``data: {"t": "step"|"thinking"|"done", ...}``; the client renders
