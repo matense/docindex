@@ -205,8 +205,29 @@
                             '<span>History compacted — messages above are out of context</span>';
             messagesEl.appendChild(div);
         }
-        function addBubbleActions(div, role, content) {
+        // Cross-module gating: the dashboards nav entry only renders
+        // when the module is enabled — no nav entry means off (fail closed).
+        function dashboardsEnabled() {
+            return !!document.querySelector('a[href^="/m/dashboards"]');
+        }
+        function insertInNotebook(content) {
+            copyWithToast(content || '');  // payload ready in the clipboard
+            const f = window.currentFile;
+            if (f && f.id && /\.pdocnb$/i.test(f.name || '')) {
+                if (window.spaNavigate) window.spaNavigate('/file/' + f.id + '/view');
+            } else if (window.spaNavigate) {
+                window.spaNavigate('/m/notebooks/');
+            }
+            if (window.uiToast) window.uiToast('Answer copied — paste it as a new cell in the notebook.', 'info');
+        }
+        function pinToDashboard(content) {
+            copyWithToast(content || '');  // payload ready in the clipboard
+            if (window.spaNavigate) window.spaNavigate('/m/dashboards/');
+            if (window.uiToast) window.uiToast('Answer copied — create a card from it in the dashboard.', 'info');
+        }
+        function addBubbleActions(div, role, content, meta) {
             div._rawContent = content;
+            const msgId = meta && meta.id ? meta.id : null;
             const bar = document.createElement('div');
             bar.className = 'ai-msg-actions';
             const copy = document.createElement('button');
@@ -217,6 +238,42 @@
             copy.innerHTML = '<i class="fas fa-copy"></i>';
             copy.addEventListener('click', () => copyWithToast(div._rawContent || ''));
             bar.appendChild(copy);
+            if (role === 'user') {
+                const edit = document.createElement('button');
+                edit.type = 'button';
+                edit.className = 'ai-msg-btn';
+                edit.title = 'Edit & Resend — load this message back into the composer';
+                edit.setAttribute('aria-label', 'Edit and resend message');
+                edit.innerHTML = '<i class="fas fa-pen"></i>';
+                edit.addEventListener('click', () => {
+                    if (!input) return;
+                    input.value = (div._rawContent || '').replace(/\n\n📎 [^\n]*$/, '');
+                    growInput();
+                    input.focus();
+                });
+                bar.appendChild(edit);
+                const branch = document.createElement('button');
+                branch.type = 'button';
+                branch.className = 'ai-msg-btn';
+                branch.title = 'Branch — fork the conversation up to this message';
+                branch.setAttribute('aria-label', 'Branch conversation here');
+                branch.innerHTML = '<i class="fas fa-code-branch"></i>';
+                branch.addEventListener('click', () => {
+                    if (!msgId || !conversationId) {
+                        if (window.uiToast) window.uiToast('Reopen the conversation to branch from here.', 'info');
+                        return;
+                    }
+                    apiFetch('/ai/conversations/' + conversationId + '/branch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
+                        body: JSON.stringify({ up_to_message_id: msgId }),
+                    }, { silent: true }).then(res => {
+                        if (res && res.id) loadConversation(res.id);
+                        else if (window.uiToast) window.uiToast('Could not create the branch.', 'error');
+                    });
+                });
+                bar.appendChild(branch);
+            }
             if (role === 'assistant') {
                 const regen = document.createElement('button');
                 regen.type = 'button';
@@ -226,6 +283,28 @@
                 regen.innerHTML = '<i class="fas fa-rotate-right"></i>';
                 regen.addEventListener('click', regenerateLast);
                 bar.appendChild(regen);
+                const nb = document.createElement('button');
+                nb.type = 'button';
+                nb.className = 'ai-msg-btn';
+                nb.title = 'Insert in Notebook — copy this answer and open the notebook';
+                nb.setAttribute('aria-label', 'Insert in Notebook');
+                nb.innerHTML = '<i class="fas fa-book-open"></i>';
+                nb.addEventListener('click', () => insertInNotebook(div._rawContent || ''));
+                bar.appendChild(nb);
+                const pin = document.createElement('button');
+                pin.type = 'button';
+                pin.className = 'ai-msg-btn';
+                pin.innerHTML = '<i class="fas fa-thumbtack"></i>';
+                if (dashboardsEnabled()) {
+                    pin.title = 'Pin to Dashboard — copy this answer and open dashboards';
+                    pin.setAttribute('aria-label', 'Pin to Dashboard');
+                    pin.addEventListener('click', () => pinToDashboard(div._rawContent || ''));
+                } else {
+                    pin.disabled = true;
+                    pin.title = 'Pin to Dashboard (dashboards module is disabled)';
+                    pin.setAttribute('aria-label', 'Pin to Dashboard (unavailable)');
+                }
+                bar.appendChild(pin);
                 if (lastAssistantDiv) {
                     lastAssistantDiv.querySelector('.ai-msg-regen')?.remove();
                 }
@@ -241,7 +320,7 @@
                 div.innerHTML = '<div class="chat-bubble chat-bubble-primary whitespace-pre-line"></div>';
                 div.querySelector('.chat-bubble').textContent = content;
                 addMetaFooter(div, meta);
-                addBubbleActions(div, role, content);
+                addBubbleActions(div, role, content, meta);
             } else if (role === 'thinking') {
                 const det = document.createElement('details');
                 det.className = 'ai-reasoning rounded-xl';
@@ -284,7 +363,7 @@
                 bubble.innerHTML = renderMarkdown(content);
                 enhanceBubble(bubble);
                 addMetaFooter(div, meta);
-                addBubbleActions(div, 'assistant', content);
+                addBubbleActions(div, 'assistant', content, meta);
             }
             messagesEl.appendChild(div);
             scrollDown(role === 'user');  // always follow your own message

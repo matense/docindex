@@ -939,6 +939,97 @@ def test_peek_denies_hidden_and_trashed(auth_client, hidden_file, trashed_file):
 # ------------------------------------------------- C6 fix round 1/2
 
 
+def _branch_messages(app, conv_id):
+    with app.app_context():
+        return (ChatMessage.query.filter_by(conversation_id=conv_id)
+                .order_by(ChatMessage.id).all())
+
+
+def test_branch_copies_up_to_message(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=3)  # q0 a0 q1 a1 q2 a2
+    orig = _branch_messages(app, conv_id)
+    up_to = orig[1].id
+    with app.app_context():
+        orig_title = db.session.get(ChatConversation, conv_id).title
+        orig_context = db.session.get(ChatConversation, conv_id).context
+    r = auth_client.post(f"/ai/conversations/{conv_id}/branch",
+                         json={"up_to_message_id": up_to})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["title"] == orig_title + " (branch)"
+    assert data["id"] != conv_id
+    branched = _branch_messages(app, data["id"])
+    assert [m.content for m in branched] == [m.content for m in orig[:2]]
+    assert [m.role for m in branched] == [m.role for m in orig[:2]]
+    with app.app_context():
+        assert db.session.get(ChatConversation, data["id"]).context == orig_context
+
+
+def test_branch_rejects_bad_message_id(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": 9999}).status_code == 404
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={}).status_code == 400
+    assert auth_client.post(
+        "/ai/conversations/999999/branch",
+        json={"up_to_message_id": 1}).status_code == 404
+
+
+def test_branch_rejects_foreign_message_id(auth_client, app, user):
+    conv_a = _make_conversation(app, n_pairs=1)
+    conv_b = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        foreign = (ChatMessage.query.filter_by(conversation_id=conv_b)
+                   .order_by(ChatMessage.id).first().id)
+    assert auth_client.post(
+        f"/ai/conversations/{conv_a}/branch",
+        json={"up_to_message_id": foreign}).status_code == 404
+
+
+def test_branch_other_users_conversation_forbidden(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    other = app.test_client()
+    other.post("/register", data={
+        "username": "erin", "email": "erin@example.com",
+        "password": "pw123456", "confirm": "pw123456",
+    })
+    with app.app_context():
+        msg_id = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                  .order_by(ChatMessage.id).first().id)
+    assert other.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": msg_id}).status_code == 404
+
+
+def test_bubble_actions_user_and_assistant():
+    src = _read_template("app/static/js/ai_core.js")
+    start = src.index("function addBubbleActions")
+    end = src.index("function addMessage", start)
+    body = src[start:end]
+    assert "Edit & Resend" in body
+    assert "Branch" in body
+    assert "Insert in Notebook" in body
+    assert "Pin to Dashboard" in body
+    assert "up_to_message_id" in body
+    assert "loadConversation(res.id)" in body
+
+
+def test_cross_module_actions_fail_closed_when_disabled():
+    src = _read_template("app/static/js/ai_core.js")
+    # Pin to Dashboard is gated on the dashboards module being active...
+    assert "dashboardsEnabled" in src
+    assert 'a[href^="/m/dashboards"]' in src
+    # ...and fails closed with a clear reason when off (never a dead button).
+    assert "dashboards module is disabled" in src
+    # Neither cross-module action invents a new server API: the chat opens
+    # the existing module surfaces with the payload ready (clipboard).
+    assert "copyWithToast" in src
+    assert "/m/notebooks/" in src and "/m/dashboards/" in src
+
+
 @pytest.mark.parametrize("err", [
     OSError("unreadable"),
     ValueError("corrupt bytes"),

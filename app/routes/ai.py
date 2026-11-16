@@ -490,7 +490,9 @@ def conversation(conv_id):
                               if task.context else None)}
                  if task and not task.notified else None),
         "messages": [
-            {"role": m.role, "content": m.content, "model": m.model,
+            # The message id feeds the Branch bubble action
+            # (POST .../branch with up_to_message_id).
+            {"id": m.id, "role": m.role, "content": m.content, "model": m.model,
              "archived": bool(m.archived), "usage": usage.get(m.id),
              "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in conv.messages
@@ -511,6 +513,41 @@ def delete_conversation(conv_id):
     db.session.delete(conv)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@bp.route("/conversations/<int:conv_id>/branch", methods=["POST"])
+@login_required
+def branch_conversation(conv_id):
+    """Fork a conversation up to a message: a new conversation titled
+    "<title> (branch)" carries the context snapshot and copies of every
+    message of the original with id <= up_to_message_id, in id order."""
+    conv = _get_conversation(conv_id)
+    if not conv:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        up_to = int(data.get("up_to_message_id") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid message id."}), 400
+    if not up_to:
+        return jsonify({"error": "up_to_message_id is required."}), 400
+    anchor = ChatMessage.query.filter_by(
+        conversation_id=conv.id, id=up_to).first()
+    if anchor is None:
+        return jsonify({"error": "Not found"}), 404
+    branched = ChatConversation(user_id=current_user.id,
+                                title=f"{conv.title} (branch)",
+                                context=conv.context)
+    db.session.add(branched)
+    db.session.flush()
+    for m in ChatMessage.query.filter(
+            ChatMessage.conversation_id == conv.id,
+            ChatMessage.id <= up_to).order_by(ChatMessage.id).all():
+        db.session.add(ChatMessage(conversation_id=branched.id, role=m.role,
+                                   content=m.content, model=m.model,
+                                   archived=m.archived))
+    db.session.commit()
+    return jsonify({"id": branched.id, "title": branched.title})
 
 
 # Marker prepended to the summary message left behind by the
