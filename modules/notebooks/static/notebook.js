@@ -707,6 +707,13 @@
         // Content checksum — compared against the server to detect external
         // (AI tool) edits while the notebook is open.
         let lastChecksum = opts.checksum || "";
+        // Checksum the server had when our in-memory doc last fully matched
+        // it — sent as base_checksum so a stale autosave merges instead of
+        // wiping concurrent (AI) edits. Only advances on a clean sync; a
+        // remote update that keeps an actively-edited cell aside leaves the
+        // old base so the next save takes the server merge/409 path.
+        let saveBase = opts.checksum || "";
+        let conflictRetries = 0;
 
         // ------------------------------------------------------------------
         // Saving
@@ -742,6 +749,8 @@
             try {
                 // RAW fetch: the error status shows data.error || resp.status,
                 // so HTTP status and body are both needed (apiFetch conflates).
+                // base_checksum lets the server merge (or 409) a stale write
+                // instead of wiping concurrent AI edits.
                 const resp = await fetch(opts.saveUrl, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -749,15 +758,27 @@
                         doc: doc,
                         force_checkpoint: !!forceCheckpoint,
                         note: forceCheckpoint ? "Manual checkpoint" : "",
+                        base_checksum: saveBase,
                     }),
                 });
                 const data = await resp.json();
                 if (resp.ok && data.ok) {
                     dirty = false;
-                    if (data.checksum) lastChecksum = data.checksum;
+                    conflictRetries = 0;
+                    if (data.checksum) lastChecksum = saveBase = data.checksum;
                     const time = (data.saved_at || "").slice(11, 19);
-                    setStatus("saved", time);
+                    setStatus("saved", data.merged ? time + " · merged" : time);
                     if (window.spaInvalidate) window.spaInvalidate();
+                } else if (resp.status === 409 && data.conflict && data.doc
+                        && data.checksum && conflictRetries < 2) {
+                    // Same cell changed on both sides: adopt the server doc
+                    // (keeping actively-edited cells), then retry with the
+                    // fresh base. The server snapshotted its state when it
+                    // answered 409, so neither side is lost.
+                    conflictRetries += 1;
+                    rebaseLocalToServer(data.doc, data.checksum);
+                    saving = false;
+                    return save(forceCheckpoint);
                 } else {
                     setStatus("error", data.error || resp.status);
                 }
@@ -776,7 +797,7 @@
                 fetch(opts.saveUrl, {
                     method: "POST", keepalive: true,
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ doc: doc }),
+                    body: JSON.stringify({ doc: doc, base_checksum: saveBase }),
                 });
                 dirty = false;
             } catch (err) { /* best effort */ }
@@ -890,8 +911,125 @@
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
 
+        // Editor UI state (_editing) is not content — it must not count
+        // as a remote change (or a conflict) when reconciling.
+        function cellSig(cell) {
+            return JSON.stringify(cell, (k, v) =>
+                (k === "_editing" ? undefined : v));
+        }
+
+        function activeCellIds() {
+            const ids = new Set();
+            doc.cells.forEach((c) => { if (c._editing) ids.add(c.id); });
+            const ae = document.activeElement;
+            const anchor = ae && ae.closest
+                ? ae.closest(".nb-cell") : null;
+            if (anchor && anchor.dataset.cellId) ids.add(anchor.dataset.cellId);
+            return ids;
+        }
+
+        // Adopt a remote document without destroying the active editor:
+        // only the affected .nb-cell nodes are patched, added or removed.
+        // Cells the user is editing (or focused) keep their local content;
+        // saveBase advances only on a fully converged sync, so a kept-aside
+        // cell makes the next save take the server merge/409 path instead
+        // of silently overwriting the remote change.
+        function applyRemoteDoc(remoteDoc, remoteChecksum) {
+            if (!remoteDoc || !Array.isArray(remoteDoc.cells)) return;
+            const localById = new Map(doc.cells.map((c) => [c.id, c]));
+            const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));
+            const active = activeCellIds();
+            let diverged = false;
+            const nextCells = remoteDoc.cells.map((rc) => {
+                const local = localById.get(rc.id);
+                if (local && active.has(rc.id)
+                        && cellSig(local) !== cellSig(rc)) {
+                    diverged = true;  // keep the active editor's content
+                    return local;
+                }
+                return rc;
+            });
+            // Local cells unknown to the server only survive while the user
+            // is editing them; other removals honour the remote delete.
+            localById.forEach((c, id) => {
+                if (!remoteIds.has(id) && active.has(id)) {
+                    diverged = true;
+                    nextCells.push(c);
+                }
+            });
+            doc.cells = nextCells;
+            doc.title = remoteDoc.title;
+            doc.ai_lock = !!remoteDoc.ai_lock;
+            doc.ai_hidden = !!remoteDoc.ai_hidden;
+            if (remoteDoc.full_history && !doc.full_history) {
+                doc.full_history = true;
+                renderFullHistButton();
+            }
+            renderAccessButtons();
+            lastChecksum = remoteChecksum;
+            if (!diverged) saveBase = remoteChecksum;
+            window.dispatchEvent(new CustomEvent("notebook_changed", {
+                detail: { fileId: opts.fileId, checksum: remoteChecksum },
+            }));
+            patchCellNodes();
+            renderToc();
+            setStatus("saved", "updated remotely");
+        }
+
+        // Reconcile the DOM with doc.cells: update, add or remove only the
+        // affected .nb-cell nodes, then rebuild the insert bars so their
+        // positions match. Nodes holding the active editor (or focus) are
+        // left alone; existing nodes are moved, never cloned, so focus and
+        // editor state survive. Cell action handlers resolve their index
+        // dynamically, so patched ordering stays correct.
+        function patchCellNodes() {
+            const focused = document.activeElement;
+            const active = activeCellIds();
+            const existing = new Map();
+            cellsEl.querySelectorAll(":scope > .nb-cell").forEach((n) => {
+                if (n.dataset.cellId) existing.set(n.dataset.cellId, n);
+            });
+            cellsEl.querySelectorAll(":scope > .nb-add-bar").forEach((b) => {
+                b.remove();
+            });
+            const liveIds = new Set(doc.cells.map((c) => c.id));
+            existing.forEach((node, id) => {
+                if (!liveIds.has(id) && !active.has(id)
+                        && !node.contains(focused)) {
+                    node.remove();
+                    existing.delete(id);
+                }
+            });
+            const frag = document.createDocumentFragment();
+            doc.cells.forEach((cell, i) => {
+                frag.appendChild(makeAddBar(i));
+                let node = existing.get(cell.id);
+                if (node && !node.isConnected) node = null;
+                if (!node) {
+                    node = renderCell(cell, i);
+                } else if (!active.has(cell.id) && !node.contains(focused)
+                        && node._nbSig !== cellSig(cell)) {
+                    renderCellBody(node, cell);
+                }
+                node._nbSig = cellSig(cell);
+                frag.appendChild(node);
+            });
+            frag.appendChild(makeAddBar(doc.cells.length));
+            cellsEl.appendChild(frag);
+        }
+
+        // Conflict resolution after a 409: adopt the server document like a
+        // poll would, but always advance the save base — the kept-aside
+        // cells are intentional overwrites being retried, and the server
+        // snapshotted its state when it answered 409.
+        function rebaseLocalToServer(serverDoc, serverChecksum) {
+            applyRemoteDoc(serverDoc, serverChecksum);
+            saveBase = serverChecksum;
+            dirty = true;
+        }
+
         // External-change watch: when the AI (or another tab) edits this
-        // notebook, refresh the view in place — unsaved local edits win.
+        // notebook, patch only the affected cells — unsaved local edits win.
         async function pollRemote() {
             if (!alive()) { clearInterval(pollTimer); return; }
             const data = await apiFetch(opts.docUrl, null, { silent: true });
@@ -899,19 +1037,7 @@
             try {
                 if (data.checksum === lastChecksum) return;
                 if (dirty || saving) return;  // local edits take precedence
-                doc.cells = data.doc.cells;
-                doc.title = data.doc.title;
-                doc.ai_lock = !!data.doc.ai_lock;
-                doc.ai_hidden = !!data.doc.ai_hidden;
-                if (data.doc.full_history && !doc.full_history) {
-                    doc.full_history = true;
-                    renderFullHistButton();
-                }
-                renderAccessButtons();
-                lastChecksum = data.checksum;
-                doc.cells.forEach((c) => { c._editing = false; });
-                render();
-                setStatus("saved", "updated remotely");
+                applyRemoteDoc(data.doc, data.checksum);
             } catch (err) { /* malformed payload — try again next tick */ }
         }
         const pollTimer = setInterval(pollRemote, 5000);
@@ -1076,7 +1202,8 @@
             grip.title = "Drag to reorder";
             grip.draggable = true;
             grip.addEventListener("dragstart", (e) => {
-                e.dataTransfer.setData("text/nb-cell", String(index));
+                e.dataTransfer.setData("text/nb-cell",
+                    String(doc.cells.indexOf(cell)));
                 // Payload for the AI chat: dropping a cell there references it.
                 e.dataTransfer.setData("application/x-docindex-cell",
                     JSON.stringify({
@@ -1116,16 +1243,20 @@
                 }));
             }
             actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
-                if (index > 0) {
-                    doc.cells.splice(index, 1);
-                    doc.cells.splice(index - 1, 0, cell);
+                // Dynamic index: per-cell patching can reorder nodes without
+                // re-rendering, so never trust the render-time closure.
+                const i = doc.cells.indexOf(cell);
+                if (i > 0) {
+                    doc.cells.splice(i, 1);
+                    doc.cells.splice(i - 1, 0, cell);
                     render(); scheduleSave();
                 }
             }));
             actions.appendChild(mkBtn("fa-arrow-down", "Move down", () => {
-                if (index < doc.cells.length - 1) {
-                    doc.cells.splice(index, 1);
-                    doc.cells.splice(index + 1, 0, cell);
+                const i = doc.cells.indexOf(cell);
+                if (i >= 0 && i < doc.cells.length - 1) {
+                    doc.cells.splice(i, 1);
+                    doc.cells.splice(i + 1, 0, cell);
                     render(); scheduleSave();
                 }
             }));
@@ -1134,7 +1265,8 @@
                     ? window.uiConfirm("Delete this cell?", { danger: true })
                     : Promise.resolve(window.confirm("Delete this cell?")));
                 if (!ok) return;
-                doc.cells.splice(index, 1);
+                const i = doc.cells.indexOf(cell);
+                if (i >= 0) doc.cells.splice(i, 1);
                 render(); scheduleSave();
             }, true));
             head.appendChild(actions);
@@ -1166,13 +1298,15 @@
                 wrap.style.boxShadow = "";
                 const from = parseInt(e.dataTransfer.getData("text/nb-cell"), 10);
                 if (isNaN(from)) return;
-                let to = index + (wrap.dataset.dropPos === "after" ? 1 : 0);
+                let to = doc.cells.indexOf(cell)
+                    + (wrap.dataset.dropPos === "after" ? 1 : 0);
                 if (to === from || to === from + 1) return;  // dropped in place
                 const moved = doc.cells.splice(from, 1)[0];
                 if (from < to) to -= 1;
                 doc.cells.splice(to, 0, moved);
                 render(); scheduleSave();
             });
+            wrap._nbSig = cellSig(cell);
             return wrap;
         }
 

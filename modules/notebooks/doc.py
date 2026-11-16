@@ -485,8 +485,66 @@ def last_organize_plan(user):
             .first())
 
 
+class CellConflictError(ValueError):
+    """A stale save overlaps concurrent edits to the same cell(s).
+
+    Carries the live server document + checksum so the caller can answer
+    409 with everything the editor needs to rebase and retry. Nothing has
+    been written when this is raised.
+    """
+
+    def __init__(self, message, server_doc, server_checksum):
+        super().__init__(message)
+        self.server_doc = server_doc
+        self.server_checksum = server_checksum
+
+
+def _canonical_cell(cell):
+    """Order-insensitive identity of a cell for concurrency comparison.
+
+    The in-memory `_editing` flag is editor UI state (older saves may even
+    have persisted it) — it is not content and must not count as a change.
+    """
+    scrubbed = {k: v for k, v in cell.items() if k != "_editing"}
+    return json.dumps(scrubbed, sort_keys=True)
+
+
+def _merge_concurrent(current_doc, incoming_doc, server_checksum):
+    """Union-merge a stale save over the live document.
+
+    Cells the live document has but the stale save lacks were added
+    concurrently (e.g. by an AI tool) — they are preserved, slotted back
+    at their live position. Cells only in the stale save are the user's
+    own adds. Shared cells must be identical; a difference on both sides
+    is a conflicting overlap -> CellConflictError. Document-level fields
+    (title, flags) follow the incoming save (user intent).
+    """
+    current_by_id = {c.get("id"): c
+                     for c in current_doc.get("cells", [])}
+    incoming_by_id = {c.get("id"): c
+                      for c in incoming_doc.get("cells", [])}
+    conflicts = sorted(
+        cid for cid in current_by_id.keys() & incoming_by_id.keys()
+        if _canonical_cell(current_by_id[cid])
+        != _canonical_cell(incoming_by_id[cid]))
+    if conflicts:
+        raise CellConflictError(
+            "Conflicting concurrent edits in "
+            f"{len(conflicts)} cell(s) — reload and re-apply your change.",
+            current_doc, server_checksum)
+    merged_cells = list(incoming_doc.get("cells", []))
+    present = set(incoming_by_id)
+    for index, cell in enumerate(current_doc.get("cells", [])):
+        if cell.get("id") not in present:
+            merged_cells.insert(min(index, len(merged_cells)), cell)
+            present.add(cell.get("id"))
+    merged = dict(incoming_doc)
+    merged["cells"] = merged_cells
+    return merged
+
+
 def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
-                  skip_snapshot=False):
+                  skip_snapshot=False, base_checksum=None):
     """Persist a document: throttled version snapshot + blob write + re-index.
 
     Autosaves write through immediately (no data loss) but only snapshot a
@@ -495,9 +553,25 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
     always snapshots (Ctrl+S); skip_snapshot=True never does (used by AI
     transactional saves after the first mutation of a run). Returns True
     when a version was snapshotted.
+
+    base_checksum is the checksum the editor last saw (sent by the
+    autosave). When it no longer matches the live file, someone else
+    (e.g. an AI tool) changed the notebook concurrently: non-overlapping
+    cell edits are union-merged and the pre-save (post-concurrent) state
+    is snapshotted first even inside SNAPSHOT_INTERVAL, so the concurrent
+    work is never overwritten without a restorable version. Overlapping
+    edits to the same cell raise CellConflictError (the caller answers
+    409) and nothing is written.
     """
     _guard_writable(stored)
     validate(doc)
+    if (base_checksum and stored.checksum is not None
+            and base_checksum != stored.checksum):
+        doc = _merge_concurrent(load(stored), doc, stored.checksum)
+        # Snapshot the post-concurrent state before writing over it — a
+        # user autosave inside SNAPSHOT_INTERVAL must never silently
+        # overwrite post-AI state without a restorable version.
+        force_checkpoint = True
     # Full-history mode is sticky: once enabled it can never be turned
     # off again (the toggle confirms this with the user).
     if not doc.get("full_history"):

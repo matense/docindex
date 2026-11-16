@@ -192,14 +192,28 @@ def save(file_id):
     document = payload.get("doc")
     if document is None:
         return jsonify({"ok": False, "error": "Missing document."}), 400
+    previous_checksum = stored.checksum
+    base_checksum = payload.get("base_checksum") or None
     try:
         snapshotted = doc_service.save_document(
             stored, document,
             force_checkpoint=bool(payload.get("force_checkpoint")),
-            note=str(payload.get("note", ""))[:255])
+            note=str(payload.get("note", ""))[:255],
+            base_checksum=base_checksum)
+    except doc_service.CellConflictError as exc:
+        # Guard-snapshot the live (post-concurrent, e.g. AI) state so it
+        # stays restorable even if the client rebases and overwrites it.
+        file_service.snapshot_version(
+            stored, "edit", note="Conflict guard - concurrent edit")
+        return jsonify({"ok": False, "error": str(exc), "conflict": True,
+                        "doc": exc.server_doc,
+                        "checksum": exc.server_checksum}), 409
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    merged = bool(base_checksum and previous_checksum
+                  and base_checksum != previous_checksum)
     return jsonify({"ok": True, "version_created": snapshotted,
+                    "merged": merged,
                     "saved_at": stored.updated_at.isoformat(),
                     "checksum": stored.checksum})
 

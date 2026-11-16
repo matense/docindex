@@ -935,3 +935,121 @@ def test_md_view_bleach_still_strips_scripts(auth_client, app):
     assert "<figcaption>" in body
     assert "<sup>" in body
     assert "<sub>" in body
+
+
+# ---------------------------------------------------------------------------
+# D1: autosave vs AI live-edit race (P0 dataloss)
+# ---------------------------------------------------------------------------
+
+def _stale_editor_snapshot(app, fid):
+    """Simulate the open editor: the doc + checksum it last saw."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        return nb_doc.load(stored), stored.checksum
+
+
+def test_autosave_never_wipes_concurrent_ai_edit(app, auth_client, user,
+                                                  enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    # First save so the editor holds a real checksum.
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    assert stale_checksum
+    # AI adds a cell while the editor is open on the stale state.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)
+        assert added["ok"] is True
+    # The user's autosave of the stale doc must not wipe the AI cell.
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/save",
+        json={"doc": stale_doc, "base_checksum": stale_checksum})
+    assert resp.status_code in (200, 409)
+    if resp.status_code == 200:
+        with app.app_context():
+            loaded = nb_doc.load(db.session.get(StoredFile, fid))
+        assert any(c.get("content") == "AI wrote this"
+                   for c in loaded["cells"])  # merged, not wiped
+
+
+def test_autosave_conflicting_overlap_returns_409(app, auth_client, user,
+                                                  enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race conflict",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    assert stale_checksum
+    # AI rewrites the same cell the stale editor is about to overwrite.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        cell_id = stale_doc["cells"][0]["id"]
+        updated = nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)
+        assert updated["ok"] is True
+    stale_doc["cells"][0]["content"] = "user rewrite"
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/save",
+        json={"doc": stale_doc, "base_checksum": stale_checksum})
+    assert resp.status_code == 409
+    # Server keeps the AI state; nothing was clobbered.
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert loaded["cells"][0]["content"] == "AI rewrite"
+
+
+def test_stale_autosave_snapshots_post_ai_state(app, auth_client, user,
+                                                enabled):
+    """A stale autosave inside SNAPSHOT_INTERVAL must still snapshot the
+    post-AI state before writing, so the AI work stays restorable."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race snapshot",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)
+        before = len(db.session.get(StoredFile, fid).versions)
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/save",
+        json={"doc": stale_doc, "base_checksum": stale_checksum})
+    assert resp.status_code in (200, 409)
+    with app.app_context():
+        assert len(db.session.get(StoredFile, fid).versions) > before
+
+
+def test_stale_save_ignores_editing_ui_flag(app, auth_client, user, enabled):
+    """The in-memory `_editing` UI flag round-trips through autosaves; it
+    must not count as a conflicting edit (no spurious 409, AI cell kept)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race editing flag",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    stale_doc["cells"][0]["_editing"] = True  # cell open in the editor
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/save",
+        json={"doc": stale_doc, "base_checksum": stale_checksum})
+    assert resp.status_code == 200
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert any(c.get("content") == "AI wrote this"
+               for c in loaded["cells"])
+
+
+def test_ai_edit_reaches_open_editor_without_wipe():
+    # JS-level: remote changes arrive as a UI event and only the affected
+    # .nb-cell nodes are patched (no full innerHTML wipe of the editor).
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "notebook_changed" in src
