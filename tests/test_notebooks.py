@@ -1757,3 +1757,38 @@ def test_drag_drop_flicker_free_guards():
     guard = src.index('types.includes("text/nb-cell")', seg_start)
     prevented = src.index("preventDefault", seg_start)
     assert guard < prevented < getdata
+
+
+def test_ai_split_and_ask_ai_present():
+    """N6: toolbar AI Split button + per-cell Ask AI.
+
+    Cross-track contract (chat side lands on the parallel track): the
+    notebook side calls window.aiChat.openAndDock('right') and
+    window.aiChat.attachNotebookCell({fileId, fileName, cellId,
+    cellType, preview}) only behind typeof guards, degrading
+    gracefully (console warning/title update, clipboard copy telling
+    the user to paste it in chat) when the chat API is absent.
+    """
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    assert "nb-ai-split-btn" in html
+    assert "AI Split" in html
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Ask AI" in src and "attachNotebookCell" in src
+    # Contract-exact dock call, guarded so a missing chat side never
+    # crashes or dead-clicks without feedback.
+    assert 'openAndDock("right")' in src
+    assert "typeof window.aiChat" in src
+    assert "console.warn" in src
+    # Exact attach payload shape from spec section 3.4.
+    for key in ("fileId", "fileName", "cellId", "cellType", "preview"):
+        assert key in src
+    assert "cellPlainText" in src
+    # Fallback when the chat side is absent: clipboard copy telling the
+    # user to paste it in chat.
+    assert "clipboard" in src
+    assert "paste it in chat" in src or "paste in chat" in src

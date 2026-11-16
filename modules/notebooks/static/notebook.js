@@ -694,6 +694,29 @@
             (k === "_editing" ? undefined : v));
     }
 
+    // Plain-text preview of any cell type for the Ask-AI payload —
+    // strings pass through, todo/table rows join, objects stringify.
+    function cellPlainText(cell) {
+        const c = cell ? cell.content : "";
+        if (typeof c === "string") return c.slice(0, 2000);
+        if (Array.isArray(c)) {
+            return c.map((row) => {
+                if (Array.isArray(row)) return row.join(" | ");
+                if (row && typeof row === "object") {
+                    return row.text !== undefined ? String(row.text)
+                        : JSON.stringify(row);
+                }
+                return String(row);
+            }).join("\n").slice(0, 2000);
+        }
+        if (c && typeof c === "object") {
+            try { return JSON.stringify(c).slice(0, 2000); }
+            catch (err) { return ""; }
+        }
+        return (c === undefined || c === null)
+            ? "" : String(c).slice(0, 2000);
+    }
+
     // Pure decision: does the live document provably contain everything a
     // flagged unload flush attempted? Only a YES clears the flag silently.
     // A base match alone proves nothing for a dirty flush (the flush may
@@ -1251,6 +1274,23 @@
         });
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
+        // --- AI Split: dock the AI chat to the right of the notebook ---
+        const aiSplitBtn = root.querySelector("#nb-ai-split-btn");
+        if (aiSplitBtn) aiSplitBtn.addEventListener("click", () => {
+            if (window.aiChat
+                    && typeof window.aiChat.openAndDock === "function") {
+                window.aiChat.openAndDock("right");
+            } else {
+                // Chat side lands on the parallel track: never dead-click
+                // without feedback — warn and point at the manual path.
+                if (typeof console !== "undefined" && console.warn) {
+                    console.warn("aiChat.openAndDock unavailable"
+                        + " — open the AI chat manually");
+                }
+                aiSplitBtn.title = "AI chat dock unavailable"
+                    + " — open the chat manually";
+            }
+        });
         renderAccessButtons();
         // --- Inline title edit: click the h1 to rename --------------------
         // Commits through the same rename route as the list page, so the
@@ -1782,6 +1822,45 @@
             return bar;
         }
 
+        // --- Per-cell Ask AI: attach the cell to the AI chat -----------
+        function askAiAboutCell(cell, btn) {
+            const payload = {
+                fileId: opts.fileId,
+                fileName: (window.currentFile && window.currentFile.name)
+                    || doc.title || "notebook",
+                cellId: cell.id,
+                cellType: cell.type,
+                preview: cellPlainText(cell),
+            };
+            if (window.aiChat
+                    && typeof window.aiChat.attachNotebookCell
+                        === "function") {
+                window.aiChat.attachNotebookCell(payload);
+                const chatInput = document.querySelector(
+                    ".ai-chat-window textarea");
+                if (chatInput && chatInput.focus) chatInput.focus();
+                return;
+            }
+            // Chat side absent: copy a paste-ready summary and say so —
+            // never dead-click without feedback.
+            const summary = "[" + payload.fileName + " / " + payload.cellId
+                + " (" + payload.cellType + ")]\n" + payload.preview;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(summary);
+            }
+            if (typeof console !== "undefined" && console.info) {
+                console.info("AI chat unavailable — cell summary copied,"
+                    + " paste it in chat");
+            }
+            if (btn) {
+                const original = btn.innerHTML;
+                btn.innerHTML = "Copied — paste in chat";
+                btn.title = "AI chat unavailable — cell copied,"
+                    + " paste it in the chat";
+                setTimeout(() => { btn.innerHTML = original; }, 2000);
+            }
+        }
+
         function renderCell(cell, index) {
             const meta = TYPE_META[cell.type] || TYPE_META.markdown;
             const wrap = el("div", "glass-panel rounded-xl px-4 py-3 nb-cell");
@@ -1838,6 +1917,12 @@
                     renderCellBody(wrap, cell, index);
                 }));
             }
+            const askAi = el("button", "btn btn-ghost btn-xs gap-1");
+            askAi.type = "button";
+            askAi.innerHTML = "✨ Ask AI";
+            askAi.title = "Attach this cell to the AI chat";
+            askAi.addEventListener("click", () => askAiAboutCell(cell, askAi));
+            actions.appendChild(askAi);
             actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
                 // Dynamic index: per-cell patching can reorder nodes without
                 // re-rendering, so never trust the render-time closure.
