@@ -192,14 +192,36 @@ def save(file_id):
     document = payload.get("doc")
     if document is None:
         return jsonify({"ok": False, "error": "Missing document."}), 400
-    previous_checksum = stored.checksum
-    base_checksum = payload.get("base_checksum") or None
     try:
-        snapshotted = doc_service.save_document(
+        # Validate shape first: malformed docs are 400 even when the save
+        # carries no base (base rules below answer 409, never 400).
+        doc_service.validate(document)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    base_checksum = payload.get("base_checksum") or None
+    base_doc = payload.get("base_doc")
+    if base_doc is not None and not isinstance(base_doc, dict):
+        return jsonify({"ok": False, "error": "base_doc must be an object."}), 400
+    if base_checksum is None and stored.checksum is not None:
+        # No base: the saver cannot prove freshness — refuse the blind
+        # overwrite (stale clients must refetch and retry with a base)
+        # instead of silently wiping concurrent cells. Internal callers
+        # (AI tools, sync) bypass this route with freshly loaded docs.
+        try:
+            server_doc = doc_service.load(stored)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": False,
+                        "error": "Save carries no base checksum — "
+                                 "reload and retry.",
+                        "conflict": True, "doc": server_doc,
+                        "checksum": stored.checksum}), 409
+    try:
+        result = doc_service.save_document(
             stored, document,
             force_checkpoint=bool(payload.get("force_checkpoint")),
             note=str(payload.get("note", ""))[:255],
-            base_checksum=base_checksum)
+            base_checksum=base_checksum, base_doc=base_doc)
     except doc_service.CellConflictError as exc:
         # Guard-snapshot the live (post-concurrent, e.g. AI) state so it
         # stays restorable even if the client rebases and overwrites it.
@@ -210,12 +232,15 @@ def save(file_id):
                         "checksum": exc.server_checksum}), 409
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    merged = bool(base_checksum and previous_checksum
-                  and base_checksum != previous_checksum)
-    return jsonify({"ok": True, "version_created": snapshotted,
-                    "merged": merged,
-                    "saved_at": stored.updated_at.isoformat(),
-                    "checksum": stored.checksum})
+    body = {"ok": True, "version_created": result.snapshotted,
+            "merged": result.merged,
+            "resurrected": result.resurrected,
+            "saved_at": stored.updated_at.isoformat(),
+            "checksum": stored.checksum}
+    if result.merged:
+        # The client needs the exact post-merge state as its next base.
+        body["doc"] = result.doc
+    return jsonify(body)
 
 
 @bp.post("/<int:file_id>/rename")

@@ -713,7 +713,38 @@
         // remote update that keeps an actively-edited cell aside leaves the
         // old base so the next save takes the server merge/409 path.
         let saveBase = opts.checksum || "";
+        // Deep copy of the doc the current base describes — sent as base_doc
+        // so the server can 3-way merge a stale save. saveBase/baseDoc only
+        // advance together on a clean sync; a divergent sync pins both so
+        // the next save takes the merge/409 path.
+        let baseDoc = (opts.doc && Array.isArray(opts.doc.cells))
+            ? JSON.parse(JSON.stringify(opts.doc))
+            : { version: 1, title: "", cells: [] };
         let conflictRetries = 0;
+        // Set when 409 retries are exhausted: stop the auto-retry loop
+        // (edits stay in memory + flagged) until fresh user intent arrives.
+        let saveHold = false;
+        // Set when a rebase kept local content over a true conflict: the
+        // next successful save says so instead of going silently.
+        let keptLocalNote = false;
+        // Unload-time saves are fire-and-forget (keepalive responses are
+        // unreadable). A known-stale flush — or an exhausted 409 — flags
+        // the next load to verify, instead of failing silently.
+        const pendingConflictKey = "nb_pending_conflict_" + opts.fileId;
+        function flagPendingConflict() {
+            try {
+                localStorage.setItem(pendingConflictKey,
+                    JSON.stringify({ at: Date.now() }));
+            } catch (err) { /* private mode etc. — best effort */ }
+        }
+        function clearPendingConflict() {
+            try { localStorage.removeItem(pendingConflictKey); }
+            catch (err) { /* best effort */ }
+        }
+        function hasPendingConflict() {
+            try { return !!localStorage.getItem(pendingConflictKey); }
+            catch (err) { return false; }
+        }
 
         // ------------------------------------------------------------------
         // Saving
@@ -737,6 +768,7 @@
 
         function scheduleSave() {
             dirty = true;
+            saveHold = false;  // fresh user intent always retries
             setStatus("dirty");
             clearTimeout(timer);
             timer = setTimeout(() => save(false), 800);
@@ -746,58 +778,93 @@
             if (saving) { dirty = true; return; }
             saving = true;
             setStatus("saving");
+            // Snapshot exactly what is sent: on success THIS becomes the next
+            // base (or the server's exact merged doc does). Later keystrokes
+            // must never move the base under a flight.
+            const outgoing = JSON.parse(JSON.stringify(doc));
             try {
                 // RAW fetch: the error status shows data.error || resp.status,
                 // so HTTP status and body are both needed (apiFetch conflates).
-                // base_checksum lets the server merge (or 409) a stale write
-                // instead of wiping concurrent AI edits.
+                // base_checksum + base_doc let the server 3-way merge (or
+                // 409) a stale write instead of wiping concurrent AI edits.
                 const resp = await fetch(opts.saveUrl, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        doc: doc,
+                        doc: outgoing,
                         force_checkpoint: !!forceCheckpoint,
                         note: forceCheckpoint ? "Manual checkpoint" : "",
                         base_checksum: saveBase,
+                        base_doc: baseDoc,
                     }),
                 });
                 const data = await resp.json();
                 if (resp.ok && data.ok) {
                     dirty = false;
+                    saveHold = false;
                     conflictRetries = 0;
                     if (data.checksum) lastChecksum = saveBase = data.checksum;
+                    if (data.merged && data.doc) {
+                        baseDoc = data.doc;
+                        if (!dirty) applyRemoteDoc(data.doc, data.checksum);
+                    } else {
+                        baseDoc = outgoing;
+                    }
+                    const extras = [];
+                    if (data.merged) extras.push("merged");
+                    if (data.resurrected && data.resurrected.length) {
+                        extras.push("deleted cell kept — re-delete to remove");
+                    }
+                    if (keptLocalNote) {
+                        extras.push("kept your edit over a concurrent change");
+                    }
+                    keptLocalNote = false;
                     const time = (data.saved_at || "").slice(11, 19);
-                    setStatus("saved", data.merged ? time + " · merged" : time);
+                    setStatus("saved", [time].concat(extras)
+                        .filter(Boolean).join(" · "));
+                    clearPendingConflict();
                     if (window.spaInvalidate) window.spaInvalidate();
                 } else if (resp.status === 409 && data.conflict && data.doc
                         && data.checksum && conflictRetries < 2) {
-                    // Same cell changed on both sides: adopt the server doc
-                    // (keeping actively-edited cells), then retry with the
-                    // fresh base. The server snapshotted its state when it
-                    // answered 409, so neither side is lost.
+                    // True overlap: adopt the server doc keeping EVERY local
+                    // change — including typed cells the user already blurred
+                    // out of — then retry with the fresh base. The server
+                    // snapshotted its side when it answered 409, so neither
+                    // side is lost.
                     conflictRetries += 1;
-                    rebaseLocalToServer(data.doc, data.checksum);
+                    keptLocalNote = rebaseLocalToServer(
+                        data.doc, data.checksum);
                     saving = false;
                     return save(forceCheckpoint);
                 } else {
+                    if (resp.status === 409) {
+                        // Retries exhausted: stop the loop, keep the edits
+                        // in memory, flag the next load to verify.
+                        saveHold = true;
+                        flagPendingConflict();
+                    }
                     setStatus("error", data.error || resp.status);
                 }
             } catch (err) {
                 setStatus("error");
             }
             saving = false;
-            if (dirty) scheduleSave();
+            if (dirty && !saveHold) scheduleSave();
         }
 
         function flushSync() {
             if (!dirty) return;
             try {
-                // RAW fetch: keepalive fire-and-forget during SPA teardown;
-                // apiFetch would await JSON and toast on failure.
+                // keepalive is fire-and-forget: the response (including a
+                // 409) can never be read. Non-conflicting unloads still
+                // merge server-side via the base; a known-stale flush flags
+                // the next load to verify. Best effort by browser design.
+                if (saveBase !== lastChecksum) flagPendingConflict();
                 fetch(opts.saveUrl, {
                     method: "POST", keepalive: true,
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ doc: doc, base_checksum: saveBase }),
+                    body: JSON.stringify({ doc: doc, base_checksum: saveBase,
+                        base_doc: baseDoc }),
                 });
                 dirty = false;
             } catch (err) { /* best effort */ }
@@ -816,6 +883,7 @@
         function detach() {
             window.removeEventListener("beforeunload", onBeforeUnload);
             document.removeEventListener("keydown", onKeydown);
+            window.removeEventListener("notebook_changed", onNotebookChanged);
         }
         window.addEventListener("beforeunload", onBeforeUnload);
         document.addEventListener("keydown", onKeydown);
@@ -910,6 +978,10 @@
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
+        if (hasPendingConflict()) {
+            setStatus("error", "previous session closed with unsynced changes"
+                + " — verify against History, then keep editing");
+        }
 
         // Editor UI state (_editing) is not content — it must not count
         // as a remote change (or a conflict) when reconciling.
@@ -930,32 +1002,77 @@
 
         // Adopt a remote document without destroying the active editor:
         // only the affected .nb-cell nodes are patched, added or removed.
-        // Cells the user is editing (or focused) keep their local content;
-        // saveBase advances only on a fully converged sync, so a kept-aside
-        // cell makes the next save take the server merge/409 path instead
-        // of silently overwriting the remote change.
-        function applyRemoteDoc(remoteDoc, remoteChecksum) {
-            if (!remoteDoc || !Array.isArray(remoteDoc.cells)) return;
-            const localById = new Map(doc.cells.map((c) => [c.id, c]));
+        // Model and view stay consistent by construction: a cell whose DOM
+        // node must keep the editor (focused/editing) also keeps its local
+        // model content, which pins the save base so the next save takes
+        // the server merge/409 path instead of silently overwriting the
+        // remote change.
+        // keepAllLocal (409 rebase only): full base-aware 3-way — every
+        // local change wins, including typed-then-blurred cells that are no
+        // longer focused. True same-cell conflicts keep the local version
+        // and report keptLocal so the next save says so. Returns the
+        // outcome; the caller decides base advancement.
+        function applyRemoteDoc(remoteDoc, remoteChecksum, keepAllLocal) {
+            if (!remoteDoc || !Array.isArray(remoteDoc.cells)) {
+                return { diverged: false, keptLocal: false };
+            }
+            const baseById = new Map(
+                (baseDoc.cells || []).map((c) => [c.id, c]));
             const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));
+            const localById = new Map(doc.cells.map((c) => [c.id, c]));
             const active = activeCellIds();
             let diverged = false;
-            const nextCells = remoteDoc.cells.map((rc) => {
-                const local = localById.get(rc.id);
-                if (local && active.has(rc.id)
-                        && cellSig(local) !== cellSig(rc)) {
-                    diverged = true;  // keep the active editor's content
-                    return local;
+            let keptLocal = false;
+            const keepAside = (cell) => {
+                diverged = true;
+                keptLocal = true;
+                return cell;
+            };
+            const nextCells = [];
+            const seen = new Set();
+            remoteDoc.cells.forEach((rc) => {
+                const id = rc.id;
+                seen.add(id);
+                const b = baseById.get(id);
+                const l = localById.get(id);
+                if (!l) { nextCells.push(rc); return; }
+                if (cellSig(l) === cellSig(rc)) { nextCells.push(rc); return; }
+                // A focused/editing cell keeps its local content so the
+                // model always matches what the (preserved) editor shows.
+                if (active.has(id)) { nextCells.push(keepAside(l)); return; }
+                if (!keepAllLocal) { nextCells.push(rc); return; }
+                if (!b) { nextCells.push(keepAside(l)); return; }
+                if (cellSig(b) === cellSig(rc)) {
+                    diverged = true;  // only local changed → keep it
+                    nextCells.push(l);
+                    return;
                 }
-                return rc;
+                if (cellSig(b) === cellSig(l)) {
+                    nextCells.push(rc);  // only server changed → adopt
+                    return;
+                }
+                nextCells.push(keepAside(l));  // both changed → local wins
             });
-            // Local cells unknown to the server only survive while the user
-            // is editing them; other removals honour the remote delete.
-            localById.forEach((c, id) => {
-                if (!remoteIds.has(id) && active.has(id)) {
+            // Local cells unknown to the server: the editor's own adds, and
+            // cells with an open editor, always survive; a server-side
+            // delete the user never touched is honoured, while a cell the
+            // user changed is kept (the retry then 409s loudly if the
+            // server also changed it — no silent drop either way).
+            localById.forEach((l, id) => {
+                if (seen.has(id) || remoteIds.has(id)) return;
+                if (active.has(id)) {
                     diverged = true;
-                    nextCells.push(c);
+                    nextCells.push(l);
+                    return;
                 }
+                const b = baseById.get(id);
+                if (!b) {
+                    diverged = true;
+                    nextCells.push(l);  // user's own add
+                } else if (cellSig(b) !== cellSig(l)) {
+                    nextCells.push(keepAside(l));  // edited vs deleted
+                }
+                // else: server deleted, user untouched → honour the delete.
             });
             doc.cells = nextCells;
             doc.title = remoteDoc.title;
@@ -967,13 +1084,16 @@
             }
             renderAccessButtons();
             lastChecksum = remoteChecksum;
-            if (!diverged) saveBase = remoteChecksum;
+            if (!diverged) {
+                saveBase = remoteChecksum;
+                baseDoc = JSON.parse(JSON.stringify(remoteDoc));
+            }
             window.dispatchEvent(new CustomEvent("notebook_changed", {
                 detail: { fileId: opts.fileId, checksum: remoteChecksum },
             }));
             patchCellNodes();
             renderToc();
-            setStatus("saved", "updated remotely");
+            return { diverged: diverged, keptLocal: keptLocal };
         }
 
         // Reconcile the DOM with doc.cells: update, add or remove only the
@@ -1019,14 +1139,40 @@
         }
 
         // Conflict resolution after a 409: adopt the server document like a
-        // poll would, but always advance the save base — the kept-aside
-        // cells are intentional overwrites being retried, and the server
-        // snapshotted its state when it answered 409.
+        // poll would, but keep EVERY local change (base-aware 3-way, not
+        // just the focused cells) and always advance the save base — the
+        // kept-aside cells are intentional overwrites being retried, and
+        // the server snapshotted its state when it answered 409. Returns
+        // whether any true conflict kept the local version (surfaced on
+        // the next successful save).
         function rebaseLocalToServer(serverDoc, serverChecksum) {
-            applyRemoteDoc(serverDoc, serverChecksum);
+            const before = { title: doc.title, ai_lock: !!doc.ai_lock,
+                ai_hidden: !!doc.ai_hidden,
+                full_history: !!doc.full_history };
+            const outcome = applyRemoteDoc(serverDoc, serverChecksum, true);
+            ["title", "ai_lock", "ai_hidden", "full_history"].forEach((k) => {
+                if (before[k] !== baseDoc[k]) doc[k] = before[k];
+            });
             saveBase = serverChecksum;
+            baseDoc = JSON.parse(JSON.stringify(serverDoc));
             dirty = true;
+            return outcome.keptLocal;
         }
+
+        // notebook_changed is dispatched for every adopted remote state
+        // (poll or rebase); this listener owns the "updated remotely"
+        // status, so the event is genuinely consumed in-slice. The poll
+        // is the cross-boundary emission leg (AI tool saves only change
+        // server state; the editor learns of them by polling /doc), and
+        // this window event is the in-page distribution leg — future
+        // consumers (toasts, index badges) hook the same event.
+        function onNotebookChanged(e) {
+            if (!e || !e.detail || e.detail.fileId !== opts.fileId) return;
+            const short = String(e.detail.checksum || "").slice(0, 7);
+            setStatus("saved", "updated remotely"
+                + (short ? " · " + short : ""));
+        }
+        window.addEventListener("notebook_changed", onNotebookChanged);
 
         // External-change watch: when the AI (or another tab) edits this
         // notebook, patch only the affected cells — unsaved local edits win.
