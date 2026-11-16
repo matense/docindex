@@ -23,6 +23,26 @@
     let dockedWin = null; // api object of the currently docked window
     let acwGhost = null, acwEdgeL = null, acwEdgeR = null, acwDivider = null;
 
+    // Dock state persists across refreshes so a split view survives reload.
+    const DOCK_KEY = 'docindex_chat_dock';
+    function persistDock() {
+        try {
+            const mode = dockedWin ? dockedWin.mode : 'float';
+            const convId = dockedWin ? (dockedWin.conversationId || null) : null;
+            sessionStorage.setItem(DOCK_KEY, JSON.stringify(
+                { dockMode: mode, dockW, convId }));
+        } catch { /* private mode — split simply won't survive reload */ }
+    }
+    function readDockState() {
+        try {
+            const raw = sessionStorage.getItem(DOCK_KEY);
+            if (!raw) return null;
+            const s = JSON.parse(raw);
+            if (!s || typeof s !== 'object') return null;
+            return s;
+        } catch { return null; }
+    }
+
     function acwAppContainer() { return document.getElementById('app-container'); }
 
     // The search sub-dock is position:fixed below the header, so it ignores
@@ -141,6 +161,22 @@
             clearSplit();
         }
         placeDivider();
+        persistDock();
+    }
+
+    // Minimized windows hide to compact pills in the bottom dock (amber
+    // draft dot when the composer holds unsent text). One pill per hidden
+    // window; clicking restores the window and focuses the composer.
+    function ensurePillsContainer() {
+        let c = document.getElementById('ai-task-dock');
+        if (c) return c;
+        const dock = document.querySelector('#bottom-dock > div');
+        c = document.createElement('div');
+        c.id = 'ai-task-dock';
+        c.className = 'flex items-end gap-2';
+        if (dock) dock.appendChild(c);
+        else document.body.appendChild(c);
+        return c;
     }
 
     // ------------------------------------------------------------------
@@ -292,6 +328,13 @@
             // Dock controls live in the "⋯" menu: only Undock is conditional.
             const undockBtn = el.querySelector('.acw-undock');
             if (undockBtn) undockBtn.style.display = (dockMode === 'float') ? 'none' : '';
+            // Layout switcher group: .active follows the window mode.
+            const floatBtn = el.querySelector('.acw-btn-float');
+            const dockBtn = el.querySelector('.acw-btn-dock');
+            const fullBtn = el.querySelector('.acw-btn-fullpage');
+            if (floatBtn) floatBtn.classList.toggle('active', dockMode === 'float');
+            if (dockBtn) dockBtn.classList.toggle('active', dockMode === 'left' || dockMode === 'right');
+            if (fullBtn) fullBtn.classList.remove('active');
         }
         header.addEventListener('mousedown', (e) => {
             if (e.target.closest('button, a, select, input')) return;
@@ -505,8 +548,36 @@
         // --- Submit (streams NDJSON agent events) ---
         // --- Header buttons ---
 
+        function removePill() {
+            if (api._pill) {
+                api._pill.remove();
+                api._pill = null;
+            }
+        }
+        function renderPill() {
+            removePill();
+            const c = ensurePillsContainer();
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            pill.className = 'ai-dock-pill';
+            pill.title = 'Restore chat';
+            const hasDraft = input.value.trim().length > 0;
+            pill.innerHTML = '<i class="fas fa-robot"></i><span>Chat</span>' +
+                (hasDraft ? '<span class="ai-dock-pill-dot" title="Unsent draft"></span>' : '');
+            pill.addEventListener('click', () => {
+                el.style.display = '';
+                api.minimized = false;
+                removePill();
+                focusWindow();
+                input.focus();
+            });
+            c.appendChild(pill);
+            api._pill = pill;
+        }
+
         function detachWindow() {
             // Drop the live subscription; the server-side run continues.
+            removePill();
             sess.detachSession();
             window.removeEventListener('ai-task-dismissed', onTaskDismissed);
             document.removeEventListener('spa:navigated', onNavigated);
@@ -515,6 +586,8 @@
                 dockedWin = null;
                 clearSplit();
                 renderDockSplit();
+            } else {
+                persistDock();
             }
             const i = windows.indexOf(api);
             if (i >= 0) windows.splice(i, 1);
@@ -544,8 +617,22 @@
         }
 
         function minimize() {
+            // Background tasks already surface in the tasks dock widget —
+            // destroying here keeps a single dock icon per task.
+            if (sess.runIsActive()) {
+                detachWindow();
+                window.uiToast('Minimized — the run keeps going in the dock.', 'info');
+                return;
+            }
+            // A window with a conversation or an unsent draft hides to a
+            // compact pill instead of losing its DOM (and the draft).
+            if (sess.conversationId || input.value.trim().length > 0) {
+                el.style.display = 'none';
+                api.minimized = true;
+                renderPill();
+                return;
+            }
             detachWindow();
-            window.uiToast('Minimized — the run keeps going in the dock.', 'info');
         }
 
         // --- Summarize & reset: AI compacts the whole history into a single
@@ -626,6 +713,12 @@
             renderDockButtons();
             renderDockSplit();
         }
+        function openFullPage() {
+            const convId = sess.conversationId;
+            const url = '/search?mode=ai' + (convId ? '&conv=' + convId : '');
+            if (window.spaNavigate) window.spaNavigate(url);
+            else window.location.href = url;
+        }
         function toggleDockMax() {
             if (dockMode === 'max') { undockWindow(); return; }
             ensureDockChrome();
@@ -647,15 +740,24 @@
             dockMode === 'right' ? undockWindow() : dockWindow('right'));
         const undockBtn = el.querySelector('.acw-undock');
         if (undockBtn) undockBtn.addEventListener('click', () => undockWindow());
+        const floatBtn = el.querySelector('.acw-btn-float');
+        if (floatBtn) floatBtn.addEventListener('click', () => undockWindow());
+        const dockBtn = el.querySelector('.acw-btn-dock');
+        if (dockBtn) dockBtn.addEventListener('click', () =>
+            dockWindow(dockMode === 'right' ? 'left' : 'right'));
+        const fullBtn = el.querySelector('.acw-btn-fullpage');
+        if (fullBtn) fullBtn.addEventListener('click', openFullPage);
         renderDockButtons();
 
         const api = {
             el,
+            minimized: false,
             attachFile: sess.attachFile,
-            loadConversation: (...a) => sess.loadConversation(...a),
+            restoreContext: sess.restoreContext,
+            loadConversation: (...a) => { const r = sess.loadConversation(...a); persistDock(); return r; },
             focus() { focusWindow(); input.focus(); },
             setMessage(msg) { input.value = msg || ''; },
-            newConversation: (...a) => sess.newConversation(...a),
+            newConversation: (...a) => { const r = sess.newConversation(...a); persistDock(); return r; },
             toggleList: (...a) => sess.toggleList(...a),
             runIsActive: (...a) => sess.runIsActive(...a),
             refreshSendKeyHint: (...a) => sess.refreshSendKeyHint(...a),
@@ -717,7 +819,98 @@
             const w = createChatWindow();
             w.loadConversation(convId);
         },
+        // Open the chat and dock it on the given side ('right' default).
+        // Thin wrapper over the existing dock() machinery.
+        openAndDock(side) {
+            const target = side === 'left' ? 'left' : 'right';
+            let w = topmostChatWindow();
+            const visible = w && !w.minimized && w.el.style.display !== 'none';
+            if (!w || !visible) w = createChatWindow();
+            else w.focus();
+            try {
+                w.dock(target);
+            } catch (err) {
+                console.warn('[aiChat] openAndDock failed:', err);
+            }
+            try { w.focus(); } catch { /* focus is best-effort */ }
+            return w;
+        },
+        // Attach a notebook cell as chat context and focus the composer.
+        // Reuses the attach/chip pipeline (attachFile + restoreContext);
+        // degrades gracefully on bad input (warn, no crash).
+        attachNotebookCell(payload) {
+            try {
+                if (!payload || typeof payload !== 'object') {
+                    console.warn('[aiChat] attachNotebookCell: bad payload', payload);
+                    return;
+                }
+                const fileId = payload.fileId ?? payload.file_id;
+                const cellId = payload.cellId ?? payload.cell_id;
+                const fileName = payload.fileName ?? payload.file_name ?? '';
+                if (fileId == null || cellId == null || cellId === '') {
+                    console.warn('[aiChat] attachNotebookCell: missing fileId/cellId', payload);
+                    return;
+                }
+                // Prefer a fresh window so setting the cell context never
+                // wipes another conversation's attachments.
+                let w = topmostChatWindow();
+                if (!w || !w.isFresh) w = createChatWindow();
+                if (w.minimized || w.el.style.display === 'none') {
+                    w.el.style.display = '';
+                    w.minimized = false;
+                    if (w._pill) { w._pill.remove(); w._pill = null; }
+                }
+                const name = fileName || ('file #' + fileId);
+                const preview = payload.preview ?? payload.cellPreview ?? null;
+                const cellType = payload.cellType ?? payload.cell_type ?? null;
+                // File chip first (reuses the attach pipeline), then the
+                // cell context (reuses the chip render via restoreContext).
+                // restoreContext replaces the snapshot, so pass the file
+                // along to keep both chips on a fresh window.
+                try {
+                    if (typeof w.restoreContext === 'function') {
+                        w.restoreContext({
+                            file_ids: [fileId],
+                            file_names: [name],
+                            context_cell: {
+                                file_id: fileId,
+                                cell_id: cellId,
+                                file_name: name,
+                            },
+                        });
+                    } else {
+                        w.attachFile(fileId, name);
+                    }
+                } catch (err) {
+                    console.warn('[aiChat] attachNotebookCell: attach failed:', err);
+                }
+                // Keep notebook metadata on the window for hosts that read it.
+                try {
+                    w._notebookCell = {
+                        fileId, fileName: name, cellId, cellType, preview,
+                    };
+                } catch { /* non-critical */ }
+                try { w.focus(); } catch { /* focus is best-effort */ }
+                return w;
+            } catch (err) {
+                console.warn('[aiChat] attachNotebookCell failed:', err);
+            }
+        },
     };
+    // Restore a split view after refresh when dock state was persisted.
+    try {
+        const saved = readDockState();
+        if (saved && (saved.dockMode === 'left' || saved.dockMode === 'right')) {
+            if (typeof saved.dockW === 'number' && saved.dockW >= 320) dockW = saved.dockW;
+            const w = createChatWindow();
+            w.dock(saved.dockMode);
+            if (saved.convId) {
+                try { w.loadConversation(saved.convId); } catch { /* stale id */ }
+            }
+        } else if (saved && typeof saved.dockW === 'number' && saved.dockW >= 320) {
+            dockW = saved.dockW;
+        }
+    } catch { /* restore is best-effort */ }
 
     // Live send-key sync: if the shift-enter-send body class flips at
     // runtime (preference saved in another tab, devtools, future AJAX

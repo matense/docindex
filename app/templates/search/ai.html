@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}AI Assistant - DocIndex{% endblock %}
 {% block content %}
-<div id="ai-page" class="flex-1 flex flex-col w-full max-w-3xl mx-auto min-h-0 relative">
+<div id="ai-page" class="flex-1 flex flex-col w-full max-w-6xl mx-auto min-h-0 relative">
     <!-- Header: mode toggle + actions -->
     <div class="flex items-center justify-between gap-2 flex-wrap">
         <div class="ai-mode-switch">
@@ -18,6 +18,9 @@
             <button id="aip-autoscroll" class="btn btn-ghost btn-sm btn-circle" title="Auto-scroll" aria-label="Auto-scroll chat">
                 <i class="fas fa-arrow-down-long" aria-hidden="true"></i>
             </button>
+            <button id="aip-popout-btn" class="btn btn-ghost btn-sm btn-circle" title="Pop out to floating window" aria-label="Pop out to floating window">
+                <i class="fas fa-window-restore" aria-hidden="true"></i>
+            </button>
             <button class="btn btn-ghost btn-sm gap-1.5" onclick="window.aiPage.toggleList()" title="Conversations">
                 <i class="fas fa-clock-rotate-left"></i><span class="hidden sm:inline">History</span>
             </button>
@@ -30,6 +33,21 @@
         </div>
     </div>
 
+    <!-- Two-column layout on lg+: fixed sidebar + chat -->
+    <div class="flex flex-col lg:flex-row gap-4 min-h-0 flex-1 mt-2">
+        <!-- Left: conversation history sidebar (always visible on lg+) -->
+        <aside id="aip-sidebar" class="hidden lg:flex flex-col w-72 flex-shrink-0 glass-panel rounded-2xl p-3 min-h-0 max-h-full overflow-hidden">
+            <div class="flex items-center gap-1 mb-2">
+                <button type="button" class="ai-conv-filter-btn ai-conv-filter-on aip-side-filter" data-filter="all">All</button>
+                <button type="button" class="ai-conv-filter-btn aip-side-filter" data-filter="tasks">Tasks</button>
+            </div>
+            <input type="text" id="aip-sidebar-search" class="input input-bordered input-xs w-full mb-2"
+                   placeholder="Search conversations…" autocomplete="off">
+            <div id="aip-sidebar-list" class="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0"></div>
+        </aside>
+
+        <!-- Right: conversation + composer -->
+        <div class="flex-1 flex flex-col min-h-0 min-w-0">
     <!-- Conversation list (replaces messages when open) -->
     <div id="aip-conv-list" class="hidden flex-1 overflow-y-auto glass-panel rounded-2xl p-3 mt-2 flex-col gap-1"></div>
 
@@ -124,6 +142,8 @@
             <div class="font-bold text-primary flex items-center gap-2"><i class="fas fa-cloud-arrow-up text-2xl"></i> Drop files to attach</div>
         </div>
     </div>
+        </div><!-- /right column -->
+    </div><!-- /two-column -->
 </div>
 
 <script src="{{ url_for('static', filename='js/ai_common.js') }}?v=3" defer></script>

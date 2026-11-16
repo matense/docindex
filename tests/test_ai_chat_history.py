@@ -807,3 +807,10 @@ def test_composer_structure_full_page():
     # Full-page composer keeps its own hooks (no behavior change).
     assert 'id="aip-form"' in html and 'id="aip-input"' in html
     assert 'id="aip-send"' in html and 'id="aip-plus"' in html
+
+
+def test_layout_switcher_and_sidebar_present():
+    assert "acw-layout-grp" in _read_template(
+        "app/templates/components/ai_chat.html")
+    full = _read_template("app/templates/search/ai.html")
+    assert 'id="aip-sidebar"' in full and 'id="aip-popout-btn"' in full
