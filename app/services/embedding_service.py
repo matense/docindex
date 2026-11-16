@@ -35,25 +35,32 @@ MAX_INPUT_CHARS = 8000
 # ~2 s per search/indexed file: after the first failure, callers fail
 # immediately until this deadline passes, then one call probes again.
 _BACKEND_FAIL_TTL = 60.0
-_backend_down_until = 0.0  # monotonic deadline; module-global on purpose
+# Fail-fast deadlines keyed per backend connection
+# (base_url, embedding_model): one down backend must not fail-fast
+# unrelated connections.
+_backend_down_until = {}
 
 
-def _note_backend_down():
-    global _backend_down_until
+def _breaker_key(base_url, model):
+    return (base_url or "", model or "")
+
+
+def _note_backend_down(base_url="", model=""):
     import time as _time
-    _backend_down_until = _time.monotonic() + _BACKEND_FAIL_TTL
+    _backend_down_until[_breaker_key(base_url, model)] = (
+        _time.monotonic() + _BACKEND_FAIL_TTL)
 
 
-def _check_backend_up():
+def _check_backend_up(base_url="", model=""):
     import time as _time
-    if _time.monotonic() < _backend_down_until:
+    if _time.monotonic() < _backend_down_until.get(
+            _breaker_key(base_url, model), 0.0):
         raise ai_service.AIError(
             "AI embedding backend recently failed — failing fast.")
 
 
-def _note_backend_up():
-    global _backend_down_until
-    _backend_down_until = 0.0
+def _note_backend_up(base_url="", model=""):
+    _backend_down_until.pop(_breaker_key(base_url, model), None)
 
 
 def _model_for(user):
@@ -92,7 +99,7 @@ def embed_texts(texts, user=None):
             "Semantic search is off (no embedding model on this connection).")
     if not (cfg["enabled"] and cfg["base_url"]):
         raise ai_service.AIError("AI is not configured.")
-    _check_backend_up()
+    _check_backend_up(cfg["base_url"], model)
     import requests
     ai_service._rate_slot(cfg, block=True)
     try:
@@ -104,20 +111,20 @@ def embed_texts(texts, user=None):
             allow_redirects=False,
         )
     except requests.RequestException as exc:
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError(
             f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
     if resp.status_code in (301, 302, 303, 307, 308):
         resp.close()
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError("AI backend redirected the request — refusing to follow (SSRF guard).")
     if resp.status_code == 429:
         # Transient by definition: the next call may succeed, never cache.
         raise ai_service.AIError("The provider's rate limit was hit (HTTP 429).")
     if resp.status_code != 200:
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}")
-    _note_backend_up()  # backend answered: clear fail-fast state
+    _note_backend_up(cfg["base_url"], model)  # backend answered: clear fail-fast state
     try:
         data = resp.json()["data"]
         vectors = [row["embedding"] for row in sorted(data, key=lambda r: r["index"])]
