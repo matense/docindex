@@ -263,6 +263,12 @@ def remove_synced_drive(drive):
         chunk = file_ids[i:i + 500]
         IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
             synchronize_session=False)
+    # Semantic vectors have no cascade (plain FK) — remove them explicitly.
+    from ..models import FileEmbedding
+    for i in range(0, len(file_ids), 500):
+        chunk = file_ids[i:i + 500]
+        FileEmbedding.query.filter(FileEmbedding.file_id.in_(chunk)).delete(
+            synchronize_session=False)
 
     # Module-provided sources clean up their local materialization
     # (e.g. the git clone cache — the remote is never touched). Runs
@@ -791,8 +797,16 @@ def sync_drive(drive, job=None):
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).
+    # FileEmbedding and file_fts rows have no cascade — remove them
+    # explicitly or they orphan (purge_file would also delete the real blob,
+    # so it must not be used here).
+    from ..models import FileEmbedding
+    vanished_ids = []
     for rel, stored in existing_files.items():
         if rel not in seen_files:
+            vanished_ids.append(stored.id)
+            FileEmbedding.query.filter_by(file_id=stored.id).delete(
+                synchronize_session=False)
             thumb = file_service.thumbnail_path(stored)
             if os.path.exists(thumb):
                 try:
@@ -802,6 +816,9 @@ def sync_drive(drive, job=None):
             file_service.drop_shadow(stored)
             db.session.delete(stored)
             stats["removed"] += 1
+    if vanished_ids:
+        from . import search_service
+        search_service.fts_delete_many(vanished_ids, commit=False)
 
     # Folders that vanished from disk (deepest first so children go first).
     for rel in sorted(set(existing_folders) - seen_folders,

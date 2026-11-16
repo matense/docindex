@@ -783,3 +783,66 @@ def test_sync_now_refuses_non_admin_on_legacy_root_drive(auth_client, app,
     resp = auth_client.post(f"/drives/{did}/sync")
     assert resp.status_code == 403
     assert calls == []  # the route's only sync path is start_sync
+
+
+# --- D4 (argon P0): sync cleanup must purge FTS/embedding orphans ---
+
+def _fts_count(app, file_id):
+    with app.app_context():
+        return db.session.execute(db.text(
+            "SELECT count(*) FROM idx.file_fts WHERE rowid = :id"),
+            {"id": file_id}).scalar()
+
+
+def test_sync_vanish_cleans_index_rows(auth_client, app, local_folder):
+    """A file deleted on disk must leave no orphan FTS or embedding rows
+    after sync_drive removes its DB row."""
+    from app.models import FileEmbedding
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        fid = hello.id
+        db.session.add(FileEmbedding(
+            file_id=fid, chunk_index=0, text="t", text_hash="h",
+            embedding=b"\x00\x01", model="t", dims=1))
+        db.session.commit()
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        drive_id = drive.id
+        fts_on = search_service.fts_available()
+    if fts_on:
+        assert _fts_count(app, fid) == 1  # indexed on first sync
+    else:
+        pytest.skip("FTS5 unavailable")
+
+    os.remove(os.path.join(local_folder, "hello.txt"))
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stats = sync_service.sync_drive(drive)
+    assert stats["removed"] == 1
+    with app.app_context():
+        assert db.session.get(StoredFile, fid) is None
+        assert FileEmbedding.query.filter_by(file_id=fid).count() == 0
+        assert _fts_count(app, fid) == 0
+
+
+def test_remove_synced_drive_drops_embeddings(auth_client, app, local_folder):
+    """Removing a synced drive clears FileEmbedding rows with everything
+    else (IndexJob/FTS were already handled) — real files untouched."""
+    from app.models import FileEmbedding
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        drive_id = drive.id
+        for stored in StoredFile.query.filter_by(drive_id=drive_id).all():
+            db.session.add(FileEmbedding(
+                file_id=stored.id, chunk_index=0, text="t", text_hash="h",
+                embedding=b"\x00\x01", model="t", dims=1))
+        db.session.commit()
+        assert FileEmbedding.query.count() == 3
+
+    resp = auth_client.post(f"/drives/{drive_id}/remove",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert FileEmbedding.query.count() == 0
+    assert os.path.exists(os.path.join(local_folder, "hello.txt"))

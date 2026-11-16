@@ -204,3 +204,92 @@ def test_restore_redirects_to_trash_page(auth_client, app):
     resp = auth_client.post(f"/file/{fid}/restore")
     assert resp.status_code == 302
     assert "/settings/trash" in resp.headers["Location"]
+
+
+# --- D4 (argon P0): folder delete must purge already-trashed files ---
+
+def test_folder_delete_purges_trashed_file_artifacts(auth_client, app):
+    """Already-trashed files inside a deleted folder must go through
+    purge_file(): no blob/version/job/embedding orphans left behind.
+    Active files are still only trashed (restorable, blobs kept)."""
+    import os as _os
+
+    from sqlalchemy import text as _sql
+
+    from app.models import FileEmbedding, Folder, IndexJob, StoredFile
+    auth_client.post("/folder/create", data={"name": "sub"},
+                     follow_redirects=True)
+    with app.app_context():
+        folder_id = Folder.query.filter_by(name="sub").one().id
+    auth_client.post("/folder/create", data={"name": "kid",
+                                             "parent_id": str(folder_id)},
+                     follow_redirects=True)
+
+    _upload(auth_client, "normal.txt", b"normal content",
+            folder_id=str(folder_id))
+    _upload(auth_client, "vers.txt", b"v1 content", folder_id=str(folder_id))
+    _upload(auth_client, "vers.txt", b"v2 content", folder_id=str(folder_id))
+    _upload(auth_client, "doomed.txt", b"doomed v1",
+            folder_id=str(folder_id))
+    _upload(auth_client, "doomed.txt", b"doomed v2",
+            folder_id=str(folder_id))
+    with app.app_context():
+        kid_id = Folder.query.filter_by(name="kid").one().id
+    _upload(auth_client, "kiddoomed.txt", b"kid doomed",
+            folder_id=str(kid_id))
+
+    with app.app_context():
+        doomed_file = StoredFile.query.filter_by(name="doomed.txt").one()
+        kid_doomed = StoredFile.query.filter_by(name="kiddoomed.txt").one()
+        doomed_id, kid_file_id = doomed_file.id, kid_doomed.id
+        # trashed file carries a version blob (two uploads -> one version)
+        assert len(doomed_file.versions) == 1
+        doomed_blob = file_service.file_path(doomed_file)
+        doomed_vers = [file_service.version_path(v)
+                       for v in doomed_file.versions]
+        kid_blob = file_service.file_path(kid_doomed)
+        # seed un-cascaded rows: embedding + queued index job
+        db.session.add(FileEmbedding(
+            file_id=doomed_id, chunk_index=0, text="t", text_hash="h",
+            embedding=b"\x00\x01", model="t", dims=1))
+        db.session.add(IndexJob(file_id=doomed_id, status="pending"))
+        db.session.add(FileEmbedding(
+            file_id=kid_file_id, chunk_index=0, text="t", text_hash="h",
+            embedding=b"\x00\x01", model="t", dims=1))
+        db.session.add(IndexJob(file_id=kid_file_id, status="pending"))
+        db.session.commit()
+        normal_id = StoredFile.query.filter_by(name="normal.txt").one().id
+        normal_blob = file_service.file_path(
+            db.session.get(StoredFile, normal_id))
+
+    auth_client.post(f"/file/{doomed_id}/delete", follow_redirects=True)
+    auth_client.post(f"/file/{kid_file_id}/delete", follow_redirects=True)
+
+    auth_client.post(f"/folder/{folder_id}/delete", follow_redirects=True)
+
+    with app.app_context():
+        # purged: rows gone AND every artifact gone
+        assert db.session.get(StoredFile, doomed_id) is None
+        assert db.session.get(StoredFile, kid_file_id) is None
+        assert not _os.path.exists(doomed_blob)
+        assert not any(_os.path.exists(p) for p in doomed_vers)
+        assert not _os.path.exists(kid_blob)
+        assert IndexJob.query.filter_by(file_id=doomed_id).count() == 0
+        assert IndexJob.query.filter_by(file_id=kid_file_id).count() == 0
+        assert FileEmbedding.query.filter_by(
+            file_id=doomed_id).count() == 0
+        assert FileEmbedding.query.filter_by(
+            file_id=kid_file_id).count() == 0
+        if search_service.fts_available():
+            for gone in (doomed_id, kid_file_id):
+                left = db.session.execute(
+                    _sql("SELECT count(*) FROM idx.file_fts "
+                         "WHERE rowid = :id"), {"id": gone}).scalar()
+                assert left == 0
+        # active files: trashed (restorable), blobs kept
+        stored = StoredFile.query.filter_by(name="normal.txt").one()
+        assert stored.deleted_at is not None
+        assert _os.path.exists(normal_blob)
+        vers = StoredFile.query.filter_by(name="vers.txt").one()
+        assert vers.deleted_at is not None
+        assert len(vers.versions) == 1

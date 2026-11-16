@@ -784,6 +784,11 @@ def _trash_folder_contents(folder):
             stored.folder_id = None
             delete_file(stored)
             trashed += 1
+        else:
+            # Already trashed: deleting the folder row would cascade and
+            # destroy the row without purging — purge it so blobs,
+            # versions, jobs, embeddings and FTS rows are cleaned up.
+            purge_file(stored)
     db.session.flush()
     return trashed
 

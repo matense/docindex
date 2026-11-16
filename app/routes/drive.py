@@ -82,6 +82,11 @@ def _delete_folder_recursive(folder):
         if stored.deleted_at is None:
             stored.folder_id = None  # folder row is removed; restore lands at root
             file_service.delete_file(stored)
+        else:
+            # Already trashed: deleting the folder row would cascade and
+            # destroy the row without purging — route it through purge_file
+            # so blobs, versions, jobs, embeddings and FTS rows are cleaned.
+            file_service.purge_file(stored)
     db.session.delete(folder)
 
 
