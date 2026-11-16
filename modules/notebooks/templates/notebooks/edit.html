@@ -8,7 +8,7 @@
         <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
            title="All notebooks"><i class="fas fa-arrow-left"></i></a>
         <div class="flex-1 min-w-0 nb-toolbar-doc">
-            <h1 class="font-bold truncate">{{ doc.title }}</h1>
+            <h1 id="nb-title" class="font-bold truncate cursor-pointer" title="Click to rename">{{ doc.title }}</h1>
             <p class="text-xs opacity-40">
                 {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
             </p>
@@ -29,6 +29,14 @@
                 onclick="document.getElementById('nb-help-modal').showModal()">
             <i class="fas fa-circle-question"></i> <span class="hidden sm:inline">Help</span>
         </button>
+        <button id="nb-undo-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Undo (Ctrl+Z)" disabled>
+            <i class="fas fa-undo"></i>
+        </button>
+        <button id="nb-redo-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Redo (Ctrl+Y)" disabled>
+            <i class="fas fa-redo"></i>
+        </button>
         <button id="nb-checkpoint-btn" class="btn btn-ghost btn-sm gap-1"
                 title="Save a restorable checkpoint now (Ctrl+S)">
             <i class="fas fa-bookmark"></i> Checkpoint
@@ -37,6 +45,7 @@
            class="btn btn-ghost btn-sm gap-1" title="Version history">
             <i class="fas fa-clock-rotate-left"></i> History
         </a>
+        <button id="nb-ai-split-btn" class="btn btn-ghost btn-sm gap-1"><i class="fas fa-robot"></i> AI Split</button>
         <button id="nb-lock-btn" class="btn btn-ghost btn-sm btn-square"
                 title="AI can edit this notebook — click to lock">
             <i class="fas fa-lock-open"></i>
@@ -55,16 +64,19 @@
         </button>
     </div>
 
-    <!-- Document index (headings) — toggled by the Index button -->
-    <div id="nb-toc" class="glass-panel rounded-2xl px-5 py-4 hidden">
-        <div class="text-xs font-semibold opacity-50 uppercase tracking-wide mb-2">
-            <i class="fas fa-list mr-1"></i> Index
+    <!-- Sticky outline (left) + cells (right) on wide screens -->
+    <div class="nb-body-layout flex flex-col lg:flex-row items-start gap-4">
+        <!-- Document index (headings) — toggled by the Index button -->
+        <div id="nb-toc" class="glass-panel rounded-2xl px-5 py-4 hidden lg:sticky lg:top-20 lg:w-56 flex-shrink-0 max-h-[calc(100vh-6rem)] overflow-y-auto">
+            <div class="text-xs font-semibold opacity-50 uppercase tracking-wide mb-2">
+                <i class="fas fa-list mr-1"></i> Index
+            </div>
+            <div id="nb-toc-list" class="flex flex-col gap-1"></div>
         </div>
-        <div id="nb-toc-list" class="flex flex-col gap-1"></div>
-    </div>
 
-    <!-- Cells -->
-    <div id="nb-cells" class="flex flex-col gap-2"></div>
+        <!-- Cells -->
+        <div id="nb-cells" class="flex flex-col gap-2 flex-1 min-w-0"></div>
+    </div>
 
     <!-- Add cell -->
     <div class="glass-panel rounded-2xl px-4 py-3 flex items-center gap-2 nb-add-toolbar">
@@ -249,6 +261,11 @@
 #nb-toc-list a:hover { background: oklch(var(--p) / .12); }
 .nb-toc-title { font-weight: 600; font-size: .9rem; }
 .nb-toc-subtitle { font-size: .82rem; opacity: .65; padding-left: 1.25rem; }
+.nb-toc-badge { display: inline-block; font-size: .6rem; font-weight: 700;
+    letter-spacing: .04em; opacity: .45; border: 1px solid currentColor;
+    border-radius: 4px; padding: 0 4px; margin-left: 6px;
+    vertical-align: 1px; }
+#nb-toc-list a.nb-toc-active { background: oklch(var(--p) / .18); }
 
 /* ---------- Markdown typography (read mode + edit-mode preview) ---------- */
 .nb-md { line-height: 1.75; font-size: .93rem; }
@@ -489,6 +506,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     const opts = {
         fileId: {{ file.id }},
         saveUrl: {{ url_for('notebooks.save', file_id=file.id)|tojson }},
+        renameUrl: {{ url_for('notebooks.rename', file_id=file.id)|tojson }},
         docUrl: {{ url_for('notebooks.document_json', file_id=file.id)|tojson }},
         assetsUrl: {{ url_for('notebooks.upload_asset', file_id=file.id)|tojson }},
         checksum: {{ (file.checksum or '')|tojson }},
@@ -502,7 +520,7 @@ a.nb-fileref:hover { background: oklch(var(--p) / .2); }
     // editor script on demand — it stays cached in window after first load.
     if (window.NotebookEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=12')|tojson }};
+    s.src = {{ (url_for('notebooks.static', filename='notebook.js') + '?v=13')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();
