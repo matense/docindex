@@ -1,12 +1,14 @@
 """Notebook module routes: list, editor, autosave, history."""
 
 import difflib
+import json
+import time
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user
 
 from app.extensions import db
-from app.models import Drive, Folder
+from app.models import Drive, Folder, StoredFile
 from app.services import file_service, hashtag_service, indexing_service
 
 from . import doc as doc_service
@@ -294,6 +296,78 @@ def upload_asset(file_id):
     indexing_service.enqueue_index([asset.id])
     return jsonify({"ok": True, "id": asset.id, "name": asset.name,
                     "url": url_for("drive.raw", file_id=asset.id)})
+
+
+@bp.post("/<int:file_id>/run-cell")
+def run_cell(file_id):
+    """Execute a code/SQL cell in the pyrun sandbox over attached files.
+
+    Input files are positional: the first id is addressable as rows('f')
+    (and 'f0'), the rest as 'f1', 'f2', ... SQL is wrapped as
+    ``res = db.query(<sql>)`` so the query rows come back as the result.
+    """
+    from app.services import agent_service, module_service
+    stored = _get_notebook(file_id)
+    if not module_service.is_enabled("pyrun"):
+        return jsonify({"ok": False,
+                        "error": "The pyrun module is disabled — "
+                                 "enable pyrun to run code cells."}), 403
+    payload = request.get_json(silent=True) or {}
+    lang = str(payload.get("lang") or "python").lower()
+    if lang not in ("python", "py", "sql"):
+        return jsonify({"ok": False,
+                        "error": f"Unsupported language {lang!r}."}), 400
+    code = payload.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return jsonify({"ok": False, "error": "Missing code."}), 400
+    raw_ids = payload.get("input_file_ids") or []
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False,
+                        "error": "input_file_ids must be a list."}), 400
+    try:
+        from docindex_module_pyrun.evaluate import evaluate
+    except ImportError:
+        return jsonify({"ok": False,
+                        "error": "pyrun evaluator is unavailable."}), 500
+    files_map = {}
+    for pos, raw in enumerate(raw_ids):
+        try:
+            input_id = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": f"Invalid file id {raw!r}."}), 400
+        target = (StoredFile.query
+                  .filter_by(id=input_id, user_id=current_user.id)
+                  .filter(StoredFile.deleted_at.is_(None)).first())
+        if target is None:
+            return jsonify({"ok": False,
+                            "error": f"File {input_id} not found."}), 404
+        guarded = agent_service._file_guard_error(current_user, target)
+        if guarded:
+            return jsonify({"ok": False, "error": guarded}), 403
+        try:
+            chunks = [file_service.read_text_content(target)]
+        except OSError:
+            return jsonify({"ok": False,
+                            "error": f"Could not read file {input_id}."}), 400
+        if pos == 0:
+            files_map["f"] = chunks
+        files_map[f"f{pos}"] = chunks
+    if lang == "sql":
+        code = "res = db.query(" + json.dumps(code) + ")\nres"
+    start = time.perf_counter()
+    try:
+        outcome = evaluate(code, files=files_map)
+    except Exception:  # noqa: BLE001 - the tool boundary never 500s raw
+        return jsonify({"ok": False,
+                        "error": "Evaluation failed unexpectedly."}), 500
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    if not outcome.get("ok"):
+        return jsonify({"ok": False,
+                        "error": outcome.get("error") or "Evaluation failed.",
+                        "elapsed_ms": elapsed_ms})
+    return jsonify({"ok": True, "stdout": "", "result": outcome.get("value"),
+                    "elapsed_ms": elapsed_ms})
 
 
 @bp.get("/<int:file_id>/history")

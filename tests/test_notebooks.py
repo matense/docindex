@@ -1792,3 +1792,76 @@ def test_ai_split_and_ask_ai_present():
     # user to paste it in chat.
     assert "clipboard" in src
     assert "paste it in chat" in src or "paste in chat" in src
+
+
+# ---------------------------------------------------------------------------
+# N7: executable code/SQL cells via pyrun
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def notebook(app, user, enabled):
+    """An empty notebook with the pyrun module enabled (run-cell needs it)."""
+    with app.app_context():
+        db.session.add(ModuleState(name="pyrun", enabled=True))
+        db.session.commit()
+    drive_id = _drive(app, user)
+    return _create(app, user, drive_id, "Runnable")
+
+
+@pytest.fixture()
+def csv_file(app, auth_client, user):
+    """A small CSV owned by the test user, addressable as rows('f')."""
+    _upload(auth_client, "data.csv", b"v\n1\n2\n3\n")
+    with app.app_context():
+        return StoredFile.query.filter_by(
+            user_id=user, name="data.csv").one().id
+
+
+def test_run_cell_executes_python(auth_client, notebook, csv_file):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python",
+                               "code": "total = sum(int(r['v']) for r in rows('f'))\ntotal",
+                               "input_file_ids": [csv_file]})
+    assert r.get_json()["ok"] is True
+
+
+def test_run_cell_fails_closed_without_pyrun(auth_client, notebook, monkeypatch):
+    from app.services import module_service
+    monkeypatch.setattr(module_service, "is_enabled",
+                        lambda name: name != "pyrun")
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python", "code": "1"})
+    assert r.status_code in (400, 403) and "pyrun" in r.get_data(as_text=True).lower()
+
+
+def test_run_cell_executes_sql(auth_client, notebook, csv_file):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "sql",
+                               "code": "SELECT v FROM t0",
+                               "input_file_ids": [csv_file]})
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["result"] == [{"v": "1"}, {"v": "2"}, {"v": "3"}]
+    assert set(("ok", "stdout", "result",
+                "elapsed_ms")) <= set(data.keys())
+
+
+def test_run_cell_rejects_unknown_input_file(auth_client, notebook):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python",
+                               "code": "1", "input_file_ids": [999999]})
+    assert r.status_code == 404
+
+
+def test_pyrun_run_button_and_output_contract():
+    """N7: the Run button appears only on code cells with a runnable
+    language; results render in .nb-pyrun-output with Save-as-Table."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Run in pyrun" in src
+    assert 'cell.type === "code"' in src
+    for lang in ('"python"', '"py"', '"sql"'):
+        assert lang in src
+    assert "nb-pyrun-output" in src
+    assert "+ Save as Table cell" in src

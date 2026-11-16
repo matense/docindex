@@ -1399,6 +1399,158 @@
         }
         updateUndoButtons();
 
+        // --- Executable code/SQL cells via pyrun ----------------------
+        // Outputs are session-only (keyed by cell id, never stored on the
+        // cell) so cellSig and the autosave payload stay clean.
+        const PYRUN_LANGS = ["python", "py", "sql"];
+        const pyrunOutputs = {};
+        function pyrunLang(cell) {
+            return String((cell.meta && cell.meta.language) || "python")
+                .toLowerCase();
+        }
+        function runCellUrl() {
+            return String(opts.saveUrl).replace(/\/save$/, "/run-cell");
+        }
+        function collectInputFileIds(content) {
+            const ids = [];
+            const re = /file:\/\/(\d+)/g;
+            let m;
+            while ((m = re.exec(String(content || ""))) !== null) {
+                const id = parseInt(m[1], 10);
+                if (!isNaN(id) && ids.indexOf(id) === -1) ids.push(id);
+            }
+            return ids;
+        }
+        function asPyrunRows(result) {
+            if (!Array.isArray(result) || !result.length) return null;
+            for (const r of result) {
+                if (!r || typeof r !== "object" || Array.isArray(r)) {
+                    return null;
+                }
+            }
+            return result;
+        }
+        function pyrunRowsTable(rows) {
+            const headers = [];
+            rows.forEach((r) => Object.keys(r).forEach((k) => {
+                if (headers.indexOf(k) === -1) headers.push(k);
+            }));
+            const table = el("table", "table table-xs");
+            const headRow = el("tr");
+            headers.forEach((h) => headRow.appendChild(el("th", "", h)));
+            const thead = el("thead");
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+            const tb = el("tbody");
+            rows.slice(0, 50).forEach((r) => {
+                const tr = el("tr");
+                headers.forEach((h) => {
+                    const v = r[h];
+                    tr.appendChild(el("td", "",
+                        v === null || v === undefined ? "" : String(v)));
+                });
+                tb.appendChild(tr);
+            });
+            table.appendChild(tb);
+            return table;
+        }
+        function savePyrunAsTable(cell, rows) {
+            const headers = [];
+            rows.forEach((r) => Object.keys(r).forEach((k) => {
+                if (headers.indexOf(k) === -1) headers.push(k);
+            }));
+            const table = newCell("table");
+            table.meta.headers = headers;
+            table.meta.rows = rows.slice(0, 200).map((r) =>
+                headers.map((h) => {
+                    const v = r[h];
+                    return v === null || v === undefined ? ""
+                        : String(v);
+                }));
+            const i = doc.cells.indexOf(cell);
+            pushUndo("save pyrun output as table");
+            doc.cells.splice(i >= 0 ? i + 1 : doc.cells.length, 0, table);
+            render();
+            scheduleSave();
+        }
+        function paintPyrunOutput(wrap, cell) {
+            const box = wrap.querySelector(".nb-pyrun-output");
+            if (!box) return;
+            box.innerHTML = "";
+            const out = pyrunOutputs[cell.id];
+            if (!out) return;
+            if (out.state === "running") {
+                box.appendChild(el("div", "text-xs opacity-60",
+                    "Running in pyrun…"));
+                return;
+            }
+            if (!out.ok) {
+                box.appendChild(el("div", "text-xs text-error",
+                    "Error: " + (out.error || "failed")));
+                return;
+            }
+            const rows = asPyrunRows(out.result);
+            if (rows) {
+                box.appendChild(pyrunRowsTable(rows));
+                if (rows.length > 50) {
+                    box.appendChild(el("div", "text-xs opacity-50",
+                        "Showing 50 of " + rows.length + " rows"));
+                }
+                const saveBtn = el("button",
+                    "btn btn-ghost btn-xs gap-1");
+                saveBtn.type = "button";
+                saveBtn.textContent = "+ Save as Table cell";
+                saveBtn.title = "Insert the result as a table cell below";
+                saveBtn.addEventListener("click",
+                    () => savePyrunAsTable(cell, rows));
+                box.appendChild(saveBtn);
+            } else {
+                const text = out.stdout
+                    || (out.result === undefined || out.result === null
+                        ? "" : JSON.stringify(out.result));
+                box.appendChild(el("pre",
+                    "text-xs whitespace-pre-wrap", String(text)));
+            }
+            if (out.elapsedMs !== undefined && out.elapsedMs !== null) {
+                box.appendChild(el("div", "text-xs opacity-50",
+                    out.elapsedMs + " ms"));
+            }
+        }
+        async function runCodeCell(cell, wrap) {
+            pyrunOutputs[cell.id] = { state: "running" };
+            paintPyrunOutput(wrap, cell);
+            const btn = wrap.querySelector(".nb-pyrun-run");
+            if (btn) btn.disabled = true;
+            let data;
+            try {
+                const resp = await fetch(runCellUrl(), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        cell_id: cell.id,
+                        lang: pyrunLang(cell),
+                        code: cell.content,
+                        input_file_ids: collectInputFileIds(cell.content),
+                    }),
+                });
+                data = await resp.json();
+            } catch (err) {
+                data = { ok: false, error: "Request failed." };
+            }
+            pyrunOutputs[cell.id] = {
+                state: "done",
+                ok: !!data.ok,
+                stdout: data.stdout || "",
+                result: data.result,
+                error: data.error || "",
+                elapsedMs: data.elapsed_ms,
+            };
+            if (!wrap.isConnected) return;
+            paintPyrunOutput(wrap, cell);
+            const btn2 = wrap.querySelector(".nb-pyrun-run");
+            if (btn2) btn2.disabled = false;
+        }
+
         function activeCellIds() {
             const ids = new Set();
             doc.cells.forEach((c) => { if (c._editing) ids.add(c.id); });
@@ -1923,6 +2075,17 @@
             askAi.title = "Attach this cell to the AI chat";
             askAi.addEventListener("click", () => askAiAboutCell(cell, askAi));
             actions.appendChild(askAi);
+            if (cell.type === "code"
+                    && PYRUN_LANGS.indexOf(pyrunLang(cell)) !== -1) {
+                const runBtn = el("button",
+                    "btn btn-ghost btn-xs gap-1 nb-pyrun-run");
+                runBtn.type = "button";
+                runBtn.textContent = "▶ Run in pyrun";
+                runBtn.title = "Execute this cell in the pyrun sandbox";
+                runBtn.addEventListener("click",
+                    () => runCodeCell(cell, wrap));
+                actions.appendChild(runBtn);
+            }
             actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
                 // Dynamic index: per-cell patching can reorder nodes without
                 // re-rendering, so never trust the render-time closure.
@@ -3121,6 +3284,12 @@
                 if (window.hljs) {
                     try { window.hljs.highlightElement(code); } catch (e) { /* unknown lang */ }
                 }
+            }
+            if (PYRUN_LANGS.indexOf(pyrunLang(cell)) !== -1) {
+                const out = el("div", "nb-pyrun-output mt-2");
+                body.appendChild(out);
+                const wrapEl = body.closest(".nb-cell");
+                paintPyrunOutput(wrapEl || body, cell);
             }
         }
 
