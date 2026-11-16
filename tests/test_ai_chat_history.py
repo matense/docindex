@@ -714,6 +714,42 @@ def test_composer_structure_unified():
     assert "ai-send-btn" in html
 
 
+# ------------------------------------------------------- token meter (C2)
+
+
+def test_conversation_returns_token_estimate(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=3)
+    with app.app_context():
+        msgs = ChatMessage.query.filter_by(conversation_id=conv_id).all()
+        expected = sum(len(m.content or "") for m in msgs) // 4
+    r = auth_client.get(f"/ai/conversations/{conv_id}")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["token_estimate"] == expected
+    assert data["max_prompt_tokens"] > 0
+
+
+def test_conversation_token_estimate_counts_active_only(auth_client, app, user):
+    # Archived history (compacted by summarize) is out of context and must
+    # not count towards the estimate.
+    _add_conn(auth_client)
+    conv_id = _make_conversation(app, n_pairs=3)
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "summary one"}):
+        assert auth_client.post(
+            f"/ai/conversations/{conv_id}/summarize").status_code == 200
+    with app.app_context():
+        active = [m for m in ChatMessage.query.filter_by(
+            conversation_id=conv_id).all()
+            if m.role in ("user", "assistant") and not m.archived]
+        assert len(active) == 1  # only the summary stays in context
+        expected = sum(len(m.content or "") for m in active) // 4
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["token_estimate"] == expected
+    # No connection-level override -> global default.
+    assert data["max_prompt_tokens"] == 60000
+
+
 def test_composer_structure_full_page():
     html = _read_template("app/templates/search/ai.html")
     assert "ai-ctx-strip" in html and "ai-token-meter" in html

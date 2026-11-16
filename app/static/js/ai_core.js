@@ -1591,6 +1591,11 @@
             conversationId = null;
             lastConvSig = null;
             pendingConvId = null;
+            const meter = rootEl ? rootEl.querySelector('.ai-token-meter') : null;
+            if (meter) {
+                meter.classList.add('hidden');
+                meter.setAttribute('aria-hidden', 'true');
+            }
             attachments = [];
             cellRef = null;
             driveRefs = [];
@@ -1725,6 +1730,57 @@
             if (stats.tokens) bits.push('↑↓ ' + fmtTokens(stats.tokens));
             return ' · ' + bits.join(' · ');
         }
+        // Token meter: estimated prompt memory reported by the server
+        // (token_estimate / max_prompt_tokens on the conversation payload).
+        // Label reads "14.2k tok"/"850 tok", the fill width is clamped to
+        // 0-100% and turns amber past 75%. Clicking delegates to the host's
+        // Summarize control, i.e. the existing summarizeConversation flow.
+        function updateTokenMeter(estimate, maxTokens) {
+            const meter = rootEl ? rootEl.querySelector('.ai-token-meter') : null;
+            if (!meter) return;
+            const max = Number(maxTokens) > 0 ? Number(maxTokens) : 0;
+            const est = Math.max(0, Number(estimate) || 0);
+            const pct = max > 0
+                ? Math.min(100, Math.max(0, Math.round((est / max) * 100)))
+                : 0;
+            let fill = meter.querySelector('.ai-token-fill');
+            let label = meter.querySelector('.ai-token-label');
+            if (!fill || !label) {
+                meter.innerHTML = '';
+                const bar = document.createElement('span');
+                bar.className = 'ai-token-bar';
+                bar.style.cssText = 'display:inline-block;width:44px;height:4px;'
+                    + 'border-radius:2px;background:rgba(127,127,127,.35);'
+                    + 'overflow:hidden;vertical-align:middle;';
+                fill = document.createElement('span');
+                fill.className = 'ai-token-fill';
+                fill.style.cssText = 'display:block;height:100%;width:0%;'
+                    + 'background:currentColor;';
+                bar.appendChild(fill);
+                label = document.createElement('span');
+                label.className = 'ai-token-label';
+                const icon = document.createElement('i');
+                icon.className = 'fas fa-compress';
+                icon.style.cssText = 'font-size:9px;';
+                meter.appendChild(bar);
+                meter.appendChild(document.createTextNode(' '));
+                meter.appendChild(label);
+                meter.appendChild(document.createTextNode(' '));
+                meter.appendChild(icon);
+                meter.title = 'Estimated prompt memory used · Click to Summarize & reset';
+                meter.setAttribute('role', 'button');
+                meter.style.cursor = 'pointer';
+                meter.addEventListener('click', () => {
+                    const host = rootEl.querySelector('.acw-summarize, #aip-summarize');
+                    if (host) host.click();
+                });
+            }
+            fill.style.width = pct + '%';
+            fill.style.background = pct > 75 ? '#f59e0b' : 'currentColor';
+            label.textContent = fmtTokens(est) + ' tok';
+            meter.classList.remove('hidden');
+            meter.setAttribute('aria-hidden', 'false');
+        }
         function loadConversation(id) {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             pendingConvId = id;  // rapid repeated opens focus, never clone
@@ -1733,6 +1789,7 @@
                     if (!conv) { pendingConvId = null; return; }
                     conversationId = conv.id;
                     pendingConvId = null;
+                    updateTokenMeter(conv.token_estimate, conv.max_prompt_tokens);
                     // Skip no-op re-renders (e.g. reconcile after Stop found
                     // nothing new): a full parse+highlight of a long history
                     // is the most expensive DOM op on this page.
@@ -2330,7 +2387,7 @@
             addSummaryCard, convGroupLabel, convGroupHeader,
             loadConnections, newConversation, renderChips,
             // Conversations, streaming, tasks, workflows
-            loadConversation, handleStreamEvent, readNdjson, watchTask,
+            loadConversation, updateTokenMeter, handleStreamEvent, readNdjson, watchTask,
             pollTaskEnd, uploadDeviceFiles, runWorkflowWithFile,
             startWorkflowRun, ensureRunForm, postWorkflowRun,
             fmtTaskDur, taskStatsLine, renderTaskBanner, renameTaskTitle,

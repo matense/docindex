@@ -467,9 +467,16 @@ def conversation(conv_id):
     # that produced each assistant message (an answer backed by N agent
     # steps sums all N calls).
     usage = ai_usage_service.message_usage_map(conv.id)
+    # Estimated prompt memory: active (in-context) transcript chars // 4.
+    active_messages = [m for m in conv.messages
+                       if m.role in ("user", "assistant") and not m.archived]
+    token_estimate = sum(len(m.content or "") for m in active_messages) // 4
     return jsonify({
         "id": conv.id,
         "title": conv.title,
+        "token_estimate": token_estimate,
+        "max_prompt_tokens": ai_service.config_for(
+            current_user)["max_prompt_tokens"],
         # Latest context the user set up in this conversation (drives,
         # attachments, cell) — restored into the chips on open.
         "context": json.loads(conv.context) if conv.context else None,
