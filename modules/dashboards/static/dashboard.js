@@ -202,6 +202,7 @@
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
             dirty: false, saving: false, saveTimer: null, saveError: "",
+            pollTimer: null,
             ptrOp: null, pickFor: null, pendingDelCard: null, usageHi: null, els: {}
         };
         if (!Array.isArray(S.doc.cards)) S.doc.cards = [];
@@ -209,6 +210,7 @@
 
         buildSkeleton(S);
         renderAll(S);
+        startBuilderStatusPoll(S);
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -238,6 +240,10 @@
 
         root._dashTeardown = function () {
             ac.abort();
+            if (S.pollTimer) {
+                clearInterval(S.pollTimer);
+                S.pollTimer = null;
+            }
             try { window.removeEventListener("beforeunload", S._onUnload); } catch (e) { /* noop */ }
             root._dashTeardown = null;
             root._dash = null;
@@ -355,6 +361,89 @@
         closeRefPick(S);
         renderAttach(S);
         renderGrid(S);
+    }
+
+    // D3: fold newer background-run state into the Builder's local doc.
+    // Pure merge (node-testable): for each card on both sides the newer
+    // side's run-owned keys win; structural keys (title, prompt, sizes,
+    // inputs) always stay local (user intent). createdFileIds unions.
+    // Never touches S.checksum — the caller takes it from the doc fetch.
+    function mergeRunOwned(S, remote) {
+        var byId = {};
+        ((remote && remote.cards) || []).forEach(function (c) {
+            byId[c.id] = c;
+        });
+        var changed = [];
+        (S.doc.cards || []).forEach(function (card) {
+            var rc = byId[card.id];
+            if (!rc) return;
+            var remoteRunning = rc.status === "running" &&
+                card.status !== "running";
+            var remoteNewer = !!rc.ranAt &&
+                (!card.ranAt || rc.ranAt > card.ranAt);
+            if (remoteRunning || remoteNewer) {
+                ["result", "status", "ranAt", "trace",
+                    "runId", "ranSecs"].forEach(function (k) {
+                    if (rc[k] !== undefined) {
+                        card[k] = JSON.parse(JSON.stringify(rc[k]));
+                    } else { delete card[k]; }
+                });
+                changed.push(card.id);
+            }
+        });
+        var seen = {}, ids = [];
+        ((S.doc.createdFileIds || [])
+            .concat((remote && remote.createdFileIds) || [])
+        ).forEach(function (fid) {
+            if (!seen[fid]) { seen[fid] = true; ids.push(fid); }
+        });
+        S.doc.createdFileIds = ids;
+        return changed;
+    }
+
+    // D3: the Builder subscribes to the card-change channel (aggregate
+    // status poll, View precedent). On change the full doc is re-read and
+    // only run-owned fields merge in — local structural edits are never
+    // clobbered and footers update in place (no re-render: focus stays).
+    function startBuilderStatusPoll(S) {
+        if (!S.opts.statusUrl) return;
+        S.pollTimer = setInterval(function () {
+            if (!document.body.contains(S.root)) {
+                clearInterval(S.pollTimer);
+                S.pollTimer = null;
+                return;
+            }
+            fetch(S.opts.statusUrl, { headers: { "Accept": "application/json" } })
+                .then(function (resp) { return resp.json(); })
+                .then(function (data) {
+                    if (!data || !data.ok || !data.cards) return;
+                    var stale = Object.keys(data.cards).some(function (id) {
+                        var card = cardById(S.doc, id);
+                        var remote = data.cards[id];
+                        return card && remote &&
+                            (card.status !== remote.status ||
+                                card.ranAt !== remote.ranAt);
+                    });
+                    if (!stale) return;
+                    fetch(S.opts.docUrl, { headers: { "Accept": "application/json" } })
+                        .then(function (resp) { return resp.json(); })
+                        .then(function (doc) {
+                            if (!doc || !doc.ok || !doc.doc) return;
+                            var changed = mergeRunOwned(S, doc.doc);
+                            if (doc.checksum) S.checksum = doc.checksum;
+                            changed.forEach(function (id) {
+                                var node = gridCardEl(S, id);
+                                var card = cardById(S.doc, id);
+                                if (node && card) {
+                                    var ran = node.querySelector(".dash-ran");
+                                    if (ran) ran.textContent = ranFull(card);
+                                }
+                            });
+                        })
+                        .catch(function () { /* next tick */ });
+                })
+                .catch(function () { /* next tick */ });
+        }, VIEW_STATUS_MS);
     }
 
     function buildSkeleton(S) {

@@ -176,6 +176,16 @@ def save(file_id):
     if document is None:
         return jsonify({"ok": False, "error": "Missing document."}), 400
     try:
+        # A stale Builder snapshot must not wipe background-run state that
+        # landed after the snapshot (D3 per-field merge, newer wins).
+        # A corrupt live blob skips the merge — the save overwrites it as
+        # before.
+        try:
+            current = doc_service.load(stored)
+        except (ValueError, OSError):
+            current = None
+        if current is not None:
+            document = doc_service.merge_run_owned(current, document)
         doc_service.save_document(
             stored, document,
             force_checkpoint=bool(payload.get("force_checkpoint")))

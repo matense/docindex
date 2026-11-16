@@ -23,13 +23,14 @@ Because dashboards are StoredFiles they get ownership, drives/folders,
 trash, FileVersion history, FTS search and the AI agent's core tools free.
 """
 
+import copy
 import hashlib
 import json
 import os
 import threading
 import time
 import uuid
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 from flask import g, has_app_context
@@ -707,6 +708,75 @@ def run_elapsed(file_id, run_id):
     if start is None:
         return None
     return round(time.monotonic() - start, 1)
+
+
+# Run-owned card keys: written by background runs, never user intent.
+# A stale Builder full-doc save must never wipe these — merge_run_owned()
+# keeps the newer side's values (D1 per-field-merge precedent).
+RUN_OWNED_CARD_KEYS = ("result", "status", "ranAt", "trace", "runId",
+                       "ranSecs")
+
+
+def _ran_at_newer(server_ran, incoming_ran):
+    """Whether the server card's run is strictly newer than the incoming
+    snapshot's. ranAt is utcnow().isoformat(); parsed comparison first,
+    lexicographic fallback for foreign shapes."""
+    if not server_ran:
+        return False
+    if not incoming_ran:
+        return True
+    try:
+        return (datetime.fromisoformat(str(server_ran))
+                > datetime.fromisoformat(str(incoming_ran)))
+    except (ValueError, TypeError):
+        return str(server_ran) > str(incoming_ran)
+
+
+def _server_run_wins(server, incoming):
+    """Whether the live card's run-owned fields beat the incoming snapshot.
+
+    A live running state always beats a non-running snapshot (the status
+    poll and run-status endpoint read it mid-run); otherwise the newer
+    ranAt wins, per field-merge. A strictly newer incoming ranAt wins for
+    the incoming side (symmetric newer-wins; unreachable from the Builder
+    today, which only ever holds older snapshots).
+    """
+    if (server.get("status") == "running"
+            and incoming.get("status") != "running"):
+        return True
+    return _ran_at_newer(server.get("ranAt"), incoming.get("ranAt"))
+
+
+def merge_run_owned(current_doc, incoming_doc):
+    """Fold newer background-run state into a stale full-doc save.
+
+    For each card present on both sides, the newer side's run-owned keys
+    (result, status, ranAt, trace, runId, ranSecs) win; structural keys
+    (title, prompt, sizes, inputs, ...) always follow the incoming save
+    (user intent). Cards only on one side are untouched. createdFileIds
+    is an append-only registry — unioned (incoming order first), since a
+    stale snapshot can only lack newer ids, never intentionally remove
+    them (clearing goes through clear_artifacts, not full-doc saves).
+    """
+    server_by_id = {c.get("id"): c for c in current_doc.get("cards", [])}
+    for card in incoming_doc.get("cards", []):
+        server = server_by_id.get(card.get("id"))
+        if server is None:
+            continue
+        if _server_run_wins(server, card):
+            for key in RUN_OWNED_CARD_KEYS:
+                if key in server:
+                    card[key] = copy.deepcopy(server[key])
+                else:
+                    card.pop(key, None)
+    seen, merged_ids = set(), []
+    for fid in (list(incoming_doc.get("createdFileIds", []))
+                + list(current_doc.get("createdFileIds", []))):
+        if fid not in seen:
+            seen.add(fid)
+            merged_ids.append(fid)
+    incoming_doc["createdFileIds"] = merged_ids
+    return incoming_doc
 
 
 def _structural_shape(doc):

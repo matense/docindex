@@ -2388,3 +2388,158 @@ def test_ai_detach_linked_is_refused(app, user, enabled):
             user_obj, {"file_id": fid, "attachment_id": att["id"]},
             None)
     assert "error" in out and "KPI" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Argon P0-D3: Builder save vs background results
+# ---------------------------------------------------------------------------
+
+def test_builder_save_preserves_background_result(app, auth_client, user,
+                                                  enabled, fake_ai):
+    """D3: a Builder full-doc save landing after a background run must not
+    wipe the run's result/status/ranAt/trace — user structural edits in
+    the stale save still apply."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    # Builder snapshot taken BEFORE the background run lands.
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert stale["cards"][0]["result"] is None
+    # Background run completes.
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    body = auth_client.get(
+        f"/m/dashboards/runs/{run_id}/status").get_json()
+    assert body["status"] == "done"
+    assert body["result"] == {"text": "3 open incidents"}
+    # Builder's older full-doc save (e.g. a debounced autosave in flight).
+    stale["cards"][0]["title"] = "Renamed in builder"
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    card = _card(app, fid, cid)
+    assert card["result"] == {"text": "3 open incidents"}
+    assert card["status"] == "done"
+    assert card["ranAt"]
+    assert card["title"] == "Renamed in builder"
+
+
+def test_builder_save_newer_background_result_wins(app, auth_client, user,
+                                                   enabled):
+    """D3: newer-wins per field — a stale Builder save carrying an older
+    completed result must not overwrite the newer background result, its
+    trace, or newly registered artifacts; structural edits still apply."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        owner = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        art = file_service.save_upload(_upload("artifact.csv"), owner,
+                                       drive=drive)
+        art.drive_id = drive_id
+        db.session.commit()
+        art_id = art.id
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    # A newer background run lands server-side (result + trace + artifact).
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        server_card = next(c for c in fresh["cards"] if c["id"] == cid)
+        server_card["status"] = "done"
+        server_card["result"] = {"text": "newer"}
+        server_card["trace"] = [{"index": 1, "label": "read",
+                                 "detail": "a.csv"}]
+        server_card["ranAt"] = "2026-11-16T12:00:00+00:00"
+        fresh["createdFileIds"] = [art_id]
+        dash_doc.save_document(stored, fresh)
+    # The stale Builder save carries an older completed result.
+    stale["cards"][0]["status"] = "done"
+    stale["cards"][0]["result"] = {"text": "older"}
+    stale["cards"][0]["ranAt"] = "2026-01-01T00:00:00+00:00"
+    stale["cards"][0]["title"] = "Builder title"
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    card = _card(app, fid, cid)
+    assert card["result"] == {"text": "newer"}
+    assert card["status"] == "done"
+    assert card["ranAt"] == "2026-11-16T12:00:00+00:00"
+    assert card["trace"] == [{"index": 1, "label": "read",
+                              "detail": "a.csv"}]
+    assert card["title"] == "Builder title"
+    with app.app_context():
+        assert dash_doc.load(
+            db.session.get(StoredFile, fid))["createdFileIds"] == [art_id]
+
+
+def test_builder_save_spares_live_run(app, auth_client, user, enabled):
+    """D3: a Builder save landing mid-run must not clear the live running
+    state (status/runId) — the status poll and run-status endpoint read it."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    run_id = f"{fid}:live123"
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        live = next(c for c in doc["cards"] if c["id"] == cid)
+        live["status"] = "running"
+        live["runId"] = run_id
+        dash_doc.save_document(stored, doc)
+        dash_doc.run_started(fid, run_id)
+    try:
+        save = auth_client.post(f"/m/dashboards/{fid}/save",
+                                json={"doc": stale})
+        assert save.status_code == 200
+    finally:
+        dash_doc.run_finished(fid, run_id)
+    card = _card(app, fid, cid)
+    assert card["status"] == "running"
+    assert card["runId"] == run_id
+
+
+def test_builder_merges_run_owned_without_clobbering_local_edits():
+    """D3 (live update): the Builder merges remote run-owned fields into
+    its local doc — local structural edits survive, newer remote results
+    land, and the artifact registry unions."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function mergeRunOwned\(S, remote\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "mergeRunOwned helper missing"
+    # The Builder subscribes to the card-change channel (aggregate status
+    # poll, View precedent) and tears the timer down on unmount.
+    assert "startBuilderStatusPoll" in src
+    assert re.search(r"function startBuilderStatusPoll\(S\)", src)
+    assert "S.opts.statusUrl" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) + """
+var S = {doc: {cards: [{id: "c1", title: "Local title", prompt: "local edit",
+    result: {text: "older"}, status: "done", ranAt: "2026-01-01T00:00:00+00:00",
+    trace: null}],
+    createdFileIds: []}, checksum: "old"};
+var remote = {cards: [{id: "c1", title: "Remote title", prompt: "remote",
+    result: {text: "newer"}, status: "done", ranAt: "2026-11-16T12:00:00+00:00",
+    trace: [{index: 1}], runId: "9:abc", ranSecs: 1.5}],
+    createdFileIds: [41]};
+mergeRunOwned(S, remote);
+var c = S.doc.cards[0];
+var checks = [c.title === "Local title", c.prompt === "local edit",
+    JSON.stringify(c.result) === JSON.stringify({text: "newer"}),
+    c.status === "done", c.ranAt === "2026-11-16T12:00:00+00:00",
+    JSON.stringify(c.trace) === JSON.stringify([{index: 1}]),
+    JSON.stringify(S.doc.createdFileIds) === JSON.stringify([41]),
+    S.checksum === "old"];
+console.log(JSON.stringify(checks));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 8
