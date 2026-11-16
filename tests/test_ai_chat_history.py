@@ -1083,3 +1083,30 @@ def test_cite_chip_click_ignores_modified_clicks():
     assert region.index("ev.button") < region.index("ev.preventDefault")
     assert (region.index("ev.preventDefault")
             < region.index("openPeekPopover("))
+
+
+# ------------------------------------------------- C8 SPA sync / dedup / listeners
+
+
+def test_spa_drive_sync_wiring():
+    assert 'data-drive-id' in _read_template("app/templates/base.html")
+    assert "drive:changed" in _read_template("app/static/js/spa.js")
+    assert _read_template("app/templates/search/ai.html").count("ai_core.js") <= 1
+
+
+def test_duplicate_scripts_removed():
+    html = _read_template("app/templates/search/ai.html")
+    assert "ai_common.js" not in html
+    assert html.count("ai_core.js") <= 1
+    assert "ai_page.js" in html  # full-page host stays
+
+
+def test_listeners_cleaned_up():
+    core = _read_template("app/static/js/ai_core.js")
+    assert "drive:changed" in core  # listener + detach cleanup
+    assert "onDocClick" in core and "onDriveChanged" in core
+    assert "removeEventListener('click', onDocClick)" in core
+    assert "removeEventListener('drive:changed', onDriveChanged)" in core
+    chat = _read_template("app/static/js/ai_chat.js")
+    assert "onMoreDocClick" in chat
+    assert "removeEventListener('click', onMoreDocClick)" in chat

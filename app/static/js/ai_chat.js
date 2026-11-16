@@ -499,12 +499,13 @@
 
 
         // --- Persona picker: Agency personality/skill for the chat --------
-        document.addEventListener('click', ev => {
+        const onMoreDocClick = (ev) => {
             if (!ev.target.closest('.acw-more-menu')
                     && !ev.target.closest('.acw-more')) {
                 closeMoreMenu();
             }
-        });
+        };
+        document.addEventListener('click', onMoreDocClick);
         // --- $ drive mention: scope the answer to a chosen drive ----------
 
 
@@ -581,6 +582,7 @@
             sess.detachSession();
             window.removeEventListener('ai-task-dismissed', onTaskDismissed);
             document.removeEventListener('spa:navigated', onNavigated);
+            document.removeEventListener('click', onMoreDocClick);
             // Snap layer: closing the docked window restores the full view.
             if (dockedWin === api) {
                 dockedWin = null;

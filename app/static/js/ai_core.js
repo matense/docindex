@@ -188,6 +188,8 @@
         let deepMode = false;
         let composerBound = false;
         let chromeBound = false;
+        let onDocClick = null;
+        let onDriveChanged = null;
         let pendingSummaries = {};
         let personaCache = null;
         let taskMode = null;
@@ -2629,7 +2631,7 @@
                 }
             });
             if (personaSearch) personaSearch.addEventListener('input', filterPersonaList);
-            document.addEventListener('click', (ev) => {
+            onDocClick = (ev) => {
                 if (personaPopup && !personaPopup.classList.contains('hidden')
                         && !personaPopup.contains(ev.target)
                         && !(attachPersona && attachPersona.contains(ev.target))) {
@@ -2641,7 +2643,10 @@
                     togglePlusMenu(false);
                 }
                 if (opts.onDocumentClick) opts.onDocumentClick(ev);
-            });
+            };
+            document.addEventListener('click', onDocClick);
+            onDriveChanged = () => renderChips();
+            window.addEventListener('drive:changed', onDriveChanged);
             if (deepToggle) {
                 deepToggle.addEventListener('click', () => {
                     setDeepMode(!deepMode);
@@ -2741,6 +2746,8 @@
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             if (toolElapsedTimer) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; }
             stopHeartbeat();
+            if (onDocClick) { document.removeEventListener('click', onDocClick); onDocClick = null; }
+            if (onDriveChanged) { window.removeEventListener('drive:changed', onDriveChanged); onDriveChanged = null; }
         }
 
         const api = {

@@ -68,7 +68,9 @@
                         <i class="fas fa-folder-open"></i><span class="hidden lg:inline">{{ app_name }}</span>
                     </a>
                     {% if current_drive %}
-                    <div class="dropdown" id="drive-dropdown">
+                    <div class="dropdown" id="drive-dropdown"
+                         data-drive-id="{{ current_drive.id if current_drive else '' }}"
+                         data-drive-name="{{ current_drive.name if current_drive else '' }}">
                         <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 glass-panel max-w-[16rem] flex-nowrap whitespace-nowrap" title="Current drive — click to switch">
                             <i class="fas fa-database text-secondary flex-shrink-0"></i>
                             <span class="truncate min-w-0">{{ current_drive.name }}</span>
