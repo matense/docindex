@@ -814,3 +814,34 @@ def test_layout_switcher_and_sidebar_present():
         "app/templates/components/ai_chat.html")
     full = _read_template("app/templates/search/ai.html")
     assert 'id="aip-sidebar"' in full and 'id="aip-popout-btn"' in full
+
+
+# ------------------------------------------------- C4 fix round 1/5
+# Reviewer Important 1: the dock wrappers must persist AFTER the (async)
+# load resolves, not synchronously with the stale convId.
+
+
+def test_dock_persist_after_load_awaits():
+    src = _read_template("app/static/js/ai_chat.js")
+    assert "await sess.loadConversation" in src
+    assert "await sess.newConversation" in src
+    load_i = src.index("await sess.loadConversation")
+    assert "persistDock()" in src[load_i:load_i + 200]
+    new_i = src.index("await sess.newConversation")
+    assert "persistDock()" in src[new_i:new_i + 200]
+
+
+# Reviewer Important 2: ?conv= must be numerically validated (no NaN fetch).
+
+
+def test_conv_param_validated():
+    src = _read_template("app/static/js/ai_page.js")
+    assert "Number.isFinite" in src
+
+
+# Reviewer Important 3: attachNotebookCell must reject empty strings too.
+
+
+def test_attach_notebook_cell_rejects_empty_strings():
+    src = _read_template("app/static/js/ai_chat.js")
+    assert "fileId === ''" in src

@@ -754,10 +754,10 @@
             minimized: false,
             attachFile: sess.attachFile,
             restoreContext: sess.restoreContext,
-            loadConversation: (...a) => { const r = sess.loadConversation(...a); persistDock(); return r; },
+            loadConversation: async (...a) => { const r = await sess.loadConversation(...a); persistDock(); return r; },
             focus() { focusWindow(); input.focus(); },
             setMessage(msg) { input.value = msg || ''; },
-            newConversation: (...a) => { const r = sess.newConversation(...a); persistDock(); return r; },
+            newConversation: async (...a) => { const r = await sess.newConversation(...a); persistDock(); return r; },
             toggleList: (...a) => sess.toggleList(...a),
             runIsActive: (...a) => sess.runIsActive(...a),
             refreshSendKeyHint: (...a) => sess.refreshSendKeyHint(...a),
@@ -847,7 +847,7 @@
                 const fileId = payload.fileId ?? payload.file_id;
                 const cellId = payload.cellId ?? payload.cell_id;
                 const fileName = payload.fileName ?? payload.file_name ?? '';
-                if (fileId == null || cellId == null || cellId === '') {
+                if (fileId == null || fileId === '' || cellId == null || cellId === '') {
                     console.warn('[aiChat] attachNotebookCell: missing fileId/cellId', payload);
                     return;
                 }

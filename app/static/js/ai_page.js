@@ -178,7 +178,8 @@
     // Deep link: /search?mode=ai&conv=<id> opens that conversation.
     try {
         const convParam = new URLSearchParams(window.location.search).get('conv');
-        if (convParam) sess.loadConversation(Number(convParam));
+        const id = Number(convParam);
+        if (Number.isFinite(id) && id > 0) sess.loadConversation(id);
     } catch { /* bad ?conv= — ignore */ }
 
     input.focus();
