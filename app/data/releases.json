@@ -1,6 +1,30 @@
 {
   "releases": [
     {
+      "version": "0.1.19",
+      "date": "2026-11-16",
+      "title": "Argon: security hardening, no data loss, reliability fixes",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Git drives only clone from https:// URLs by default, with an admin allowlist for intranet hosts; loopback and private-network addresses are refused everywhere except an admin-configured allowance for local AI endpoints.",
+            "Creating synced drives and pausing the index queue are now admin-only, and all redirect targets are validated to stay on this server."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "API secrets now use HKDF key derivation with automatic migration of existing keys, and are never stored silently in plaintext.",
+            "Notebooks autosave merges instead of overwriting concurrent AI edits, and large notebooks always load whole instead of truncating; dashboards Builder preserves background run results when saving.",
+            "Semantic search runs an order of magnitude faster, the scheduler no longer retries failed workflows in a hot loop, and folder deletion plus sync cleanup leave no orphaned files, index jobs or embeddings behind."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.18",
       "date": "2026-11-15",
       "title": "Pyrun: sealed Python + SQL scratchpad for the AI agent",
