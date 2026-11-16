@@ -1332,6 +1332,10 @@
         // commits, Esc cancels.
         const titleEl = root.querySelector("#nb-title");
         async function commitTitle(value, original) {
+            // The server strips a trailing `.pdocnb` before storing the
+            // title — strip it here too so the client never desyncs from
+            // doc["title"] (stored/displayed title must match exactly).
+            const clean = String(value).replace(/\.pdocnb$/i, "");
             const fd = new FormData();
             fd.append("name", value);
             let resp = null;
@@ -1344,14 +1348,31 @@
                 setStatus("error", "rename failed");
                 return;
             }
-            doc.title = value;
-            baseDoc.title = value;
-            titleEl.textContent = value;
+            doc.title = clean;
+            baseDoc.title = clean;
+            titleEl.textContent = clean;
             if (window.currentFile) {
                 window.currentFile.name =
                     value.toLowerCase().endsWith(".pdocnb")
                         ? value : value + ".pdocnb";
             }
+            // The rename saved server-side and bumped its checksum — adopt
+            // it as the new base so the next autosave is a clean fast-path
+            // instead of a spurious merge/409. Best effort: a failed
+            // refresh leaves the stale base and the merge path still heals.
+            try {
+                const refreshed = await fetch(opts.docUrl, {
+                    headers: { "Accept": "application/json" } });
+                const rdata = await refreshed.json();
+                if (refreshed.ok && rdata && rdata.ok && rdata.checksum) {
+                    lastChecksum = saveBase = rdata.checksum;
+                    if (rdata.doc) {
+                        baseDoc = rdata.doc;
+                        doc.title = rdata.doc.title || clean;
+                        titleEl.textContent = doc.title;
+                    }
+                }
+            } catch (err) { /* best effort — merge path heals */ }
         }
         if (titleEl && opts.renameUrl) {
             titleEl.addEventListener("click", () => {
@@ -2141,7 +2162,7 @@
             const summary = "[" + payload.fileName + " / " + payload.cellId
                 + " (" + payload.cellType + ")]\n" + payload.preview;
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(summary);
+                navigator.clipboard.writeText(summary).catch(() => {});
             }
             if (typeof console !== "undefined" && console.info) {
                 console.info("AI chat unavailable — cell summary copied,"
@@ -3707,7 +3728,7 @@
             bar.appendChild(mkBar("Export CSV", () => {
                 const esc = (v) => {
                     v = String(v == null ? "" : v);
-                    return /[",\n]/.test(v)
+                    return /[",\n\r]/.test(v)
                         ? '"' + v.replace(/"/g, '""') + '"' : v;
                 };
                 const lines = [meta.headers.map(esc).join(",")].concat(

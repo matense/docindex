@@ -1981,3 +1981,85 @@ def test_restore_cell_reinserts_removed_at_original_index(
     assert neighbors_unchanged(before, after, except_id="target")
     assert next(c for c in after["cells"]
                 if c["id"] == "target")["content"] == "old target"
+
+
+# ---------------------------------------------------------------------------
+# Final-review hardening: title sync, run-cell validation, clipboard,
+# rename cap, CSV escape
+# ---------------------------------------------------------------------------
+
+def test_rename_extension_strip_and_save_without_409(
+        app, auth_client, user, enabled):
+    """Finding 1: typing `foo.pdocnb` stores title `foo` (no client/server
+    desync), and a save after the rename succeeds without a 409."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    r = auth_client.post(f"/m/notebooks/{fid}/rename",
+                         data={"name": "foo.pdocnb"})
+    assert r.status_code in (200, 302)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "foo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "foo"
+        base_doc = nb_doc.load(stored)
+        checksum = stored.checksum
+    edited = copy.deepcopy(base_doc)
+    edited["cells"].append(nb_doc.new_cell("markdown", "after rename"))
+    r = _post_save(auth_client, fid, edited, checksum, base_doc)
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    # Client half (static pin): commitTitle strips `.pdocnb` before
+    # commit/display and refreshes saveBase/lastChecksum after a rename.
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "commitTitle")
+    assert ".pdocnb$/i" in body
+    assert "saveBase" in body and "lastChecksum" in body
+
+
+def test_run_cell_with_list_body_returns_400(auth_client, notebook):
+    """Finding 2: a non-dict JSON body must 400, not 500."""
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         data="[1, 2, 3]", content_type="application/json")
+    assert r.status_code == 400
+
+
+def test_ask_ai_clipboard_fallback_handles_denial():
+    """Finding 3 (static pin, explicitly labeled): the Ask-AI fallback's
+    clipboard write stays silent when permission is denied — a `.catch`
+    handler exists on the writeText(summary) call."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "askAiAboutCell")
+    assert "writeText(summary)" in body
+    assert ".catch" in body
+
+
+def test_rename_overlong_name_rejected(app, auth_client, user, enabled):
+    """Finding 4: an over-long rename aborts 400 (names are capped at 255
+    elsewhere: drive rename clamps [:255], StoredFile.name is String(255))."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    r = auth_client.post(f"/m/notebooks/{fid}/rename",
+                         data={"name": "x" * 300})
+    assert r.status_code == 400
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "Original.pdocnb"
+    # Boundary: exactly 255 chars incl. the extension still works.
+    ok = auth_client.post(f"/m/notebooks/{fid}/rename",
+                          data={"name": "y" * 248})
+    assert ok.status_code in (200, 302)
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).name == "y" * 248 + ".pdocnb"
+
+
+def test_export_csv_escapes_lone_cr():
+    """Finding 5 (static pin, explicitly labeled): the Export-CSV escaper
+    quotes lone-CR cells (regex covers \\r, not just `"`, `,` and `\\n`)."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert '/[",\\n\\r]/' in src

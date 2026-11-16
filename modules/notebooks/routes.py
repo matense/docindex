@@ -254,6 +254,11 @@ def rename(file_id):
         abort(400, "Name is required.")
     if not name.lower().endswith(f".{doc_service.EXTENSION}"):
         name = f"{name}.{doc_service.EXTENSION}"
+    # Names live in StoredFile.name (String(255)) and flow to FTS — reject
+    # over-long renames instead of silently truncating one side of the
+    # name/title sync (drive rename clamps [:255] for the same reason).
+    if len(name) > 255:
+        abort(400, "Name is too long (max 255 characters).")
     # Single-source rule: the file name and doc["title"] stay in sync both
     # ways — a rename writes the stripped title into the document as well.
     # The file name is assigned AFTER save_document: it refreshes the row
@@ -313,6 +318,9 @@ def run_cell(file_id):
                         "error": "The pyrun module is disabled — "
                                  "enable pyrun to run code cells."}), 403
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False,
+                        "error": "Request body must be a JSON object."}), 400
     lang = str(payload.get("lang") or "python").lower()
     if lang not in ("python", "py", "sql"):
         return jsonify({"ok": False,
