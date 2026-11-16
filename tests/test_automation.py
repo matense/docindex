@@ -3747,3 +3747,13 @@ def test_canvas_hud_present():
 def test_canvas_hud_calls_redraw():
     src = read("modules/automation/static/automation.js")
     assert "redrawAllConnections" in src and "minimap" in src.lower()
+
+
+# ---------------------------------------------------------------------------
+# B3: typed sockets + node ID badges (static pins)
+# ---------------------------------------------------------------------------
+
+def test_node_id_badges_and_typed_sockets():
+    src = read("modules/automation/static/automation.js")
+    assert "wf-node-id" in src and ("exportIds[dfId]" in src or '("n" + dfId)' in src)
+    assert 'dataset.kind' in src and 'dataset.multiple' in src

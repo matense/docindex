@@ -34,6 +34,7 @@
             `<span class="min-w-0 flex-1">` +
             `<span class="wf-node-label block">${esc(spec.label || type)}</span>` +
             `<span class="wf-node-summary block"></span>` +
+            `<code class="wf-node-id"></code>` +
             `</span>` +
             `<span class="wf-node-kind"></span>` +
             `<i class="fas fa-pen wf-node-edit" title="Double-click to configure"></i>` +
@@ -53,11 +54,15 @@
         (spec.inputs || []).forEach((p, i) => {
             el.querySelectorAll(`.input_${i + 1}`).forEach(s => {
                 s.title = `${p.name}: ${p.kind || 'any'}${p.multiple ? ' (many wires)' : ''}`;
+                s.dataset.kind = p.kind || 'any';
+                s.dataset.multiple = p.multiple ? '1' : '0';
             });
         });
         (spec.outputs || []).forEach((p, i) => {
             el.querySelectorAll(`.output_${i + 1}`).forEach(s => {
                 s.title = `${p.name}: ${p.kind || 'any'}`;
+                s.dataset.kind = p.kind || 'any';
+                s.dataset.multiple = p.multiple ? '1' : '0';
             });
         });
     }
@@ -420,6 +425,8 @@
             const kind = ((specByType[data.type] || {}).outputs || [])[0];
             const kindEl = el.querySelector('.wf-node-kind');
             if (kindEl) kindEl.textContent = kind ? kind.kind || '' : '';
+            const badge = el.querySelector('.wf-node-id');
+            if (badge) badge.textContent = exportIds[dfId] || ('n' + dfId);
             decoratePorts(dfId, specByType[data.type]);
         }
     }
@@ -2842,6 +2849,24 @@
             }
         });
 
+        // Highlight compatible input sockets while dragging a wire out of
+        // an output socket (same KIND_ACCEPTS rules as connectionCreated).
+        canvas.addEventListener('mousedown', e => {
+            const out = e.target.closest('.output');
+            if (!out || !canvas.contains(out)) return;
+            const outKind = out.dataset.kind || 'any';
+            canvas.querySelectorAll('.input').forEach(inp => {
+                const inKind = inp.dataset.kind || 'any';
+                const accepts = KIND_ACCEPTS[inKind];
+                if (!accepts || accepts.includes(outKind)) inp.classList.add('wf-drop-ok');
+            });
+        });
+        document.addEventListener('mouseup', clearDropMarks);
+        function clearDropMarks() {
+            canvas.querySelectorAll('.input.wf-drop-ok').forEach(
+                inp => inp.classList.remove('wf-drop-ok'));
+        }
+
         document.getElementById('wf-console-toggle').addEventListener('click', () => {
             document.getElementById('wf-console').classList.toggle('hidden');
         });
@@ -3122,6 +3147,7 @@
             if (resizeRO) { try { resizeRO.disconnect(); } catch {} resizeRO = null; }
             document.removeEventListener('click', onDocClick);
             document.removeEventListener('keydown', onDocKeydown);
+            document.removeEventListener('mouseup', clearDropMarks);
             window.removeEventListener('docindex-ui-action', onUiAction);
             editor = null;
             root = null;
