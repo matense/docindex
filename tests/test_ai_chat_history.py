@@ -845,3 +845,17 @@ def test_conv_param_validated():
 def test_attach_notebook_cell_rejects_empty_strings():
     src = _read_template("app/static/js/ai_chat.js")
     assert "fileId === ''" in src
+
+
+# ------------------------------------------------- C5 badges + grouping
+
+
+def test_reasoning_badges_and_grouping():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "ai-reasoning-badges" in src
+    for tool in ["search_files", "read_file", "pyrun.compute"]:
+        assert tool in src  # category mapping covers it
+    assert "ai-reasoning-elapsed" in src  # total time inside <summary>
+    assert "flushHistoryReasoning" in src  # single-<details> grouping on history load
+    css = _read_template("app/static/css/style.css")
+    assert "ai-reasoning-badges" in css

@@ -66,6 +66,34 @@
         return 'fa-wrench';
     }
 
+    // Reasoning badges: per-turn tool-call categories (spec §4.1). Exact
+    // tool-name lists — the brief's values win on any conflict. `.read`
+    // entries win over the `notebooks.`/`dashboards.` edit prefix below.
+    const REASONING_SEARCH_TOOLS = ['search_files', 'grep_file', 'list_files'];
+    const REASONING_READ_TOOLS = ['read_file', 'get_file_info', 'view_image',
+        'notebooks.read', 'dashboards.read'];
+    const REASONING_COMPUTE_TOOLS = ['pyrun.compute'];
+
+    function toolCategory(name) {
+        if (!name) return null;
+        if (REASONING_SEARCH_TOOLS.indexOf(name) !== -1) return 'search';
+        if (REASONING_READ_TOOLS.indexOf(name) !== -1) return 'read';
+        if (REASONING_COMPUTE_TOOLS.indexOf(name) !== -1) return 'compute';
+        if (name.startsWith('notebooks.') || name.startsWith('dashboards.') ||
+            name.startsWith('automation.') || name.startsWith('whiteboards.')) return 'edit';
+        return null;
+    }
+
+    // Badge contract: `[🔍 N search] [📄 N read] [🐍 pyrun SQL] [✨ N edit]`.
+    function reasoningBadgesText(counts) {
+        const bits = [];
+        if (counts.search > 0) bits.push('[🔍 ' + counts.search + ' search]');
+        if (counts.read > 0) bits.push('[📄 ' + counts.read + ' read]');
+        if (counts.compute > 0) bits.push('[🐍 pyrun SQL]');
+        if (counts.edit > 0) bits.push('[✨ ' + counts.edit + ' edit]');
+        return bits.join(' ');
+    }
+
     function iconFor(ext, isImage) {
         if (isImage) return 'fa-image text-secondary';
         const map = { pdf: 'fa-file-pdf text-error', txt: 'fa-file-lines', md: 'fa-file-lines', py: 'fa-file-code', js: 'fa-file-code', html: 'fa-file-code', json: 'fa-file-code', docx: 'fa-file-word text-info', xlsx: 'fa-file-excel text-success', pdocnb: 'fa-book-open text-amber-500' };
@@ -123,6 +151,8 @@
         let liveBubble = null;
         let toolChipEl = null;
         let toolElapsedTimer = null;
+        let toolCategoryCounts = null;
+        let reasoningStartedAt = 0;
         let thinkBuf = '';
         let answerBuf = '';
         let rafScheduled = false;
@@ -413,6 +443,8 @@
             lastThinkingSpan = null;
             liveBubble = null;
             toolChipEl = null;
+            toolCategoryCounts = null;
+            reasoningStartedAt = 0;
             thinkBuf = '';
             answerBuf = '';
             lastAssistantDiv = null;
@@ -435,7 +467,11 @@
         }
         function collapseReasoningBox() {
             settleToolChip(); // a still-running tool never got its result
-            if (reasoningBox) reasoningBox.open = false;
+            if (reasoningBox) {
+                renderReasoningBadges(reasoningBox, toolCategoryCounts,
+                    reasoningStartedAt);
+                reasoningBox.open = false;
+            }
             reasoningBox = null;
             reasoningBody = null;
             lastThinkingSpan = null;
@@ -444,6 +480,31 @@
             // the "New messages" pill doesn't stick around.
             if (asAtBottom()) asPaused = false;
             renderAutoScroll();
+        }
+        // Summary badges: per-turn category counts + total elapsed, visible
+        // even with the box closed. Rendered once (guard: collapse runs on
+        // every answer/error/reconcile).
+        function renderReasoningBadges(box, counts, startedAt) {
+            const summary = box.querySelector('summary');
+            if (!summary || !counts) return;
+            if (summary.querySelector('.ai-reasoning-badges')) return;
+            const text = reasoningBadgesText(counts);
+            if (!text) return;
+            const badges = document.createElement('span');
+            badges.className = 'ai-reasoning-badges';
+            badges.textContent = text;
+            const elapsed = document.createElement('span');
+            elapsed.className = 'ai-reasoning-elapsed mono';
+            elapsed.textContent =
+                ((Date.now() - (startedAt || Date.now())) / 1000).toFixed(1) + 's';
+            const chev = summary.querySelector('.ai-reasoning-chevron');
+            if (chev) {
+                summary.insertBefore(elapsed, chev);
+                summary.insertBefore(badges, chev);
+            } else {
+                summary.appendChild(badges);
+                summary.appendChild(elapsed);
+            }
         }
         function convGroupHeader(label) {
             const div = document.createElement('div');
@@ -503,11 +564,20 @@
                 '<div class="ai-reasoning-body"></div>';
             reasoningBody = reasoningBox.querySelector('.ai-reasoning-body');
             messagesEl.appendChild(reasoningBox);
+            toolCategoryCounts = { search: 0, read: 0, compute: 0, edit: 0 };
+            reasoningStartedAt = Date.now();
             scrollDown();
         }
         function ensureToolChip(label, name) {
             ensureReasoningBox();
             settleToolChip();
+            const cat = toolCategory(name);
+            if (cat) {
+                if (!toolCategoryCounts) {
+                    toolCategoryCounts = { search: 0, read: 0, compute: 0, edit: 0 };
+                }
+                toolCategoryCounts[cat]++;
+            }
             const chip = document.createElement('div');
             chip.className = 'ai-tool-line';
             chip.dataset.status = 'running';
@@ -1839,6 +1909,45 @@
             meter.classList.remove('hidden');
             meter.setAttribute('aria-hidden', 'false');
         }
+        // History grouping: one closed box per consecutive thinking/step run.
+        // Persisted steps are "label: detail" text (no tool names survive),
+        // so no category badges here — but the elapsed span still shows.
+        function historyElapsed(items) {
+            const t = items.map(m => {
+                if (!m.created_at) return NaN;
+                const iso = m.created_at;
+                return Date.parse(/Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
+            }).filter(v => !isNaN(v));
+            if (t.length < 2) return null;
+            return ((Math.max.apply(null, t) - Math.min.apply(null, t)) / 1000).toFixed(1) + 's';
+        }
+        function renderHistoryReasoning(items) {
+            if (emptyEl) emptyEl.remove();
+            const det = document.createElement('details');
+            det.className = 'ai-reasoning rounded-xl';
+            if (items.length && items.every(m => m.archived)) det.classList.add('ai-archived');
+            const elapsed = historyElapsed(items);
+            det.innerHTML =
+                '<summary><i class="fas fa-brain text-secondary"></i> ' +
+                '<span class="ai-reasoning-title">Reasoning</span>' +
+                (elapsed ? '<span class="ai-reasoning-elapsed mono">' + elapsed + '</span>' : '') +
+                '<i class="fas fa-chevron-down ai-reasoning-chevron"></i></summary>' +
+                '<div class="ai-reasoning-body"></div>';
+            const body = det.querySelector('.ai-reasoning-body');
+            items.forEach(m => {
+                const line = document.createElement('div');
+                if (m.role === 'thinking') {
+                    line.className = 'flex items-start gap-2 text-sm italic opacity-80';
+                    line.innerHTML = '<i class="fas fa-brain text-secondary mt-0.5 flex-shrink-0"></i><span class="whitespace-pre-wrap"></span>';
+                } else {
+                    line.className = 'text-xs opacity-60 flex items-center gap-2';
+                    line.innerHTML = '<i class="fas fa-circle-check text-success"></i><span></span>';
+                }
+                line.querySelector('span').textContent = m.content;
+                body.appendChild(line);
+            });
+            messagesEl.appendChild(det);
+        }
         function loadConversation(id) {
             if (taskAbort) { taskAbort.abort(); taskAbort = null; }
             pendingConvId = id;  // rapid repeated opens focus, never clone
@@ -1859,7 +1968,28 @@
                         lastConvSig = sig;
                         clearMessages();
                         let seenArchived = false;
+                        // Consecutive thinking/step lines collapse into one
+                        // closed <details class="ai-reasoning"> (spec §4.1) —
+                        // history never shows a stack of solo boxes.
+                        let pendingReasoning = [];
+                        const flushHistoryReasoning = () => {
+                            if (!pendingReasoning.length) return;
+                            const items = pendingReasoning;
+                            pendingReasoning = [];
+                            renderHistoryReasoning(items);
+                        };
                         conv.messages.forEach(m => {
+                            if (m.role === 'thinking' || m.role === 'step') {
+                                if (!m.archived && seenArchived) {
+                                    flushHistoryReasoning();
+                                    addArchiveDivider();
+                                    seenArchived = false;
+                                }
+                                pendingReasoning.push(m);
+                                if (m.archived) seenArchived = true;
+                                return;
+                            }
+                            flushHistoryReasoning();
                             if (!m.archived && seenArchived) {
                                 addArchiveDivider();
                                 seenArchived = false;
@@ -1875,6 +2005,7 @@
                                 if (el) el.classList.add('ai-archived');
                             }
                         });
+                        flushHistoryReasoning();
                     }
                     if (opts.taskMode && conv.task) {
                         // Task-owned conversation: banner + frozen context

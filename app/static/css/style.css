@@ -3305,6 +3305,24 @@ figure.nb-figure figcaption {
     opacity: 0.9;
 }
 
+/* --- AI chat: reasoning summary badges (spec §4.1) --- */
+.ai-reasoning-badges {
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ai-reasoning-elapsed {
+    font-weight: 600;
+    font-size: 10px;
+    opacity: 0.55;
+    white-space: nowrap;
+}
+
 .ai-reasoning .ai-reasoning-body {
     padding: 0 0.75rem 0.6rem;
     display: flex;
