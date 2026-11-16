@@ -1008,6 +1008,11 @@ class _Interpreter:
             obj = self._ev(target.value)
             index = self._ev(target.slice)
             self._guard(_setitem, obj, index, value)
+            # Every stored reference counts per path (multiplicity), so a
+            # subscript-store loop cannot accumulate uncharged sharing.
+            # Charged after success: failed stores stay catchable errors.
+            self._charge_value(index)
+            self._charge_value(value)
         else:
             raise _Denied("denied construct: assignment target")
 
@@ -2500,6 +2505,7 @@ class _Interpreter:
             self._no_kwargs("append", kwargs)
             self._checked_args("append", args, 1, 1)
             self._charge(40)
+            self._charge_value(args[0])
             obj.append(args[0])
             return None
         if name == "extend":
@@ -2508,6 +2514,7 @@ class _Interpreter:
             items = []
             for item in self._safe_iter(args[0]):
                 self._tick()
+                self._charge_value(item)
                 items.append(item)
             self._charge(8 * len(items))
             obj.extend(items)
@@ -2578,6 +2585,8 @@ class _Interpreter:
             self._tick(len(pairs))
             for key, value in pairs:
                 obj[self._guard(_hashable, key)] = value
+                self._charge_value(key)
+                self._charge_value(value)
             self._charge(72 * len(pairs))
             return None
         if name == "setdefault":
@@ -2589,6 +2598,9 @@ class _Interpreter:
             else:
                 result = self._guard(obj.setdefault, key, args[1])
             self._charge(72)
+            self._charge_value(key)
+            if len(args) > 1:
+                self._charge_value(args[1])
             return result
         raise _Denied(f"attribute '{name}' is not allowed")
 
@@ -2691,6 +2703,13 @@ def evaluate(code, variables=None, files=None, limits=None, collect=None):
         try:
             runner = _Interpreter(clean_vars, files, merged, scratch)
             result = runner.run(tree)
+            # Serialization backstop: charge the result's referenced bytes
+            # (multiplicity-aware) BEFORE json.dumps materializes it, so an
+            # accumulator built by append/extend/subscript loops trips the
+            # allocation budget instead of OOMing in dumps. Anything this
+            # rejects carries far more referenced bytes than the output cap
+            # allows, so no previously-passing result can trip it.
+            runner._charge_value(result)
             collected = {}
             for var in want:
                 try:
@@ -2707,7 +2726,13 @@ def evaluate(code, variables=None, files=None, limits=None, collect=None):
                 # The old second-evaluate probe enforced the output budget
                 # on collected artifacts; check here so oversized outputs
                 # fail with the outputs-hint mapping instead of sailing
-                # through with a multi-MB artifact.
+                # through with a multi-MB artifact. Charge first so a
+                # collected accumulator trips before dumps materializes it.
+                try:
+                    runner._charge_value(collected)
+                except (_Denied, _Budget) as exc:
+                    return {"ok": False, "error": str(exc),
+                            "collect_failed": True}
                 try:
                     collected_text = json.dumps(collected, allow_nan=False)
                 except (TypeError, ValueError):

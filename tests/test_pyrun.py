@@ -958,3 +958,62 @@ def test_pyrun_oversized_collected_output_rejected(app, user):
 def test_pyrun_small_shared_structure_still_passes():
     out = evaluate("s = 'hello'\ninner = [s, s]\nL = [inner, inner]\nlen(L)")
     assert out == {"ok": True, "value": 2}
+
+
+# ---------------------------------------------------------------------------
+# Task S8 fix round 2/5: append/extend-loop accumulation backstop
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_append_loop_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nl = []\nfor i in range(1000):"
+                   "\n l.append(s)\nlen(l)")
+    assert out["ok"] is False  # denied before dumps materializes ~1GB
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_extend_loop_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nl = []\nchunk = [s]\n"
+                   "for i in range(1000):\n l.extend(chunk)\nlen(l)")
+    assert out["ok"] is False  # denied before dumps materializes ~1GB
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_subscript_store_accumulation_charged():
+    out = evaluate("s = 'a' * 1000000\nd = {}\nfor i in range(1000):"
+                   "\n d[i] = s\nlen(d)")
+    assert out["ok"] is False  # same accumulation class via subscript store
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_accumulator_collected_output_rejected(app, user):
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "s = 'a' * 1000000\nl = []\nfor i in range(100):"
+                    "\n l.append(s)\nout = l",
+            "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    # The loop trips during the run (program error), so dumps never runs —
+    # neither for the result nor for the collected artifact.
+    assert "allocation budget" in out["error"].lower()
+    assert "revise the code" in out.get("retry_hint", "").lower()
+
+
+def test_pyrun_medium_accumulator_collected_trips_with_outputs_hint(app, user):
+    # 30 x 1MB appends (~31MB) pass the run, so the collect-phase backstop
+    # trips instead — mapped to the outputs hint like any output failure.
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "s = 'a' * 1000000\nl = []\nfor i in range(30):"
+                    "\n l.append(s)\nout = l",
+            "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    assert "allocation budget" in out["error"].lower()
+    assert "must match" in out.get("retry_hint", "")
+
+
+def test_pyrun_small_append_extend_loops_still_pass():
+    out = evaluate("l = []\nfor i in range(10):\n l.append(i)\nlen(l)")
+    assert out == {"ok": True, "value": 10}
+    out = evaluate("l = [1]\nfor i in range(3):\n l.extend([i, i])\nlen(l)")
+    assert out == {"ok": True, "value": 7}
