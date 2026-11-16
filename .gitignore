@@ -31,3 +31,6 @@ modules/whiteboards/static/dist/index.html
 
 # Local-only plans and notes (never committed)
 plans/
+
+# Local git worktrees (never committed)
+.worktrees/
