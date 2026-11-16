@@ -1560,11 +1560,30 @@
                     () => savePyrunAsTable(cell, rows));
                 box.appendChild(saveBtn);
             } else {
-                const text = out.stdout
-                    || (out.result === undefined || out.result === null
+                // Plain-text results render verbatim (real line breaks, no
+                // JSON quoting); anything else keeps compact JSON form.
+                let text;
+                if (typeof out.result === "string") {
+                    text = (out.stdout || "") + out.result;
+                } else {
+                    text = out.stdout || (out.result === undefined
+                        || out.result === null
                         ? "" : JSON.stringify(out.result));
-                box.appendChild(el("pre",
-                    "text-xs whitespace-pre-wrap", String(text)));
+                }
+                const MAX_OUT = 5000;
+                let note = "";
+                if (text.length > MAX_OUT) {
+                    note = "… (output truncated, showing first "
+                        + MAX_OUT + " of " + text.length + " chars)";
+                    text = text.slice(0, MAX_OUT);
+                }
+                const pre = el("pre",
+                    "text-xs whitespace-pre-wrap max-h-64 overflow-y-auto");
+                pre.textContent = text;
+                box.appendChild(pre);
+                if (note) {
+                    box.appendChild(el("div", "text-xs opacity-50", note));
+                }
             }
             if (out.elapsedMs !== undefined && out.elapsedMs !== null) {
                 box.appendChild(el("div", "text-xs opacity-50",
