@@ -1,6 +1,7 @@
 """Automation module routes: workflow list, editor, runs."""
 
 import json
+import re
 
 from flask import (
     Blueprint,
@@ -20,7 +21,7 @@ from app.models import Drive, Folder, StoredFile
 
 from . import engine, examples, nodes, runtime
 from .models import AutomationFolder, AutomationRun, AutomationWorkflow
-from .registry import active_node_types, palette
+from .registry import _NODE_TYPES, active_node_types, palette
 
 bp = Blueprint("automation", __name__,
                template_folder="templates", static_folder="static")
@@ -259,18 +260,40 @@ def example_use(key):
         engine.validate_graph(graph, active_node_types())
     except engine.WorkflowError as exc:
         # E.g. the example needs a module that is disabled (notebooks).
-        return render_template("automation/list.html",
-                               workflows=(AutomationWorkflow.query
-                                          .filter_by(user_id=current_user.id)
-                                          .order_by(AutomationWorkflow
-                                                    .updated_at.desc()).all()),
+        # Name the owning module so the user knows what to enable, and
+        # render the full list view (same context as index) — a partial
+        # context 500s on the missing template vars.
+        detail = str(exc)
+        unknown = re.search(r"Unknown node type '([^']+)'", detail)
+        owner = (_NODE_TYPES.get(unknown.group(1), {}).get("module")
+                 if unknown else None)
+        if owner and owner != "automation":
+            detail = (f"{detail} The '{owner}' module is disabled — "
+                      "enable it to use this example.")
+        workflows = (AutomationWorkflow.query
+                     .filter_by(user_id=current_user.id)
+                     .order_by(AutomationWorkflow
+                               .updated_at.desc()).all())
+        folders, _by_id, flat_folders = _folder_tree()
+        counts = dict(
+            db.session.query(AutomationWorkflow.folder_id,
+                             db.func.count(AutomationWorkflow.id))
+            .filter(AutomationWorkflow.user_id == current_user.id)
+            .group_by(AutomationWorkflow.folder_id).all())
+        wf_by_folder = {}
+        for w in workflows:
+            wf_by_folder.setdefault(w.folder_id, []).append(w)
+        return render_template("automation/list.html", workflows=workflows,
                                examples=examples.EXAMPLES,
                                recent_runs=(AutomationRun.query
                                             .filter_by(user_id=current_user.id)
                                             .order_by(AutomationRun.id.desc())
                                             .limit(10).all()),
+                               folders=folders, flat_folders=flat_folders,
+                               folder_counts=counts, q="",
+                               wf_by_folder=wf_by_folder, visible=None,
                                example_error=f"Cannot use "
-                                             f"'{example['name']}': {exc}"), 400
+                                             f"'{example['name']}': {detail}"), 400
     workflow = AutomationWorkflow(
         user_id=current_user.id, name=example["name"][:160],
         description=example["description"], graph=json.dumps(graph))

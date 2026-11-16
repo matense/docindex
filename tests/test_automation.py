@@ -3599,3 +3599,17 @@ def test_preview_stubs_params_and_copy_nodes(auth_client, app, user, enabled):
     assert resp.get_json()["ok"] is True
     with app.app_context():
         assert StoredFile.query.filter_by(user_id=user).count() == before
+
+
+# ---------------------------------------------------------------------------
+# D9: example_use with a disabled-module requirement — no 500
+# ---------------------------------------------------------------------------
+
+def test_example_use_without_module_shows_error_not_500(auth_client, app, user,
+                                                         enabled):
+    # summarize-to-notebook needs notebook.* nodes; the notebooks module is
+    # disabled here, so validation fails — the page must explain (400),
+    # not blow up with a 500 (Jinja2 UndefinedError from missing list-view
+    # template context).
+    r = auth_client.post("/m/automation/examples/summarize-to-notebook/use")
+    assert r.status_code in (200, 302, 400) and b"notebooks" in r.data.lower()
