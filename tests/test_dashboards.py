@@ -3104,3 +3104,118 @@ console.log(JSON.stringify([kept, cleared, cancelledBoth]));
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [True] * 3
+
+
+def test_ai_lock_blocks_edits_but_allows_reads(app, user, enabled):
+    """Fix round (Important 1): a locked dashboard refuses AI mutations
+    (cards, attach, runs) with the unlock message, but stays readable and
+    listed with the lock visible — notebooks _save_and_report mirror."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    _attach_file(app, fid)
+    cid = _add_card(app, fid, title="KPI")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_lock"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        read = tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert "error" not in read
+        assert read["ai_lock"] is True
+        assert "unlock" in read["note"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi", "title": "nope"},
+            None)
+        assert "locked" in added["error"].lower()
+        ran = tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+        assert "locked" in ran["error"].lower()
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "x.txt", "content": "x"},
+            None)
+        assert "locked" in attached["error"].lower()
+        listing = tools._tool_list(user_obj, {}, None)
+        entry = next(n for n in listing["dashboards"] if n["id"] == fid)
+        assert entry["ai_lock"] is True
+
+
+def test_ai_hidden_blocks_everything(app, user, enabled):
+    """Fix round (Important 1): a hidden dashboard is invisible to the AI
+    tools — read/mutate/run/recommend refuse, list drops it."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Secret")
+    _add_card(app, fid, title="KPI")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "hidden" in tools._tool_read(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi"}, None)["error"]
+        assert "hidden" in tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": "c1"}, None)["error"]
+        assert "hidden" in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)["error"]
+        listing = tools._tool_list(user_obj, {}, None)
+        assert not any(n["id"] == fid for n in listing["dashboards"])
+
+
+def test_tool_run_refuses_already_running_card(app, user, enabled):
+    """Fix round (Important 2 pin, tools side): a second AI run on an
+    in-flight card is refused — never a second concurrent execution."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid)
+    _set_running(app, fid, cid)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+    assert cid in out["already_running"]
+
+
+def test_console_same_card_run_guard():
+    """Fix round (Important 2 pin, client side): both stream call sites
+    refuse in-flight/running cards through one guard, so a second
+    same-card stream — the only way to overwrite a live reader — cannot
+    start (the server 409s it too, before any reader is created)."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function canStartCardRun\(V, card\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "canStartCardRun guard missing"
+    # Both stream call sites gate on it; the rationale is documented.
+    assert src.count("canStartCardRun(V, card") >= 2
+    assert "Same-card concurrency is impossible" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) + """
+var V = { inFlight: {} };
+var idle = { id: "c1", status: "idle" };
+var running = { id: "c2", status: "running" };
+var checks = [canStartCardRun(V, idle) === true,
+    canStartCardRun(V, null) === false,
+    canStartCardRun(V, running) === false];
+V.inFlight["c1"] = true;
+checks.push(canStartCardRun(V, idle) === false);
+delete V.inFlight["c1"];
+checks.push(canStartCardRun(V, idle) === true);
+console.log(JSON.stringify(checks));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 5

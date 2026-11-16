@@ -2879,6 +2879,18 @@
         V.timers.push(timer);
     }
 
+    // Same-card concurrency is impossible, so the per-card reader map holds
+    // at most one live reader per card (i.e. per run): both stream call
+    // sites refuse in-flight/running cards synchronously through
+    // canStartCardRun below, the run button is disabled while running, and
+    // the server rejects a second start with 409 under the dashboard lock
+    // before the client ever creates a reader (resp.ok gate in
+    // streamCardRun). A sequential re-run only clears its own entry via
+    // clearConsoleReader's identity guard.
+    function canStartCardRun(V, card) {
+        return !!card && !V.inFlight[card.id] && card.status !== "running";
+    }
+
     function finishViewRun(V, cardId, done) {
         fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
             .then(function (resp) { return resp.json(); })
@@ -2903,7 +2915,7 @@
     function refreshCard(V, cardId) {
         var card = cardById(V.doc, cardId);
         if (!card) return;
-        if (V.inFlight[cardId] || card.status === "running") {
+        if (!canStartCardRun(V, card)) {
             viewToast(V, "This card is already running — wait.");
             return;
         }
@@ -2980,7 +2992,7 @@
                     active++;
                     paint();
                     var card = cardById(V.doc, id);
-                    if (!card || V.inFlight[id] || card.status === "running") {
+                    if (!canStartCardRun(V, card)) {
                         settle();
                         return;
                     }
