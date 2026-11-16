@@ -1,4 +1,5 @@
 import os
+import sqlite3
 
 from flask import Flask
 from sqlalchemy import event
@@ -85,6 +86,39 @@ def _index_db_path(uri):
     return root + "_index" + (ext or ".sqlite")
 
 
+def _ensure_persistent_wal(db_uri, index_path):
+    """Set `journal_mode=WAL` once at startup; it persists in the files.
+
+    WAL mode is stored in each database file's header, so every later
+    connection (including each fresh NullPool checkout) inherits it with
+    no per-checkout PRAGMA. Best-effort: never block startup (read-only
+    filesystems, `:memory:` test DBs, unparseable URIs).
+    """
+    paths = set()
+    if db_uri and db_uri.startswith("sqlite"):
+        try:
+            from sqlalchemy.engine.url import make_url
+
+            db_path = make_url(db_uri).database
+        except Exception:  # noqa: BLE001 - unparseable URI: nothing to persist
+            db_path = None
+        if db_path:
+            paths.add(db_path)
+    if index_path:
+        paths.add(index_path)
+    for path in sorted(paths):
+        if not path or path == ":memory:":
+            continue
+        try:
+            raw = sqlite3.connect(path)
+            try:
+                raw.execute("PRAGMA journal_mode=WAL")
+            finally:
+                raw.close()
+        except Exception:  # noqa: BLE001 - WAL is an optimization, not startup-critical
+            continue
+
+
 def _sqlite_listener(index_path):
     """Per-engine connect listener: pragmas + ATTACH of the index db.
 
@@ -93,27 +127,23 @@ def _sqlite_listener(index_path):
     everywhere. One SQLite connection = one transaction across both
     files, so meta + index writes stay atomic.
 
-    The listener is (re-)registered on every create_app call on purpose:
-    ATTACH is per-connection, and a fresh connection never carries `idx`,
-    so DETACH-then-ATTACH is idempotent no matter how many listeners pile
-    up. (A guard keyed by id(engine) would be wrong — CPython reuses ids
-    of garbage-collected engines, silently skipping the listener for new
-    engines, e.g. across hundreds of test apps.)
+    `journal_mode=WAL` is persistent in the database files, so it is set
+    once at startup (_ensure_persistent_wal), not per checkout. There is
+    likewise no DETACH: this listener only ever runs on a brand-new
+    DBAPI connection, which never carries `idx`, so DETACH always fails
+    (swallowed) and is pure per-checkout overhead. `synchronous` and
+    `busy_timeout` are per-connection settings and stay here; ATTACH is
+    per-connection by nature and stays too.
     """
+
     def _on_connect(dbapi_conn, _connection_record):
         """Avoid 'database is locked' errors under concurrent requests."""
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         if index_path is not None:
-            try:
-                cursor.execute("DETACH DATABASE idx")
-            except Exception:  # noqa: BLE001 - not attached: the common case
-                pass
             quoted = "'" + index_path.replace("'", "''") + "'"
             cursor.execute(f"ATTACH DATABASE {quoted} AS idx")
-            cursor.execute("PRAGMA idx.journal_mode=WAL")
             cursor.execute("PRAGMA idx.synchronous=NORMAL")
             cursor.execute("PRAGMA idx.busy_timeout=30000")
         cursor.close()
@@ -139,9 +169,14 @@ def create_app(config_class=Config):
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
             engine = db.engine
-            listener = _sqlite_listener(_index_db_path(
-                app.config["SQLALCHEMY_DATABASE_URI"]))
+            index_path = _index_db_path(
+                app.config["SQLALCHEMY_DATABASE_URI"])
+            listener = _sqlite_listener(index_path)
             event.listens_for(engine, "connect")(listener)
+            # WAL persists in the database files: set once here, not on
+            # every checkout (NullPool opens a fresh connection per checkout).
+            _ensure_persistent_wal(
+                app.config["SQLALCHEMY_DATABASE_URI"], index_path)
 
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every
