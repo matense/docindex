@@ -55,9 +55,10 @@ Semantics (binding for this task):
   namespace layer: an explicit user binding shadows them (so a `rows`
   data variable keeps working), while builtins still take precedence
   over everything.
-* SQLite scratchpad: every run seeds a throwaway ``:memory:`` database
-  from ``files`` (tables ``t0``, ``t1``, ... in ``files`` insertion
-  order, every column ``TEXT``) and exposes it as ``db`` with exactly
+* SQLite scratchpad: each run lazily seeds a throwaway ``:memory:``
+  database from ``files`` (tables ``t0``, ``t1``, ... in ``files``
+  insertion order, every column ``TEXT``) on first ``db``/``rows()``
+  access, and exposes it as ``db`` with exactly
   two host functions — ``db.query(sql[, params])`` runs one
   ``SELECT``/``WITH`` statement and returns a list of plain dicts;
   ``db.exec(sql[, params])`` runs one write/DDL statement
@@ -694,7 +695,13 @@ class _Interpreter:
         self.depth = 0
         self.start = time.monotonic()
         self.last_value = None
-        self._seed_db()
+        self._db_seeded = False
+        # Engine-side backstop: Python-level tick/wall checks only run
+        # between fetched rows, so an unbounded statement (recursive CTE
+        # / cross join feeding one aggregate row) would never reach them.
+        # The handler runs inside the engine every 1000 VM steps and
+        # interrupts the statement once the wall-clock budget is gone.
+        self._db_conn.set_progress_handler(self._db_progress, 1000)
 
     # -- budgets -------------------------------------------------------
     def _tick(self, n=1):
@@ -708,12 +715,34 @@ class _Interpreter:
             self._check_wall()
 
     def _check_wall(self):
+        # NOTE: `>=` (not `>`): a zero budget must trip at the first timed
+        # check, and on coarse clocks (Windows GetTickCount64: 15.6ms) a
+        # fast program otherwise reads elapsed == 0.0 and never trips.
         elapsed = time.monotonic() - self.start
-        if elapsed > self.limits["max_wall_seconds"]:
+        if elapsed >= self.limits["max_wall_seconds"]:
             raise _Budget(
                 f"wall-clock budget exceeded ({elapsed:.1f}s of "
                 f"{self.limits['max_wall_seconds']}s); chunk the "
                 "input and combine partial results")
+
+    def _db_progress(self):
+        """SQLite progress callback: abort engine-side hangs on wall expiry.
+
+        Returning nonzero interrupts the running statement (surfaces as
+        ``interrupted``), so an unbounded ``WITH RECURSIVE`` / cross join
+        cannot spin inside the engine past the wall-clock budget.
+        """
+        try:
+            self._check_wall()
+        except _Budget:
+            return 1
+        return 0
+
+    def _ensure_db_seeded(self):
+        """Seed file tables on first data access, not at startup."""
+        if not self._db_seeded:
+            self._db_seeded = True
+            self._seed_db()
 
     def _charge(self, n):
         self.alloc += n
@@ -734,8 +763,36 @@ class _Interpreter:
             self._charge(40 + len(value))
         elif isinstance(value, (list, tuple, set)):
             self._charge(56 + 8 * len(value))
+            self._charge_referenced(value)
         elif isinstance(value, dict):
             self._charge(64 + 72 * len(value))
+            self._charge_referenced(value)
+
+    def _charge_referenced(self, container):
+        """Charge bytes a container's members reference, per slot.
+
+        ``[s] * 1000`` holds 1000 references to one string: serializing
+        or copying the list expands every slot, so every slot counts —
+        counting each reference is what trips the amplification instead
+        of OOMing later in ``json.dumps``. The walk is dedupe-aware:
+        container identities are visited once, so shared substructures
+        are not re-walked and reference cycles terminate.
+        """
+        seen = {id(container)}
+        stack = [container]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                members = list(item.keys()) + list(item.values())
+            else:
+                members = list(item)
+            for member in members:
+                if isinstance(member, (list, tuple, set, dict)):
+                    if id(member) not in seen:
+                        seen.add(id(member))
+                        stack.append(member)
+                else:
+                    self._charge_value(member)
 
     def _charge_deep(self, value):
         """Charge a whole host-parsed value tree against the allocation
@@ -1925,6 +1982,7 @@ class _Interpreter:
             args[1] if len(args) > 1 else ",")
         if name not in self.files:
             raise _UserError(KeyError(name))
+        self._ensure_db_seeded()
         chunks = self.files[name]
         if not chunks:
             return []
@@ -1947,8 +2005,11 @@ class _Interpreter:
     def _seed_db(self):
         """Seed tables ``t0``, ``t1``, ... from ``files`` chunk lists.
 
-        Header-first CSV logic mirrors ``rows()`` (first chunk carries
-        the header); zero-column files are skipped, never a path error.
+        Runs lazily on first ``db``/``rows()`` access (see
+        ``_ensure_db_seeded``): pure-Python runs over attached files pay
+        no seeding ticks. Header-first CSV logic mirrors ``rows()``
+        (first chunk carries the header); zero-column files are skipped,
+        never a path error.
         """
         try:
             cursor = self._db_conn.cursor()
@@ -2069,6 +2130,7 @@ class _Interpreter:
 
     def _db_query(self, *args, **kwargs):
         sql, params = self._prepare_db_call("query", args, kwargs)
+        self._ensure_db_seeded()
         try:
             cursor = self._db_conn.execute(sql) if params is None \
                 else self._db_conn.execute(sql, params)
@@ -2108,6 +2170,7 @@ class _Interpreter:
 
     def _db_exec(self, *args, **kwargs):
         sql, params = self._prepare_db_call("exec", args, kwargs)
+        self._ensure_db_seeded()
         try:
             cursor = self._db_conn.execute(sql) if params is None \
                 else self._db_conn.execute(sql, params)
@@ -2551,10 +2614,14 @@ def _merge_limits(limits):
     return merged, None
 
 
-def evaluate(code, variables=None, files=None, limits=None):
+def evaluate(code, variables=None, files=None, limits=None, collect=None):
     """Run ``code`` in the sealed evaluator.
 
     Returns ``{"ok": True, "value": ...}`` or ``{"ok": False, "error": ...}``.
+    When ``collect`` holds variable names, their values are read in the
+    same pass (no re-run) and returned under ``"collected"``; a missing
+    name fails with ``"collect_failed": True`` so the caller can tell an
+    output-name error apart from a program error.
     """
     try:
         if not isinstance(code, str):
@@ -2585,6 +2652,14 @@ def evaluate(code, variables=None, files=None, limits=None):
             if not isinstance(key, str) or not isinstance(chunks, list) \
                     or not all(isinstance(c, str) for c in chunks):
                 return _fail("files must map names to lists of text chunks")
+        want = []
+        if collect is not None:
+            if not isinstance(collect, (list, tuple)) or not all(
+                    isinstance(name, str) and name.isidentifier()
+                    and not keyword.iskeyword(name)
+                    and not name.startswith("__") for name in collect):
+                return _fail("collect must hold variable names")
+            want = list(collect)
         try:
             tree = ast.parse(code)
         except (SyntaxError, ValueError):
@@ -2602,6 +2677,18 @@ def evaluate(code, variables=None, files=None, limits=None):
         try:
             runner = _Interpreter(clean_vars, files, merged, scratch)
             result = runner.run(tree)
+            collected = {}
+            for var in want:
+                try:
+                    probe = ast.parse(f"({var})", mode="eval")
+                    collected[var] = runner._ev(probe.body)
+                except (_Denied, _Budget) as exc:
+                    return {"ok": False, "error": str(exc),
+                            "collect_failed": True}
+                except _UserError as exc:
+                    return {"ok": False,
+                            "error": f"{type(exc.exc).__name__}: {exc.exc}",
+                            "collect_failed": True}
             runner._check_wall()
         except (_Denied, _Budget) as exc:
             return _fail(str(exc))
@@ -2619,7 +2706,10 @@ def evaluate(code, variables=None, files=None, limits=None):
         if len(serialized) > merged["max_output_chars"]:
             return _fail(f"result exceeds output budget ({len(serialized)} "
                          f"chars, cap {merged['max_output_chars']})")
-        return {"ok": True, "value": result}
+        response = {"ok": True, "value": result}
+        if want:
+            response["collected"] = collected
+        return response
     except (_Denied, _Budget) as exc:
         return _fail(str(exc))
     except _UserError as exc:

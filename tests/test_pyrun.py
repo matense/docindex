@@ -843,3 +843,88 @@ def test_task10_rejects_bad_shapes():
                  "all([1], 2)", "type(1)", "'a'.rindex('a')",
                  "'a'.capitalize()"]:
         assert evaluate(code)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task S8: file-guard parity + SQLite progress hardening + shared-ref charge
+# + single-pass outputs + lazy seeding
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_denies_guard_hidden_files(app, user, monkeypatch):
+    from app.services import agent_service
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id)
+    seen = []
+
+    def _deny(_user, stored):
+        seen.append(stored.id)
+        if stored.id == fid:
+            return "This file is hidden from the AI in tests."
+        return None
+
+    monkeypatch.setattr(agent_service, "_FILE_GUARDS", [(None, _deny)])
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "rows('f')",
+            "files": [{"file_id": fid, "as": "f"}]})
+    assert out["ok"] is False
+    assert "hidden" in out["error"].lower()
+    assert fid in seen  # the guard was consulted for the attached file
+
+
+def test_pyrun_sql_progress_aborts_hang():
+    import time
+    started = time.monotonic()
+    out = evaluate(
+        "db.query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL "
+        "SELECT x+1 FROM c) SELECT count(*) FROM c')",
+        files={"f": ["a\n1\n"]},
+        limits={"max_wall_seconds": 1})
+    elapsed = time.monotonic() - started
+    assert out["ok"] is False
+    assert "interrupt" in out["error"].lower()  # progress-handler abort
+    assert elapsed < 20  # aborted by the handler, not left to run away
+
+
+def test_pyrun_shared_ref_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nL = [s] * 1000\nlen(L)")
+    assert out["ok"] is False  # must trip the allocation cap, not OOM in json.dumps
+
+
+def test_pyrun_outputs_single_pass(app, user, monkeypatch):
+    tools = _pyrun_tools()
+    calls = []
+    real_evaluate = tools.evaluate
+
+    def _counting(*args, **kwargs):
+        calls.append(1)
+        return real_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "evaluate", _counting)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x'\n",
+                                   "outputs": {"r.txt": "out"}})
+    assert out["ok"] is True
+    assert len(calls) == 1  # outputs collected in the same evaluation pass
+    assert out["artifacts"] and out["artifacts"][0]["name"] == "r.txt"
+
+
+def test_pyrun_db_seeds_lazily(monkeypatch):
+    import sys
+    mod = sys.modules["docindex_module_pyrun_evaluate"]
+    calls = []
+    orig = mod._Interpreter._seed_db
+
+    def _counting(self):
+        calls.append(1)
+        return orig(self)
+
+    monkeypatch.setattr(mod._Interpreter, "_seed_db", _counting)
+    files = {"f": ["a\n1\n"]}
+    assert evaluate("1 + 1", files=files) == {"ok": True, "value": 2}
+    assert calls == []
+    assert evaluate("db.query('SELECT * FROM t0')", files=files)["ok"] is True
+    assert len(calls) == 1
+    assert evaluate("rows('f')", files=files)["ok"] is True
+    assert len(calls) == 2

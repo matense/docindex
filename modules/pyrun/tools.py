@@ -193,6 +193,17 @@ def _resolve_input_files(user, entries):
                 f"File {file_id} not found.",
                 "Use a file_id you own that is not trashed — list "
                 "your files to pick one — and retry.")
+        try:
+            from app.services import agent_service
+            guarded = agent_service._file_guard_error(user, stored)
+        except Exception:  # noqa: BLE001 - guard trouble denies the file
+            return None, _err(
+                f"Could not read file {file_id}.",
+                "Pick another file and retry.")
+        if guarded:
+            return None, _err(
+                guarded,
+                "Use a file that is not hidden from the AI and retry.")
         as_name = entry.get("as", f"f{file_id}")
         if not isinstance(as_name, str) or not as_name:
             return None, _err(
@@ -312,7 +323,8 @@ def _tool_compute(user, args, drive=None):
         _record(user.id, code)
         return error
     try:
-        outcome = evaluate(code, variables=inputs, files=files_map)
+        outcome = evaluate(code, variables=inputs, files=files_map,
+                           collect=list(outputs.values()) if outputs else None)
     except Exception:  # noqa: BLE001 - the tool boundary never 500s
         _record(user.id, code)
         return _err(
@@ -321,34 +333,21 @@ def _tool_compute(user, args, drive=None):
             "and retry.")
     if not outcome.get("ok"):
         _record(user.id, code)
+        if outcome.get("collect_failed"):
+            return {"ok": False,
+                    "error": outcome.get("error") or "Evaluation failed.",
+                    "retry_hint": "The 'outputs' names must match "
+                                  "variables the code assigns — fix the "
+                                  "code and retry."}
         return {"ok": False,
                 "error": outcome.get("error") or "Evaluation failed.",
                 "retry_hint": "Revise the code for the reported error "
                               "and retry."}
     artifacts = []
     if outputs:
-        probe = ("{" + ", ".join(f"{json.dumps(name)}: ({var})"
-                                 for name, var in outputs.items()) + "}")
-        try:
-            collected = evaluate(code + "\n" + probe, variables=inputs,
-                                 files=files_map)
-        except Exception:  # noqa: BLE001 - the tool boundary never 500s
-            _record(user.id, code, outcome.get("value"))
-            return {"ok": False,
-                    "error": "Evaluation failed unexpectedly.",
-                    "retry_hint": "The 'outputs' names must match "
-                                  "variables the code assigns — fix the "
-                                  "code and retry."}
-        if not collected.get("ok"):
-            _record(user.id, code, outcome.get("value"))
-            return {"ok": False,
-                    "error": collected.get("error") or "Evaluation failed.",
-                    "retry_hint": "The 'outputs' names must match "
-                                  "variables the code assigns — fix the "
-                                  "code and retry."}
-        values = collected.get("value") or {}
-        for name in outputs:
-            text = values.get(name)
+        values = outcome.get("collected") or {}
+        for name, var in outputs.items():
+            text = values.get(var)
             if not isinstance(text, str):
                 _record(user.id, code, outcome.get("value"))
                 return _err(
