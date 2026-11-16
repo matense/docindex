@@ -2720,6 +2720,7 @@
             const before = value.slice(0, trig.lineStart);
             const after = value.slice(pos);
             if (opt.type === "file") {
+                pushUndo("slash " + opt.cmd);
                 area.value = before + after;
                 area.setSelectionRange(before.length, before.length);
                 area.dispatchEvent(new Event("input", { bubbles: true }));

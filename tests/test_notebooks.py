@@ -1690,3 +1690,18 @@ def test_slash_menu_contract():
     assert "Enter" in wire_body and "Escape" in wire_body
     apply_body = _js_fn_body(src, "applySlashOption")
     assert "pickFile" in apply_body and "file://" in apply_body
+
+
+def test_slash_file_option_is_undoable():
+    """N4 fix: the /file branch snapshots undo like every other slash
+    option — pushUndo before the trigger strip, so the async link insert
+    is covered by the same pre-change snapshot."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    apply_body = _js_fn_body(src, "applySlashOption")
+    file_branch = apply_body.split('opt.type === "file"')[1].split(
+        "return;")[0]
+    assert "pushUndo(" in file_branch
+    assert file_branch.index("pushUndo(") < file_branch.index(
+        "area.value = before")
