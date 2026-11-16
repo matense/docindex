@@ -635,6 +635,11 @@ def sync_drive(drive, job=None):
     adds, updates, thumbnails = [], [], []
     pending = []  # (rel, rel_dir, filename, path, size)
 
+    if job:
+        # A provider pre_sync leaves progress on its 0-100 percent scale;
+        # the file enumeration below owns these counters from here on.
+        job.total = 0
+        job.processed = 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # Never descend into a blocked dir (or a dir shielding one).
         dirnames[:] = [name for name in dirnames

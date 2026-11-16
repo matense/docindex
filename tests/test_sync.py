@@ -882,3 +882,20 @@ def test_sync_walks_once(auth_client, app, local_folder, monkeypatch):
         assert status["percent"] == 100
         assert status["total"] == status["processed"] == 3
 
+
+def test_sync_resets_provider_progress_before_enumeration(auth_client, app,
+                                                          local_folder):
+    """Provider pre_sync percent updates leave job.total/processed on the
+    0-100 scale; enumeration must reset them, not accumulate (100+N)."""
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        job = sync_service._SyncJob(drive.id, drive.name)
+        # simulate provider pre_sync percent updates (see _sync_worker)
+        job.total = 100
+        job.processed = 100
+        job.current = "Cloning..."
+        sync_service.sync_drive(drive, job=job)
+    assert job.total == job.processed == 3
+    assert job.percent == 100
+
