@@ -877,3 +877,57 @@ def test_rename_rerun_isolated_per_user(auth_client, app, user):
     assert client2.post(f"/ai/tasks/{task_id}/rename",
                         json={"title": "x"}).status_code == 404
     assert client2.post(f"/ai/tasks/{task_id}/rerun").status_code == 404
+
+
+# --- D6: chat close posts stop with the real task id --------------------------
+# No DOM/JS harness exists in this repo, so the client-shape pins below are
+# explicitly SECOND-BEST static asserts (not behavioral JS tests): they pin
+# the session api surface and the close path's guarded use of it. The
+# behavioral half — stop with the real id actually stops the run — is pinned
+# by test_stop_endpoint_reached_with_real_id.
+
+
+def _chat_js(name):
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "app",
+                        "static", "js", name)
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_session_api_exposes_live_task_id(auth_client, app, user):
+    """Static pin: createSession's api object exposes a live taskId getter."""
+    import re
+    assert re.search(r"get taskId\(\)", _chat_js("ai_core.js")), \
+        "session api must expose `get taskId()`"
+
+
+def test_stop_close_uses_guarded_real_id(auth_client, app, user):
+    """Static pin: chat-window close stops via sess.taskId with a guard for
+    no-active-task (no request when there is nothing to stop)."""
+    import re
+    src = _chat_js("ai_chat.js")
+    assert "sess.taskId" in src, "close path must use sess.taskId"
+    assert re.search(r"if\s*\(\s*stopId\s*\)", src), \
+        "close path must guard the stop POST (no request with no active task)"
+
+
+def test_stop_endpoint_reached_with_real_id(auth_client, app, user):
+    """Behavioral half: stop with the real id reaches the endpoint (200 and
+    the run stops); the old client URL (literal `undefined` id) 404s and
+    stops nothing. Note: a `running` row with no live worker only gets the
+    cooperative stop signal (200, still `running` until its worker observes
+    it); a `queued` run flips to `stopped` synchronously."""
+    _enable_ai(app)
+    queued_id = _make_task(app, user, "queued")
+    assert queued_id is not None
+    assert auth_client.post(f"/ai/tasks/{queued_id}/stop").status_code == 200
+    with app.app_context():
+        assert db.session.get(AITask, queued_id).status == "stopped"
+    running_id = _make_task(app, user, "running")
+    assert auth_client.post(f"/ai/tasks/{running_id}/stop").status_code == 200
+    # The pre-D6 client symptom: `/ai/tasks/undefined/stop` matches no
+    # route (int converter) and the server task keeps running.
+    assert auth_client.post("/ai/tasks/undefined/stop").status_code == 404
+    with app.app_context():
+        assert db.session.get(AITask, running_id).status == "running"
