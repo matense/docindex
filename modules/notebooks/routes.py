@@ -554,4 +554,7 @@ def history_restore_cell(file_id, version_id):
     doc_service.save_document(
         stored, current, force_checkpoint=True,
         note=f"Before restore cell to v{version.version}")
+    # No explicit enqueue_index: save_document already enqueues the reindex
+    # (unlike file_service.restore_version used by history_restore, which
+    # needs its own call).
     return redirect(url_for("notebooks.editor", file_id=stored.id))

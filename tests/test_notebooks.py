@@ -1920,3 +1920,46 @@ def test_restore_cell_preserves_neighbors(auth_client, notebook, version_with_ex
                          json={"cell_id": "target"})
     assert load_doc(notebook)["cells"] != before["cells"]
     assert neighbors_unchanged(before, load_doc(notebook), except_id="target")
+
+
+def test_restore_cell_enqueues_index_with_restored_content(
+        app, auth_client, notebook, version_with_extra_cell):
+    """Important 1: restore-cell saves via save_document, which enqueues the
+    reindex itself (no duplicate call in the route) — draining the queue
+    makes the restored content show up in the index."""
+    from app.models import IndexJob
+    with app.app_context():
+        IndexJob.query.filter_by(file_id=notebook).delete()
+        db.session.commit()
+    auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                     json={"cell_id": "target"})
+    with app.app_context():
+        job = (IndexJob.query.filter_by(file_id=notebook)
+               .filter(IndexJob.status.in_(("pending", "running"))).first())
+        assert job is not None  # the save path requested the reindex
+        indexing_service.index_file(notebook, app)  # drain inline, as _create does
+        assert "old target" in (
+            db.session.get(StoredFile, notebook).index.extracted_text or "")
+
+
+def test_restore_cell_reinserts_removed_at_original_index(
+        app, auth_client, notebook, version_with_extra_cell):
+    """Important 2: when the live doc deleted the cell after the version, the
+    restore re-inserts it at its historic index with neighbors byte-identical
+    and order-preserved."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, notebook)
+        pruned = nb_doc.load(stored)
+        pruned["cells"] = [c for c in pruned["cells"]
+                           if c.get("id") != "target"]
+        nb_doc.save_document(stored, pruned, force_checkpoint=True)
+    before = load_doc(notebook)
+    assert [c["id"] for c in before["cells"]] == ["keep-a", "keep-b"]
+    r = auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                         json={"cell_id": "target"})
+    assert r.status_code == 302
+    after = load_doc(notebook)
+    assert [c["id"] for c in after["cells"]] == ["keep-a", "target", "keep-b"]
+    assert neighbors_unchanged(before, after, except_id="target")
+    assert next(c for c in after["cells"]
+                if c["id"] == "target")["content"] == "old target"
