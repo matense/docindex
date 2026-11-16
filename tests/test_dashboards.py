@@ -2002,7 +2002,7 @@ def test_console_close_never_cancels_stream():
     teardown = re.findall(r"root\._dashTeardown = function \(\) \{(.*?)\n    \}",
                          src, re.S)
     assert teardown, "teardown missing"
-    assert any("consoleReader" in body for body in teardown)
+    assert any("cancelConsoleReaders" in body for body in teardown)
 
 
 # ---------------------------------------------------------------------------
@@ -2987,3 +2987,120 @@ def test_run_cards_stale_all_target_skips_missing(app, auth_client, user,
         ids = [c["id"] for c in dash_doc.load(
             db.session.get(StoredFile, fid))["cards"]]
     assert gone not in ids
+
+
+# ---------------------------------------------------------------------------
+# Argon P1 B7d: dashboards on_enable/guards, spreadsheet context fallback,
+# per-run console reader
+# ---------------------------------------------------------------------------
+
+def file_guard_registered(module):
+    """Whether an AI file guard is registered for the module."""
+    from app.services import agent_service
+    return any(m == module for m, _ in agent_service._FILE_GUARDS)
+
+
+def test_dashboards_have_ai_guards(app, user):
+    assert file_guard_registered("dashboards") is True
+
+
+def test_on_enable_creates_default_drive_once(app, user):
+    from app.services import module_service
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert module_service.set_enabled("dashboards", True, user_obj)
+        assert module_service.set_enabled("dashboards", True, user_obj)
+        drives = Drive.query.filter_by(
+            user_id=user, name=_dash.DEFAULT_DRIVE_NAME).all()
+        assert len(drives) == 1
+
+
+def test_hidden_dashboard_invisible_to_core_agent_tools(app, user, enabled):
+    from app.services import agent_service
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Invisible")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = agent_service._tool_read_file(user_obj, fid)
+        assert "hidden" in result["error"]
+        found = agent_service._tool_search_files(user_obj, "Invisible")
+        assert all(r["file_id"] != fid for r in found["results"])
+
+
+def test_excel_context_falls_back_to_index(app, user):
+    import openpyxl
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["col_alpha", "col_beta"])
+    ws.append([1, 2])
+    buf = io.BytesIO()
+    wb.save(buf)
+    att = _attach_file(app, fid, name="data.xlsx", content=buf.getvalue())
+    cid = _add_card(app, fid, prompt="Summarize",
+                    attachments=[att["id"]])
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = next(c for c in doc["cards"] if c["id"] == cid)
+        files = {att["id"]: db.session.get(StoredFile, att["fileId"])}
+        text, _truncated = dash_engine.build_context(stored, doc, card,
+                                                     files)
+    assert text.strip() != ""
+    assert "col_alpha" in text  # never ""
+
+
+def test_console_readers_are_per_run():
+    """Concurrent runs must not share one reader: readers are keyed per
+    card/run, so a second stream never clobbers the first and teardown
+    cancels every live reader."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    setter = re.search(
+        r"function setConsoleReader\(V, cardId, reader\) \{(.*?)\n    \}",
+        src, re.S)
+    clearer = re.search(
+        r"function clearConsoleReader\(V, cardId, reader\) \{(.*?)\n    \}",
+        src, re.S)
+    canceller = re.search(r"function cancelConsoleReaders\(V\) \{(.*?)\n    \}",
+                          src, re.S)
+    assert setter, "setConsoleReader helper missing"
+    assert clearer, "clearConsoleReader helper missing"
+    assert canceller, "cancelConsoleReaders helper missing"
+    assert "V.consoleReader =" not in src  # no shared scalar anymore
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (setter.group(0) + "\n" + clearer.group(0) + "\n"
+             + canceller.group(0) + """
+var cancelled = [];
+var V = {};
+var r1 = { cancel: function () { cancelled.push("c1"); } };
+var r2 = { cancel: function () { cancelled.push("c2"); } };
+setConsoleReader(V, "c1", r1);
+setConsoleReader(V, "c2", r2);
+clearConsoleReader(V, "c1", { cancel: function () {} });
+var kept = V.consoleReaders["c1"] === r1 &&
+    V.consoleReaders["c2"] === r2;
+clearConsoleReader(V, "c1", r1);
+var cleared = !("c1" in V.consoleReaders) &&
+    V.consoleReaders["c2"] === r2;
+cancelConsoleReaders(V);
+var cancelledBoth = cancelled.join(",") === "c2" &&
+    !("c2" in V.consoleReaders);
+console.log(JSON.stringify([kept, cleared, cancelledBoth]));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 3

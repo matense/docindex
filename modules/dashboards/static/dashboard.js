@@ -1885,7 +1885,7 @@
             charts: {}, observers: [], timers: [],
             inFlight: {}, runAllActive: false, runAllStop: false, els: {},
             live: {}, consoleFor: null, consoleLive: null,
-            consoleReader: null, consoleDismissed: false
+            consoleReaders: {}, consoleDismissed: false
         };
         if (!Array.isArray(V.doc.cards)) V.doc.cards = [];
         if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
@@ -1918,10 +1918,7 @@
             ac.abort();
             stopViewTimers(V);
             destroyViewCharts(V);
-            if (V.consoleReader) {
-                try { V.consoleReader.cancel(); } catch (e) { /* noop */ }
-                V.consoleReader = null;
-            }
+            cancelConsoleReaders(V);
             V.consoleLive = null;
             root._dashTeardown = null;
             root._dash = null;
@@ -2167,6 +2164,25 @@
         return V.live[cardId];
     }
 
+    function setConsoleReader(V, cardId, reader) {
+        if (!V.consoleReaders) V.consoleReaders = {};
+        V.consoleReaders[cardId] = reader;
+    }
+
+    function clearConsoleReader(V, cardId, reader) {
+        if (!V.consoleReaders) return;
+        if (!reader || V.consoleReaders[cardId] === reader) {
+            delete V.consoleReaders[cardId];
+        }
+    }
+
+    function cancelConsoleReaders(V) {
+        Object.keys(V.consoleReaders || {}).forEach(function (cardId) {
+            try { V.consoleReaders[cardId].cancel(); } catch (e) { /* noop */ }
+        });
+        V.consoleReaders = {};
+    }
+
     function livePopupHTML(buf, live) {
         var head = '<div class="dash-console-pop-head"><span>Run console · ' +
             (live ? "live · " : "") + buf.frames.length +
@@ -2212,10 +2228,11 @@
         var buf = V.live[cardId];
         var frames = 0;
         var settled = false;
+        var reader = null;
         var finishLive = function (ok) {
             if (settled) return;
             settled = true;
-            V.consoleReader = null;
+            clearConsoleReader(V, cardId, reader);
             V.consoleLive = null;
             buf.done = true;
             if (ok) {
@@ -2241,8 +2258,8 @@
             if (!resp.ok || !resp.body || !resp.body.getReader) {
                 throw new Error("no stream");
             }
-            var reader = resp.body.getReader();
-            V.consoleReader = reader;
+            reader = resp.body.getReader();
+            setConsoleReader(V, cardId, reader);
             var decoder = new TextDecoder();
             var buf = "";
             var pumpStream = function () {
@@ -2273,11 +2290,11 @@
         }).catch(function () {
             if (V.consoleDismissed) {
                 V.consoleDismissed = false;
-                V.consoleReader = null;
+                clearConsoleReader(V, cardId, reader);
                 V.consoleLive = null;
                 finishViewRun(V, cardId, done);
             } else if (!settled && frames === 0) {
-                V.consoleReader = null;
+                clearConsoleReader(V, cardId, reader);
                 V.consoleLive = null;
                 closeConsole(V);
                 fallback();

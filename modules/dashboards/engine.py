@@ -30,13 +30,17 @@ import time
 
 from app.extensions import db
 from app.models import StoredFile
-from app.services import ai_usage_service, file_service
+from app.services import ai_usage_service, file_service, indexing_service
 
 from . import doc as doc_service
 
 # Tools-off context budget: attached files are inlined up to this many
 # characters total; anything beyond is cut and flagged on the card.
 TOOLS_OFF_MAX_CHARS = 20_000
+
+# Binary workbook extensions: a raw text read of these is zip garbage, so
+# build_context uses the indexed extracted text instead.
+_SPREADSHEET_EXTS = {"xlsx", "xlsm", "xls"}
 
 # How long a workflow-backed card waits for its automation run (the test
 # suite runs them inline, so this only binds in async production mode).
@@ -465,7 +469,10 @@ def build_context(stored, doc, card, files):
     """Inline attached file text up to TOOLS_OFF_MAX_CHARS.
 
     Returns (context_text, truncated). Truncation is flagged on the card so
-    tools-off runs stay honest about what the model actually saw.
+    tools-off runs stay honest about what the model actually saw. Spreadsheet
+    attachments are binary workbooks — a raw text read is zip garbage, so
+    they (and any attachment that reads back blank) fall back to the indexed
+    extracted text instead of inlining garbage.
     """
     refs = (card.get("inputs") or {}).get("attachments") or []
     chunks, used, truncated = [], 0, False
@@ -477,6 +484,14 @@ def build_context(stored, doc, card, files):
         except OSError as exc:
             raise MissingInputError(
                 f"Attachment '{stored_file.name}' cannot be read ({exc}).")
+        if ((stored_file.extension or "").lower() in _SPREADSHEET_EXTS
+                or not text.strip()):
+            try:
+                extracted = indexing_service.extract_text(stored_file)
+            except Exception:  # noqa: BLE001 - fall back to the raw read
+                extracted = ""
+            if extracted and extracted.strip():
+                text = extracted
         room = TOOLS_OFF_MAX_CHARS - used
         if room <= 0:
             truncated = True

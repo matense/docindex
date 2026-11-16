@@ -106,7 +106,8 @@ def new_card(type="kpi", title="", prompt=""):
 
 def empty_dashboard(title="Untitled dashboard"):
     return {"version": 1, "title": title or "Untitled dashboard",
-            "cards": [], "attachments": [], "createdFileIds": []}
+            "cards": [], "attachments": [], "createdFileIds": [],
+            "ai_lock": False, "ai_hidden": False}
 
 
 def _snap_size(card):
@@ -275,6 +276,10 @@ def validate(doc):
     doc["title"] = str(doc.get("title") or "Untitled dashboard"
                        )[:TITLE_MAX_CHARS]
     doc["version"] = 1
+    # AI access flags: ai_lock blocks AI edits, ai_hidden blocks all AI
+    # access (read, search and listing) to this dashboard.
+    doc["ai_lock"] = bool(doc.get("ai_lock"))
+    doc["ai_hidden"] = bool(doc.get("ai_hidden"))
     concurrency = doc.get("concurrency", DEFAULT_CONCURRENCY)
     if isinstance(concurrency, bool) or not isinstance(concurrency, int):
         raise ValueError("concurrency must be an integer.")
@@ -345,6 +350,48 @@ def extract(source):
             parts.append(text)
     parts.extend(a.get("name", "") for a in doc.get("attachments", []))
     return "\n".join(p for p in parts if p)
+
+
+def ai_error(stored, write=False):
+    """Error message when the AI may not touch this dashboard, else None.
+
+    ai_hidden blocks every access (the dashboard is invisible to the AI);
+    ai_lock blocks only mutations. Corrupt/unreadable dashboards are treated
+    as accessible — the normal read errors apply.
+    """
+    try:
+        doc = load(stored)
+    except (ValueError, OSError):
+        return None
+    if doc.get("ai_hidden"):
+        return ("This dashboard is hidden from the AI by the user — do not "
+                "read or mention its content. Tell the user they can unhide "
+                "it with the eye button in the dashboard toolbar.")
+    if write and doc.get("ai_lock"):
+        return ("This dashboard is LOCKED against AI edits by the user. Do "
+                "not generate or propose the content in chat — just tell "
+                "the user the dashboard is locked and ask them to unlock it "
+                "with the lock button in the dashboard toolbar, then repeat "
+                "the request.")
+    return None
+
+
+def access_flags(stored):
+    """(ai_lock, ai_hidden) booleans, for AI tool listings. Unreadable
+    dashboards report no flags."""
+    try:
+        document = load(stored)
+    except (ValueError, OSError):
+        return False, False
+    return bool(document.get("ai_lock")), bool(document.get("ai_hidden"))
+
+
+def ai_file_guard(_user, stored):
+    """Core guard hook (registered with agent_service): hides hidden
+    dashboards from every core AI tool (read, grep, search, list)."""
+    if stored.extension != EXTENSION:
+        return None
+    return ai_error(stored)
 
 
 # ---------------------------------------------------------------------------
