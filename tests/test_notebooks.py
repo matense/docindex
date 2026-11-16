@@ -1528,3 +1528,48 @@ def test_image_upload_wiring_behavior():
                            "notebook_image_harness.js")
     proc = subprocess.run(["node", harness], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# N0 reconciliation pins: the P0-DONE items above (truncation load, checksum
+# merge, image-upload paste/drop) are already pinned by passing tests, so
+# they are NOT re-tested here. The three items below are TODO (owned by N9):
+# marked xfail so the suite stays green; run with --runxfail to see the RED
+# proof. N9: transcribe these into real tests and drop the markers.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    reason="N0 verdict TODO -> N9: global window.marked.use pollutes chat; "
+           "no isolated instance",
+    strict=False)
+def test_marked_isolation_from_chat():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "new window.marked.Marked" in src or "new Marked" in src
+    assert "window.marked.use(" not in src
+
+
+@pytest.mark.xfail(
+    reason="N0 verdict TODO -> N9: no .ai-live-flash reconcile animation on "
+           "AI-changed cells",
+    strict=False)
+def test_live_flash_on_ai_edit_pin():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "ai-live-flash" in src
+    assert "Reverter" in src
+
+
+@pytest.mark.xfail(
+    reason="N0 verdict TODO -> N9: focusout handlers close the cell even "
+           "when focus moves to the chat window",
+    strict=False)
+def test_keep_open_on_chat_click_pin():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    parts = src.split('addEventListener("focusout"')
+    assert len(parts) > 1  # focusout handlers exist
+    assert any("relatedTarget" in chunk[:1500] for chunk in parts[1:])
