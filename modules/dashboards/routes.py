@@ -740,6 +740,27 @@ def run_card_stream(file_id):
                     {"t": "done", "result": result, "trace": trace},
                     default=str) + "\n\n"
                 return
+            if card_snapshot.get("script_enabled") and \
+                    card_snapshot.get("type") != "workflow":
+                trace, artifact_ids = [], []
+                try:
+                    result, artifact_ids, trace = engine_service.run_card(
+                        live, card_snapshot, live_user.id)
+                    _settle_stream_card(stored_id, card_id, "done",
+                                        result, trace, artifact_ids)
+                except engine_service.MissingInputError as exc:
+                    result = {"error": str(exc)}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                except Exception as exc:  # noqa: BLE001
+                    db.session.rollback()
+                    result = {"error": (str(exc) or "The run failed.")[:500]}
+                    _settle_stream_card(stored_id, card_id, "error",
+                                        result, [])
+                yield "data: " + json.dumps(
+                    {"t": "done", "result": result, "trace": trace},
+                    default=str) + "\n\n"
+                return
             if not card_snapshot.get("tools", True):
                 try:
                     refs = (card_snapshot.get("inputs") or {}).get(

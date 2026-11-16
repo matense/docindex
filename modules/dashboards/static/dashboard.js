@@ -33,6 +33,9 @@
     var MAX_H = 6;
     var MAX_TITLE = 255;
     var MAX_PROMPT = 20000;
+    // Mirrors doc.SCRIPT_MAX_CHARS server-side (Task A4): the save validator
+    // still enforces it, this just keeps the editor from over-typing.
+    var MAX_SCRIPT = 20000;
     var SAVE_DELAY = 800;
 
     var TYPE_META = {
@@ -706,7 +709,7 @@
             // scrollHeight 0, so fitting inside buildCard no-ops. Skip
             // hidden fields (e.g. workflow params inside a closed
             // <details>) — they keep their rows default until opened.
-            node.querySelectorAll(".dash-prompt, .dash-wf-params")
+            node.querySelectorAll(".dash-prompt, .dash-script, .dash-wf-params")
                 .forEach(function (el) {
                     if (el.offsetParent !== null) autoGrow(el);
                 });
@@ -749,9 +752,16 @@
             'value="' + esc(card.title || "") + '" aria-label="Card title" placeholder="Card title">' +
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
             '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
-            '<div><div class="dash-prompt-label">Card prompt</div>' +
+            '<div data-f="promptwrap"' + (card.script_enabled ? ' style="display:none"' : "") + '>' +
+            '<div class="dash-prompt-label">Card prompt</div>' +
             '<textarea class="dash-prompt" data-f="prompt" maxlength="' + MAX_PROMPT + '" ' +
             'placeholder="' + esc(m.ph) + '">' + esc(card.prompt || "") + "</textarea></div>" +
+            '<div data-f="scriptwrap"' + (card.script_enabled ? "" : ' style="display:none"') + '>' +
+            '<div class="dash-prompt-label">Script <span class="opacity-60">— runs instead of the prompt</span></div>' +
+            '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="4" ' +
+            'placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
+            '<label class="dash-script-toggle"><input type="checkbox" data-f="script_enabled"' +
+            (card.script_enabled ? " checked" : "") + '> Script card</label>' +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
             wfBlock +
             '<div class="dash-tools"><b>tools</b>' +
@@ -782,6 +792,19 @@
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
             autoGrow(promptInput);
+            scheduleSave(S);
+        });
+        var scriptToggle = d.querySelector('[data-f="script_enabled"]');
+        scriptToggle.addEventListener("change", function () {
+            card.script_enabled = scriptToggle.checked;
+            if (card.script === undefined || card.script === null) card.script = "";
+            renderGrid(S);
+            scheduleSave(S);
+        });
+        var scriptInput = d.querySelector('[data-f="script"]');
+        scriptInput.addEventListener("input", function () {
+            card.script = scriptInput.value.slice(0, MAX_SCRIPT);
+            autoGrow(scriptInput);
             scheduleSave(S);
         });
         var toolsEl = d.querySelector('[data-f="tools"]');

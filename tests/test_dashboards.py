@@ -3424,3 +3424,79 @@ def test_update_card_sets_script(app, user, enabled):
                         "script": "res = 2\nres",
                         "card": {"script": "res = 9\nres"}}, None)
         assert flat["card"]["script"] == "res = 2\nres"
+
+
+# ---------------------------------------------------------------------------
+# Task A4: builder toggle + editor, immediate run, stream branch
+# ---------------------------------------------------------------------------
+
+def test_script_builder_hooks():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'data-f="script_enabled"' in src and 'data-f="script"' in src
+    assert "dash-script" in src
+    assert 'data-f="promptwrap"' in src and 'data-f="scriptwrap"' in src
+
+
+def _script_card_persisted(app, fid, cid, script="res = 1\nres"):
+    """Flip a saved card to script mode (the stream/classic routes read the
+    stored doc, so the toggle must be persisted, not just in-memory)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = next(c for c in doc["cards"] if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        dash_doc.save_document(stored, doc)
+
+
+def _stub_no_agent(monkeypatch):
+    """pyrun on, every AI seam rigged to blow: any agent use fails the test."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate",
+                        lambda code, files: {"ok": True, "value": "seven"},
+                        raising=False)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("agent must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom)
+    monkeypatch.setattr(dash_engine, "complete_once", boom)
+    monkeypatch.setattr("app.services.agent_service.run_agent_events", boom)
+
+
+def test_script_run_needs_no_prompt(app, auth_client, user, enabled,
+                                    monkeypatch):
+    """Task A4 run-immediately contract: the existing Refresh POST runs a
+    script card with an empty prompt — no prompt required, no AI steps."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    assert _run_and_finish(app, auth_client, fid, cid) == {"text": "seven"}
+
+
+def test_script_stream_runs_script(app, auth_client, user, enabled,
+                                   monkeypatch):
+    """Task A4: a script-enabled card via /run/stream executes the script
+    through run_card — the done frame carries the coerced script result and
+    the card settles done with zero agent calls."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "seven" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "seven"}
