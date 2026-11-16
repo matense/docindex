@@ -123,7 +123,7 @@ def index(folder_id=None):
                           drive_id=drive.id)
                .order_by(Folder.name).all())
     files = (StoredFile.query
-             .options(selectinload(StoredFile.index))
+             .options(selectinload(StoredFile.index).defer(FileIndex.extracted_text))
              .filter_by(user_id=current_user.id, folder_id=scope,
                         drive_id=drive.id)
              .filter(StoredFile.deleted_at.is_(None))
