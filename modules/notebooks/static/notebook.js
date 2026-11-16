@@ -1383,10 +1383,11 @@
             if (!remoteDoc || !Array.isArray(remoteDoc.cells)) {
                 return { diverged: false, keptLocal: false };
             }
-            // An AI (or other-tab) edit landing here is itself undoable —
-            // snapshot first. The 409 rebase path (keepAllLocal) only
-            // rearranges already-tracked local state, so it pushes nothing.
-            if (!keepAllLocal) pushUndo("AI edit");
+            // Every adopted remote state is itself undoable — snapshot
+            // first, on BOTH paths: the poll path and the 409 rebase path
+            // (keepAllLocal) adopt server-only cells into doc.cells below,
+            // so undo restores the pre-change local state either way.
+            pushUndo("AI edit");
             const baseById = new Map(
                 (baseDoc.cells || []).map((c) => [c.id, c]));
             const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));

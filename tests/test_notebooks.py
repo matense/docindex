@@ -1626,3 +1626,24 @@ def test_undo_scope_is_structural():
     assert "KeyZ" in src and "KeyY" in src
     key_body = _js_fn_body(src, "onKeydown")
     assert "INPUT" in key_body and "TEXTAREA" in key_body
+
+
+def test_undo_covers_conflict_rebase_path():
+    """N2 fix: the 409 keepAllLocal rebase adopts server-only cells into
+    doc.cells (a structural change like any poll apply), so
+    applyRemoteDoc must snapshot unconditionally — undo restores the
+    pre-rebase local state instead of stranding adopted cells."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "applyRemoteDoc")
+    assert "pushUndo(" in body
+    # Snapshot precedes every adoption branch (push BEFORE mutating),
+    # including the server-only-cell adoption below.
+    assert body.index("pushUndo(") < body.index("nextCells.push(rc)")
+    # Unconditional: no keepAllLocal carve-out — the rebase path adopts
+    # server cells too, so it snapshots like the poll path.
+    assert "if (!keepAllLocal) pushUndo" not in src
+    # The inaccurate comment (rebase "only rearranges already-tracked
+    # local state") must be gone.
+    assert "only rearranges already-tracked local state" not in src
