@@ -735,7 +735,10 @@ _CARD_FIELDS = {
     "script": {"type": "string",
                "description": "Python script source for a script card; it "
                               "runs via pyrun when script_enabled is true "
-                              "and the prompt is ignored."},
+                              "and the prompt is ignored. Attachments seed "
+                              "scratch tables t0..tN in card order — probe "
+                              "them with db.tables(), never try/except over "
+                              "guessed t-names (sandbox errors abort)."},
     "w": {"type": "integer",
           "description": "Width in grid columns (1-12, snapped)."},
     "h": {"type": "integer", "description": "Height in grid rows."},

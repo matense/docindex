@@ -171,3 +171,19 @@ def test_nav_items_cached_per_request(app):
     finally:
         event.remove(Engine, "before_cursor_execute", _count)
     assert len(seen) <= 1
+
+
+def test_is_enabled_survives_stale_request_cache(app):
+    """A request-cached ModuleState row that outlives its session (teardown
+    without context pop, background handoff) must not break lookups: the
+    cached access fails closed to a fresh query instead of raising
+    DetachedInstanceError."""
+    from app.services import module_service
+    with app.test_request_context("/"):
+        db.session.add(ModuleState(name="pyrun", enabled=True))
+        db.session.commit()
+        assert module_service.is_enabled("pyrun") is True  # warms g cache
+        db.session.commit()  # expires cached rows (still bound)
+        db.session.expunge_all()  # session reset, context (and g) survives
+        assert module_service.is_enabled("pyrun") is True
+        assert module_service.is_enabled("missing-module") is False

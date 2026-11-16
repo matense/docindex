@@ -3319,9 +3319,11 @@ def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
 
 
 def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
-    """Task A2: the pyrun files map mirrors notebooks run-cell — positional
-    in card attachment order, files_map["f"] + files_map["f{pos}"], each a
-    [read_text_content] chunk list."""
+    """Task A2 (amended, script-card bugfix): the pyrun files map is
+    positional in card attachment order — files_map["f{pos}"] only, each a
+    [read_text_content] chunk list. No "f" alias: pyrun seeds tables t0..tN
+    in files-dict order, so an extra "f" key would duplicate the first
+    file at t1 and shift every later table."""
     from app.services import module_service
     dash_engine = _engine()
     monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
@@ -3340,18 +3342,45 @@ def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
     cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
                     attachments=[first["id"], second["id"]])
     card = _script_card(app, fid, cid,
-                          script="res = len(rows('f'))\nres")
+                          script="res = len(rows('f0'))\nres")
     with app.app_context():
         stored = db.session.get(StoredFile, fid)
         result, _, _ = dash_engine.run_card(stored, card, user)
     code, files = seen["call"]
-    assert code == "res = len(rows('f'))\nres"
-    assert set(files) == {"f", "f0", "f1"}
-    assert files["f"] == files["f0"] != files["f1"]
+    assert code == "res = len(rows('f0'))\nres"
+    assert set(files) == {"f0", "f1"}
+    assert files["f0"] != files["f1"]
     assert all(isinstance(chunks, list) and len(chunks) == 1
                for chunks in files.values())
-    assert "v" in files["f"][0] and "v" in files["f1"][0]
+    assert "v" in files["f0"][0] and "v" in files["f1"][0]
     assert result == {"kpi": {"value": "3", "label": "rows"}}
+
+
+def test_script_tables_follow_attachment_order(app, user, enabled,
+                                                 monkeypatch):
+    """Script-card bugfix: with real pyrun evaluation, tables t0..tN hold
+    the attachments' contents in card order — no duplication, no shift."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"id\nA1\nA2\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"id\nB1\nB2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(
+        app, fid, cid,
+        script="a = db.query('select id from t0')[0]['id']\n"
+               "b = db.query('select id from t1')[0]['id']\n"
+               "{'t0id': a, 't1id': b}")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    # A bare dict is not the KPI {"value", "label"} contract, so the value
+    # falls back to {"text": ...} — but the table data inside proves t0/t1
+    # hold the right files in order (no duplication, no shift).
+    assert result == {'text': '{"t0id": "A1", "t1id": "B1"}'}, result
 
 
 def test_script_card_rejects_foreign_attachment(app, user, enabled,

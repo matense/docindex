@@ -511,6 +511,19 @@ def test_sqlite_lockdown_denied():
         assert out["ok"] is False, sql
 
 
+def test_db_tables_lists_seeded_tables_in_order():
+    assert evaluate("db.tables()",
+                    files={"f": ["a\n1\n"],
+                           "f1": ["b\n2\n"]}) == {
+        "ok": True, "value": ["t0", "t1"]}
+    assert evaluate("db.tables()", files={}) == {"ok": True, "value": []}
+    # A prose attachment seeds a header-only table (first line is the
+    # header) — tables() reports exactly what queries can see.
+    assert evaluate("db.tables()",
+                    files={"f": ["just some prose"]}) == {
+        "ok": True, "value": ["t0"]}
+
+
 # ---------------------------------------------------------------------------
 # Final-review hardening: budget + tool-boundary gaps (RED-first)
 # ---------------------------------------------------------------------------

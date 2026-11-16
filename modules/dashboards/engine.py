@@ -605,13 +605,14 @@ def _run_prompt_card(stored, doc, card, user, files):
 def _run_script_card(stored, doc, card, user, files):
     """Execute a script card in the pyrun sandbox, no prompt, no AI steps.
 
-    Attachments map to pyrun files positionally in card attachment order
-    (mirroring notebooks run-cell): the first id is addressable as 'f'
-    (and 'f0'), the rest as 'f1', 'f2', ... — each a [read_text_content]
-    chunk list, so CSV/XLSX attachments seed scratch tables inside pyrun
-    exactly like notebook cells. The value coerces into the card type's
-    snapshot contract; script errors raise ValueError for the card's
-    visible error state.
+    Attachments map to pyrun files positionally in card attachment order:
+    attachment i is addressable as f"f{i}" (f0, f1, ...) — each a
+    [read_text_content] chunk list, so CSV/XLSX attachments seed scratch
+    tables t0..tN in the same order. There is deliberately no "f" alias:
+    pyrun seeds tables in files-dict order, so an extra alias key would
+    duplicate the first file at t1 and shift every later table. The value
+    coerces into the card type's snapshot contract; script errors raise
+    ValueError for the card's visible error state.
     """
     del stored, doc, user  # ownership/files resolved by the caller
     script = card.get("script") or ""
@@ -627,8 +628,6 @@ def _run_script_card(stored, doc, card, user, files):
         except OSError as exc:
             raise MissingInputError(
                 f"Attachment '{target.name}' cannot be read ({exc}).")
-        if pos == 0:
-            files_map["f"] = chunks
         files_map[f"f{pos}"] = chunks
     outcome = _pyrun_evaluate(script, files_map)
     if not isinstance(outcome, dict) or not outcome.get("ok"):
