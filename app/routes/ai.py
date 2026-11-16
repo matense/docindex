@@ -999,7 +999,7 @@ def file_peek(file_id):
         try:
             snippet = file_service.read_text_content(
                 stored, max_chars=_PEEK_SNIPPET_CHARS)
-        except OSError:
+        except (OSError, UnicodeDecodeError, ValueError):
             snippet = ""
     drive = stored.drive
     return jsonify({

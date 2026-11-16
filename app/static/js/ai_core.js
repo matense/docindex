@@ -2452,13 +2452,16 @@
                 asPaused = !asAtBottom();
                 renderAutoScroll();
             });
-            // Quick-peek: citation pills open the preview popover instead
-            // of navigating away (plain click only — middle-click / open
-            // in new tab still follows the /file/<id>/view href).
+            // Quick-peek: a plain primary click on a citation pill opens
+            // the preview popover instead of navigating away. Modified or
+            // non-primary clicks keep their native behavior (new tab /
+            // window) via the plain /file/<id>/view href — there is no
+            // auxclick listener, so middle-click is never intercepted.
             if (messagesEl) messagesEl.addEventListener('click', (ev) => {
                 const chip = ev.target && ev.target.closest
                     ? ev.target.closest('.ai-cite-chip[data-cite-file-id]') : null;
                 if (!chip || !messagesEl.contains(chip)) return;
+                if (ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
                 ev.preventDefault();
                 openPeekPopover(chip.getAttribute('data-cite-file-id'));
             });

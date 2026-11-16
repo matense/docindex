@@ -934,3 +934,40 @@ def test_peek_returns_snippet(auth_client, owned_file):
 def test_peek_denies_hidden_and_trashed(auth_client, hidden_file, trashed_file):
     assert auth_client.get(f"/ai/files/{hidden_file}/peek").status_code == 403
     assert auth_client.get(f"/ai/files/{trashed_file}/peek").status_code == 404
+
+
+# ------------------------------------------------- C6 fix round 1/2
+
+
+@pytest.mark.parametrize("err", [
+    OSError("unreadable"),
+    ValueError("corrupt bytes"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte"),
+])
+def test_peek_unreadable_file_returns_empty_snippet(
+        auth_client, owned_file, monkeypatch, err):
+    # Decode/corrupt/binary failures must degrade to an empty preview,
+    # never bubble to a 500.
+    from app.services import file_service
+
+    def _boom(stored, max_chars=600):
+        raise err
+
+    monkeypatch.setattr(file_service, "read_text_content", _boom)
+    r = auth_client.get(f"/ai/files/{owned_file}/peek")
+    assert r.status_code == 200 and r.get_json()["snippet"] == ""
+
+
+def test_cite_chip_click_ignores_modified_clicks():
+    # Only a plain primary click may open the popover: Ctrl/Cmd+click,
+    # Shift+click and non-primary buttons must keep their native
+    # behavior (new tab / new window) via the plain href.
+    src = _read_template("app/static/js/ai_core.js")
+    i = src.index("ev.target.closest('.ai-cite-chip[data-cite-file-id]')")
+    region = src[i:i + 600]
+    for token in ["ev.button !== 0", "ev.ctrlKey", "ev.metaKey",
+                  "ev.shiftKey", "ev.altKey"]:
+        assert token in region
+    assert region.index("ev.button") < region.index("ev.preventDefault")
+    assert (region.index("ev.preventDefault")
+            < region.index("openPeekPopover("))
