@@ -138,6 +138,12 @@ def _run_worker(run_id, app):
                 run.status = "error"
                 run.error = str(exc)[:500]
                 run.finished_at = _utcnow()
+                # Record run time even on unhandled failure so the
+                # scheduler neither wedges nor hot-loops the schedule.
+                workflow = db.session.get(
+                    AutomationWorkflow, run.workflow_id)
+                if workflow is not None:
+                    workflow.last_run_at = run.finished_at
                 db.session.commit()
         finally:
             with _lock:

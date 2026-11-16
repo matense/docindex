@@ -3602,8 +3602,99 @@ def test_preview_stubs_params_and_copy_nodes(auth_client, app, user, enabled):
 
 
 # ---------------------------------------------------------------------------
-# D9: example_use with a disabled-module requirement — no 500
+# B7a: scheduler retry + lock races
 # ---------------------------------------------------------------------------
+
+def test_failing_workflow_does_not_wedge_scheduler(app, user, enabled):
+    """Unhandled failure records run time: no wedge, no hot-loop, no dup."""
+    wf_id = _workflow(app, user, _text_graph("sched"),
+                      enabled=True, interval_minutes=10)
+    real_execute = engine.execute_graph
+    calls = {"n": 0}
+
+    def fail_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated node crash")
+        return real_execute(*a, **k)
+
+    with patch.object(engine, "execute_graph", side_effect=fail_once):
+        with patch("random.random", return_value=1.0):
+            assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).all()
+        assert len(runs) == 1 and runs[0].status == "error"
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        # Failure record updated even on unhandled exception.
+        assert wf.last_run_at is not None
+        first_run_at = wf.last_run_at
+    # No hot-loop: an immediate re-tick must not relaunch.
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).count() == 1
+        assert not runtime.has_active_run(wf_id)
+        assert not duplicate_concurrent_runs(wf_id)
+    # No wedge: once the interval elapses the schedule triggers again.
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        last = first_run_at
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        wf.last_run_at = last - timedelta(minutes=11)
+        db.session.commit()
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+    with app.app_context():
+        assert models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).count() == 2
+        assert scheduler_triggers_again_next_tick(wf_id)
+
+
+def test_scheduler_retry_atomic_start_no_duplicates(app, user, enabled):
+    """Check-then-start is atomic under lock: concurrent run wins, no dup."""
+    wf_id = _workflow(app, user, _text_graph("race"),
+                      enabled=True, interval_minutes=10)
+    # Race: due-check saw idle, but a concurrent run went active before start.
+    with patch.object(runtime, "has_active_run",
+                      side_effect=[False, True]) as m_has, \
+         patch.object(runtime, "start_run") as m_start, \
+         patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+        m_start.assert_not_called()
+        assert m_has.call_count == 2  # due-check + atomic re-check under lock
+    # No race: the start happens while holding the scheduler lock.
+    locked_seen = {}
+    real_start = runtime.start_run
+
+    def recording_start(wf, run_user, **kw):
+        locked_seen["held"] = scheduler._lock.locked()
+        return real_start(wf, run_user, **kw)
+
+    with patch.object(runtime, "has_active_run",
+                      side_effect=[False, False]), \
+         patch.object(runtime, "start_run", side_effect=recording_start), \
+         patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+        assert locked_seen.get("held") is True
+
+
+def scheduler_triggers_again_next_tick(workflow_id):
+    """Intent helper: True iff the workflow fired again after its failure
+    (the caller makes it due by ageing last_run_at, then ticks)."""
+    return (models.AutomationRun.query
+            .filter_by(workflow_id=workflow_id).count()) >= 2
+
+
+def duplicate_concurrent_runs(workflow_id):
+    """Intent helper: True iff >1 active run exists for the workflow."""
+    return (models.AutomationRun.query
+            .filter_by(workflow_id=workflow_id)
+            .filter(models.AutomationRun.status.in_(
+                ("queued", "running"))).count()) > 1
+
 
 def test_example_use_without_module_shows_error_not_500(auth_client, app, user,
                                                          enabled):
