@@ -3732,3 +3732,18 @@ def test_single_background_menu_with_folder_selector():
 def test_run_form_up_navigates_parent():
     src = read("modules/automation/static/run_form.js")
     assert "crumbs[crumbs.length - 2]" in src
+
+
+# ---------------------------------------------------------------------------
+# B2: canvas HUD — zoom/fit/layout + minimap (static pins)
+# ---------------------------------------------------------------------------
+
+def test_canvas_hud_present():
+    html = read("modules/automation/templates/automation/editor.html")
+    for token in ["data-hud=", "100%", "fa-expand", "fa-wand-magic-sparkles"]:
+        assert token in html
+
+
+def test_canvas_hud_calls_redraw():
+    src = read("modules/automation/static/automation.js")
+    assert "redrawAllConnections" in src and "minimap" in src.lower()

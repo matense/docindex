@@ -133,6 +133,7 @@
         refRaf = requestAnimationFrame(() => {
             refRaf = 0;
             renderRefWires();
+            renderMinimap();
         });
     }
 
@@ -495,6 +496,209 @@
         [150, 500, 1200, 2500].forEach(ms => _redrawTimers.push(setTimeout(run, ms)));
         if (document.fonts && document.fonts.ready) {
             document.fonts.ready.then(run).catch(() => {});
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Canvas HUD: zoom / fit-to-view / auto-layout / minimap
+    // ------------------------------------------------------------------
+    function applyView() {
+        if (!editor || !editor.precanvas) return;
+        editor.precanvas.style.transform =
+            'translate(' + editor.canvas_x + 'px, ' +
+            editor.canvas_y + 'px) scale(' + editor.zoom + ')';
+        editor.zoom_last_value = editor.zoom;
+        scheduleRefRender();
+    }
+
+    // Scale + center the canvas so every node is visible. Named for
+    // reuse: the `F` keyboard shortcut calls this exact helper.
+    function fitView() {
+        if (!editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        let minX = Infinity, minY = Infinity,
+            maxX = -Infinity, maxY = -Infinity;
+        ids.forEach(dfId => {
+            const n = data[dfId];
+            const el = document.getElementById('node-' + dfId);
+            const w = el && el.offsetWidth ? el.offsetWidth : 200;
+            const h = el && el.offsetHeight ? el.offsetHeight : 90;
+            minX = Math.min(minX, n.pos_x);
+            minY = Math.min(minY, n.pos_y);
+            maxX = Math.max(maxX, n.pos_x + w);
+            maxY = Math.max(maxY, n.pos_y + h);
+        });
+        const canvas = document.getElementById('drawflow');
+        const rect = canvas ? canvas.getBoundingClientRect()
+            : { width: 800, height: 600 };
+        if (!rect.width || !rect.height) return;
+        const pad = 60;
+        const bw = Math.max(1, maxX - minX);
+        const bh = Math.max(1, maxY - minY);
+        const zMin = editor.zoom_min || 0.5;
+        const zMax = editor.zoom_max || 1.6;
+        editor.zoom = Math.min(zMax, Math.max(zMin, Math.min(
+            (rect.width - pad * 2) / bw,
+            (rect.height - pad * 2) / bh)));
+        editor.canvas_x = rect.width / 2 - (minX + maxX) / 2 * editor.zoom;
+        editor.canvas_y = rect.height / 2 - (minY + maxY) / 2 * editor.zoom;
+        applyView();
+        redrawAllConnections();
+    }
+
+    // Arrange nodes in topological columns, left to right (Kahn
+    // layers), then redraw the wires for their new positions.
+    function autoLayout() {
+        if (!editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        const succ = {}, indeg = {};
+        ids.forEach(id => { succ[id] = []; indeg[id] = 0; });
+        ids.forEach(id => {
+            Object.values((data[id] || {}).outputs || {}).forEach(out => {
+                (out.connections || []).forEach(c => {
+                    const to = String(c.node);
+                    if ((to in succ) && !succ[id].includes(to)) {
+                        succ[id].push(to);
+                        indeg[to] += 1;
+                    }
+                });
+            });
+        });
+        const layer = {};
+        let frontier = ids.filter(id => indeg[id] === 0).sort();
+        let depth = 0;
+        while (frontier.length) {
+            const next = [];
+            frontier.forEach(id => { layer[id] = depth; });
+            frontier.forEach(id => {
+                succ[id].forEach(to => {
+                    indeg[to] -= 1;
+                    if (indeg[to] === 0) next.push(to);
+                });
+            });
+            frontier = [...new Set(next)].sort();
+            depth += 1;
+        }
+        // Leftover nodes are on a cycle: park them in a final column.
+        ids.forEach(id => { if (!(id in layer)) layer[id] = depth; });
+        const cols = {};
+        ids.forEach(id => {
+            (cols[layer[id]] = cols[layer[id]] || []).push(id);
+        });
+        Object.values(cols).forEach(col => col.sort(
+            (a, b) => data[a].pos_y - data[b].pos_y));
+        const X0 = 80, Y0 = 80, DX = 320, DY = 200;
+        Object.keys(cols).map(Number).sort((a, b) => a - b)
+            .forEach(col => {
+                cols[col].forEach((id, row) => {
+                    const x = X0 + col * DX, y = Y0 + row * DY;
+                    data[id].pos_x = x;
+                    data[id].pos_y = y;
+                    const el = document.getElementById('node-' + id);
+                    if (el) {
+                        el.style.left = x + 'px';
+                        el.style.top = y + 'px';
+                    }
+                });
+            });
+        markDirty();
+        redrawAllConnections();
+        scheduleRefRender();
+    }
+
+    // Compact 160x100px SVG minimap (bottom-right): one dot per node,
+    // one line per wire, plus the current viewport outline. Refreshed
+    // from scheduleRefRender() so it tracks every canvas change.
+    function renderMinimap() {
+        const svg = document.getElementById('wf-minimap');
+        if (!svg || !editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const W = 160, H = 100, NS = 'http://www.w3.org/2000/svg';
+        svg.innerHTML = '';
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        const size = dfId => {
+            const el = document.getElementById('node-' + dfId);
+            return {
+                w: el && el.offsetWidth ? el.offsetWidth : 200,
+                h: el && el.offsetHeight ? el.offsetHeight : 90,
+            };
+        };
+        let minX = Infinity, minY = Infinity,
+            maxX = -Infinity, maxY = -Infinity;
+        ids.forEach(dfId => {
+            const n = data[dfId], s = size(dfId);
+            minX = Math.min(minX, n.pos_x);
+            minY = Math.min(minY, n.pos_y);
+            maxX = Math.max(maxX, n.pos_x + s.w);
+            maxY = Math.max(maxY, n.pos_y + s.h);
+        });
+        const bw = Math.max(1, maxX - minX);
+        const bh = Math.max(1, maxY - minY);
+        const s = Math.min((W - 16) / bw, (H - 16) / bh);
+        const ox = (W - bw * s) / 2 - minX * s;
+        const oy = (H - bh * s) / 2 - minY * s;
+        const X = x => ox + x * s, Y = y => oy + y * s;
+        // Wires first (under the nodes).
+        ids.forEach(dfId => {
+            const n = data[dfId];
+            const s0 = size(dfId);
+            const x1 = X(n.pos_x + s0.w / 2), y1 = Y(n.pos_y + s0.h / 2);
+            Object.values(n.outputs || {}).forEach(out => {
+                (out.connections || []).forEach(c => {
+                    const t = data[String(c.node)];
+                    if (!t) return;
+                    const st = size(String(c.node));
+                    const line = document.createElementNS(NS, 'line');
+                    line.setAttribute('x1', x1);
+                    line.setAttribute('y1', y1);
+                    line.setAttribute('x2', X(t.pos_x + st.w / 2));
+                    line.setAttribute('y2', Y(t.pos_y + st.h / 2));
+                    line.setAttribute('stroke', 'currentColor');
+                    line.setAttribute('stroke-opacity', '0.35');
+                    line.setAttribute('stroke-width', '1');
+                    svg.appendChild(line);
+                });
+            });
+        });
+        ids.forEach(dfId => {
+            const n = data[dfId], sn = size(dfId);
+            const r = document.createElementNS(NS, 'rect');
+            r.setAttribute('x', X(n.pos_x));
+            r.setAttribute('y', Y(n.pos_y));
+            r.setAttribute('width', Math.max(2, sn.w * s));
+            r.setAttribute('height', Math.max(2, sn.h * s));
+            r.setAttribute('rx', 2);
+            r.setAttribute('fill', 'currentColor');
+            r.setAttribute('fill-opacity', '0.55');
+            svg.appendChild(r);
+        });
+        // Viewport outline.
+        const canvas = document.getElementById('drawflow');
+        if (canvas && editor.zoom) {
+            const rect = canvas.getBoundingClientRect();
+            const v = document.createElementNS(NS, 'rect');
+            v.setAttribute('x', X(-editor.canvas_x / editor.zoom));
+            v.setAttribute('y', Y(-editor.canvas_y / editor.zoom));
+            v.setAttribute('width', rect.width / editor.zoom * s);
+            v.setAttribute('height', rect.height / editor.zoom * s);
+            v.setAttribute('fill', 'none');
+            v.setAttribute('stroke', 'currentColor');
+            v.setAttribute('stroke-width', '1');
+            svg.appendChild(v);
         }
     }
 
@@ -2641,6 +2845,22 @@
         document.getElementById('wf-console-toggle').addEventListener('click', () => {
             document.getElementById('wf-console').classList.toggle('hidden');
         });
+        // Canvas HUD (bottom-left): zoom controls, fit-to-view, auto-layout.
+        const hud = (name, fn) => {
+            const b = root.querySelector(`[data-hud="${name}"]`);
+            if (b) b.addEventListener('click', fn);
+        };
+        hud('zoom-in', () => { editor.zoom_in(); });
+        hud('zoom-out', () => { editor.zoom_out(); });
+        hud('reset', () => {
+            editor.zoom_reset();
+            editor.canvas_x = 0;
+            editor.canvas_y = 0;
+            applyView();
+        });
+        hud('fit', () => fitView());
+        hud('layout', () => autoLayout());
+
         document.getElementById('wf-console-close').addEventListener('click', () => {
             document.getElementById('wf-console').classList.add('hidden');
         });

@@ -106,10 +106,31 @@
         <!-- Canvas -->
         <div class="glass-panel rounded-2xl flex-1 overflow-hidden relative">
             <div id="drawflow" class="w-full h-full"></div>
-            <div class="absolute bottom-3 right-3 text-[10px] opacity-40 pointer-events-none">
+            <div class="absolute top-3 right-3 text-[10px] opacity-40 pointer-events-none">
                 double-click a node to configure it · drag from a socket to connect ·
                 <span class="wf-ref-legend">dashed = {{ ref }}</span>
             </div>
+            <!-- Canvas HUD: zoom / fit / auto-layout -->
+            <div id="wf-hud" class="glass-panel absolute bottom-3 left-3 z-20 flex items-center gap-0.5 px-1.5 py-1 rounded-xl">
+                <button type="button" class="btn btn-ghost btn-xs" data-hud="zoom-out" title="Zoom out">
+                    <i class="fas fa-minus"></i>
+                </button>
+                <button type="button" class="btn btn-ghost btn-xs" data-hud="reset" title="Reset zoom to 100%">100%</button>
+                <button type="button" class="btn btn-ghost btn-xs" data-hud="zoom-in" title="Zoom in">
+                    <i class="fas fa-plus"></i>
+                </button>
+                <span class="opacity-20 mx-0.5">|</span>
+                <button type="button" class="btn btn-ghost btn-xs" data-hud="fit" title="Fit to view">
+                    <i class="fas fa-expand"></i>
+                </button>
+                <button type="button" class="btn btn-ghost btn-xs" data-hud="layout" title="Auto-layout nodes left to right">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                </button>
+            </div>
+            <!-- Canvas minimap -->
+            <svg id="wf-minimap" width="160" height="100"
+                 class="absolute bottom-3 right-3 z-20 rounded-xl glass-panel text-primary"
+                 title="Minimap"></svg>
             <!-- Run console -->
             <div id="wf-console" class="wf-console hidden">
                 <div class="wf-console-head">
