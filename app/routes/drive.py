@@ -31,6 +31,7 @@ from ..services import (
     search_service,
     sync_service,
 )
+from ..utils import safe_local_redirect
 
 bp = Blueprint("drive", __name__)
 
@@ -81,6 +82,11 @@ def _delete_folder_recursive(folder):
         if stored.deleted_at is None:
             stored.folder_id = None  # folder row is removed; restore lands at root
             file_service.delete_file(stored)
+        else:
+            # Already trashed: deleting the folder row would cascade and
+            # destroy the row without purging — route it through purge_file
+            # so blobs, versions, jobs, embeddings and FTS rows are cleaned.
+            file_service.purge_file(stored)
     db.session.delete(folder)
 
 
@@ -117,7 +123,7 @@ def index(folder_id=None):
                           drive_id=drive.id)
                .order_by(Folder.name).all())
     files = (StoredFile.query
-             .options(selectinload(StoredFile.index))
+             .options(selectinload(StoredFile.index).defer(FileIndex.extracted_text))
              .filter_by(user_id=current_user.id, folder_id=scope,
                         drive_id=drive.id)
              .filter(StoredFile.deleted_at.is_(None))
@@ -207,14 +213,18 @@ def create_drive():
         flash(error, "error")
     else:
         flash(f'Drive "{drive.name}" created.', "success")
-    return redirect(request.form.get("next") or url_for("drive.index"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("drive.index")))
 
 
 @bp.route("/drives/sync-create", methods=["POST"])
 @login_required
 def sync_create():
     """Create a drive that mirrors a local folder (mirror) or two-way
-    syncs it with writes + history (shared)."""
+    syncs it with writes + history (shared). Admin only: syncing exposes
+    server-side files to the app."""
+    if not current_user.is_admin:
+        abort(403)
     mode = request.form.get("sync_mode", "mirror")
     drive, job, error = sync_service.create_synced_drive(
         current_user, request.form.get("path", ""),
@@ -236,7 +246,13 @@ def sync_create():
 @bp.route("/drives/<int:drive_id>/sync", methods=["POST"])
 @login_required
 def sync_now(drive_id):
-    """On-demand re-sync of a synced drive (runs in the background)."""
+    """On-demand re-sync of a synced drive (runs in the background).
+
+    Admin only (same decision as S2's admin-only sync-create): a legacy
+    drive rooted at `/` or `C:\\` still syncs everything outside blocked
+    subtrees, so ownership alone must not authorize a walk."""
+    if not current_user.is_admin:
+        abort(403)
     drive = Drive.query.filter_by(id=drive_id, user_id=current_user.id).first()
     if not drive or not drive.is_synced:
         abort(404)
@@ -250,7 +266,8 @@ def sync_now(drive_id):
     else:
         flash("Sync started — progress is shown in the bottom-right corner.",
               "info")
-    return redirect(request.form.get("next") or url_for("drive.index"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("drive.index")))
 
 
 def _get_synced_drive(drive_id):
@@ -308,7 +325,8 @@ def sync_settings(drive_id):
         return jsonify({"ok": True, "captions_enabled": drive.captions_enabled,
                         "index_workers": drive.index_workers})
     flash("Sync settings saved.", "success")
-    return redirect(request.form.get("next") or url_for("settings.profile"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("settings.profile")))
 
 
 @bp.route("/drives/<int:drive_id>/delete", methods=["POST"])
@@ -328,7 +346,8 @@ def delete_drive(drive_id):
         else:
             flash(f'Drive "{drive.name}" moved to the trash with its files.',
                   "success")
-    return redirect(request.form.get("next") or url_for("drive.index"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("drive.index")))
 
 
 @bp.route("/drives/<int:drive_id>/restore", methods=["POST"])
@@ -339,7 +358,8 @@ def restore_drive(drive_id):
         flash("Drive not found.", "error")
     else:
         flash(f'Drive "{drive.name}" restored.', "success")
-    return redirect(request.form.get("next") or url_for("settings.trash"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("settings.trash")))
 
 
 @bp.route("/drives/<int:drive_id>/purge", methods=["POST"])
@@ -351,7 +371,8 @@ def purge_drive(drive_id):
         if session.get("drive_id") == int(drive_id):
             session.pop("drive_id", None)
         flash("Drive permanently deleted.", "success")
-    return redirect(request.form.get("next") or url_for("settings.trash"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("settings.trash")))
 
 
 @bp.route("/drives/<int:drive_id>/remove", methods=["POST"])
@@ -543,7 +564,8 @@ def select_drive(drive_id):
     if not drive:
         abort(404)
     flash(f'Switched to drive "{drive.name}".', "success")
-    return redirect(request.form.get("next") or url_for("drive.index"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("drive.index")))
 
 
 @bp.route("/drives/<int:drive_id>/edit", methods=["POST"])
@@ -555,7 +577,8 @@ def edit_drive(drive_id):
         request.form.get("description", ""),
     )
     flash(error, "error") if error else flash(f'Drive "{drive.name}" updated.', "success")
-    return redirect(request.form.get("next") or url_for("drive.index"))
+    return redirect(safe_local_redirect(request.form.get("next"),
+                                        url_for("drive.index")))
 
 
 @bp.route("/file/<int:file_id>/similar")
@@ -622,11 +645,14 @@ def upload():
     folder_id = request.form.get("folder_id", type=int)
     if folder_id:
         folder = _get_owned(Folder, folder_id)
+        if folder.drive_id != drive.id:
+            abort(400, "Folder is in a different drive.")
 
     uploaded = request.files.getlist("files")
     if not uploaded or not any(f.filename for f in uploaded):
         flash("No files selected.", "error")
-        return redirect(request.referrer or url_for("drive.index"))
+        return redirect(safe_local_redirect(request.referrer,
+                                            url_for("drive.index")))
 
     saved, errors = 0, []
     saved_files = []
@@ -771,7 +797,7 @@ def delete(file_id):
 
 # ---------- Trash (soft-deleted files) ----------
 
-@bp.route("/file/<int:file_id>/restore", methods=["GET", "POST"])
+@bp.route("/file/<int:file_id>/restore", methods=["POST"])
 @login_required
 def restore(file_id):
     stored = _get_file(file_id, include_trashed=True)
@@ -784,7 +810,7 @@ def restore(file_id):
         # The file was trashed with its drive: restoring it alone would
         # land it in limbo (healthy file, trashed drive). Ask whether to
         # bring the original drive back too, or move it elsewhere.
-        mode = request.form.get("mode") if request.method == "POST" else None
+        mode = request.form.get("mode")
         if mode not in ("original", "other"):
             targets = (Drive.query
                        .filter_by(user_id=current_user.id)
@@ -803,7 +829,7 @@ def restore(file_id):
                       .first())
             if target is None:
                 flash("Pick a valid destination drive.", "error")
-                return redirect(url_for("drive.restore", file_id=stored.id))
+                return redirect(url_for("settings.trash"))
             file_service.restore_file(stored)
             moved, error = file_service.move_file_to_drive(
                 current_user, stored.id, target.id)

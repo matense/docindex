@@ -116,3 +116,28 @@ def test_fts_respects_search_fts_flag(auth_client, app, user):
             assert search_service.search_files("toggle", user_obj)
     finally:
         app.config["SEARCH_FTS"] = True
+
+
+def test_ilike_fallback_avoids_n_plus_one(auth_client, app, user):
+    """The ILIKE fallback must eager-load FileIndex: one batched query,
+    not one lazy load per result row."""
+    from sqlalchemy import event
+    for i in range(5):
+        _upload(auth_client, f"n{i}.txt", f"findable body number {i}".encode())
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        stmts = []
+        engine = db.engine
+
+        def _rec(conn, cursor, statement, params, context, executemany):
+            stmts.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _rec)
+        try:
+            with patch("app.services.search_service.fts_available",
+                       return_value=False):
+                results = search_service.search_files("findable", user_obj)
+        finally:
+            event.remove(engine, "before_cursor_execute", _rec)
+        assert len(results) == 5
+        assert len(stmts) < len(results) + 1, stmts

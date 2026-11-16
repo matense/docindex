@@ -1,4 +1,8 @@
 import base64
+import hashlib
+import hmac
+import logging
+import secrets
 import threading
 import time
 from collections import deque
@@ -8,6 +12,8 @@ from flask import current_app
 
 from ..models import AIConnection
 from . import ai_usage_service
+
+_log = logging.getLogger(__name__)
 
 
 class AIError(Exception):
@@ -125,48 +131,110 @@ def _headers(cfg):
     return headers
 
 
-def _fernet():
-    """Fernet over SECRET_KEY (SHA256-derived). None when unusable."""
-    try:
-        import base64 as _b64
-        import hashlib as _hl
+# HKDF domain separation: binds derived keys to this exact use so a key
+# derived elsewhere (or for another purpose) can never open these rows.
+_HKDF_INFO = b"docindex ai-service api-key v1"
+_HKDF_SALT_LEN = 16
 
-        from cryptography.fernet import Fernet as _Fernet
+
+def _secret_bytes():
+    try:
         from flask import current_app as _ca
-        secret = (_ca.config.get("SECRET_KEY") or "").encode()
+        return (_ca.config.get("SECRET_KEY") or "").encode()
+    except Exception:
+        return b""
+
+
+def _hkdf_key(secret, salt):
+    """RFC 5869 HKDF-SHA256 (extract + single expand block, 32 bytes)."""
+    prk = hmac.new(salt, secret, hashlib.sha256).digest()
+    return hmac.new(prk, _HKDF_INFO + b"\x01", hashlib.sha256).digest()
+
+
+def _fernet():
+    """Legacy Fernet over SHA256(SECRET_KEY). Kept as the dual-read fallback
+    so rows encrypted before the HKDF migration still open."""
+    try:
+        from cryptography.fernet import Fernet as _Fernet
+        secret = _secret_bytes()
         if not secret:
             return None
-        digest = _hl.sha256(secret).digest()
-        return _Fernet(_b64.urlsafe_b64encode(digest))
+        digest = hashlib.sha256(secret).digest()
+        return _Fernet(base64.urlsafe_b64encode(digest))
     except Exception:
         return None
 
 
+def _fernet_for_salt(salt):
+    """HKDF-derived Fernet for one row's salt. None when unusable."""
+    try:
+        from cryptography.fernet import Fernet as _Fernet
+        secret = _secret_bytes()
+        if not secret or not salt:
+            return None
+        return _Fernet(base64.urlsafe_b64encode(_hkdf_key(secret, salt)))
+    except Exception:
+        return None
+
+
+def is_hkdf_ciphertext(stored):
+    """True when a stored value uses the HKDF (v2) envelope."""
+    return bool(stored) and stored.startswith("enc:v2:")
+
+
+def api_key_needs_rotation(stored):
+    """Rotation-banner hook for the settings page: True when a stored key
+    predates HKDF (legacy ciphertext or plaintext) and should be
+    re-saved. Minimal predicate — no UI build."""
+    if not stored:
+        return False
+    return not is_hkdf_ciphertext(stored)
+
+
 def encrypt_api_key(plain):
-    """Encrypt an API key for storage (prefix enc:). Plaintext passthrough on failure."""
+    """Encrypt an API key for storage (enc:v2: envelope). Never returns
+    plaintext silently — raises when crypto is unavailable."""
     plain = plain or ""
     if not plain or plain.startswith("enc:"):
         return plain
     try:
-        f = _fernet()
+        salt = secrets.token_bytes(_HKDF_SALT_LEN)
+        f = _fernet_for_salt(salt)
         if f is None:
-            return plain
-        return "enc:" + f.encrypt(plain.encode()).decode()
-    except Exception:
-        return plain
+            raise RuntimeError("API key encryption unavailable (SECRET_KEY unusable)")
+        token = f.encrypt(plain.encode()).decode()
+        return "enc:v2:" + base64.urlsafe_b64encode(salt).decode() + ":" + token
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"API key encryption failed: {exc}") from exc
 
 
 def decrypt_api_key(stored):
-    """Decrypt a stored key; legacy plaintext returns as-is."""
-    if not stored or not stored.startswith("enc:"):
-        return stored or ""
-    try:
-        f = _fernet()
-        if f is None:
-            return ""
-        return f.decrypt(stored[4:].encode()).decode()
-    except Exception:
+    """Decrypt a stored key. Dual-read: HKDF rows first, legacy SHA-256
+    rows second. Plaintext-looking rows pass through with a warning log
+    (re-encrypted with HKDF on the next save — no lockout)."""
+    if not stored:
         return ""
+    if is_hkdf_ciphertext(stored):
+        try:
+            _salt_b64, _token = stored[len("enc:v2:"):].split(":", 1)
+            f = _fernet_for_salt(base64.urlsafe_b64decode(_salt_b64.encode()))
+            if f is None:
+                return ""
+            return f.decrypt(_token.encode()).decode()
+        except Exception:
+            return ""
+    if stored.startswith("enc:"):
+        try:
+            f = _fernet()
+            if f is None:
+                return ""
+            return f.decrypt(stored[4:].encode()).decode()
+        except Exception:
+            return ""
+    _log.warning("Stored API key looks like plaintext; re-save to re-encrypt it")
+    return stored
 
 
 def chat_completion(messages, model=None, tools=None, tool_choice=None, config=None,

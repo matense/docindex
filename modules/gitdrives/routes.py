@@ -126,18 +126,20 @@ def _flash_lfs_warning(drive):
               f"content.", "warning")
 
 
-@bp.get("/api/check")
+@bp.post("/api/check")
 @login_required
 def check():
     """Validate a remote without creating anything (live form feedback)."""
     provider = drive_service.get_drive_source("git")
     if provider is None:
         return jsonify({"ok": False, "error": "Git module not ready."}), 500
+    data = request.form.to_dict() if request.form else (
+        request.get_json(silent=True) or {})
     error = provider.validate(current_user, {
-        "repo_url": request.args.get("repo_url", ""),
-        "branch": request.args.get("branch", ""),
-        "username": request.args.get("username", ""),
-        "token": request.args.get("token", "")})
+        "repo_url": data.get("repo_url", ""),
+        "branch": data.get("branch", ""),
+        "username": data.get("username", ""),
+        "token": data.get("token", "")})
     if error:
         return jsonify({"ok": False, "error": error})
     return jsonify({"ok": True})

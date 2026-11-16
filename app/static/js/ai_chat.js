@@ -531,8 +531,14 @@
                     'The transcript so far is kept. Minimize (—) instead to let it finish.',
                     { title: 'Close chat', confirmText: 'Stop & close' });
                 if (!ok) return;
-                await apiFetch('/ai/tasks/' + sess.taskId + '/stop',
-                               { method: 'POST' }, { silent: true });
+                // Live task id from the session (null when no run is
+                // active): no request in that case, never a bare
+                // `/ai/tasks/undefined/stop`.
+                const stopId = sess.taskId;
+                if (stopId) {
+                    await apiFetch('/ai/tasks/' + stopId + '/stop',
+                                   { method: 'POST' }, { silent: true });
+                }
             }
             detachWindow();
         }

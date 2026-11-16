@@ -35,25 +35,32 @@ MAX_INPUT_CHARS = 8000
 # ~2 s per search/indexed file: after the first failure, callers fail
 # immediately until this deadline passes, then one call probes again.
 _BACKEND_FAIL_TTL = 60.0
-_backend_down_until = 0.0  # monotonic deadline; module-global on purpose
+# Fail-fast deadlines keyed per backend connection
+# (base_url, embedding_model): one down backend must not fail-fast
+# unrelated connections.
+_backend_down_until = {}
 
 
-def _note_backend_down():
-    global _backend_down_until
+def _breaker_key(base_url, model):
+    return (base_url or "", model or "")
+
+
+def _note_backend_down(base_url="", model=""):
     import time as _time
-    _backend_down_until = _time.monotonic() + _BACKEND_FAIL_TTL
+    _backend_down_until[_breaker_key(base_url, model)] = (
+        _time.monotonic() + _BACKEND_FAIL_TTL)
 
 
-def _check_backend_up():
+def _check_backend_up(base_url="", model=""):
     import time as _time
-    if _time.monotonic() < _backend_down_until:
+    if _time.monotonic() < _backend_down_until.get(
+            _breaker_key(base_url, model), 0.0):
         raise ai_service.AIError(
             "AI embedding backend recently failed — failing fast.")
 
 
-def _note_backend_up():
-    global _backend_down_until
-    _backend_down_until = 0.0
+def _note_backend_up(base_url="", model=""):
+    _backend_down_until.pop(_breaker_key(base_url, model), None)
 
 
 def _model_for(user):
@@ -92,7 +99,7 @@ def embed_texts(texts, user=None):
             "Semantic search is off (no embedding model on this connection).")
     if not (cfg["enabled"] and cfg["base_url"]):
         raise ai_service.AIError("AI is not configured.")
-    _check_backend_up()
+    _check_backend_up(cfg["base_url"], model)
     import requests
     ai_service._rate_slot(cfg, block=True)
     try:
@@ -104,20 +111,20 @@ def embed_texts(texts, user=None):
             allow_redirects=False,
         )
     except requests.RequestException as exc:
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError(
             f"Cannot reach AI backend at {cfg['base_url']}: {exc}") from exc
     if resp.status_code in (301, 302, 303, 307, 308):
         resp.close()
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError("AI backend redirected the request — refusing to follow (SSRF guard).")
     if resp.status_code == 429:
         # Transient by definition: the next call may succeed, never cache.
         raise ai_service.AIError("The provider's rate limit was hit (HTTP 429).")
     if resp.status_code != 200:
-        _note_backend_down()
+        _note_backend_down(cfg["base_url"], model)
         raise ai_service.AIError(f"AI backend returned {resp.status_code}: {resp.text[:300]}")
-    _note_backend_up()  # backend answered: clear fail-fast state
+    _note_backend_up(cfg["base_url"], model)  # backend answered: clear fail-fast state
     try:
         data = resp.json()["data"]
         vectors = [row["embedding"] for row in sorted(data, key=lambda r: r["index"])]
@@ -319,43 +326,60 @@ def semantic_search(user, query, limit=50, drive=None, file_ids=None,
     qvec = embed_texts([query], user=user)[0]
 
     best = {}
-    best_text = {}
+    best_row = {}
     qdims = len(qvec)
-    batch, batch_rows = [], []
-    for row in q.yield_per(1000):
-        vec = _unpack(row.embedding, row.dims)
-        if not vec or len(vec) != qdims:
-            continue  # stale row from another embedding model
-        batch.append(vec)
-        batch_rows.append((row.file_id, row.text))
-        if len(batch) >= 500:
-            _score_batch(qvec, batch, batch_rows, best, best_text)
-            batch, batch_rows = [], []
-    if batch:
-        _score_batch(qvec, batch, batch_rows, best, best_text)
-    ranked = sorted(best.items(), key=lambda kv: -kv[1])
-    if with_text:
-        return [(fid, score, best_text.get(fid)) for fid, score in ranked[:limit]]
-    return ranked[:limit]
-
-
-def _score_batch(qvec, batch, file_rows, best, best_text=None):
     if _HAS_NUMPY:
-        try:
-            import numpy as _np2
-            m = _np2.asarray(batch, dtype=_np2.float32)
-            q = _np2.asarray(qvec, dtype=_np2.float32)
-            for (fid, text), s in zip(file_rows, m.dot(q).tolist(), strict=True):
-                if s > best.get(fid, -1):
-                    best[fid] = float(s)
-                    if best_text is not None:
-                        best_text[fid] = text
-            return
-        except Exception:  # noqa: BLE001 - fall through to pure python
-            pass
-    for (fid, text), vec in zip(file_rows, batch, strict=True):
-        s = cosine(qvec, vec)
-        if s > best.get(fid, -1):
-            best[fid] = s
-            if best_text is not None:
-                best_text[fid] = text
+        import numpy as _np2
+        qarr = _np2.asarray(qvec, dtype=_np2.float32)
+    # Column-bounded scan: ids + vectors only. Chunk texts stay on disk
+    # until the winners are known (fetched by row id below); vectors are
+    # viewed zero-copy straight out of the BLOB — no struct.unpack→list
+    # round-trip, no full-row ORM materialization.
+    scan = (q.with_entities(FileEmbedding.id, FileEmbedding.file_id,
+                            FileEmbedding.chunk_index, FileEmbedding.embedding)
+             .yield_per(1000))
+    batch_views, batch_ids, batch_fids = [], [], []
+
+    def _flush():
+        if _HAS_NUMPY:
+            try:
+                scores = _np2.stack(batch_views).dot(qarr).tolist()
+            except Exception:  # noqa: BLE001 - fall back to pure python
+                scores = [cosine(v.tolist(), qvec) for v in batch_views]
+        else:
+            scores = [cosine(_unpack(b, qdims), qvec) for b in batch_views]
+        for eid, fid, s in zip(batch_ids, batch_fids, scores, strict=True):
+            if s > best.get(fid, -1):
+                best[fid] = float(s)
+                best_row[fid] = eid
+        del batch_views[:], batch_ids[:], batch_fids[:]
+
+    for eid, fid, _cidx, blob in scan:
+        if blob is None or len(blob) != qdims * 4:
+            continue  # stale row from another embedding model
+        if _HAS_NUMPY:
+            try:
+                batch_views.append(
+                    _np.frombuffer(blob, dtype=_np.float32))
+            except (ValueError, TypeError):
+                continue
+        else:
+            batch_views.append(bytes(blob))
+        batch_ids.append(eid)
+        batch_fids.append(fid)
+        if len(batch_views) >= 500:
+            _flush()
+    if batch_views:
+        _flush()
+    ranked = sorted(best.items(), key=lambda kv: -kv[1])[:limit]
+    if with_text:
+        # Winner texts only: one bounded fetch for the top-limit rows.
+        texts = {}
+        if ranked:
+            win_ids = [best_row[fid] for fid, _ in ranked]
+            texts = dict(
+                db.session.query(FileEmbedding.id, FileEmbedding.text)
+                .filter(FileEmbedding.id.in_(win_ids)).all())
+        return [(fid, score, texts.get(best_row[fid]))
+                for fid, score in ranked]
+    return ranked

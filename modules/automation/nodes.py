@@ -1001,29 +1001,21 @@ def _resolve_dest_folder(ctx, config, outputs, drive):
 
 
 def _exec_http_get(ctx, config, inputs, outputs):
-    """GET JSON/text from a URL (SSRF-guarded, no redirects, size-capped)."""
-    import ipaddress as _ip
-    from urllib.parse import urlparse as _up
+    """GET JSON/text from a URL (SSRF-guarded, no redirects, size-capped).
+
+    Strict public-only form: the host must resolve (fail closed) to
+    exclusively public addresses — no loopback carve-out, unlike AI
+    provider URLs. The refusal happens before any network touch.
+    """
+    from app.services.ssrf import url_block_reason as _ssrf_reason
 
     import requests as _rq
     raw = render_template(config.get("url", ""), outputs).strip()
     if not raw:
         raise WorkflowError("Configure a URL.")
-    try:
-        p = _up(raw)
-    except Exception as err:
-        raise WorkflowError("Invalid URL.") from err
-    if p.scheme not in ("http", "https"):
-        raise WorkflowError("URL must start with http:// or https://.")
-    host = (p.hostname or "").lower()
-    if not host or host in ("169.254.169.254", "metadata.google.internal"):
-        raise WorkflowError("That host is not allowed.")
-    try:
-        addr = _ip.ip_address(host)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            raise WorkflowError("Private/local addresses are not allowed.")
-    except ValueError:
-        pass
+    reason = _ssrf_reason(raw)
+    if reason is not None:
+        raise WorkflowError(reason)
     try:
         resp = _rq.get(raw, timeout=15, allow_redirects=False,
                        headers={"User-Agent": "DocIndex-Automation/1.0"})

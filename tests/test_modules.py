@@ -129,3 +129,45 @@ def test_invalid_module_is_skipped(app, tmp_path):
         # Restore the global registry for later tests.
         app.config["MODULES_FOLDER"] = original
         module_service.discover(app)
+
+
+def test_tool_toggles_hit_same_namespace(app):
+    """Toggles must validate against the loader's canonical module object,
+    not a second copy imported as ``modules.<name>.tools``."""
+    import sys
+
+    sys.modules.pop("modules.aiutils.tools", None)
+    with app.app_context():
+        saved = module_service.set_tool_toggles(
+            "aiutils", ["Math"], ["calculate", "nope"])
+    assert saved == {"sections": ["Math"], "tools": ["calculate"]}
+    with app.app_context():
+        assert module_service.disabled_tool_names("aiutils") == {
+            "aiutils.calculate", "aiutils.statistics",
+            "aiutils.base_convert", "aiutils.fraction",
+        }
+    assert "modules.aiutils.tools" not in sys.modules
+    canonical = sys.modules.get("docindex_module_aiutils")
+    assert canonical is not None
+    assert getattr(canonical, "tools", None) is not None
+
+
+def test_nav_items_cached_per_request(app):
+    """Two nav_items() calls in one request hit module_states at most once."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    seen = []
+
+    @event.listens_for(Engine, "before_cursor_execute")
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "module_states" in statement:
+            seen.append(statement)
+
+    try:
+        with app.test_request_context("/"):
+            module_service.nav_items()
+            module_service.nav_items()
+    finally:
+        event.remove(Engine, "before_cursor_execute", _count)
+    assert len(seen) <= 1

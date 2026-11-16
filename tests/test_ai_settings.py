@@ -1,4 +1,7 @@
+import socket
 from unittest.mock import patch
+
+import pytest
 
 from app.extensions import db
 from app.models import AIConnection, User
@@ -299,3 +302,104 @@ def test_switcher_isolated_between_users(auth_client, app):
     })
     assert other.get("/ai/connections").get_json() == []
     assert other.post(f"/ai/connections/{cid}/activate").status_code == 404
+
+
+# --- S3: hostname-resolving SSRF guard for AI base URLs. ---
+#
+# _valid_base_url resolves the host (fail closed) and rejects every
+# non-public target, including obfuscated loopback forms. The fake
+# provider hosts used across this module never resolve via real DNS, so
+# they are stubbed to a public documentation IP here (anything else still
+# resolves for real); without this the fail-closed guard would refuse the
+# pre-existing fixture URLs.
+
+_TEST_PUBLIC_IP = "93.184.216.34"
+
+_STUB_HOSTS = {"my-llm", "my-llm.local", "old.local", "new.local",
+               "env-llm", "evil", "api.openai.com"}
+
+
+@pytest.fixture(autouse=True)
+def _ssrf_test_dns(monkeypatch):
+    real = socket.getaddrinfo
+
+    def fake(host, port, *args, **kwargs):
+        if (host or "").lower() in _STUB_HOSTS:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                     (_TEST_PUBLIC_IP, 0))]
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+def _ssrf_dns(monkeypatch):
+    """Deterministic DNS for the SSRF cases (DNS-dependent by design)."""
+    real = socket.getaddrinfo
+    table = {
+        "localhost": ["127.0.0.1", "::1"],
+        "169.254.169.254.nip.io": ["169.254.169.254"],
+        "2130706433": ["127.0.0.1"],
+        "api.openai.com": [_TEST_PUBLIC_IP],
+    }
+
+    def fake(host, port, *args, **kwargs):
+        if host in table:
+            out = []
+            for ip in table[host]:
+                if ":" in ip:
+                    out.append((socket.AF_INET6, socket.SOCK_STREAM, 0, "",
+                                (ip, 0, 0, 0)))
+                else:
+                    out.append((socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                                (ip, 0)))
+            return out
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+def test_ssrf_rejects_obfuscated_loopback(monkeypatch):
+    from app.routes.settings import _valid_base_url
+    _ssrf_dns(monkeypatch)
+    for url in ["http://localhost:11434/",
+                "http://[::ffff:169.254.169.254]/",
+                "http://169.254.169.254.nip.io/",
+                "http://2130706433/"]:
+        ok, _msg = _valid_base_url(url)
+        assert ok is False
+
+
+def test_ollama_loopback_allowed_when_admin_configured(monkeypatch):
+    from app.routes.settings import _valid_base_url
+    _ssrf_dns(monkeypatch)
+    ok, _msg = _valid_base_url("http://localhost:11434/",
+                               allow_loopback=True)
+    assert ok is True
+
+
+def test_ssrf_public_provider_still_allowed(monkeypatch):
+    from app.routes.settings import _valid_base_url
+    _ssrf_dns(monkeypatch)
+    ok, _msg = _valid_base_url("https://api.openai.com/v1")
+    assert ok is True
+
+
+def test_test_existing_connection_revalidates_stored_url(auth_client, app,
+                                                         user):
+    """A row stored before the S3 lockdown (e.g. a metadata/nip.io URL) is
+    re-validated: the stored non-public URL is refused with 4xx and no
+    fetch is ever attempted."""
+    from app.services import ai_service
+    with app.app_context():
+        conn = AIConnection(user_id=user, name="Legacy",
+                            base_url="http://169.254.169.254/v1",
+                            api_key=ai_service.encrypt_api_key("sk-test"),
+                            model="m")
+        db.session.add(conn)
+        db.session.commit()
+        cid = conn.id
+    with patch("app.services.ai_service.requests.get") as mock_get:
+        resp = auth_client.post(f"/settings/ai/{cid}/test")
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+    mock_get.assert_not_called()

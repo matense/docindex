@@ -263,6 +263,12 @@ def remove_synced_drive(drive):
         chunk = file_ids[i:i + 500]
         IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
             synchronize_session=False)
+    # Semantic vectors have no cascade (plain FK) — remove them explicitly.
+    from ..models import FileEmbedding
+    for i in range(0, len(file_ids), 500):
+        chunk = file_ids[i:i + 500]
+        FileEmbedding.query.filter(FileEmbedding.file_id.in_(chunk)).delete(
+            synchronize_session=False)
 
     # Module-provided sources clean up their local materialization
     # (e.g. the git clone cache — the remote is never touched). Runs
@@ -298,21 +304,16 @@ def remove_synced_drive(drive):
 # Drive creation
 # --------------------------------------------------------------------------
 
-def validate_path(path):
-    """Normalize and validate a local folder path. Returns (abs_path, error)."""
-    path = (path or "").strip().strip('"')
-    if not path:
-        return None, "A folder path is required."
-    abs_path = os.path.realpath(os.path.abspath(path))
-    if not os.path.exists(abs_path):
-        return None, f'"{path}" does not exist on this machine.'
-    if not os.path.isdir(abs_path):
-        return None, f'"{path}" is not a folder.'
-    if not os.access(abs_path, os.R_OK):
-        return None, f'"{path}" is not readable by the server.'
+def _app_basedir():
+    """Absolute real path of the application root (parent of `app/`)."""
+    return os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..")))
+
+
+def _blocked_dirs():
+    """Absolute real paths that must never be synced (system/app dirs)."""
     try:
-        basedir = os.path.realpath(os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..")))
+        basedir = _app_basedir()
         blocked = {
             os.path.realpath(p) for p in (
                 "/etc", "/proc", "/sys", "/root", "/boot",
@@ -328,10 +329,52 @@ def validate_path(path):
                 blocked.add(os.path.realpath(win))
     except Exception:
         blocked = set()
+    return blocked
+
+
+def _shields_blocked(path, blocked=None):
+    """True when `path` IS a blocked dir or a parent of one.
+
+    Descending into `path` could reach blocked content, so the walk must
+    not enter it. Note the direction: a drive root that lives *inside* a
+    blocked dir (e.g. a git-drive clone under ``uploads/``) is NOT
+    shielded — only the blocked dir itself and its ancestors are.
+    """
+    rp = os.path.realpath(path)
+    if blocked is None:
+        blocked = _blocked_dirs()
+    if rp in blocked:
+        return True
+    # rstrip covers the filesystem root, where rp + os.sep would otherwise
+    # never match ("//" is not a prefix of "/etc").
+    return any(b.startswith(rp.rstrip(os.sep) + os.sep) for b in blocked)
+
+
+def validate_path(path):
+    """Normalize and validate a local folder path. Returns (abs_path, error)."""
+    path = (path or "").strip().strip('"')
+    if not path:
+        return None, "A folder path is required."
+    abs_path = os.path.realpath(os.path.abspath(path))
+    if not os.path.exists(abs_path):
+        return None, f'"{path}" does not exist on this machine.'
+    if not os.path.isdir(abs_path):
+        return None, f'"{path}" is not a folder.'
+    if not os.access(abs_path, os.R_OK):
+        return None, f'"{path}" is not readable by the server.'
+    basedir = _app_basedir()
+    blocked = _blocked_dirs()
+    if abs_path == basedir:
+        return None, "That system folder cannot be synced."
     if abs_path in blocked:
         return None, "That system folder cannot be synced."
     for b in blocked:
         if abs_path.startswith(b + os.sep):
+            return None, "That system folder cannot be synced."
+        if b.startswith(abs_path.rstrip(os.sep) + os.sep):
+            # `abs_path` is a parent of a blocked dir: syncing it would
+            # expose the blocked dir (rstrip covers the filesystem root,
+            # where abs_path + os.sep would otherwise never match).
             return None, "That system folder cannot be synced."
     allowed = os.environ.get("SYNC_ALLOWED_ROOTS", "")
     roots = [os.path.realpath(os.path.abspath(r.strip()))
@@ -424,23 +467,6 @@ def _trigger_indexing(file_ids, workers=1):
 def _index_batch(file_ids, app):
     for file_id in file_ids:
         indexing_service.index_file(file_id, app)
-
-
-def _count_files(root):
-    """Fast pre-pass: how many files will be scanned (for the % progress)."""
-    total = 0
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name != ".git"]
-        for filename in filenames:
-            path = os.path.join(dirpath, filename)
-            if os.path.islink(path):
-                continue
-            try:
-                if _allowed(filename, os.path.getsize(path)):
-                    total += 1
-            except OSError:
-                continue
-    return total
 
 
 def _notebook_doc_module():
@@ -567,14 +593,19 @@ def sync_drive(drive, job=None):
         raise ValueError("Not a synced drive.")
     if not os.path.isdir(drive.source_path):
         raise ValueError(f'Synced folder "{drive.source_path}" no longer exists.')
+    blocked = _blocked_dirs()
+    if (os.path.realpath(drive.source_path) == _app_basedir()
+            or os.path.realpath(drive.source_path) in blocked):
+        # Fail closed: a legacy drive rooted exactly at the app dir or at a
+        # blocked dir must not be scanned (walk pruning below only shields
+        # their children). Parents of blocked dirs are NOT refused here —
+        # the walk skips the blocked subtree and syncs the rest.
+        raise ValueError("That system folder cannot be synced.")
 
     stats = job.stats if job else {"added": 0, "updated": 0, "removed": 0,
                                    "skipped": 0}
     stats.setdefault("versions", 0)
     root = drive.source_path
-
-    if job:
-        job.total = _count_files(root)
 
     # Existing state, keyed by path relative to the root (read-only).
     # Trashed rows and ignored paths are invisible to the scan: a trashed
@@ -595,19 +626,33 @@ def sync_drive(drive, job=None):
     for folder in Folder.query.filter_by(drive_id=drive.id).all():
         existing_folders[_folder_rel_path(folder)] = folder
 
-    # -- Phase 1: scan the disk. Nothing is written to the DB here, so the
-    # slow parts (sha256 of every file, thumbnail generation) run without
-    # holding the write lock.
+    # -- Single pass: enumerate the tree once. Allowed files (with their
+    # stat) are collected here; job.total grows as they are found so
+    # progress has a denominator, and the heavy per-file work in phase 1
+    # advances job.processed to match it. Skipped files (symlinks,
+    # disallowed, unreadable) never touch the progress counters.
     seen_files, needed_dirs = set(), set()
     adds, updates, thumbnails = [], [], []
+    pending = []  # (rel, rel_dir, filename, path, size)
 
+    if job:
+        # A provider pre_sync leaves progress on its 0-100 percent scale;
+        # the file enumeration below owns these counters from here on.
+        job.total = 0
+        job.processed = 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name != ".git"]
+        # Never descend into a blocked dir (or a dir shielding one).
+        dirnames[:] = [name for name in dirnames
+                       if name != ".git"
+                       and not _shields_blocked(os.path.join(dirpath, name),
+                                                blocked)]
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir != ".":
             needed_dirs.add(rel_dir)
         for filename in filenames:
             path = os.path.join(dirpath, filename)
+            if job:
+                job.checkpoint()
             if os.path.islink(path):
                 stats["skipped"] += 1
                 continue
@@ -619,62 +664,69 @@ def sync_drive(drive, job=None):
             if not _allowed(filename, size, drive):
                 stats["skipped"] += 1
                 continue
-
             rel = os.path.normpath(os.path.join(rel_dir, filename))
+            pending.append((rel, rel_dir, filename, path, size))
             if job:
-                job.checkpoint()
-                job.current = rel
+                job.total += 1
 
-            if rel in ignored or rel in trashed_paths:
+    # -- Phase 1: scan the collected entries. Nothing is written to the DB
+    # here, so the slow parts (sha256 of every file, thumbnail generation)
+    # run without holding the write lock.
+    for rel, rel_dir, filename, path, size in pending:
+        if job:
+            job.checkpoint()
+            job.current = rel
+
+        if rel in ignored or rel in trashed_paths:
+            if job:
+                job.processed += 1
+            continue
+        seen_files.add(rel)
+        stored = existing_files.get(rel)
+        if stored is None:
+            stored = StoredFile(
+                name=filename,
+                stored_name=f"{uuid.uuid4().hex}.{file_service.get_extension(filename)}",
+                extension=file_service.get_extension(filename),
+                mime_type=None,
+                size=size,
+                checksum=_sha256_of(path),
+                user_id=drive.user_id,
+                drive_id=drive.id,
+                source_path=os.path.abspath(path),
+            )
+            adds.append((rel, rel_dir, stored))
+            if stored.is_image:
+                thumbnails.append((path, stored.stored_name))
+            stats["added"] += 1
+        else:
+            # Size-first: same size + known checksum = assume unchanged
+            # (avoids re-hashing 10k files every sync; content changes
+            # with identical size are rare and caught on next size change
+            # or reindex).
+            if size == stored.size and stored.checksum:
                 if job:
                     job.processed += 1
                 continue
-            seen_files.add(rel)
-            stored = existing_files.get(rel)
-            if stored is None:
-                stored = StoredFile(
-                    name=filename,
-                    stored_name=f"{uuid.uuid4().hex}.{file_service.get_extension(filename)}",
-                    extension=file_service.get_extension(filename),
-                    mime_type=None,
-                    size=size,
-                    checksum=_sha256_of(path),
-                    user_id=drive.user_id,
-                    drive_id=drive.id,
-                    source_path=os.path.abspath(path),
-                )
-                adds.append((rel, rel_dir, stored))
-                if stored.is_image:
-                    thumbnails.append((path, stored.stored_name))
-                stats["added"] += 1
-            else:
-                # Size-first: same size + known checksum = assume unchanged
-                # (avoids re-hashing 10k files every sync; content changes
-                # with identical size are rare and caught on next size change
-                # or reindex).
-                if size == stored.size and stored.checksum:
+            checksum = _sha256_of(path)
+            if checksum != stored.checksum or size != stored.size:
+                if (drive.is_shared and stored.extension == "pdocnb"
+                        and not _remote_notebook_valid(path)):
+                    # Corrupt remote notebook: quarantine it — keep the
+                    # local content, log, and skip (never adopt garbage).
+                    current_app.logger.warning(
+                        "Shared sync: remote notebook %s failed "
+                        "validation — kept local content.", rel)
+                    stats["skipped"] += 1
                     if job:
                         job.processed += 1
                     continue
-                checksum = _sha256_of(path)
-                if checksum != stored.checksum or size != stored.size:
-                    if (drive.is_shared and stored.extension == "pdocnb"
-                            and not _remote_notebook_valid(path)):
-                        # Corrupt remote notebook: quarantine it — keep the
-                        # local content, log, and skip (never adopt garbage).
-                        current_app.logger.warning(
-                            "Shared sync: remote notebook %s failed "
-                            "validation — kept local content.", rel)
-                        stats["skipped"] += 1
-                        if job:
-                            job.processed += 1
-                        continue
-                    updates.append((stored, checksum, size))
-                    if stored.is_image:
-                        thumbnails.append((path, stored.stored_name))
-                    stats["updated"] += 1
-            if job:
-                job.processed += 1
+                updates.append((stored, checksum, size))
+                if stored.is_image:
+                    thumbnails.append((path, stored.stored_name))
+                stats["updated"] += 1
+        if job:
+            job.processed += 1
 
     for path, stored_name in thumbnails:
         file_service._make_thumbnail(path, stored_name)
@@ -737,8 +789,16 @@ def sync_drive(drive, job=None):
 
     # Files that vanished from disk: delete the DB row ONLY (never the blob —
     # the blob is the user's real file, which simply no longer exists here).
+    # FileEmbedding, IndexJob and file_fts rows have no cascade — remove them
+    # explicitly or they orphan (purge_file would also delete the real blob,
+    # so it must not be used here).
+    from ..models import FileEmbedding
+    vanished_ids = []
     for rel, stored in existing_files.items():
         if rel not in seen_files:
+            vanished_ids.append(stored.id)
+            FileEmbedding.query.filter_by(file_id=stored.id).delete(
+                synchronize_session=False)
             thumb = file_service.thumbnail_path(stored)
             if os.path.exists(thumb):
                 try:
@@ -748,6 +808,16 @@ def sync_drive(drive, job=None):
             file_service.drop_shadow(stored)
             db.session.delete(stored)
             stats["removed"] += 1
+    if vanished_ids:
+        from . import search_service
+        search_service.fts_delete_many(vanished_ids, commit=False)
+        # Queued index jobs have the same plain-FK orphan problem as
+        # FileEmbedding — same batched delete as remove_synced_drive.
+        from ..models import IndexJob
+        for i in range(0, len(vanished_ids), 500):
+            chunk = vanished_ids[i:i + 500]
+            IndexJob.query.filter(IndexJob.file_id.in_(chunk)).delete(
+                synchronize_session=False)
 
     # Folders that vanished from disk (deepest first so children go first).
     for rel in sorted(set(existing_folders) - seen_folders,

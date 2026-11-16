@@ -45,6 +45,7 @@ def _get_owned(user, file_id):
 
 
 def _summary(stored):
+    ai_lock, _ai_hidden = doc_service.access_flags(stored)
     try:
         document = doc_service.load(stored)
         cards = len(document.get("cards", []))
@@ -55,6 +56,9 @@ def _summary(stored):
         "drive": stored.drive.name if stored.drive else None,
         "folder": stored.folder.name if stored.folder else None,
         "cards": cards,
+        # The AI must see the lock up front so it asks the user to unlock
+        # instead of generating content that cannot be saved.
+        "ai_lock": ai_lock,
         "updated_at": (stored.updated_at.isoformat()
                        if stored.updated_at else None),
     }
@@ -206,6 +210,10 @@ def _save_and_report(user, file_id, mutate):
     stored, error = _get_owned(user, file_id)
     if error:
         return error
+    # AI-hidden dashboards refuse all access; AI-locked ones refuse edits.
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
         outcome = mutate(user, document)
@@ -220,6 +228,9 @@ def _tool_list(user, args, drive):
     drive_ids = search_service.drive_id_list(drive)
     if drive_ids is not None:
         dashboards = [d for d in dashboards if d.drive_id in drive_ids]
+    # AI-hidden dashboards are invisible to the assistant entirely.
+    dashboards = [d for d in dashboards
+                  if not doc_service.ai_error(d)]
     return {"total": len(dashboards),
             "dashboards": [_summary(d) for d in dashboards[:100]]}
 
@@ -228,17 +239,27 @@ def _tool_read(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    guarded = doc_service.ai_error(stored)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
         return {"error": str(exc)}
-    return {"id": stored.id, "title": document.get("title", ""),
-            "concurrency": document.get(
-                "concurrency", doc_service.DEFAULT_CONCURRENCY),
-            "total_cards": len(document.get("cards", [])),
-            "cards": document.get("cards", []),
-            "attachments": document.get("attachments", []),
-            "createdFileIds": document.get("createdFileIds", [])}
+    result = {"id": stored.id, "title": document.get("title", ""),
+              "concurrency": document.get(
+                  "concurrency", doc_service.DEFAULT_CONCURRENCY),
+              "total_cards": len(document.get("cards", [])),
+              "cards": document.get("cards", []),
+              "attachments": document.get("attachments", []),
+              "createdFileIds": document.get("createdFileIds", []),
+              "ai_lock": bool(document.get("ai_lock"))}
+    if result["ai_lock"]:
+        result["note"] = ("This dashboard is LOCKED against AI edits by the "
+                          "user — do not generate or propose changes; ask "
+                          "them to unlock it with the lock button in the "
+                          "dashboard toolbar first.")
+    return result
 
 
 def _tool_create(user, args, drive):
@@ -364,6 +385,9 @@ def _tool_attach_file(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     use_link = args.get("target_file_id") is not None
     use_upload = args.get("name") or args.get("content") is not None
     target_id = None
@@ -408,6 +432,9 @@ def _tool_detach_file(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     att_id = args.get("attachment_id", args.get("attachment"))
     if not att_id:
         return {"error": "Pass the attachment id to detach."}
@@ -502,6 +529,11 @@ def _tool_run_card(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    # Runs mutate the doc (result/status/trace/artifacts), so locked and
+    # hidden dashboards refuse them like any other AI edit.
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     if not args.get("card_id"):
         return {"error": "Pass the card id to run."}
     try:
@@ -516,6 +548,9 @@ def _tool_run_all(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    guarded = doc_service.ai_error(stored, write=True)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
@@ -657,6 +692,9 @@ def _tool_recommend(user, args, drive):
     stored, error = _get_owned(user, args.get("file_id"))
     if error:
         return error
+    guarded = doc_service.ai_error(stored)
+    if guarded:
+        return {"error": guarded}
     try:
         document = doc_service.load(stored)
     except ValueError as exc:
@@ -700,7 +738,10 @@ register_tool(
     "list",
     _schema("dashboards.list",
             "List the user's dashboards (prompt-driven card pages) with "
-            "drive, folder and card count.",
+            "drive, folder and card count. Each entry has an 'ai_lock' "
+            "flag: when true the dashboard is locked against AI edits — "
+            "do not generate or propose changes; ask the user to unlock "
+            "it first.",
             {}),
     _tool_list, label="Listed dashboards", module="dashboards")
 
@@ -708,7 +749,10 @@ register_tool(
     "read",
     _schema("dashboards.read",
             "Read a dashboard: title, cards (type/title/prompt/inputs/"
-            "result/status/ranAt), attachments and run-created file ids.",
+            "result/status/ranAt), attachments and run-created file ids. "
+            "The response includes 'ai_lock': when true the dashboard is "
+            "locked against AI edits — do not generate or propose "
+            "changes; ask the user to unlock it first.",
             {"file_id": _FILE_ID},
             required=["file_id"]),
     _tool_read, label="Read dashboard", module="dashboards")

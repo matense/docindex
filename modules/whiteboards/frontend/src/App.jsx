@@ -55,6 +55,10 @@ export default function App() {
   const savingRef = useRef(false);
   const saveTimerRef = useRef(null);
   const firstChangeRef = useRef(true);
+  // Set while applying a poll-fetched remote scene via updateScene: the
+  // echo onChange Excalidraw fires for that programmatic apply is not a
+  // user edit, so handleChange must not schedule a redundant PUT for it.
+  const remoteApplyRef = useRef(false);
 
   const doSave = useCallback(async () => {
     saveTimerRef.current = null;
@@ -140,6 +144,19 @@ export default function App() {
         firstChangeRef.current = false;
         return;
       }
+      if (remoteApplyRef.current) {
+        // Echo of the poll-applied remote scene (see poll effect below):
+        // snapshot is already in sync, so swallow it without scheduling
+        // a redundant save. Snapshot keeps the echo's runtime-filled
+        // elements.
+        remoteApplyRef.current = false;
+        baseRef.current = {
+          elements,
+          appState,
+        };
+        pendingRef.current = false;
+        return;
+      }
       pendingRef.current = true;
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
@@ -189,8 +206,9 @@ export default function App() {
         // repairBindings + refreshDimensions are REQUIRED here: without
         // them container-bound text labels silently fail to render on
         // live updates (they only appeared after a full reload).
-        // The echo onChange this triggers schedules one redundant save of
-        // identical content, which is benign (versions converge).
+        // The echo onChange this triggers is swallowed by handleChange
+        // via remoteApplyRef, so no redundant save is scheduled.
+        remoteApplyRef.current = true;
         let elements = scene.elements || [];
         try {
           elements = restoreElements(elements, null, {
@@ -200,7 +218,23 @@ export default function App() {
         } catch {
           elements = scene.elements || [];
         }
-        api.updateScene({ elements, appState: scene.appState || {} });
+        try {
+          api.updateScene({ elements, appState: scene.appState || {} });
+        } catch {
+          // Programmatic apply failed: never in sync, so drop the guard
+          // (a stale flag would misclassify the next real user edit as an
+          // echo and lose its save) and leave the version alone — the next
+          // poll retries.
+          remoteApplyRef.current = false;
+          return;
+        }
+        // Fallback clear: if Excalidraw never fires the echo onChange
+        // (identical scene, unmounted, API change), the flag must not stay
+        // armed to poison the next real edit. Normal path unaffected: the
+        // echo consumes the flag first, making this a no-op.
+        setTimeout(() => {
+          remoteApplyRef.current = false;
+        }, 1000);
         snapshotRef.current = {
           elements,
           appState: scene.appState || {},

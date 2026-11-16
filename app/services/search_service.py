@@ -308,6 +308,7 @@ def search_files(query, user, limit=MAX_RESULTS, drive=None):
         conditions.append(FileIndex.hashtags.ilike(like))
 
     q = (StoredFile.query
+         .options(selectinload(StoredFile.index))
          .outerjoin(FileIndex, FileIndex.file_id == StoredFile.id)
          .filter(StoredFile.user_id == user.id,
                  StoredFile.deleted_at.is_(None)))

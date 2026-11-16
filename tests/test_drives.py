@@ -1,5 +1,7 @@
 import io
 
+import pytest
+
 from app.extensions import db
 from app.models import Drive, StoredFile
 
@@ -269,7 +271,7 @@ def test_restore_file_with_trashed_drive_asks_where(auth_client, app, user):
         assert db.session.get(StoredFile, fid).deleted_at is not None
 
     # Choice page lists the original drive and the other-drive form.
-    resp = auth_client.get(f"/file/{fid}/restore")
+    resp = auth_client.post(f"/file/{fid}/restore")
     assert resp.status_code == 200
     assert b"Restore the original drive too" in resp.data
     assert b"Put it in another drive" in resp.data
@@ -440,3 +442,165 @@ def test_trash_auto_purge_toggle_and_30_day_rule(auth_client, app, user):
                      follow_redirects=True)
     with app.app_context():
         assert db.session.get(_U, user).trash_auto_purge is False
+
+
+def _assert_safe_redirect(resp, url, nxt):
+    assert resp.status_code == 302, (url, nxt)
+    loc = resp.headers.get("Location", "")
+    assert loc == "/" or loc.startswith("/"), (url, nxt, loc)
+    assert "\\" not in loc, (url, nxt, loc)
+    assert not loc.startswith("//"), (url, nxt, loc)
+
+
+def test_drive_redirect_targets_validated(auth_client, app):
+    bad = ["//evil.com", "/\\evil.com", "https://evil.com",
+           "javascript:alert(1)"]
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    with app.app_context():
+        wid = Drive.query.filter_by(name="Work").one().id
+    safe_cases = [
+        ("/drives/create", {"name": "Work2"}),
+        (f"/drives/{wid}/select", {}),
+        (f"/drives/{wid}/edit", {"name": "Work", "description": "d"}),
+    ]
+    for nxt in bad:
+        for url, data in safe_cases:
+            resp = auth_client.post(url, data={**data, "next": nxt},
+                                    follow_redirects=False)
+            _assert_safe_redirect(resp, url, nxt)
+    # Destructive endpoints validate `next` too (drive is trashed/restored
+    # along the way; only the Location header matters here).
+    resp = auth_client.post(f"/drives/{wid}/delete",
+                            data={"next": "//evil.com"},
+                            follow_redirects=False)
+    _assert_safe_redirect(resp, "delete", "//evil.com")
+    resp = auth_client.post(f"/drives/{wid}/restore",
+                            data={"next": "https://evil.com"},
+                            follow_redirects=False)
+    _assert_safe_redirect(resp, "restore", "https://evil.com")
+    resp = auth_client.post("/drives/create", data={"name": "Gone"},
+                            follow_redirects=True)
+    with app.app_context():
+        gid = Drive.query.filter_by(name="Gone").one().id
+    auth_client.post(f"/drives/{gid}/delete", follow_redirects=True)
+    resp = auth_client.post(f"/drives/{gid}/purge",
+                            data={"next": "/\\evil.com"},
+                            follow_redirects=False)
+    _assert_safe_redirect(resp, "purge", "/\\evil.com")
+
+
+def test_upload_ignores_external_referrer(auth_client):
+    resp = auth_client.post(
+        "/upload", data={},
+        headers={"Referer": "https://evil.com/phish"},
+        content_type="multipart/form-data", follow_redirects=False)
+    assert resp.status_code == 302
+    loc = resp.headers.get("Location", "")
+    assert loc == "/" or loc.startswith("/"), loc
+    assert "evil.com" not in loc
+
+
+def test_upload_rejects_cross_drive_folder(auth_client, app):
+    from app.models import Folder
+    auth_client.get("/")  # lazily creates the default "Personal" drive
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    with app.app_context():
+        personal = Drive.query.filter_by(name="Personal").one()
+        work = Drive.query.filter_by(name="Work").one()
+    # Folder lives in Personal; current drive becomes Work.
+    auth_client.post(f"/drives/{personal.id}/select", follow_redirects=True)
+    auth_client.post("/folder/create", data={"name": "Vault"},
+                     follow_redirects=True)
+    with app.app_context():
+        vault = Folder.query.filter_by(name="Vault").one()
+        assert vault.drive_id == personal.id
+        wid = work.id
+    auth_client.post(f"/drives/{wid}/select", follow_redirects=True)
+    resp = auth_client.post("/upload", data={
+        "folder_id": str(vault.id),
+        "files": (io.BytesIO(b"sneaky"), "sneaky.txt"),
+    }, content_type="multipart/form-data", follow_redirects=False)
+    assert resp.status_code in (400, 403)
+    with app.app_context():
+        assert StoredFile.query.filter_by(name="sneaky.txt").count() == 0
+
+
+# --- B6: batch-matched drive trash/restore, committed once ---
+
+def test_trash_restore_roundtrip_matches(auth_client, app, user):
+    """Trash stamps the drive and its files with one batch timestamp;
+    restore brings back exactly that batch (pre-trashed files stay) and
+    leaves no orphan timestamps behind."""
+    from app.models import StoredFile as _SF
+    from app.models import User as _U
+    from app.services import drive_service as _ds
+    from app.services import file_service as _fs
+
+    _upload(auth_client, "keep1.txt", b"one")
+    _upload(auth_client, "keep2.txt", b"two")
+    _upload(auth_client, "doomed.txt", b"doomed")
+    with app.app_context():
+        user_obj = db.session.get(_U, user)
+        drive = Drive.query.filter_by(user_id=user).one()
+        wid = drive.id
+        doomed = _SF.query.filter_by(name="doomed.txt").one()
+        # Trash one file on its own first: it must survive the roundtrip.
+        _fs.delete_file(doomed)
+        doomed_stamp = db.session.get(_SF, doomed.id).deleted_at
+        assert doomed_stamp is not None
+
+        _ds.trash_drive(user_obj, wid)
+        drive = db.session.get(Drive, wid)
+        batch = drive.deleted_at
+        assert batch is not None
+        batch_files = _SF.query.filter_by(drive_id=wid,
+                                          deleted_at=batch).all()
+        assert {f.name for f in batch_files} == {"keep1.txt", "keep2.txt"}
+        # The earlier file keeps its own stamp (not the batch one).
+        assert db.session.get(_SF, doomed.id).deleted_at == doomed_stamp
+
+        _ds.restore_drive(user_obj, wid)
+        assert db.session.get(Drive, wid).deleted_at is None
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="keep1.txt").one().deleted_at is None
+        assert _SF.query.filter_by(drive_id=wid,
+                                   name="keep2.txt").one().deleted_at is None
+        assert db.session.get(_SF, doomed.id).deleted_at is not None
+        # No orphans: nothing still carries the batch stamp.
+        assert _SF.query.filter_by(drive_id=wid,
+                                   deleted_at=batch).count() == 0
+
+
+def test_failed_drive_trash_leaves_nothing_behind(auth_client, app, user,
+                                                  monkeypatch):
+    """A mid-loop failure must not leave a half-trashed drive: the whole
+    batch is committed once, so an error rolls everything back."""
+    from app.models import User as _U
+    from app.services import drive_service as _ds
+    from app.services import search_service as _ss
+
+    _upload(auth_client, "a.txt", b"aaa")
+    _upload(auth_client, "b.txt", b"bbb")
+    with app.app_context():
+        user_obj = db.session.get(_U, user)
+        drive = Drive.query.filter_by(user_id=user).one()
+        wid = drive.id
+        real = _ss.fts_delete
+        calls = {"n": 0}
+
+        def flaky(file_id, commit=True):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise ValueError("boom mid-loop")
+            return real(file_id, commit=commit)
+
+        monkeypatch.setattr(_ss, "fts_delete", flaky)
+        with pytest.raises(ValueError):
+            _ds.trash_drive(user_obj, wid)
+        db.session.rollback()
+        assert db.session.get(Drive, wid).deleted_at is None
+        assert StoredFile.query.filter(
+            StoredFile.drive_id == wid,
+            StoredFile.deleted_at.isnot(None)).count() == 0

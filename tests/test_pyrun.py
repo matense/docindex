@@ -843,3 +843,177 @@ def test_task10_rejects_bad_shapes():
                  "all([1], 2)", "type(1)", "'a'.rindex('a')",
                  "'a'.capitalize()"]:
         assert evaluate(code)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task S8: file-guard parity + SQLite progress hardening + shared-ref charge
+# + single-pass outputs + lazy seeding
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_denies_guard_hidden_files(app, user, monkeypatch):
+    from app.services import agent_service
+    drive_id = _writable_drive(app, user)
+    fid = _csv_file(app, user, drive_id)
+    seen = []
+
+    def _deny(_user, stored):
+        seen.append(stored.id)
+        if stored.id == fid:
+            return "This file is hidden from the AI in tests."
+        return None
+
+    monkeypatch.setattr(agent_service, "_FILE_GUARDS", [(None, _deny)])
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "rows('f')",
+            "files": [{"file_id": fid, "as": "f"}]})
+    assert out["ok"] is False
+    assert "hidden" in out["error"].lower()
+    assert fid in seen  # the guard was consulted for the attached file
+
+
+def test_pyrun_sql_progress_aborts_hang():
+    import time
+    started = time.monotonic()
+    out = evaluate(
+        "db.query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL "
+        "SELECT x+1 FROM c) SELECT count(*) FROM c')",
+        files={"f": ["a\n1\n"]},
+        limits={"max_wall_seconds": 1})
+    elapsed = time.monotonic() - started
+    assert out["ok"] is False
+    assert "interrupt" in out["error"].lower()  # progress-handler abort
+    assert elapsed < 20  # aborted by the handler, not left to run away
+
+
+def test_pyrun_shared_ref_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nL = [s] * 1000\nlen(L)")
+    assert out["ok"] is False  # must trip the allocation cap, not OOM in json.dumps
+
+
+def test_pyrun_outputs_single_pass(app, user, monkeypatch):
+    tools = _pyrun_tools()
+    calls = []
+    real_evaluate = tools.evaluate
+
+    def _counting(*args, **kwargs):
+        calls.append(1)
+        return real_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "evaluate", _counting)
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x'\n",
+                                   "outputs": {"r.txt": "out"}})
+    assert out["ok"] is True
+    assert len(calls) == 1  # outputs collected in the same evaluation pass
+    assert out["artifacts"] and out["artifacts"][0]["name"] == "r.txt"
+
+
+def test_pyrun_db_seeds_lazily(monkeypatch):
+    import sys
+    mod = sys.modules["docindex_module_pyrun_evaluate"]
+    calls = []
+    orig = mod._Interpreter._seed_db
+
+    def _counting(self):
+        calls.append(1)
+        return orig(self)
+
+    monkeypatch.setattr(mod._Interpreter, "_seed_db", _counting)
+    files = {"f": ["a\n1\n"]}
+    assert evaluate("1 + 1", files=files) == {"ok": True, "value": 2}
+    assert calls == []
+    assert evaluate("db.query('SELECT * FROM t0')", files=files)["ok"] is True
+    assert len(calls) == 1
+    assert evaluate("rows('f')", files=files)["ok"] is True
+    assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Task S8 fix round 1: nested shared-ref multiplicity + collected output cap
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_nested_shared_ref_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\ninner = [s]\nL = [inner] * 1000\nlen(L)")
+    assert out["ok"] is False  # nested sharing must trip like the flat form
+
+
+def test_pyrun_written_out_shared_refs_charged():
+    code = "s = 'a' * 1000000\nL = [" + ", ".join(["s"] * 60) + "]\nlen(L)"
+    out = evaluate(code)
+    assert out["ok"] is False  # per-slot cost applies to literals too
+
+
+def test_pyrun_oversized_collected_output_rejected(app, user):
+    with app.app_context():
+        out = _call_compute(user, {"code": "out = 'x' * 10000000",
+                                   "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    assert "output budget" in out["error"].lower()
+    assert "must match" in out.get("retry_hint", "")  # outputs-hint mapping
+
+
+def test_pyrun_small_shared_structure_still_passes():
+    out = evaluate("s = 'hello'\ninner = [s, s]\nL = [inner, inner]\nlen(L)")
+    assert out == {"ok": True, "value": 2}
+
+
+# ---------------------------------------------------------------------------
+# Task S8 fix round 2/5: append/extend-loop accumulation backstop
+# ---------------------------------------------------------------------------
+
+
+def test_pyrun_append_loop_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nl = []\nfor i in range(1000):"
+                   "\n l.append(s)\nlen(l)")
+    assert out["ok"] is False  # denied before dumps materializes ~1GB
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_extend_loop_amplification_charged():
+    out = evaluate("s = 'a' * 1000000\nl = []\nchunk = [s]\n"
+                   "for i in range(1000):\n l.extend(chunk)\nlen(l)")
+    assert out["ok"] is False  # denied before dumps materializes ~1GB
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_subscript_store_accumulation_charged():
+    out = evaluate("s = 'a' * 1000000\nd = {}\nfor i in range(1000):"
+                   "\n d[i] = s\nlen(d)")
+    assert out["ok"] is False  # same accumulation class via subscript store
+    assert "allocation budget" in out["error"].lower()
+
+
+def test_pyrun_accumulator_collected_output_rejected(app, user):
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "s = 'a' * 1000000\nl = []\nfor i in range(100):"
+                    "\n l.append(s)\nout = l",
+            "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    # The loop trips during the run (program error), so dumps never runs —
+    # neither for the result nor for the collected artifact.
+    assert "allocation budget" in out["error"].lower()
+    assert "revise the code" in out.get("retry_hint", "").lower()
+
+
+def test_pyrun_medium_accumulator_collected_trips_with_outputs_hint(app, user):
+    # 30 x 1MB appends (~31MB) pass the run, so the collect-phase backstop
+    # trips instead — mapped to the outputs hint like any output failure.
+    with app.app_context():
+        out = _call_compute(user, {
+            "code": "s = 'a' * 1000000\nl = []\nfor i in range(30):"
+                    "\n l.append(s)\nout = l",
+            "outputs": {"r.txt": "out"}})
+    assert out["ok"] is False
+    assert "allocation budget" in out["error"].lower()
+    assert "must match" in out.get("retry_hint", "")
+
+
+def test_pyrun_small_append_extend_loops_still_pass():
+    out = evaluate("l = []\nfor i in range(10):\n l.append(i)\nlen(l)")
+    assert out == {"ok": True, "value": 10}
+    out = evaluate("l = [1]\nfor i in range(3):\n l.extend([i, i])\nlen(l)")
+    assert out == {"ok": True, "value": 7}

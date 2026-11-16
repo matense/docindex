@@ -2,15 +2,17 @@
 
 
 import importlib.util
+import copy
 import io
 import os
+import subprocess
 import sys
 
 import pytest
 
 from app.extensions import db
 from app.models import Drive, FileIndex, ModuleState, StoredFile, User
-from app.services import indexing_service, search_service
+from app.services import file_service, indexing_service, search_service
 
 # Load the module package directly (it lives outside the app package).
 _NB_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -423,10 +425,14 @@ def test_editor_routes_require_enabled_module(app, auth_client, user):
 def test_save_endpoint_roundtrip(app, auth_client, user, enabled):
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)
-    document = {"version": 1, "title": "Notes",
-                "cells": [nb_doc.new_cell("markdown", "hello from autosave")]}
-    resp = auth_client.post(f"/m/notebooks/{fid}/save",
-                            json={"doc": document})
+    # New save contract: every save carries the base it was built on.
+    base = auth_client.get(f"/m/notebooks/{fid}/doc").get_json()
+    document = copy.deepcopy(base["doc"])
+    document["cells"][0]["content"] = "hello from autosave"
+    resp = auth_client.post(
+        f"/m/notebooks/{fid}/save",
+        json={"doc": document, "base_checksum": base["checksum"],
+              "base_doc": base["doc"]})
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
     with app.app_context():
@@ -935,3 +941,590 @@ def test_md_view_bleach_still_strips_scripts(auth_client, app):
     assert "<figcaption>" in body
     assert "<sup>" in body
     assert "<sub>" in body
+
+
+# ---------------------------------------------------------------------------
+# D1: autosave vs AI live-edit race (P0 dataloss)
+# ---------------------------------------------------------------------------
+
+def _stale_editor_snapshot(app, fid):
+    """Simulate the open editor: the doc + checksum it last saw."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        return nb_doc.load(stored), stored.checksum
+
+
+def _post_save(client, fid, doc, base_checksum, base_doc):
+    """POST /save under the new contract; base_doc=None omits the key."""
+    payload = {"doc": doc}
+    if base_checksum is not None:
+        payload["base_checksum"] = base_checksum
+    if base_doc is not None:
+        payload["base_doc"] = base_doc
+    return client.post(f"/m/notebooks/{fid}/save", json=payload)
+
+
+def _js_fn_body(src, name):
+    """Extract a `function name(...) {...}` body (brace-matched)."""
+    start = src.index("function " + name + "(")
+    brace = src.index("{", start)
+    depth = 0
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace:i + 1]
+    raise AssertionError(f"no body for {name}")
+
+
+def test_user_edit_plus_ai_add_merges_first_try(app, auth_client, user,
+                                                enabled):
+    """Critical 1: the common case — user types while AI appends — must
+    merge with 200 on the FIRST try, not 409-first-try."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race merge",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    stale_doc["cells"][0]["content"] = "user edit"  # user types
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200  # merged first try — no 409 detour
+    assert resp.get_json()["merged"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    contents = [c.get("content") for c in loaded["cells"]]
+    assert "user edit" in contents and "AI wrote this" in contents
+
+
+def test_autosave_never_wipes_concurrent_ai_edit(app, auth_client, user,
+                                                  enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)
+        assert added["ok"] is True
+    # The user's autosave of the stale doc must not wipe the AI cell.
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    assert resp.get_json()["merged"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert any(c.get("content") == "AI wrote this"
+               for c in loaded["cells"])  # merged, not wiped
+
+
+def test_true_overlap_409s_then_retry_converges(app, auth_client, user,
+                                                 enabled):
+    """Critical 2: both sides edit the same cell — 409 carries everything
+    the editor needs to rebase, and the retry converges with neither side
+    lost (not even typed-then-blurred edits)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race conflict",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)["ok"] is True
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI side note"}, None)["ok"] is True
+        ai_versions = len(db.session.get(StoredFile, fid).versions)
+    stale_doc["cells"][0]["content"] = "user rewrite"
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert payload["conflict"] is True
+    server_doc, server_checksum = payload["doc"], payload["checksum"]
+    assert any(c.get("content") == "AI rewrite"
+               for c in server_doc["cells"])
+    # Server keeps the AI state; nothing was clobbered.
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert loaded["cells"][0]["content"] == "AI rewrite"
+    # Editor rebase (mirrors notebook.js): adopt the server doc, keep the
+    # user's own version of the conflicted cell — including edits the user
+    # already blurred out of (they live in the in-memory doc, not the DOM).
+    rebased = copy.deepcopy(server_doc)
+    for cell in rebased["cells"]:
+        if cell["id"] == cell_id:
+            cell["content"] = "user rewrite"
+    resp2 = _post_save(auth_client, fid, rebased, server_checksum,
+                       server_doc)
+    assert resp2.status_code == 200
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert loaded["cells"][0]["content"] == "user rewrite"
+    assert any(c.get("content") == "AI side note"
+               for c in loaded["cells"])
+    # The pre-retry AI state was guard-snapshotted: restorable.
+    with app.app_context():
+        assert len(db.session.get(StoredFile, fid).versions) == ai_versions + 1
+
+
+def test_retry_survives_third_writer(app, auth_client, user, enabled):
+    """Critical 3: a writer landing between 409 and retry must not be lost —
+    the retry re-merges against its true base instead of blind-writing."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race third writer",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)["ok"] is True
+    stale_doc["cells"][0]["content"] = "user rewrite"
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    server_doc, server_checksum = (resp.get_json()["doc"],
+                                   resp.get_json()["checksum"])
+    # A third writer (another tab) lands BEFORE the user retries.
+    tab_doc, tab_checksum = _stale_editor_snapshot(app, fid)
+    tab_base = copy.deepcopy(tab_doc)
+    tab_doc["cells"].append(nb_doc.new_cell("markdown", "tab two"))
+    tab_resp = _post_save(auth_client, fid, tab_doc, tab_checksum, tab_base)
+    assert tab_resp.status_code == 200
+    # The user retries with the 409 base while the tab's write is live.
+    rebased = copy.deepcopy(server_doc)
+    for cell in rebased["cells"]:
+        if cell["id"] == cell_id:
+            cell["content"] = "user rewrite"
+    retry = _post_save(auth_client, fid, rebased, server_checksum,
+                       server_doc)
+    assert retry.status_code == 200
+    assert retry.get_json()["merged"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    contents = [c.get("content") for c in loaded["cells"]]
+    assert "user rewrite" in contents  # retrying writer kept
+    assert "tab two" in contents  # interleaving writer not lost
+    with app.app_context():
+        assert len(db.session.get(StoredFile, fid).versions) == 3
+
+
+def test_save_without_base_checksum_rejected(app, auth_client, user,
+                                             enabled):
+    """Important 4: a save with no base must never silently wipe concurrent
+    cells — reject with 409, not a 200 overwrite."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race no base",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, _ = _stale_editor_snapshot(app, fid)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = auth_client.post(f"/m/notebooks/{fid}/save",
+                            json={"doc": stale_doc})
+    assert resp.status_code == 409
+    assert resp.get_json()["conflict"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert any(c.get("content") == "AI wrote this"
+               for c in loaded["cells"])
+
+
+def test_stale_save_without_base_doc_rejected(app, auth_client, user,
+                                              enabled):
+    """Important 4: a stale base without base content cannot be attributed
+    to either side — reject (409), never blind-merge or blind-write."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race no base doc",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, None)
+    assert resp.status_code == 409
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert any(c.get("content") == "AI wrote this"
+               for c in loaded["cells"])
+
+
+def test_stale_autosave_snapshots_post_ai_state(app, auth_client, user,
+                                                enabled):
+    """A stale autosave inside SNAPSHOT_INTERVAL must still snapshot the
+    post-AI state before writing, so the AI work stays restorable."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race snapshot",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    with app.app_context():
+        # AI run (1) + forced merge snapshot (1): post-AI state restorable.
+        assert len(db.session.get(StoredFile, fid).versions) == 2
+
+
+def test_stale_save_ignores_editing_ui_flag(app, auth_client, user, enabled):
+    """The in-memory `_editing` UI flag round-trips through autosaves; it
+    must not count as a conflicting edit (no spurious 409, AI cell kept)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race editing flag",
+                  cells=[nb_doc.new_cell("markdown", "user text")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    stale_doc["cells"][0]["_editing"] = True  # cell open in the editor
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert any(c.get("content") == "AI wrote this"
+               for c in loaded["cells"])
+
+
+def test_stale_merge_flags_resurrected_delete(app, auth_client, user,
+                                              enabled):
+    """Important 8: P0 bias keeps a concurrently-untouched deleted cell
+    (never lose data) — but the response must flag it so the UI can hint
+    and the user can re-delete."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race resurrect",
+                  cells=[nb_doc.new_cell("markdown", "keep me"),
+                         nb_doc.new_cell("markdown", "drop me")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    drop_id = stale_doc["cells"][1]["id"]
+    del stale_doc["cells"][1]  # user deletes the second cell
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    assert resp.get_json()["resurrected"] == [drop_id]
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    contents = [c.get("content") for c in loaded["cells"]]
+    assert "keep me" in contents and "AI wrote this" in contents
+    assert "drop me" in contents  # bias: kept, flagged above
+
+
+def test_delete_vs_edit_conflicts(app, auth_client, user, enabled):
+    """Important 8: deleting a cell the concurrent writer edited is a true
+    conflict — 409, server edit intact (never silently resurrected over)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race delete edit",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)["ok"] is True
+    del stale_doc["cells"][0]  # user deletes the cell AI just edited
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    assert loaded["cells"][0]["content"] == "AI rewrite"
+
+
+def test_repeated_conflicts_eventually_converge(app, auth_client, user,
+                                                 enabled):
+    """The server never locks a retrying editor out: after two consecutive
+    409s (a writer landing between 409 and retry), a rebase against the
+    latest base still converges. Client-side this pairs with the retry
+    counter reset (see the JS test): every fresh attempt gets fair merges."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race repeated",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI one"}, None)["ok"] is True
+    stale_doc["cells"][0]["content"] = "user rewrite"
+
+    def rebase_keep_user(server_doc):
+        rebased = copy.deepcopy(server_doc)
+        for cell in rebased["cells"]:
+            if cell["id"] == cell_id:
+                cell["content"] = "user rewrite"
+        return rebased
+
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    c1_doc, c1_checksum = (resp.get_json()["doc"],
+                           resp.get_json()["checksum"])
+    # A second writer lands before the user retries.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI two"}, None)["ok"] is True
+    retry1 = _post_save(auth_client, fid, rebase_keep_user(c1_doc),
+                        c1_checksum, c1_doc)
+    assert retry1.status_code == 409  # stale again — but never locked out
+    c2_doc, c2_checksum = (retry1.get_json()["doc"],
+                           retry1.get_json()["checksum"])
+    retry2 = _post_save(auth_client, fid, rebase_keep_user(c2_doc),
+                        c2_checksum, c2_doc)
+    assert retry2.status_code == 200
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+        assert loaded["cells"][0]["content"] == "user rewrite"
+        # AI one (1) + AI two (1, new run) + two conflict guards (2):
+        # every pre-retry state stays restorable.
+        assert len(db.session.get(StoredFile, fid).versions) == 4
+
+
+def test_dirty_unload_flush_merges_without_wipe(app, auth_client, user,
+                                                enabled):
+    """Important 2 (server half): a dirty editor never polls, so its unload
+    flush can carry a base the server has already moved past. The
+    flush-shaped save must still merge — never blind-write the AI cell."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race unload merge",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    stale_doc["cells"][0]["content"] = "unsent user edit"
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI wrote this"}, None)["ok"] is True
+    # Same shape as the keepalive flush: doc + base, no response read.
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 200
+    assert resp.get_json()["merged"] is True
+    with app.app_context():
+        loaded = nb_doc.load(db.session.get(StoredFile, fid))
+    contents = [c.get("content") for c in loaded["cells"]]
+    assert "unsent user edit" in contents and "AI wrote this" in contents
+
+
+def test_dirty_unload_flush_conflict_never_wipes(app, auth_client, user,
+                                                 enabled):
+    """Important 2 (server half): when the unseen concurrent edit truly
+    overlaps, the unload flush 409s (guard-snapshotted) instead of wiping —
+    the only unknown left is delivery itself, which the client flags."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Race unload conflict",
+                  cells=[nb_doc.new_cell("markdown", "original")])
+    stale_doc, stale_checksum = _stale_editor_snapshot(app, fid)
+    base_doc = copy.deepcopy(stale_doc)
+    cell_id = stale_doc["cells"][0]["id"]
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": cell_id,
+                       "content": "AI rewrite"}, None)["ok"] is True
+        before = len(db.session.get(StoredFile, fid).versions)
+    stale_doc["cells"][0]["content"] = "unsent user edit"
+    resp = _post_save(auth_client, fid, stale_doc, stale_checksum, base_doc)
+    assert resp.status_code == 409
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert nb_doc.load(stored)["cells"][0]["content"] == "AI rewrite"
+        assert len(stored.versions) == before + 1  # guard snapshot
+
+
+def test_unload_flag_decision_table():
+    """Round-3 (a)(b)(c): the node harness drives the SHIPPED
+    flushedContentConfirmed through lost-in-transit / exhausted-409 /
+    clean-merge / delete / flag / legacy cases. The flag may clear silently
+    ONLY on proof the flushed content landed."""
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "notebook_flag_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_notebook_conflict_counter_and_unload_flag():
+    # JS-level round-2 findings: fresh user intent must re-arm the bounded
+    # 409 retry (counter reset in scheduleSave), and every dirty keepalive
+    # flush must version-flag the next load (no silent unknown outcome).
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    sched_body = _js_fn_body(src, "scheduleSave")
+    assert "conflictRetries = 0" in sched_body  # Important 1
+    flush_body = _js_fn_body(src, "flushSync")
+    # Important 2: no known-stale-only gate — every dirty flush flags, and
+    # the flag carries the attempted checksum for a versioned next-load
+    # clear (no wolf-cries when the server provably matches our base).
+    assert "if (saveBase !== lastChecksum)" not in flush_body
+    assert "flagPendingConflict()" in flush_body
+    assert "checkPendingConflict" in src
+    # Round 3: the silent clear must be proof-of-landing (content confirmed
+    # present), never base equality (which proves nothing for a dirty flush).
+    assert "pending.checksum === (opts.checksum" not in src
+    assert "flushedContentConfirmed" in src
+    flag_body = _js_fn_body(src, "flagPendingConflict")
+    assert "changed" in flag_body and "deleted" in flag_body
+
+
+def test_ai_edit_reaches_open_editor_without_wipe():
+    # JS-level: remote changes arrive as a consumed UI event and only the
+    # affected .nb-cell nodes are patched — the active editor is never
+    # wiped by a full re-render, and saves always carry their base.
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "notebook_changed" in src
+    # Important 6: the event is consumed in-slice (listener registered).
+    assert 'addEventListener("notebook_changed"' in src
+    # The remote path patches per-cell nodes and preserves the editor.
+    assert "patchCellNodes" in src
+    assert "base_doc" in src
+    apply_body = _js_fn_body(src, "applyRemoteDoc")
+    assert "render(" not in apply_body  # no full re-render on remote input
+    assert "innerHTML" not in apply_body  # no wipe; per-node patching only
+    patch_body = _js_fn_body(src, "patchCellNodes")
+    assert "innerHTML" not in patch_body
+    # The 409 rebase keeps every local change (Critical 2), not just the
+    # focused cell: base-aware rule mirrored from the server merge.
+    rebase_body = _js_fn_body(src, "rebaseLocalToServer")
+    assert "baseDoc" in rebase_body
+
+
+# ---------------------------------------------------------------------------
+# D2: oversized notebooks + pasted-image uploads (P0 dataloss)
+# ---------------------------------------------------------------------------
+
+def _big_cells(n, size):
+    """Real-world-shaped bulk: many markdown cells, each ~`size` chars."""
+    return [nb_doc.new_cell("markdown", f"cell {i} " + "x" * size)
+            for i in range(n)]
+
+
+def test_large_notebook_loads_whole(app, user):
+    """A .pdocnb bigger than MAX_TEXT_CHARS must load whole — never a
+    mid-JSON slice that parses as corrupt."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Big", cells=_big_cells(700, 1000))
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert (os.path.getsize(file_service.file_path(stored))
+                > indexing_service.MAX_TEXT_CHARS)
+        doc = nb_doc.load(stored)
+        assert len(doc["cells"]) == 700
+        assert doc["cells"][0]["content"].startswith("cell 0 ")
+        assert doc["cells"][699]["content"].startswith("cell 699 ")
+
+
+def test_large_notebook_doc_endpoint_serves_whole(app, auth_client, user,
+                                                  enabled):
+    """The editor's /doc fetch of an oversized notebook is 200 with every
+    cell — not a 400 'Corrupt notebook file'."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Big route",
+                  cells=_big_cells(700, 1000))
+    resp = auth_client.get(f"/m/notebooks/{fid}/doc")
+    assert resp.status_code == 200
+    assert len(resp.get_json()["doc"]["cells"]) == 700
+
+
+def test_large_notebook_with_synced_history_loads_whole(app, user):
+    """Full-history notebooks embed prior versions in synced_history — the
+    whole file (cells + history tail) must load, history intact."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "BigHist",
+                  cells=_big_cells(400, 1000))
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = nb_doc.load(stored)
+        doc["full_history"] = True
+        nb_doc.save_document(stored, doc, force_checkpoint=True)
+        assert (os.path.getsize(file_service.file_path(stored))
+                > indexing_service.MAX_TEXT_CHARS)
+        loaded = nb_doc.load(stored)
+        assert len(loaded["cells"]) == 400
+        history = loaded.get("synced_history")
+        assert isinstance(history, list) and history
+        assert history[-1]["doc"]["cells"][0]["content"].startswith(
+            "cell 0 ")
+
+
+def test_pasted_and_dropped_images_upload_instead_of_base64():
+    """Paste/drop of an image into a rich-text cell must route through the
+    shared assets uploader — never baked into the cell as a data: URL (one
+    screenshot would bloat the .pdocnb past the load cap).
+
+    Interception runs on the holder in the capture phase (before Quill's own
+    root listeners — Quill 2.0.3 embeds pasted/dropped files as base64 via
+    FileReader, and its drop listener has no defaultPrevented check, so
+    bubble-phase preventDefault would be too late AND duplicate).
+    """
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "wireImageUploads")
+    # Capture-phase interception on the holder (ancestor of quill.root),
+    # never on the root itself where Quill's listeners would run first.
+    assert 'ctx.holder.addEventListener("paste"' in body
+    assert 'ctx.holder.addEventListener("drop"' in body
+    assert body.count(", true)") >= 2  # capture flags
+    assert 'quill.root.addEventListener("paste"' not in src
+    assert 'quill.root.addEventListener("drop"' not in src
+    # One shared uploader: def + paste + drop + sweep call sites here, plus
+    # the toolbar call site outside.
+    assert body.count("uploadImageFile(") == 4
+    assert src.count("uploadImageFile(") == 5
+    # Every insert path embeds the uploaded URL — never a data: URL.
+    assert 'insertEmbed(range.index, "image", url, "user")' in body
+    assert 'img.setAttribute("src", url)' in body
+    # The Critical guarantee, pinned statically: src is replaced only on
+    # success, so the original is never cleared up front.
+    assert 'removeAttribute("src")' not in body
+    assert "data-nb-uploading" in body  # in-flight guard, cleared on settle
+    # Mixed paste keeps its text (no preventDefault); HTML drags and late
+    # (FileReader-delayed) embeds are covered by sweep + observer.
+    assert '"files"' in body  # image-only detection (case-insensitive)
+    assert "stopPropagation" in body  # drop: Quill has no prevented-check
+    assert "MutationObserver" in body
+    assert 'src^="data:"' in body
+    assert "opts.assetsUrl" in src
+
+
+def test_image_upload_wiring_behavior():
+    """Node harness drives the SHIPPED wireImageUploads with fakes:
+    image-only paste / mixed paste / failed upload (src preserved) /
+    file drop / file-less drop / observer backstop."""
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "notebook_image_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

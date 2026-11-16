@@ -2958,6 +2958,75 @@ def test_table_compute_bad_formula_errors(app, user):
                 {"new_column": "x", "formula": "price *"}), app, user)
 
 
+def test_table_compute_rejects_dunder_formula(app, user):
+    fid = _make_file(app, user, "p.csv", "price,qty\n10,2\n5,4\n")
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError,
+                           match="could not be evaluated"):
+            _execute(_table_file_graph(
+                fid, "transform.table_compute",
+                {"new_column": "x",
+                 "formula": "price.__class__.__name__"}), app, user)
+
+
+def test_table_compute_rejects_hostile_formulas(app, user):
+    fid = _make_file(app, user, "p.csv", "price,qty\n10,2\n5,4\n")
+    hostile = [
+        "price.__class__.__name__",
+        "price.tolist().__class__.__base__.__subclasses__()",
+        "__import__('os').system('id')",
+        "open('/etc/passwd').read()",
+        "eval('1')",
+    ]
+    with app.app_context():
+        for formula in hostile:
+            with pytest.raises(engine.WorkflowError,
+                               match="could not be evaluated"):
+                _execute(_table_file_graph(
+                    fid, "transform.table_compute",
+                    {"new_column": "x", "formula": formula}), app, user)
+
+
+def test_table_compute_allows_arithmetic(app, user):
+    fid = _make_file(app, user, "ab.csv", "a,b\n1,2\n3,4\n")
+    with app.app_context():
+        outputs, _, _ = _execute(_table_file_graph(
+            fid, "transform.table_compute",
+            {"new_column": "total", "formula": "a + b * 2"}), app, user)
+        assert [r[2] for r in outputs["t"]["out"]["data"]["rows"]] == [5, 11]
+
+
+def test_table_compute_refuses_over_cap_table_without_running_rows(
+        monkeypatch):
+    """An over-cap table fails closed BEFORE the per-row loop: the error
+    tells the user to slice the table, and no interpreter run happens."""
+    nodes_tables = importlib.import_module(
+        "docindex_module_automation.nodes_tables")
+    over = nodes_tables._TABLE_COMPUTE_MAX_ROWS + 1
+    payload = {"kind": "table", "data": {"columns": ["n"],
+                                         "rows": [[i] for i in range(over)]}}
+    calls = []
+
+    def fake_evaluate(expr, variables=None):
+        calls.append(1)
+        return {"ok": True, "value": 0}
+
+    monkeypatch.setattr(nodes_tables, "_pyrun_evaluate", fake_evaluate)
+    ctx = {"log": lambda *a: None, "_outputs": {}}
+    with pytest.raises(engine.WorkflowError, match="slice the table"):
+        nodes_tables._exec_table_compute(
+            ctx, {"new_column": "total", "formula": "n * 2"},
+            {"in": payload})
+    assert calls == []
+    # Boundary: exactly at the cap still runs (fail-closed, not off-by-one).
+    at_cap = {"kind": "table", "data": {
+        "columns": ["n"],
+        "rows": [[i] for i in range(nodes_tables._TABLE_COMPUTE_MAX_ROWS)]}}
+    nodes_tables._exec_table_compute(
+        ctx, {"new_column": "total", "formula": "n * 2"}, {"in": at_cap})
+    assert len(calls) == nodes_tables._TABLE_COMPUTE_MAX_ROWS
+
+
 def test_save_table_csv_creates_file(auth_client, app, user, enabled):
     drive_id = _drive(app, user)
     fid = _make_file(app, user, "t.csv", "a,b\n1,2\n")
@@ -3383,3 +3452,255 @@ def test_chat_hidden_workflow_adds_no_context_note(
     assert not [m for m in messages
                 if m["role"] == "system"
                 and "automation workflow" in m["content"]]
+
+
+# --- S3: input.http enforces the strict (public-only) SSRF guard. ---
+#
+# Hostnames are resolved and EVERY address must be public; there is no
+# loopback carve-out here. The fetch itself is stubbed to explode so the
+# tests prove the refusal happens before any network touch.
+
+def _http_dns(monkeypatch):
+    import socket
+    real = socket.getaddrinfo
+    table = {
+        "169.254.169.254.nip.io": ["169.254.169.254"],
+        "internal.example": ["10.9.8.7"],
+        "example.com": ["93.184.216.34"],
+    }
+
+    def fake(host, port, *args, **kwargs):
+        if host in table:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                     (ip, 0)) for ip in table[host]]
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+def _http_no_fetch(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("input.http must not fetch a rejected URL")
+    monkeypatch.setattr("requests.get", _boom)
+
+
+def test_input_http_rejects_nonpublic_hosts(monkeypatch):
+    _http_dns(monkeypatch)
+    _http_no_fetch(monkeypatch)
+    for url in ["http://localhost:11434/v1",
+                "http://127.0.0.1:11434/v1",
+                "http://169.254.169.254.nip.io/latest",
+                "http://internal.example/data"]:
+        with pytest.raises(engine.WorkflowError, match="non-public|resolve"):
+            nodes._exec_http_get({}, {"url": url}, {}, {})
+
+
+def test_input_http_allows_public_host(monkeypatch):
+    import requests
+    _http_dns(monkeypatch)
+
+    class _Resp:
+        status_code = 200
+        text = "hello"
+        headers = {"Content-Type": "text/plain"}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+    out = nodes._exec_http_get({}, {"url": "https://example.com/data"},
+                               {}, {})
+    assert engine.as_text(out) == "hello"
+
+
+# ---------------------------------------------------------------------------
+# D8: custom node IDs + template-ref traversal + preview dry-run stubs
+# ---------------------------------------------------------------------------
+
+def _automation_js_source():
+    import pathlib
+    return pathlib.Path(os.path.join(
+        _AUTO_DIR, "static", "automation.js")).read_text(encoding="utf-8")
+
+
+def test_upstream_helpers_respect_custom_ids():
+    # JS-shape test (no DOM harness exists): the canvas helpers must
+    # resolve custom graph ids through the exportIds map instead of
+    # hardcoding the 'n' + dfId convention, and ancestorsOf must walk
+    # template refs as well as wires.
+    src = _automation_js_source()
+    assert "exportIds[dfId]" in src
+    assert "refDfId(edge.from)" in src  # upstreamFileId maps graph->canvas
+    assert "exportIds[nodeId]" in src  # fetchUpstreamColumns + ref pickers
+    assert "scanRefs(n.config" in src  # ancestorsOf walks {{ }} refs
+    assert "refDfId(String(nid" in src  # nodeCard maps graph id->canvas
+
+
+def test_automation_js_syntax():
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    js = os.path.join(_AUTO_DIR, "static", "automation.js")
+    subprocess.run([node, "--check", js], check=True)
+
+
+def test_run_up_to_node_via_template_ref(auth_client, app, user, enabled):
+    # The fragment a template-aware ancestorsOf sends for a template-only
+    # dependency: both nodes, no wire between them.
+    graph = {"nodes": [
+        {"id": "src", "type": "input.text",
+         "config": {"content": "hello", "format": "text"}},
+        {"id": "tpl", "type": "transform.template",
+         "config": {"template": "v={{ src }}"}},
+        {"id": "out", "type": "output.result", "config": {}},
+    ], "edges": [
+        {"from": "tpl", "from_port": "out", "to": "out", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": graph, "dry_run": True})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["outputs"]["tpl"]["out"] == "v=hello"
+    # ...while the target alone (what a wire-only ancestorsOf would send)
+    # fails: the template ancestor must be part of the fragment.
+    lone = {"nodes": [n for n in graph["nodes"] if n["id"] != "src"],
+            "edges": graph["edges"]}
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": lone, "dry_run": True})
+    assert resp.status_code == 400
+
+
+def test_preview_stubs_params_and_copy_nodes(auth_client, app, user, enabled):
+    # Dry-run preview of a fragment with run inputs and a file mover:
+    # placeholders for the answers, no files relocated.
+    fid = _make_file(app, user, "preview-src.png", "fake png bytes")
+    src = _drive(app, user, name="Src")
+    dst = _drive(app, user, name="Dst")
+    with app.app_context():
+        db.session.get(StoredFile, fid).drive_id = src
+        db.session.commit()
+        before = StoredFile.query.filter_by(user_id=user).count()
+    graph = {"nodes": [
+        {"id": "t", "type": "input.trigger", "config": {}},
+        {"id": "p1", "type": "input.param",
+         "config": {"param": "q", "kind": "text", "ask": "yes"}},
+        {"id": "tpl", "type": "transform.template",
+         "config": {"template": "Q={{ p1 }} + {{ t }}"}},
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "m", "type": "output.copy_file",
+         "config": {"drive_id": str(dst)}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "m", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/preview",
+                            json={"graph": graph, "dry_run": True})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+    with app.app_context():
+        assert StoredFile.query.filter_by(user_id=user).count() == before
+
+
+# ---------------------------------------------------------------------------
+# B7a: scheduler retry + lock races
+# ---------------------------------------------------------------------------
+
+def test_failing_workflow_does_not_wedge_scheduler(app, user, enabled):
+    """Unhandled failure records run time: no wedge, no hot-loop, no dup."""
+    wf_id = _workflow(app, user, _text_graph("sched"),
+                      enabled=True, interval_minutes=10)
+    real_execute = engine.execute_graph
+    calls = {"n": 0}
+
+    def fail_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated node crash")
+        return real_execute(*a, **k)
+
+    with patch.object(engine, "execute_graph", side_effect=fail_once):
+        with patch("random.random", return_value=1.0):
+            assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).all()
+        assert len(runs) == 1 and runs[0].status == "error"
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        # Failure record updated even on unhandled exception.
+        assert wf.last_run_at is not None
+        first_run_at = wf.last_run_at
+    # No hot-loop: an immediate re-tick must not relaunch.
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).count() == 1
+        assert not runtime.has_active_run(wf_id)
+        assert not duplicate_concurrent_runs(wf_id)
+    # No wedge: once the interval elapses the schedule triggers again.
+    with app.app_context():
+        wf = db.session.get(models.AutomationWorkflow, wf_id)
+        last = first_run_at
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        wf.last_run_at = last - timedelta(minutes=11)
+        db.session.commit()
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+    with app.app_context():
+        assert models.AutomationRun.query.filter_by(
+            workflow_id=wf_id).count() == 2
+        assert scheduler_triggers_again_next_tick(wf_id)
+
+
+def test_scheduler_retry_atomic_start_no_duplicates(app, user, enabled):
+    """Check-then-start is atomic under lock: concurrent run wins, no dup."""
+    wf_id = _workflow(app, user, _text_graph("race"),
+                      enabled=True, interval_minutes=10)
+    # Race: due-check saw idle, but a concurrent run went active before start.
+    with patch.object(runtime, "has_active_run",
+                      side_effect=[False, True]) as m_has, \
+         patch.object(runtime, "start_run") as m_start, \
+         patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+        m_start.assert_not_called()
+        assert m_has.call_count == 2  # due-check + atomic re-check under lock
+    # No race: the start happens while holding the scheduler lock.
+    locked_seen = {}
+    real_start = runtime.start_run
+
+    def recording_start(wf, run_user, **kw):
+        locked_seen["held"] = scheduler._lock.locked()
+        return real_start(wf, run_user, **kw)
+
+    with patch.object(runtime, "has_active_run",
+                      side_effect=[False, False]), \
+         patch.object(runtime, "start_run", side_effect=recording_start), \
+         patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+        assert locked_seen.get("held") is True
+
+
+def scheduler_triggers_again_next_tick(workflow_id):
+    """Intent helper: True iff the workflow fired again after its failure
+    (the caller makes it due by ageing last_run_at, then ticks)."""
+    return (models.AutomationRun.query
+            .filter_by(workflow_id=workflow_id).count()) >= 2
+
+
+def duplicate_concurrent_runs(workflow_id):
+    """Intent helper: True iff >1 active run exists for the workflow."""
+    return (models.AutomationRun.query
+            .filter_by(workflow_id=workflow_id)
+            .filter(models.AutomationRun.status.in_(
+                ("queued", "running"))).count()) > 1
+
+
+def test_example_use_without_module_shows_error_not_500(auth_client, app, user,
+                                                         enabled):
+    # summarize-to-notebook needs notebook.* nodes; the notebooks module is
+    # disabled here, so validation fails — the page must explain (400),
+    # not blow up with a 500 (Jinja2 UndefinedError from missing list-view
+    # template context).
+    r = auth_client.post("/m/automation/examples/summarize-to-notebook/use")
+    assert r.status_code in (200, 302, 400) and b"notebooks" in r.data.lower()

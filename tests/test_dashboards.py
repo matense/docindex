@@ -2002,7 +2002,7 @@ def test_console_close_never_cancels_stream():
     teardown = re.findall(r"root\._dashTeardown = function \(\) \{(.*?)\n    \}",
                          src, re.S)
     assert teardown, "teardown missing"
-    assert any("consoleReader" in body for body in teardown)
+    assert any("cancelConsoleReaders" in body for body in teardown)
 
 
 # ---------------------------------------------------------------------------
@@ -2388,3 +2388,834 @@ def test_ai_detach_linked_is_refused(app, user, enabled):
             user_obj, {"file_id": fid, "attachment_id": att["id"]},
             None)
     assert "error" in out and "KPI" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Argon P0-D3: Builder save vs background results
+# ---------------------------------------------------------------------------
+
+def test_builder_save_preserves_background_result(app, auth_client, user,
+                                                  enabled, fake_ai):
+    """D3: a Builder full-doc save landing after a background run must not
+    wipe the run's result/status/ranAt/trace — user structural edits in
+    the stale save still apply."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    # Builder snapshot taken BEFORE the background run lands.
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    assert stale["cards"][0]["result"] is None
+    # Background run completes.
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": cid})
+    assert resp.status_code == 200
+    run_id = resp.get_json()["accepted"][0]
+    body = auth_client.get(
+        f"/m/dashboards/runs/{run_id}/status").get_json()
+    assert body["status"] == "done"
+    assert body["result"] == {"text": "3 open incidents"}
+    # Builder's older full-doc save (e.g. a debounced autosave in flight).
+    stale["cards"][0]["title"] = "Renamed in builder"
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    card = _card(app, fid, cid)
+    assert card["result"] == {"text": "3 open incidents"}
+    assert card["status"] == "done"
+    assert card["ranAt"]
+    assert card["title"] == "Renamed in builder"
+
+
+def test_builder_save_newer_background_result_wins(app, auth_client, user,
+                                                   enabled):
+    """D3: newer-wins per field — a stale Builder save carrying an older
+    completed result must not overwrite the newer background result, its
+    trace, or newly registered artifacts; structural edits still apply."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        owner = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        art = file_service.save_upload(_upload("artifact.csv"), owner,
+                                       drive=drive)
+        art.drive_id = drive_id
+        db.session.commit()
+        art_id = art.id
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    # A newer background run lands server-side (result + trace + artifact).
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        server_card = next(c for c in fresh["cards"] if c["id"] == cid)
+        server_card["status"] = "done"
+        server_card["result"] = {"text": "newer"}
+        server_card["trace"] = [{"index": 1, "label": "read",
+                                 "detail": "a.csv"}]
+        server_card["ranAt"] = "2026-11-16T12:00:00+00:00"
+        fresh["createdFileIds"] = [art_id]
+        dash_doc.save_document(stored, fresh)
+    # The stale Builder save carries an older completed result.
+    stale["cards"][0]["status"] = "done"
+    stale["cards"][0]["result"] = {"text": "older"}
+    stale["cards"][0]["ranAt"] = "2026-01-01T00:00:00+00:00"
+    stale["cards"][0]["title"] = "Builder title"
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    card = _card(app, fid, cid)
+    assert card["result"] == {"text": "newer"}
+    assert card["status"] == "done"
+    assert card["ranAt"] == "2026-11-16T12:00:00+00:00"
+    assert card["trace"] == [{"index": 1, "label": "read",
+                              "detail": "a.csv"}]
+    assert card["title"] == "Builder title"
+    with app.app_context():
+        assert dash_doc.load(
+            db.session.get(StoredFile, fid))["createdFileIds"] == [art_id]
+
+
+def test_builder_save_spares_live_run(app, auth_client, user, enabled):
+    """D3: a Builder save landing mid-run must not clear the live running
+    state (status/runId) — the status poll and run-status endpoint read it."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    run_id = f"{fid}:live123"
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        live = next(c for c in doc["cards"] if c["id"] == cid)
+        live["status"] = "running"
+        live["runId"] = run_id
+        dash_doc.save_document(stored, doc)
+        dash_doc.run_started(fid, run_id)
+    try:
+        save = auth_client.post(f"/m/dashboards/{fid}/save",
+                                json={"doc": stale})
+        assert save.status_code == 200
+    finally:
+        dash_doc.run_finished(fid, run_id)
+    card = _card(app, fid, cid)
+    assert card["status"] == "running"
+    assert card["runId"] == run_id
+
+
+# ---------------------------------------------------------------------------
+# Argon P0-D3 fix round 1: reviewer findings 1, 2, 4
+# ---------------------------------------------------------------------------
+
+def test_builder_save_both_running_preserves_live_run_id(app, auth_client,
+                                                         user, enabled):
+    """Fix-1: both sides `running` used to fall through to the `ranAt`
+    compare — with both `ranAt` null the stale snapshot's `runId`
+    overwrote the live `runId`. Server wins when `runId`s differ."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    live_run = f"{fid}:live123"
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        live = next(c for c in doc["cards"] if c["id"] == cid)
+        live["status"] = "running"
+        live["runId"] = live_run
+        dash_doc.save_document(stored, doc)
+        dash_doc.run_started(fid, live_run)
+    try:
+        # Stale snapshot taken during an older run of the same card.
+        stale["cards"][0]["status"] = "running"
+        stale["cards"][0]["runId"] = f"{fid}:stale999"
+        save = auth_client.post(f"/m/dashboards/{fid}/save",
+                                json={"doc": stale})
+        assert save.status_code == 200
+    finally:
+        dash_doc.run_finished(fid, live_run)
+    card = _card(app, fid, cid)
+    assert card["status"] == "running"
+    assert card["runId"] == live_run
+
+
+def test_merge_run_owned_same_run_falls_back_to_ran_at():
+    """Fix-1 unit pin: both `running` with the SAME `runId` falls back to
+    the `ranAt` compare (newer server run still wins; ties keep incoming,
+    which is the same run either way)."""
+    base = {"id": "c1", "status": "running", "runId": "9:r1", "ranAt": None,
+            "result": None, "trace": None}
+    # Same run, nothing newer anywhere: incoming untouched.
+    incoming = dict(base, title="local")
+    out = dash_doc.merge_run_owned({"cards": [dict(base)], "createdFileIds": []},
+                                    {"cards": [incoming], "createdFileIds": []})
+    assert out["cards"][0]["runId"] == "9:r1"
+    assert out["cards"][0]["title"] == "local"
+    # Same run, server ranAt newer (settle raced the snapshot): server wins.
+    server = dict(base, status="done", ranAt="2026-11-16T12:00:00+00:00",
+                  result={"text": "newer"})
+    incoming2 = dict(base, ranAt="2026-01-01T00:00:00+00:00",
+                     result={"text": "older"}, title="local")
+    out2 = dash_doc.merge_run_owned(
+        {"cards": [server], "createdFileIds": []},
+        {"cards": [incoming2], "createdFileIds": []})
+    assert out2["cards"][0]["result"] == {"text": "newer"}
+
+
+def test_builder_save_preserves_server_added_card(app, auth_client, user,
+                                                  enabled):
+    """Fix-2: a card added server-side (AI/another tab) while the Builder
+    snapshot was stale must survive the Builder save — union-preserved at
+    its live position — while the stale structural edit still applies. The
+    Builder sends its base checksum; the mismatch (no run need have
+    landed) triggers the union. Without the checksum the save behaves as
+    before."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    snap = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()
+    stale, base = snap["doc"], snap["checksum"]
+    # Concurrent change: a card is added server-side (no run lands).
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        fresh["cards"].append(dash_doc.new_card("table", title="AI rows"))
+        added_id = fresh["cards"][-1]["id"]
+        dash_doc.save_document(stored, fresh)
+    stale["cards"][0]["title"] = "Builder title"
+    save = auth_client.post(f"/m/dashboards/{fid}/save",
+                            json={"doc": stale, "base_checksum": base})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert [c["id"] for c in doc["cards"]] == [cid, added_id]
+    assert doc["cards"][0]["title"] == "Builder title"
+    assert doc["cards"][1]["title"] == "AI rows"
+
+
+def test_builder_save_without_checksum_skips_card_union(
+        app, auth_client, user, enabled):
+    """Fix-2: a save with no base checksum carries no evidence of
+    concurrency — membership follows the incoming save (legacy/unknown
+    clients behave exactly as before the fix)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    _add_card(app, fid, type="kpi", title="Open", prompt="Count open")
+    stale = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()["doc"]
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        fresh = dash_doc.load(stored)
+        fresh["cards"].append(dash_doc.new_card("table", title="AI rows"))
+        dash_doc.save_document(stored, fresh)
+    save = auth_client.post(f"/m/dashboards/{fid}/save", json={"doc": stale})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert len(doc["cards"]) == 1  # no evidence, no union
+
+
+def test_builder_save_card_delete_stands_without_concurrent_run(
+        app, auth_client, user, enabled):
+    """Fix-2 gate pin: with NO concurrent background write (checksums
+    match), card membership follows the incoming save — a user card
+    deletion is not resurrected. (Union is gated on checksum mismatch;
+    unconditional union would break Builder deletes.)"""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _add_card(app, fid, type="kpi", title="Keep",
+                      prompt="Count open")
+    _add_card(app, fid, type="table", title="Drop", prompt="List rows")
+    snap = auth_client.get(f"/m/dashboards/{fid}/doc").get_json()
+    stale, base = snap["doc"], snap["checksum"]
+    assert len(stale["cards"]) == 2
+    # User deletes the second card in the Builder; nothing else changed.
+    stale["cards"] = [c for c in stale["cards"] if c["id"] == first]
+    stale["cards"][0]["title"] = "Kept renamed"
+    save = auth_client.post(f"/m/dashboards/{fid}/save",
+                            json={"doc": stale, "base_checksum": base})
+    assert save.status_code == 200
+    with app.app_context():
+        doc = dash_doc.load(db.session.get(StoredFile, fid))
+    assert [c["id"] for c in doc["cards"]] == [first]
+    assert doc["cards"][0]["title"] == "Kept renamed"
+
+
+def test_builder_status_poll_behavior():
+    """Fix-4: node harness drives the SHIPPED Builder poll wiring with
+    fakes — status fetch, run-field merge, footer update, timer teardown,
+    and the add/remove scope boundary (no doc fetch for those)."""
+    import subprocess
+    harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "dashboard_builder_poll_harness.js")
+    proc = subprocess.run(["node", harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_builder_merges_run_owned_without_clobbering_local_edits():
+    """D3 (live update): the Builder merges remote run-owned fields into
+    its local doc — local structural edits survive, newer remote results
+    land, and the artifact registry unions."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function mergeRunOwned\(S, remote\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "mergeRunOwned helper missing"
+    # The Builder subscribes to the card-change channel (aggregate status
+    # poll, View precedent) and tears the timer down on unmount.
+    assert "startBuilderStatusPoll" in src
+    assert re.search(r"function startBuilderStatusPoll\(S\)", src)
+    assert "S.opts.statusUrl" in src
+    # Fix-2: both save paths send the last-seen checksum so the server can
+    # gate the card union on real concurrency evidence.
+    for fn in ("save", "flushSync"):
+        body = re.search(r"function %s\(S(?:,.*?)?\) \{(.*?)\n    \}" % fn,
+                         src, re.S)
+        assert body, "%s helper missing" % fn
+        assert "base_checksum" in body.group(1), \
+            "%s must send base_checksum" % fn
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) + """
+var S = {doc: {cards: [{id: "c1", title: "Local title", prompt: "local edit",
+    result: {text: "older"}, status: "done", ranAt: "2026-01-01T00:00:00+00:00",
+    trace: null}],
+    createdFileIds: []}, checksum: "old"};
+var remote = {cards: [{id: "c1", title: "Remote title", prompt: "remote",
+    result: {text: "newer"}, status: "done", ranAt: "2026-11-16T12:00:00+00:00",
+    trace: [{index: 1}], runId: "9:abc", ranSecs: 1.5}],
+    createdFileIds: [41]};
+mergeRunOwned(S, remote);
+var c = S.doc.cards[0];
+var checks = [c.title === "Local title", c.prompt === "local edit",
+    JSON.stringify(c.result) === JSON.stringify({text: "newer"}),
+    c.status === "done", c.ranAt === "2026-11-16T12:00:00+00:00",
+    JSON.stringify(c.trace) === JSON.stringify([{index: 1}]),
+    JSON.stringify(S.doc.createdFileIds) === JSON.stringify([41]),
+    S.checksum === "old"];
+console.log(JSON.stringify(checks));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 8
+
+
+# ---------------------------------------------------------------------------
+# Task D5: dashboard_lock released during run_cards execution
+# ---------------------------------------------------------------------------
+
+def test_parallel_runcards_do_not_serialize(monkeypatch, tmp_path):
+    """D5: two runs admitted under the cap must overlap in the LLM wait —
+    the dashboard lock must be released during execution and re-acquired
+    per card to settle (run_card_stream shape), with a per-card run-id
+    guard so a stale settle never clobbers a newer run."""
+    import threading
+    import time
+
+    from app import create_app
+    from config import TestConfig
+
+    class RaceConfig(TestConfig):
+        SQLALCHEMY_DATABASE_URI = "sqlite:///" + str(tmp_path / "race.sqlite")
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "connect_args": {"check_same_thread": False, "timeout": 30}}
+
+    race_app = create_app(RaceConfig)
+    with race_app.app_context():
+        db.create_all()
+        owner = User(username="alice", email="alice@example.com")
+        owner.set_password("password123")
+        db.session.add(owner)
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+        uid = owner.id
+    drive_id = _drive(race_app, uid)
+    fid = _create(race_app, uid, drive_id)
+    first = _add_card(race_app, fid, title="One")
+    second = _add_card(race_app, fid, title="Two")
+    with race_app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["concurrency"] = 2
+        dash_doc.save_document(stored, doc)
+
+    entered, exited = {}, {}
+    both_in = threading.Event()
+    guard = threading.Lock()
+    state = {"inflight": 0, "peak": 0}
+
+    def fake_run_card(stored, card, user_id):
+        entered[card["id"]] = time.monotonic()
+        with guard:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+        if len(entered) == 2:
+            both_in.set()
+        both_in.wait(timeout=10)  # serial execution never lets both in
+        exited[card["id"]] = time.monotonic()
+        with guard:
+            state["inflight"] -= 1
+        return ({"text": "ok"}, [], [])
+
+    dash_engine = _engine()
+    monkeypatch.setattr(dash_engine, "run_card", fake_run_card)
+
+    clients = []
+    for _ in range(2):
+        client = race_app.test_client()
+        assert client.post("/login", data={"username": "alice",
+                                           "password": "password123"}
+                           ).status_code in (200, 302)
+        clients.append(client)
+
+    results, errors = {}, {}
+
+    def hit(slot, client, card_id):
+        try:
+            results[slot] = client.post(f"/m/dashboards/{fid}/run",
+                                        json={"card_id": card_id})
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            errors[slot] = exc
+
+    threads = [threading.Thread(target=hit, args=(i, clients[i], cid))
+               for i, cid in enumerate((first, second))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not errors, errors
+    assert all(t.is_alive() is False for t in threads)
+    assert results[0].status_code == 200, results[0].data
+    assert results[1].status_code == 200, results[1].data
+    # Both runs were inside the LLM wait at the same time.
+    assert len(entered) == 2 and len(exited) == 2
+    assert state["peak"] == 2
+    assert max(entered.values()) <= min(exited.values())
+    # ... and both settled correctly: neither completion clobbered the other.
+    for cid in (first, second):
+        card = _card(race_app, fid, cid)
+        assert card["status"] == "done"
+        assert card["result"] == {"text": "ok"}
+        assert card["ranAt"]
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix wave: save-vs-settle lock (item 1) + stale run targets
+# (item 3). Item 2 (save_document_ai base-unaware) is closed by ruling
+# (tracked follow-up P0-FU1) — verified + documented in task-D3-report.md,
+# no code change.
+# ---------------------------------------------------------------------------
+
+def test_builder_save_races_run_settle_both_survive(monkeypatch, tmp_path):
+    """Item 1: Builder save holds dashboard_lock across load-merge-write, so
+    a run settling mid-save blocks until the save lands — both survive
+    (mirrors D1's third-writer test: the interleaving writer is never
+    lost). Pre-fix the settle slips through mid-save and the save wipes
+    it (RED)."""
+    import threading
+    import time
+
+    from app import create_app
+    from config import TestConfig
+
+    class RaceConfig(TestConfig):
+        SQLALCHEMY_DATABASE_URI = "sqlite:///" + str(tmp_path / "saverace.sqlite")
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "connect_args": {"check_same_thread": False, "timeout": 30}}
+
+    race_app = create_app(RaceConfig)
+    with race_app.app_context():
+        db.create_all()
+        owner = User(username="alice", email="alice@example.com")
+        owner.set_password("password123")
+        db.session.add(owner)
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+        uid = owner.id
+    drive_id = _drive(race_app, uid)
+    fid = _create(race_app, uid, drive_id)
+    cid = _add_card(race_app, fid, title="One")
+    import copy
+    with race_app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        stale_doc = copy.deepcopy(dash_doc.load(stored))
+        base_checksum = stored.checksum
+    stale_doc["cards"][0]["title"] = "Builder title"
+
+    dash_engine = _engine()
+    entered = threading.Event()
+    attempted = threading.Event()
+    release = threading.Event()
+    orig_merge = dash_doc.merge_run_owned
+
+    def blocking_merge(current, incoming, union_cards=False):
+        entered.set()
+        assert release.wait(timeout=30)
+        return orig_merge(current, incoming, union_cards=union_cards)
+
+    monkeypatch.setattr(dash_doc, "merge_run_owned", blocking_merge)
+
+    clients = []
+    for _ in range(2):
+        client = race_app.test_client()
+        assert client.post("/login", data={"username": "alice",
+                                           "password": "password123"}
+                           ).status_code in (200, 302)
+        clients.append(client)
+
+    save_out, settle_out = {}, {}
+
+    def do_save():
+        try:
+            save_out["resp"] = clients[0].post(
+                f"/m/dashboards/{fid}/save",
+                json={"doc": stale_doc, "base_checksum": base_checksum})
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            save_out["error"] = exc
+
+    def do_settle():
+        try:
+            attempted.set()
+            # The real settle shape (routes.run_cards): lock, fresh load,
+            # run-id-guarded write — never clobbers a newer writer.
+            with dash_engine.dashboard_lock(fid):
+                with race_app.app_context():
+                    stored = db.session.get(StoredFile, fid)
+                    fresh = dash_doc.load(stored)
+                    card = next(c for c in fresh["cards"]
+                                if c.get("id") == cid)
+                    card["status"] = "done"
+                    card["result"] = {"text": "settled"}
+                    card["ranAt"] = "2026-11-16T12:00:00+00:00"
+                    dash_doc.save_document(stored, fresh)
+            settle_out["done"] = True
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            settle_out["error"] = exc
+
+    save_thread = threading.Thread(target=do_save)
+    save_thread.start()
+    try:
+        assert entered.wait(timeout=30), "save never reached merge"
+        settle_thread = threading.Thread(target=do_settle)
+        settle_thread.start()
+        assert attempted.wait(timeout=30), "settle never started"
+        time.sleep(1.0)
+        # The save holds the lock across load-merge-write: the settle must
+        # still be blocked (pre-fix it slips through and is wiped below).
+        assert settle_out.get("done") is not True, \
+            "settle slipped through mid-save (lock not held)"
+        assert settle_thread.is_alive(), \
+            "settle slipped through mid-save (lock not held)"
+        release.set()
+        settle_thread.join(timeout=60)
+        save_thread.join(timeout=60)
+    finally:
+        release.set()
+    assert not save_thread.is_alive() and not settle_thread.is_alive()
+    assert settle_out.get("done") is True, settle_out
+    assert "error" not in save_out, save_out
+    assert save_out["resp"].status_code == 200, save_out["resp"].data
+    card = _card(race_app, fid, cid)
+    assert card["title"] == "Builder title"  # save side kept
+    assert card["result"] == {"text": "settled"}  # settle side kept
+    assert card["status"] == "done"
+    assert card["ranAt"] == "2026-11-16T12:00:00+00:00"
+
+
+def test_run_cards_stale_single_target_returns_404(app, auth_client, user,
+                                                   enabled, monkeypatch):
+    """Item 3: a card deleted between the pre-lock check and the in-lock
+    reload must 404, never StopIteration-500. Pre-fix this raises
+    StopIteration (RED)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    gone = _add_card(app, fid, title="Gone")
+    orig_load = dash_doc.load
+    calls = {"n": 0}
+
+    def interleaving_load(stored):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # A concurrent writer deletes the card after the pre-lock
+            # check but before the admission reload.
+            fresh = orig_load(stored)
+            fresh["cards"] = [c for c in fresh["cards"]
+                              if c["id"] != gone]
+            dash_doc.save_document(stored, fresh)
+        return orig_load(stored)
+
+    monkeypatch.setattr(dash_doc, "load", interleaving_load)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run",
+                            json={"card_id": gone})
+    assert resp.status_code == 404
+    assert "unknown" in resp.get_json()["error"].lower()
+
+
+def test_run_cards_stale_all_target_skips_missing(app, auth_client, user,
+                                                  enabled, monkeypatch,
+                                                  fake_ai):
+    """Item 3: run-all with one card deleted mid-admission must not crash
+    the whole run — the missing card is skipped, the rest proceed. Pre-fix
+    this raises StopIteration (RED)."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    keep = _add_card(app, fid, title="Keep")
+    gone = _add_card(app, fid, title="Gone")
+    orig_load = dash_doc.load
+    calls = {"n": 0}
+
+    def interleaving_load(stored):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            fresh = orig_load(stored)
+            fresh["cards"] = [c for c in fresh["cards"]
+                              if c["id"] != gone]
+            dash_doc.save_document(stored, fresh)
+        return orig_load(stored)
+
+    monkeypatch.setattr(dash_doc, "load", interleaving_load)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run", json={"all": True})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["ok"] is True
+    assert len(body["accepted"]) == 1
+    card = _card(app, fid, keep)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "3 open incidents"}
+    with app.app_context():
+        ids = [c["id"] for c in dash_doc.load(
+            db.session.get(StoredFile, fid))["cards"]]
+    assert gone not in ids
+
+
+# ---------------------------------------------------------------------------
+# Argon P1 B7d: dashboards on_enable/guards, spreadsheet context fallback,
+# per-run console reader
+# ---------------------------------------------------------------------------
+
+def file_guard_registered(module):
+    """Whether an AI file guard is registered for the module."""
+    from app.services import agent_service
+    return any(m == module for m, _ in agent_service._FILE_GUARDS)
+
+
+def test_dashboards_have_ai_guards(app, user):
+    assert file_guard_registered("dashboards") is True
+
+
+def test_on_enable_creates_default_drive_once(app, user):
+    from app.services import module_service
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert module_service.set_enabled("dashboards", True, user_obj)
+        assert module_service.set_enabled("dashboards", True, user_obj)
+        drives = Drive.query.filter_by(
+            user_id=user, name=_dash.DEFAULT_DRIVE_NAME).all()
+        assert len(drives) == 1
+
+
+def test_hidden_dashboard_invisible_to_core_agent_tools(app, user, enabled):
+    from app.services import agent_service
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Invisible")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = agent_service._tool_read_file(user_obj, fid)
+        assert "hidden" in result["error"]
+        found = agent_service._tool_search_files(user_obj, "Invisible")
+        assert all(r["file_id"] != fid for r in found["results"])
+
+
+def test_excel_context_falls_back_to_index(app, user):
+    import openpyxl
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["col_alpha", "col_beta"])
+    ws.append([1, 2])
+    buf = io.BytesIO()
+    wb.save(buf)
+    att = _attach_file(app, fid, name="data.xlsx", content=buf.getvalue())
+    cid = _add_card(app, fid, prompt="Summarize",
+                    attachments=[att["id"]])
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = next(c for c in doc["cards"] if c["id"] == cid)
+        files = {att["id"]: db.session.get(StoredFile, att["fileId"])}
+        text, _truncated = dash_engine.build_context(stored, doc, card,
+                                                     files)
+    assert text.strip() != ""
+    assert "col_alpha" in text  # never ""
+
+
+def test_console_readers_are_per_run():
+    """Concurrent runs must not share one reader: readers are keyed per
+    card/run, so a second stream never clobbers the first and teardown
+    cancels every live reader."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    setter = re.search(
+        r"function setConsoleReader\(V, cardId, reader\) \{(.*?)\n    \}",
+        src, re.S)
+    clearer = re.search(
+        r"function clearConsoleReader\(V, cardId, reader\) \{(.*?)\n    \}",
+        src, re.S)
+    canceller = re.search(r"function cancelConsoleReaders\(V\) \{(.*?)\n    \}",
+                          src, re.S)
+    assert setter, "setConsoleReader helper missing"
+    assert clearer, "clearConsoleReader helper missing"
+    assert canceller, "cancelConsoleReaders helper missing"
+    assert "V.consoleReader =" not in src  # no shared scalar anymore
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (setter.group(0) + "\n" + clearer.group(0) + "\n"
+             + canceller.group(0) + """
+var cancelled = [];
+var V = {};
+var r1 = { cancel: function () { cancelled.push("c1"); } };
+var r2 = { cancel: function () { cancelled.push("c2"); } };
+setConsoleReader(V, "c1", r1);
+setConsoleReader(V, "c2", r2);
+clearConsoleReader(V, "c1", { cancel: function () {} });
+var kept = V.consoleReaders["c1"] === r1 &&
+    V.consoleReaders["c2"] === r2;
+clearConsoleReader(V, "c1", r1);
+var cleared = !("c1" in V.consoleReaders) &&
+    V.consoleReaders["c2"] === r2;
+cancelConsoleReaders(V);
+var cancelledBoth = cancelled.join(",") === "c2" &&
+    !("c2" in V.consoleReaders);
+console.log(JSON.stringify([kept, cleared, cancelledBoth]));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 3
+
+
+def test_ai_lock_blocks_edits_but_allows_reads(app, user, enabled):
+    """Fix round (Important 1): a locked dashboard refuses AI mutations
+    (cards, attach, runs) with the unlock message, but stays readable and
+    listed with the lock visible — notebooks _save_and_report mirror."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    _attach_file(app, fid)
+    cid = _add_card(app, fid, title="KPI")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_lock"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        read = tools._tool_read(user_obj, {"file_id": fid}, None)
+        assert "error" not in read
+        assert read["ai_lock"] is True
+        assert "unlock" in read["note"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi", "title": "nope"},
+            None)
+        assert "locked" in added["error"].lower()
+        ran = tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+        assert "locked" in ran["error"].lower()
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "x.txt", "content": "x"},
+            None)
+        assert "locked" in attached["error"].lower()
+        listing = tools._tool_list(user_obj, {}, None)
+        entry = next(n for n in listing["dashboards"] if n["id"] == fid)
+        assert entry["ai_lock"] is True
+
+
+def test_ai_hidden_blocks_everything(app, user, enabled):
+    """Fix round (Important 1): a hidden dashboard is invisible to the AI
+    tools — read/mutate/run/recommend refuse, list drops it."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Secret")
+    _add_card(app, fid, title="KPI")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "hidden" in tools._tool_read(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi"}, None)["error"]
+        assert "hidden" in tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": "c1"}, None)["error"]
+        assert "hidden" in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)["error"]
+        listing = tools._tool_list(user_obj, {}, None)
+        assert not any(n["id"] == fid for n in listing["dashboards"])
+
+
+def test_tool_run_refuses_already_running_card(app, user, enabled):
+    """Fix round (Important 2 pin, tools side): a second AI run on an
+    in-flight card is refused — never a second concurrent execution."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid)
+    _set_running(app, fid, cid)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        out = tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+    assert cid in out["already_running"]
+
+
+def test_console_same_card_run_guard():
+    """Fix round (Important 2 pin, client side): both stream call sites
+    refuse in-flight/running cards through one guard, so a second
+    same-card stream — the only way to overwrite a live reader — cannot
+    start (the server 409s it too, before any reader is created)."""
+    import re
+    import shutil
+    import subprocess
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    match = re.search(r"function canStartCardRun\(V, card\) \{(.*?)\n    \}",
+                      src, re.S)
+    assert match, "canStartCardRun guard missing"
+    # Both stream call sites gate on it; the rationale is documented.
+    assert src.count("canStartCardRun(V, card") >= 2
+    assert "Same-card concurrency is impossible" in src
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0) + """
+var V = { inFlight: {} };
+var idle = { id: "c1", status: "idle" };
+var running = { id: "c2", status: "running" };
+var checks = [canStartCardRun(V, idle) === true,
+    canStartCardRun(V, null) === false,
+    canStartCardRun(V, running) === false];
+V.inFlight["c1"] = true;
+checks.push(canStartCardRun(V, idle) === false);
+delete V.inFlight["c1"];
+checks.push(canStartCardRun(V, idle) === true);
+console.log(JSON.stringify(checks));
+""")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True] * 5

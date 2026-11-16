@@ -170,7 +170,10 @@ def test_pause_blocks_drainers_and_resume_restarts(auth_client, app):
         indexing_service.run_pending_inline()
 
 
-def test_index_queue_routes(auth_client, app):
+def test_index_queue_routes(auth_client, app, user):
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
     _upload(auth_client, "r.txt", b"route job")
     with app.app_context():
         fid = StoredFile.query.one().id
@@ -197,3 +200,24 @@ def test_index_queue_routes(auth_client, app):
 def test_index_queue_routes_require_login(client):
     assert client.get("/settings/index-queue/status").status_code == 302
     assert client.post("/settings/index-queue/pause").status_code == 302
+
+
+def test_index_queue_pause_resume_require_admin(auth_client):
+    assert auth_client.post("/settings/index-queue/pause").status_code == 403
+    assert auth_client.post("/settings/index-queue/resume").status_code == 403
+
+
+def test_index_queue_pause_resume_admin_ok(auth_client, app, user):
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
+    try:
+        assert auth_client.post("/settings/index-queue/pause").get_json()["paused"] is True
+        assert indexing_service.queue_paused() is True
+        assert auth_client.post("/settings/index-queue/resume").get_json()["paused"] is False
+        assert indexing_service.queue_paused() is False
+    finally:
+        with app.app_context():
+            db.session.get(User, user).is_admin = False
+            db.session.commit()
+            indexing_service.resume_queue(app)

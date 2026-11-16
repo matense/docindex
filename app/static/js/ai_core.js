@@ -2346,6 +2346,11 @@
                 return !conversationId && !pendingConvId && !taskMode;
             },
             get taskActive() { return !!taskMode; },
+            // Live background-task id for host stop paths (close = stop):
+            // the streaming subscription if one is attached, else the
+            // task-mode banner's task. Null when no run is active, so
+            // hosts can skip the stop request entirely.
+            get taskId() { return watchingTaskId || (taskMode && taskMode.id); },
         };
         return api;
     }

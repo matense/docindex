@@ -55,9 +55,10 @@ Semantics (binding for this task):
   namespace layer: an explicit user binding shadows them (so a `rows`
   data variable keeps working), while builtins still take precedence
   over everything.
-* SQLite scratchpad: every run seeds a throwaway ``:memory:`` database
-  from ``files`` (tables ``t0``, ``t1``, ... in ``files`` insertion
-  order, every column ``TEXT``) and exposes it as ``db`` with exactly
+* SQLite scratchpad: each run lazily seeds a throwaway ``:memory:``
+  database from ``files`` (tables ``t0``, ``t1``, ... in ``files``
+  insertion order, every column ``TEXT``) on first ``db``/``rows()``
+  access, and exposes it as ``db`` with exactly
   two host functions — ``db.query(sql[, params])`` runs one
   ``SELECT``/``WITH`` statement and returns a list of plain dicts;
   ``db.exec(sql[, params])`` runs one write/DDL statement
@@ -694,7 +695,13 @@ class _Interpreter:
         self.depth = 0
         self.start = time.monotonic()
         self.last_value = None
-        self._seed_db()
+        self._db_seeded = False
+        # Engine-side backstop: Python-level tick/wall checks only run
+        # between fetched rows, so an unbounded statement (recursive CTE
+        # / cross join feeding one aggregate row) would never reach them.
+        # The handler runs inside the engine every 1000 VM steps and
+        # interrupts the statement once the wall-clock budget is gone.
+        self._db_conn.set_progress_handler(self._db_progress, 1000)
 
     # -- budgets -------------------------------------------------------
     def _tick(self, n=1):
@@ -708,12 +715,34 @@ class _Interpreter:
             self._check_wall()
 
     def _check_wall(self):
+        # NOTE: `>=` (not `>`): a zero budget must trip at the first timed
+        # check, and on coarse clocks (Windows GetTickCount64: 15.6ms) a
+        # fast program otherwise reads elapsed == 0.0 and never trips.
         elapsed = time.monotonic() - self.start
-        if elapsed > self.limits["max_wall_seconds"]:
+        if elapsed >= self.limits["max_wall_seconds"]:
             raise _Budget(
                 f"wall-clock budget exceeded ({elapsed:.1f}s of "
                 f"{self.limits['max_wall_seconds']}s); chunk the "
                 "input and combine partial results")
+
+    def _db_progress(self):
+        """SQLite progress callback: abort engine-side hangs on wall expiry.
+
+        Returning nonzero interrupts the running statement (surfaces as
+        ``interrupted``), so an unbounded ``WITH RECURSIVE`` / cross join
+        cannot spin inside the engine past the wall-clock budget.
+        """
+        try:
+            self._check_wall()
+        except _Budget:
+            return 1
+        return 0
+
+    def _ensure_db_seeded(self):
+        """Seed file tables on first data access, not at startup."""
+        if not self._db_seeded:
+            self._db_seeded = True
+            self._seed_db()
 
     def _charge(self, n):
         self.alloc += n
@@ -734,8 +763,46 @@ class _Interpreter:
             self._charge(40 + len(value))
         elif isinstance(value, (list, tuple, set)):
             self._charge(56 + 8 * len(value))
+            self._charge_referenced(value)
         elif isinstance(value, dict):
             self._charge(64 + 72 * len(value))
+            self._charge_referenced(value)
+
+    def _charge_referenced(self, container):
+        """Charge bytes a container's members reference, per reference path.
+
+        ``[s] * 1000`` and ``[inner] * 1000`` hold 1000 references each:
+        serializing or copying the list expands every slot, so the cost
+        of a shared subtree counts once per path (multiplicity) — that is
+        what trips the amplification instead of OOMing later in
+        ``json.dumps``. Cycles terminate via the current-path ancestry
+        stack (a back edge charges a small constant instead of
+        recursing), not via a global visited set: a global dedupe would
+        visit shared subtrees once and undercharge every path but one.
+        """
+        if isinstance(container, dict):
+            members = list(container.keys()) + list(container.values())
+        else:
+            members = list(container)
+        stack = [(members, (id(container),))]
+        while stack:
+            pending, ancestry = stack.pop()
+            for member in pending:
+                if isinstance(member, (list, tuple, set, dict)):
+                    if id(member) in ancestry:
+                        self._charge(16)
+                        continue
+                    if isinstance(member, dict):
+                        self._charge(64 + 72 * len(member))
+                        stack.append((
+                            list(member.keys()) + list(member.values()),
+                            ancestry + (id(member),)))
+                    else:
+                        self._charge(56 + 8 * len(member))
+                        stack.append((list(member),
+                                      ancestry + (id(member),)))
+                else:
+                    self._charge_value(member)
 
     def _charge_deep(self, value):
         """Charge a whole host-parsed value tree against the allocation
@@ -941,6 +1008,11 @@ class _Interpreter:
             obj = self._ev(target.value)
             index = self._ev(target.slice)
             self._guard(_setitem, obj, index, value)
+            # Every stored reference counts per path (multiplicity), so a
+            # subscript-store loop cannot accumulate uncharged sharing.
+            # Charged after success: failed stores stay catchable errors.
+            self._charge_value(index)
+            self._charge_value(value)
         else:
             raise _Denied("denied construct: assignment target")
 
@@ -1162,6 +1234,7 @@ class _Interpreter:
             else:
                 flat.append(item)
         self._charge(56 + 8 * len(flat))
+        self._charge_referenced(flat)
         return flat
 
     def _ev_Tuple(self, node):
@@ -1173,6 +1246,7 @@ class _Interpreter:
                 items.append(self._ev(elt))
         result = tuple(items)
         self._charge(56 + 8 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_Set(self, node):
@@ -1184,6 +1258,7 @@ class _Interpreter:
                 items.append(self._ev(elt))
         result = self._guard(set, items)
         self._charge(200 + 32 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_Dict(self, node):
@@ -1198,6 +1273,7 @@ class _Interpreter:
             else:
                 result[self._ev(key_node)] = self._ev(val_node)
         self._charge(64 + 72 * len(result))
+        self._charge_referenced(result)
         return result
 
     def _ev_ListComp(self, node):
@@ -1925,6 +2001,7 @@ class _Interpreter:
             args[1] if len(args) > 1 else ",")
         if name not in self.files:
             raise _UserError(KeyError(name))
+        self._ensure_db_seeded()
         chunks = self.files[name]
         if not chunks:
             return []
@@ -1947,8 +2024,11 @@ class _Interpreter:
     def _seed_db(self):
         """Seed tables ``t0``, ``t1``, ... from ``files`` chunk lists.
 
-        Header-first CSV logic mirrors ``rows()`` (first chunk carries
-        the header); zero-column files are skipped, never a path error.
+        Runs lazily on first ``db``/``rows()`` access (see
+        ``_ensure_db_seeded``): pure-Python runs over attached files pay
+        no seeding ticks. Header-first CSV logic mirrors ``rows()``
+        (first chunk carries the header); zero-column files are skipped,
+        never a path error.
         """
         try:
             cursor = self._db_conn.cursor()
@@ -2069,6 +2149,7 @@ class _Interpreter:
 
     def _db_query(self, *args, **kwargs):
         sql, params = self._prepare_db_call("query", args, kwargs)
+        self._ensure_db_seeded()
         try:
             cursor = self._db_conn.execute(sql) if params is None \
                 else self._db_conn.execute(sql, params)
@@ -2108,6 +2189,7 @@ class _Interpreter:
 
     def _db_exec(self, *args, **kwargs):
         sql, params = self._prepare_db_call("exec", args, kwargs)
+        self._ensure_db_seeded()
         try:
             cursor = self._db_conn.execute(sql) if params is None \
                 else self._db_conn.execute(sql, params)
@@ -2423,6 +2505,7 @@ class _Interpreter:
             self._no_kwargs("append", kwargs)
             self._checked_args("append", args, 1, 1)
             self._charge(40)
+            self._charge_value(args[0])
             obj.append(args[0])
             return None
         if name == "extend":
@@ -2431,6 +2514,7 @@ class _Interpreter:
             items = []
             for item in self._safe_iter(args[0]):
                 self._tick()
+                self._charge_value(item)
                 items.append(item)
             self._charge(8 * len(items))
             obj.extend(items)
@@ -2501,6 +2585,8 @@ class _Interpreter:
             self._tick(len(pairs))
             for key, value in pairs:
                 obj[self._guard(_hashable, key)] = value
+                self._charge_value(key)
+                self._charge_value(value)
             self._charge(72 * len(pairs))
             return None
         if name == "setdefault":
@@ -2512,6 +2598,9 @@ class _Interpreter:
             else:
                 result = self._guard(obj.setdefault, key, args[1])
             self._charge(72)
+            self._charge_value(key)
+            if len(args) > 1:
+                self._charge_value(args[1])
             return result
         raise _Denied(f"attribute '{name}' is not allowed")
 
@@ -2551,10 +2640,14 @@ def _merge_limits(limits):
     return merged, None
 
 
-def evaluate(code, variables=None, files=None, limits=None):
+def evaluate(code, variables=None, files=None, limits=None, collect=None):
     """Run ``code`` in the sealed evaluator.
 
     Returns ``{"ok": True, "value": ...}`` or ``{"ok": False, "error": ...}``.
+    When ``collect`` holds variable names, their values are read in the
+    same pass (no re-run) and returned under ``"collected"``; a missing
+    name fails with ``"collect_failed": True`` so the caller can tell an
+    output-name error apart from a program error.
     """
     try:
         if not isinstance(code, str):
@@ -2585,6 +2678,14 @@ def evaluate(code, variables=None, files=None, limits=None):
             if not isinstance(key, str) or not isinstance(chunks, list) \
                     or not all(isinstance(c, str) for c in chunks):
                 return _fail("files must map names to lists of text chunks")
+        want = []
+        if collect is not None:
+            if not isinstance(collect, (list, tuple)) or not all(
+                    isinstance(name, str) and name.isidentifier()
+                    and not keyword.iskeyword(name)
+                    and not name.startswith("__") for name in collect):
+                return _fail("collect must hold variable names")
+            want = list(collect)
         try:
             tree = ast.parse(code)
         except (SyntaxError, ValueError):
@@ -2602,6 +2703,48 @@ def evaluate(code, variables=None, files=None, limits=None):
         try:
             runner = _Interpreter(clean_vars, files, merged, scratch)
             result = runner.run(tree)
+            # Serialization backstop: charge the result's referenced bytes
+            # (multiplicity-aware) BEFORE json.dumps materializes it, so an
+            # accumulator built by append/extend/subscript loops trips the
+            # allocation budget instead of OOMing in dumps. Anything this
+            # rejects carries far more referenced bytes than the output cap
+            # allows, so no previously-passing result can trip it.
+            runner._charge_value(result)
+            collected = {}
+            for var in want:
+                try:
+                    probe = ast.parse(f"({var})", mode="eval")
+                    collected[var] = runner._ev(probe.body)
+                except (_Denied, _Budget) as exc:
+                    return {"ok": False, "error": str(exc),
+                            "collect_failed": True}
+                except _UserError as exc:
+                    return {"ok": False,
+                            "error": f"{type(exc.exc).__name__}: {exc.exc}",
+                            "collect_failed": True}
+            if want:
+                # The old second-evaluate probe enforced the output budget
+                # on collected artifacts; check here so oversized outputs
+                # fail with the outputs-hint mapping instead of sailing
+                # through with a multi-MB artifact. Charge first so a
+                # collected accumulator trips before dumps materializes it.
+                try:
+                    runner._charge_value(collected)
+                except (_Denied, _Budget) as exc:
+                    return {"ok": False, "error": str(exc),
+                            "collect_failed": True}
+                try:
+                    collected_text = json.dumps(collected, allow_nan=False)
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "error": "result is not JSON-serializable",
+                            "collect_failed": True}
+                if len(collected_text) > merged["max_output_chars"]:
+                    return {"ok": False,
+                            "error": f"result exceeds output budget "
+                                     f"({len(collected_text)} chars, cap "
+                                     f"{merged['max_output_chars']})",
+                            "collect_failed": True}
             runner._check_wall()
         except (_Denied, _Budget) as exc:
             return _fail(str(exc))
@@ -2619,7 +2762,10 @@ def evaluate(code, variables=None, files=None, limits=None):
         if len(serialized) > merged["max_output_chars"]:
             return _fail(f"result exceeds output budget ({len(serialized)} "
                          f"chars, cap {merged['max_output_chars']})")
-        return {"ok": True, "value": result}
+        response = {"ok": True, "value": result}
+        if want:
+            response["collected"] = collected
+        return response
     except (_Denied, _Budget) as exc:
         return _fail(str(exc))
     except _UserError as exc:

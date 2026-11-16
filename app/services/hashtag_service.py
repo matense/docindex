@@ -42,8 +42,13 @@ def get_tags(index):
     """Tags of a FileIndex row as a list of strings."""
     if not index or not index.hashtags:
         return []
+    return _tags_from_json(index.hashtags)
+
+
+def _tags_from_json(blob):
+    """Parse a hashtags JSON blob; garbage in -> [] (same as get_tags)."""
     try:
-        tags = json.loads(index.hashtags)
+        tags = json.loads(blob)
     except (ValueError, TypeError):
         return []
     return [t for t in tags if isinstance(t, str)]
@@ -94,7 +99,9 @@ def get_all_tags(user, drive=None):
     be a single Drive or a list of Drives (multi-drive chat context).
     """
     from . import search_service
-    q = (FileIndex.query
+    # Only the hashtags column is needed — never fetch the bulky
+    # extracted_text/caption bodies just to count tags.
+    q = (FileIndex.query.with_entities(FileIndex.hashtags)
          .join(StoredFile, StoredFile.id == FileIndex.file_id)
          .filter(StoredFile.user_id == user.id,
                  StoredFile.deleted_at.is_(None),
@@ -103,8 +110,8 @@ def get_all_tags(user, drive=None):
     if drive_ids is not None:
         q = q.filter(StoredFile.drive_id.in_(drive_ids or [-1]))
     counts = {}
-    for index in q.all():
-        for tag in get_tags(index):
+    for (blob,) in q.all():
+        for tag in _tags_from_json(blob):
             counts[tag] = counts.get(tag, 0) + 1
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 

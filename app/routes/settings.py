@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import os
 from datetime import datetime
 
@@ -32,8 +33,11 @@ from ..models import (
     User,
 )
 from ..services import ai_service, indexing_service, module_service
+from ..services.ssrf import url_block_reason as _ssrf_block_reason
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
+
+_log = logging.getLogger(__name__)
 
 # Presets for well-known OpenAI-compatible providers.
 PROVIDERS = {
@@ -89,36 +93,21 @@ def _get_owned(conn_id):
     return conn
 
 
-def _valid_base_url(url):
-    """Basic SSRF guard for AI base URLs: http(s) only, no private/link-local.
+def _valid_base_url(url, allow_loopback=False):
+    """SSRF guard for AI base URLs: http(s) only, and the host must resolve
+    (via getaddrinfo, fail closed) exclusively to public IPs — IPv4-mapped
+    IPv6 is unwrapped first so obfuscated loopback/link-local forms cannot
+    slip through.
 
-    Local Ollama/LM Studio (localhost) stays allowed — self-hosted users need
-    it — but metadata-IP (169.254.x.x) and non-http schemes are rejected.
+    Local Ollama/LM Studio is a flagship flow, so the settings routes pass
+    ``allow_loopback=True``: the URL is typed in by the account owner
+    (admin-configured), which keeps loopback working there while every
+    other context stays strict.
     """
-    import ipaddress
-    from urllib.parse import urlparse
-    try:
-        p = urlparse((url or "").strip())
-    except Exception:
-        return False, "Invalid base URL."
-    if p.scheme not in ("http", "https"):
-        return False, "Base URL must start with http:// or https://."
-    host = (p.hostname or "").lower()
-    if not host:
-        return False, "Base URL must include a host."
-    # Block cloud metadata + non-http schemes; localhost stays allowed.
-    if host in ("169.254.169.254", "metadata.google.internal"):
-        return False, "That host is not allowed."
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_link_local or ip.is_multicast or ip.is_reserved:
-            return False, "That IP address is not allowed."
-        # Private LAN allowed only for http (local Ollama/LM Studio); never
-        # exfiltrate keys to private hosts over plain http? keep permissive
-        # for self-hosting but block metadata above.
-    except ValueError:
-        pass  # hostname, not IP — allow (DNS)
-    return True, ""
+    reason = _ssrf_block_reason(url, allow_loopback=allow_loopback)
+    if reason is None:
+        return True, ""
+    return False, reason
 
 
 def _clamp_int(value, lo, hi):
@@ -384,6 +373,8 @@ def index_queue_status():
 @login_required
 def index_queue_pause():
     """Pause the (shared) indexing queue — pending jobs stay in the DB."""
+    if not current_user.is_admin:
+        abort(403)
     indexing_service.pause_queue()
     return jsonify({"ok": True, "paused": True})
 
@@ -391,6 +382,8 @@ def index_queue_pause():
 @bp.route("/index-queue/resume", methods=["POST"])
 @login_required
 def index_queue_resume():
+    if not current_user.is_admin:
+        abort(403)
     indexing_service.resume_queue()
     return jsonify({"ok": True, "paused": False})
 
@@ -497,18 +490,48 @@ def profile_registration():
     return redirect(url_for("settings.profile"))
 
 
+def _migrate_connection_keys(connections):
+    """Re-encrypt legacy/plaintext stored keys with the HKDF scheme (S6).
+
+    Runs where a DB session exists (settings load/save) so the pure service
+    read path (`decrypt_api_key`) never writes. Returns True when at least
+    one row was migrated — the settings page renders its rotation banner
+    from this flag. Undecryptable rows are left untouched (no lockout), and
+    one bad row never breaks the page for the rest.
+    """
+    rotated = False
+    for conn in connections:
+        stored = conn.api_key or ""
+        if not ai_service.api_key_needs_rotation(stored):
+            continue
+        try:
+            plain = ai_service.decrypt_api_key(stored)
+            if not plain:
+                continue  # undecryptable: leave it, never lock the user out
+            conn.api_key = ai_service.encrypt_api_key(plain)
+            rotated = True
+        except Exception:
+            _log.warning("Skipping API key rotation for connection %s",
+                         conn.id, exc_info=True)
+    if rotated:
+        db.session.commit()
+    return rotated
+
+
 @bp.route("/ai")
 @login_required
 def ai_settings():
     connections = (AIConnection.query
                    .filter_by(user_id=current_user.id)
                    .order_by(AIConnection.created_at).all())
+    keys_rotated = _migrate_connection_keys(connections)
     editing = None
     edit_id = request.args.get("edit", type=int)
     if edit_id:
         editing = _get_owned(edit_id)
     return render_template("settings/ai.html", connections=connections,
-                           providers=PROVIDERS, editing=editing)
+                           providers=PROVIDERS, editing=editing,
+                           keys_rotated=keys_rotated)
 
 
 @bp.route("/ai/<int:conn_id>/edit", methods=["POST"])
@@ -525,7 +548,7 @@ def ai_edit(conn_id):
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
@@ -551,6 +574,10 @@ def ai_edit(conn_id):
     new_key = request.form.get("api_key", "").strip()
     if new_key:
         conn.api_key = ai_service.encrypt_api_key(new_key)
+    else:
+        # Empty keeps the old key — upgrade it to HKDF in place when needed
+        # (commit below persists it).
+        _migrate_connection_keys([conn])
     if request.form.get("is_active"):
         AIConnection.query.filter_by(user_id=current_user.id).update({"is_active": False})
         conn.is_active = True
@@ -571,7 +598,7 @@ def ai_add():
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings"))
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings"))
@@ -666,7 +693,7 @@ def ai_test():
     api_key = (data.get("api_key") or "").strip()
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok, msg = _valid_base_url(base_url)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok:
         return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(base_url, api_key)
@@ -679,6 +706,11 @@ def ai_test_existing(conn_id):
     conn = _get_owned(conn_id)
     if not conn:
         return jsonify({"ok": False, "message": "Connection not found."}), 404
+    ok, msg = _valid_base_url(conn.base_url, allow_loopback=True)
+    if not ok:
+        # Stored before the S3 lockdown (e.g. a metadata/nip.io URL):
+        # refuse without fetching — the row stays a working SSRF oracle.
+        return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(
         conn.base_url, ai_service.decrypt_api_key(conn.api_key or ""))
     return jsonify({"ok": ok, "message": message})
@@ -699,7 +731,7 @@ def ai_models():
             api_key = ai_service.decrypt_api_key(conn.api_key or "")
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok_url, url_msg = _valid_base_url(base_url)
+    ok_url, url_msg = _valid_base_url(base_url, allow_loopback=True)
     if not ok_url:
         return jsonify({"ok": False, "message": url_msg}), 400
     try:

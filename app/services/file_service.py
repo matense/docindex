@@ -784,6 +784,11 @@ def _trash_folder_contents(folder):
             stored.folder_id = None
             delete_file(stored)
             trashed += 1
+        else:
+            # Already trashed: deleting the folder row would cascade and
+            # destroy the row without purging — purge it so blobs,
+            # versions, jobs, embeddings and FTS rows are cleaned up.
+            purge_file(stored)
     db.session.flush()
     return trashed
 
@@ -892,6 +897,32 @@ def trashed_files(user_id):
             .all())
 
 
+def _atomic_copy(src, dst):
+    """Copy src onto dst atomically (temp file in the destination's
+    directory + os.replace, so a crash never leaves a torn file)."""
+    tmp = f"{dst}.tmp-{uuid.uuid4().hex}"
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def _atomic_write_text(path, content):
+    """Overwrite a text file atomically (temp file + os.replace)."""
+    tmp = f"{path}.tmp-{uuid.uuid4().hex}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
 def version_path(version):
     return os.path.join(current_app.config["VERSIONS_FOLDER"], version.stored_name)
 
@@ -957,8 +988,8 @@ def replace_with_upload(stored_file, file_storage):
         os.remove(tmp_path)
         return "identical"
 
-    snapshot_version(stored_file, "upload")
     with file_lock(stored_file.id):
+        snapshot_version(stored_file, "upload")
         os.replace(tmp_path, file_path(stored_file))
     stored_file.size = size
     stored_file.checksum = new_checksum
@@ -972,16 +1003,15 @@ def replace_with_upload(stored_file, file_storage):
 
 def restore_version(stored_file, version):
     """Roll the file back to a past version (current state is snapshotted)."""
-    snapshot_version(stored_file, "restore",
-                     note=f"Before restore to v{version.version}")
     with file_lock(stored_file.id):
-        shutil.copyfile(version_path(version), file_path(stored_file))
+        snapshot_version(stored_file, "restore",
+                         note=f"Before restore to v{version.version}")
+        _atomic_copy(version_path(version), file_path(stored_file))
     stored_file.size = version.size
     stored_file.checksum = version.checksum
     if stored_file.is_image:
         _make_thumbnail(file_path(stored_file), stored_file.stored_name)
     db.session.commit()
-    refresh_shadow(stored_file)
     refresh_shadow(stored_file)
 
 
@@ -990,11 +1020,10 @@ def update_file_content(stored_file, content, source="edit", note=""):
     content = content or ""
     if len(content.encode("utf-8")) > current_app.config["MAX_FILE_SIZE"]:
         raise ValueError(f"File exceeds the {current_app.config['MAX_FILE_SIZE'] // (1024 * 1024)} MB limit.")
-    snapshot_version(stored_file, source, note=note)
     path = file_path(stored_file)
     with file_lock(stored_file.id):
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(content)
+        snapshot_version(stored_file, source, note=note)
+        _atomic_write_text(path, content)
     stored_file.size = os.path.getsize(path)
     checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
     stored_file.checksum = checksum

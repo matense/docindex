@@ -176,9 +176,31 @@ def save(file_id):
     if document is None:
         return jsonify({"ok": False, "error": "Missing document."}), 400
     try:
-        doc_service.save_document(
-            stored, document,
-            force_checkpoint=bool(payload.get("force_checkpoint")))
+        # A stale Builder snapshot must not wipe background-run state that
+        # landed after the snapshot (D3 per-field merge, newer wins). The
+        # Builder sends the checksum it last saw; a mismatch proves someone
+        # else wrote since, so concurrently added cards union in too (D1
+        # precedent) — matching checksums mean the snapshot is merely
+        # user-edited and card membership (incl. user deletes) stands.
+        # A corrupt live blob skips the merge — the save overwrites it as
+        # before.
+        # The load + merge + write section holds the dashboard lock (same
+        # shape as the run_cards admission lock below): a run settling
+        # between the load and the write would otherwise be wiped.
+        base_checksum = payload.get("base_checksum")
+        with engine_service.dashboard_lock(stored.id):
+            try:
+                current = doc_service.load(stored)
+            except (ValueError, OSError):
+                current = None
+            if current is not None:
+                document = doc_service.merge_run_owned(
+                    current, document,
+                    union_cards=(base_checksum is not None
+                                 and base_checksum != stored.checksum))
+            doc_service.save_document(
+                stored, document,
+                force_checkpoint=bool(payload.get("force_checkpoint")))
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True,
@@ -504,10 +526,13 @@ def _fresh_card(stored, card_id):
 @bp.post("/<int:file_id>/run")
 def run_cards(file_id):
     """Run one card (``{"card_id": ...}``) or the whole dashboard
-    (``{"all": true}``). Cards execute sequentially through the dashboard's
-    concurrency cap; returns ``{"accepted": [run_ids]}``. A run targeting a
-    card that is already running (or exceeding the cap) is rejected with
-    409 + ``already_running`` instead of queueing."""
+    (``{"all": true}``). Admission (cap check + mark running) holds the
+    dashboard lock; the lock is released for the LLM/workflow wait and
+    re-acquired per card to settle, so runs admitted under the cap overlap
+    instead of blocking on the whole execution. Returns
+    ``{"accepted": [run_ids]}``. A run targeting a card that is already
+    running (or exceeding the cap) is rejected with 409 + ``already_running``
+    instead of queueing."""
     stored = _get_dashboard(file_id)
     _guard_writable(stored)
     payload = request.get_json(silent=True) or {}
@@ -529,8 +554,25 @@ def run_cards(file_id):
                         "error": f"Unknown card(s): "
                                  f"{', '.join(unknown)}."}), 404
 
+    # Admission (cap check + mark running) holds the lock; the lock is
+    # released for the LLM/workflow wait and re-acquired per card to settle
+    # (run_card_stream shape), so admitted runs overlap. Settle sections
+    # stay serialized by the lock and guarded by run-id, so concurrent
+    # completions never clobber each other.
     with engine_service.dashboard_lock(stored.id):
         doc = doc_service.load(stored)
+        # Re-validate targets against the reloaded doc: a card deleted
+        # between the pre-lock check and this reload is gone — a single
+        # missing target 404s (same shape as above); a run-all simply
+        # skips the missing cards so the rest still proceed (never a
+        # bare next() StopIteration 500).
+        live = {c.get("id") for c in doc.get("cards", [])}
+        missing = [t for t in targets if t not in live]
+        if missing and not payload.get("all"):
+            return jsonify({"ok": False,
+                            "error": f"Unknown card(s): "
+                                     f"{', '.join(missing)}."}), 404
+        targets = [t for t in targets if t in live]
         cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
         running = [c.get("id") for c in doc.get("cards", [])
                    if c.get("status") == "running"]
@@ -548,28 +590,34 @@ def run_cards(file_id):
             card["runId"] = run_id
             accepted.append(run_id)
         doc_service.save_document(stored, doc)
-
-        for target, run_id in zip(targets, accepted):
+        for run_id in accepted:
             doc_service.run_started(stored.id, run_id)
-            started = time.monotonic()
-            try:
-                card = _fresh_card(stored, target)
-                result, artifact_ids, trace = engine_service.run_card(
-                    stored, card, current_user.id)
-                status = "done"
-            except engine_service.MissingInputError as exc:
-                result, artifact_ids, trace, status = (
-                    {"error": str(exc)}, [], [], "error")
-            except Exception as exc:  # noqa: BLE001 - errors surface on card
-                db.session.rollback()
-                result, artifact_ids, trace, status = (
-                    {"error": (str(exc) or "The run failed.")[:500]},
-                    [], [], "error")
-            finally:
-                doc_service.run_finished(stored.id, run_id)
+
+    for target, run_id in zip(targets, accepted):
+        started = time.monotonic()
+        try:
+            card = _fresh_card(stored, target)
+            result, artifact_ids, trace = engine_service.run_card(
+                stored, card, current_user.id)
+            status = "done"
+        except engine_service.MissingInputError as exc:
+            result, artifact_ids, trace, status = (
+                {"error": str(exc)}, [], [], "error")
+        except Exception as exc:  # noqa: BLE001 - errors surface on card
+            db.session.rollback()
+            result, artifact_ids, trace, status = (
+                {"error": (str(exc) or "The run failed.")[:500]},
+                [], [], "error")
+        finally:
+            doc_service.run_finished(stored.id, run_id)
+        with engine_service.dashboard_lock(stored.id):
             fresh = doc_service.load(stored)
-            card = next(c for c in fresh["cards"]
-                        if c.get("id") == target)
+            card = next((c for c in fresh["cards"]
+                         if c.get("id") == target), None)
+            if card is None or card.get("runId") != run_id:
+                # Superseded by a newer run, or removed while we ran: a
+                # newer writer owns this card now — never clobber it.
+                continue
             card["status"] = status
             card["result"] = result
             card["trace"] = trace
@@ -633,6 +681,12 @@ def run_card_stream(file_id):
 
     with engine_service.dashboard_lock(stored.id):
         doc = doc_service.load(stored)
+        # Same stale-target guard as run_cards: a card deleted between
+        # the pre-lock check and this reload 404s instead of raising
+        # StopIteration on the bare next() below.
+        if card_id not in {c.get("id") for c in doc.get("cards", [])}:
+            return jsonify({"ok": False,
+                            "error": f"Unknown card '{card_id}'."}), 404
         cap = doc.get("concurrency", doc_service.DEFAULT_CONCURRENCY)
         running = [c.get("id") for c in doc.get("cards", [])
                    if c.get("status") == "running"]

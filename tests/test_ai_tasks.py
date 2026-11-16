@@ -877,3 +877,173 @@ def test_rename_rerun_isolated_per_user(auth_client, app, user):
     assert client2.post(f"/ai/tasks/{task_id}/rename",
                         json={"title": "x"}).status_code == 404
     assert client2.post(f"/ai/tasks/{task_id}/rerun").status_code == 404
+
+
+# --- D6: chat close posts stop with the real task id --------------------------
+# No DOM/JS harness exists in this repo, so the client-shape pins below are
+# explicitly SECOND-BEST static asserts (not behavioral JS tests): they pin
+# the session api surface and the close path's guarded use of it. The
+# behavioral half — stop with the real id actually stops the run — is pinned
+# by test_stop_endpoint_reached_with_real_id.
+
+
+def _chat_js(name):
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "app",
+                        "static", "js", name)
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_session_api_exposes_live_task_id(auth_client, app, user):
+    """Static pin: createSession's api object exposes a live taskId getter."""
+    import re
+    assert re.search(r"get taskId\(\)", _chat_js("ai_core.js")), \
+        "session api must expose `get taskId()`"
+
+
+def test_stop_close_uses_guarded_real_id(auth_client, app, user):
+    """Static pin: chat-window close stops via sess.taskId with a guard for
+    no-active-task (no request when there is nothing to stop)."""
+    import re
+    src = _chat_js("ai_chat.js")
+    assert "sess.taskId" in src, "close path must use sess.taskId"
+    assert re.search(r"if\s*\(\s*stopId\s*\)", src), \
+        "close path must guard the stop POST (no request with no active task)"
+
+
+def test_stop_endpoint_reached_with_real_id(auth_client, app, user):
+    """Behavioral half: stop with the real id reaches the endpoint (200 and
+    the run stops); the old client URL (literal `undefined` id) 404s and
+    stops nothing. Note: a `running` row with no live worker only gets the
+    cooperative stop signal (200, still `running` until its worker observes
+    it); a `queued` run flips to `stopped` synchronously."""
+    _enable_ai(app)
+    queued_id = _make_task(app, user, "queued")
+    assert queued_id is not None
+    assert auth_client.post(f"/ai/tasks/{queued_id}/stop").status_code == 200
+    with app.app_context():
+        assert db.session.get(AITask, queued_id).status == "stopped"
+    running_id = _make_task(app, user, "running")
+    assert auth_client.post(f"/ai/tasks/{running_id}/stop").status_code == 200
+    # The pre-D6 client symptom: `/ai/tasks/undefined/stop` matches no
+    # route (int converter) and the server task keeps running.
+    assert auth_client.post("/ai/tasks/undefined/stop").status_code == 404
+    with app.app_context():
+        assert db.session.get(AITask, running_id).status == "running"
+
+
+# --- D7: reload of a running task must not duplicate persisted messages ----
+# A window reopened mid-run loads the persisted transcript (loadConversation)
+# then subscribes to the live stream (watchTask): replayed SSE events whose
+# content is already persisted rendered a second time. The server contract
+# is that the replay buffer holds only in-flight, unpersisted state —
+# completed messages come from the transcript — so the overlap below is
+# always empty. Live subscribers still receive every event (pinned below).
+
+
+def _replay_dupe_of_persisted(ev, persisted, token_text):
+    t = ev.get("type")
+    if t == "thinking":
+        return ("thinking", ev.get("content")) in set(persisted)
+    if t == "notice":
+        return ("notice", ev.get("content")) in set(persisted)
+    if t == "step":
+        s = ev.get("step", {})
+        text = s.get("label", "") + (": " + s["detail"]
+                                     if s.get("detail") else "")
+        return any(r == "step" and (c == text or c.startswith(text + " → "))
+                   for r, c in persisted)
+    if t == "tool_result":
+        summary = (ev.get("result") or {}).get("summary")
+        return any(r == "step" and summary
+                   and c.endswith("→ " + summary)
+                   for r, c in persisted)
+    if t == "thinking_token":
+        # A stale partial of a thinking block that already persisted whole.
+        return any(r == "thinking" and c.startswith(token_text)
+                   for r, c in persisted)
+    return False
+
+
+def test_reload_running_task_shows_no_dupes(app, user):
+    import queue as _queue
+
+    _enable_ai(app)
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    with app.app_context():
+        task_id = _make_task(app, user, "queued")
+    captured = {}
+
+    def scripted(u, history, drive=None, **kwargs):
+        yield ("thinking", "A direct thought")
+        yield ("thinking_token", "Considering ")
+        yield ("thinking", "Considering drives")
+        yield ("tool_start", {"label": "Listing drives",
+                              "name": "list_drives"})
+        yield ("step", {"label": "Listed drives", "detail": "1 drive",
+                        "index": 1, "max_steps": 16})
+        yield ("tool_result", {"summary": "1 drive"})
+        yield ("notice", "Context compacted")
+        yield ("tool_start", {"label": "Reading file", "name": "read_file"})
+        # Window reopened mid-run: transcript so far + replay from here.
+        captured["q"] = ai_task_service.subscribe(task_id)
+        yield ("answer", "You have one drive.")
+
+    with app.app_context():
+        live_q = ai_task_service.subscribe(task_id)
+        with patch.object(agent_service, "run_agent_events", scripted):
+            ai_task_service._task_worker(task_id, app)
+        conv_id = db.session.get(AITask, task_id).conversation_id
+        persisted = [(m.role, m.content) for m in
+                     db.session.get(ChatConversation, conv_id).messages]
+
+    replayed = []
+    while True:
+        ev = captured["q"].get(timeout=5)
+        if ev is None:  # end-of-stream sentinel
+            break
+        replayed.append(ev)
+    token_text = "".join(ev.get("content", "") for ev in replayed
+                         if ev.get("type") == "thinking_token")
+    dupes = [ev for ev in replayed
+             if _replay_dupe_of_persisted(ev, persisted, token_text)]
+    assert dupes == []
+
+    # Live streaming intact: the running tool chip still rebuilds, and a
+    # subscriber attached from the start received every event live.
+    assert any(ev.get("type") == "tool_start"
+               and ev.get("step", {}).get("label") == "Reading file"
+               for ev in replayed)
+    live_kinds = set()
+    while True:
+        try:
+            ev = live_q.get_nowait()
+        except _queue.Empty:
+            break
+        if ev is not None and isinstance(ev, dict):
+            live_kinds.add(ev.get("type"))
+    assert {"thinking", "tool_start", "step", "tool_result",
+            "notice", "answer"} <= live_kinds
+
+    # Transcript intact: step row persisted at arrival, summary appended at
+    # result — same final content as before.
+    roles = [r for r, _ in persisted]
+    assert roles == ["thinking", "thinking", "step", "notice", "assistant"]
+    assert persisted[2][1] == "Listed drives: 1 drive → 1 drive"
+    assert persisted[-1] == ("assistant", "You have one drive.")
+
+
+def test_replay_prune_drops_only_finished_block_tokens(app, user):
+    ai_task_service._replay.clear()  # global buffer; _make_task bypasses workers
+    task_id = _make_task(app, user, "running")
+    ai_task_service._broadcast(task_id, {"type": "thinking_token",
+                                         "content": "a"})
+    ai_task_service._broadcast(task_id, {"type": "answer_token",
+                                         "content": "b"})
+    ai_task_service._drop_replay(task_id, "thinking_token")
+    q = ai_task_service.subscribe(task_id)
+    first = q.get(timeout=2)
+    assert first == {"type": "answer_token", "content": "b"}
+    assert q.empty()
+    ai_task_service.unsubscribe(task_id, q)

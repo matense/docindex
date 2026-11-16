@@ -29,6 +29,8 @@ import uuid
 from datetime import UTC, timedelta
 from io import BytesIO
 
+from typing import NamedTuple
+
 from flask import g, has_app_context
 from werkzeug.datastructures import FileStorage
 
@@ -187,8 +189,19 @@ def parse(text):
 
 
 def load(stored):
-    return parse(file_service.read_text_content(
-        stored, max_chars=indexing_service.MAX_TEXT_CHARS))
+    """Load the full notebook document — never a truncated slice.
+
+    Notebooks are JSON: any mid-document character cap parses as corrupt
+    (P0 dataloss for large notebooks), so the whole file is read. The
+    embedded synced_history tail stays in the returned doc — stripping it
+    here would make the next editor save drop that history, and paging it
+    would need a new API; a full parse is correct at any size Python can
+    hold. (The MAX_TEXT_CHARS cap still applies where it belongs: the
+    search-index excerpt in indexing_service.)
+    """
+    path = file_service.file_path(stored)
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return parse(fh.read())
 
 
 def _sha256_file(path):
@@ -485,69 +498,219 @@ def last_organize_plan(user):
             .first())
 
 
+class SaveResult(NamedTuple):
+    """Outcome of save_document: whether a version was snapshotted, whether
+    a stale base was merged (with resurrected cell ids), and the exact
+    document bytes that were written (the client's next base on merge)."""
+    snapshotted: bool
+    merged: bool
+    resurrected: list
+    doc: dict
+
+
+class CellConflictError(ValueError):
+    """A stale save overlaps concurrent edits to the same cell(s).
+
+    Carries the live server document + checksum so the caller can answer
+    409 with everything the editor needs to rebase and retry. Nothing has
+    been written when this is raised.
+    """
+
+    def __init__(self, message, server_doc, server_checksum):
+        super().__init__(message)
+        self.server_doc = server_doc
+        self.server_checksum = server_checksum
+
+
+def _canonical_cell(cell):
+    """Order-insensitive identity of a cell for concurrency comparison.
+
+    The in-memory `_editing` flag is editor UI state (older saves may even
+    have persisted it) — it is not content and must not count as a change.
+    """
+    scrubbed = {k: v for k, v in cell.items() if k != "_editing"}
+    return json.dumps(scrubbed, sort_keys=True)
+
+
+def _merge_three_way(base_doc, current_doc, incoming_doc, server_checksum):
+    """3-way cell merge: attribute each difference to its author via base.
+
+    Per incoming cell id (b=base, c=live server, i=incoming save):
+    - c is None, b is None -> the saver's own add -> keep.
+    - c is None, b == i -> server deleted it, saver untouched -> honour.
+    - c is None, b != i -> server deleted it, saver edited it -> conflict.
+    - c == i -> keep (unchanged on both sides, or changed identically).
+    - b == c -> only the saver changed it -> take i.
+    - b == i -> only the concurrent writer changed it -> take c.
+    - otherwise both changed it differently -> CellConflictError.
+
+    Live-only cells missing from base are concurrent adds -> kept at live
+    position. A live cell missing from the save whose base copy is
+    unchanged was deleted by the saver: the P0 bias keeps it (re-delete to
+    remove) and reports its id in `resurrected` — never silently lose data.
+    A live cell missing from the save whose base copy CHANGED on the server
+    is a delete-vs-edit conflict -> CellConflictError. Document-level fields
+    (title, flags) follow the saver when it changed them, else the live
+    value. Returns (merged_doc, resurrected_ids).
+    """
+    # TODO(tombstones): record deletion intents with timestamps so a future
+    # slice can tell "user deleted this" from "user never saw this" without
+    # the keep-and-flag bias. See the D1 fix-round report.
+    base_by_id = {c.get("id"): c for c in base_doc.get("cells", [])}
+    current_by_id = {c.get("id"): c for c in current_doc.get("cells", [])}
+    resurrected = []
+    conflicts = []
+    merged_cells = []
+    for cell in incoming_doc.get("cells", []):
+        cid = cell.get("id")
+        base_cell = base_by_id.get(cid)
+        live_cell = current_by_id.get(cid)
+        if live_cell is None:
+            if base_cell is None:
+                merged_cells.append(cell)  # saver's own add
+            elif _canonical_cell(base_cell) == _canonical_cell(cell):
+                pass  # server deleted, saver untouched -> honour delete
+            else:
+                conflicts.append(cid)  # server deleted, saver edited it
+            continue
+        if _canonical_cell(live_cell) == _canonical_cell(cell):
+            merged_cells.append(cell)  # unchanged on both sides
+        elif (base_cell is not None and _canonical_cell(base_cell)
+                == _canonical_cell(live_cell)):
+            merged_cells.append(cell)  # only the saver changed it
+        elif (base_cell is not None and _canonical_cell(base_cell)
+                == _canonical_cell(cell)):
+            merged_cells.append(live_cell)  # only the server changed it
+        else:
+            conflicts.append(cid)  # both changed it (or both added it)
+    present = {c.get("id") for c in merged_cells}
+    for index, cell in enumerate(current_doc.get("cells", [])):
+        cid = cell.get("id")
+        if cid in present:
+            continue
+        base_cell = base_by_id.get(cid)
+        if (base_cell is None
+                or _canonical_cell(base_cell) == _canonical_cell(cell)):
+            # Concurrent add — or the saver's delete of a cell the server
+            # left alone (P0 bias: keep it, flagged via `resurrected`).
+            merged_cells.insert(min(index, len(merged_cells)), cell)
+            present.add(cid)
+            if base_cell is not None:
+                resurrected.append(cid)
+        else:
+            conflicts.append(cid)  # saver deleted, server edited it
+    if conflicts:
+        raise CellConflictError(
+            "Conflicting concurrent edits in "
+            f"{len(set(conflicts))} cell(s) — reload and re-apply your change.",
+            current_doc, server_checksum)
+    merged = dict(incoming_doc)
+    for key in ("title", "ai_lock", "ai_hidden", "full_history"):
+        if incoming_doc.get(key) == base_doc.get(key):
+            merged[key] = current_doc.get(key, incoming_doc.get(key))
+        # else: the saver changed it -> incoming (user intent) wins.
+    merged["cells"] = merged_cells
+    return merged, resurrected
+
+
 def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
-                  skip_snapshot=False):
+                  skip_snapshot=False, base_checksum=None, base_doc=None):
     """Persist a document: throttled version snapshot + blob write + re-index.
 
     Autosaves write through immediately (no data loss) but only snapshot a
     FileVersion when the latest one is older than SNAPSHOT_INTERVAL, so a
     burst of edits collapses into one history entry. force_checkpoint=True
     always snapshots (Ctrl+S); skip_snapshot=True never does (used by AI
-    transactional saves after the first mutation of a run). Returns True
-    when a version was snapshotted.
+    transactional saves after the first mutation of a run).
+
+    base_checksum + base_doc describe the state the saver built on (sent by
+    the editor). When the checksum no longer matches the live file, someone
+    else (e.g. an AI tool) changed the notebook concurrently: the save is
+    3-way merged against its base (non-overlapping edits merge; overlapping
+    edits to the same cell raise CellConflictError and nothing is written)
+    and the pre-save post-concurrent state is snapshotted first even inside
+    SNAPSHOT_INTERVAL. A stale save without base content is rejected the
+    same way rather than blind-writing.
+
+    The whole read-check-write sequence holds the file lock and re-reads
+    the row inside it, so no interleaving commit can slip between the
+    freshness check and the write: every write is verified against the
+    state it was based on. Returns a SaveResult.
     """
     _guard_writable(stored)
     validate(doc)
-    # Full-history mode is sticky: once enabled it can never be turned
-    # off again (the toggle confirms this with the user).
-    if not doc.get("full_history"):
-        try:
-            if load(stored).get("full_history"):
-                doc["full_history"] = True
-        except (ValueError, OSError):
-            pass
-    latest = stored.versions[0] if stored.versions else None
-    snapshotted = False
-    snap = None
-    last_snapshot_at = latest.created_at if latest else None
-    if last_snapshot_at is not None and last_snapshot_at.tzinfo is None:
-        # SQLite returns naive datetimes; utcnow() is timezone-aware.
-        last_snapshot_at = last_snapshot_at.replace(tzinfo=UTC)
-    if (not skip_snapshot
-            and (force_checkpoint or last_snapshot_at is None
-                 or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL)):
-        snap = file_service.snapshot_version(stored, source, note=note)
-        snapshotted = True
-
-    if snapshotted and doc.get("full_history"):
-        # Embed the pre-save state in the file itself (without nested
-        # history — otherwise the file would grow exponentially) so every
-        # collaborator's sync reconstructs the full history.
-        try:
-            prev = load(stored)
-        except (ValueError, OSError):
-            prev = None
-        if prev is not None:
-            prev = {k: v for k, v in prev.items()
-                    if k != "synced_history"}
-            entries = [e for e in (doc.get("synced_history") or [])
-                       if isinstance(e, dict)]
-            entries.append({
-                "version": snap.version if snap else None,
-                "created_at": utcnow().isoformat(),
-                "source": snap.source if snap else source,
-                "note": note,
-                "checksum": stored.checksum,
-                "doc": prev,
-            })
-            doc["synced_history"] = entries[-MAX_EMBEDDED_HISTORY:]
-
-    data = serialize(doc)
-    path = file_service.file_path(stored)
     with file_service.file_lock(stored.id):
-        # Atomic write (tmp + replace): a crash or concurrent reader never
-        # sees a half-written notebook. Binary mode: no newline translation,
-        # so the verification hash matches exactly.
+        # Re-read inside the write lock: the check-then-write window closes
+        # here — an interleaving commit lands in the refreshed checksum and
+        # forces the merge/409 path instead of a silent overwrite.
+        db.session.refresh(stored)
+        merged = False
+        resurrected = []
+        if (stored.checksum is not None and base_checksum is not None
+                and base_checksum != stored.checksum):
+            if base_doc is None:
+                raise CellConflictError(
+                    "Notebook changed elsewhere and this save carries no "
+                    "base document — reload and retry.",
+                    load(stored), stored.checksum)
+            validate(base_doc)
+            doc, resurrected = _merge_three_way(
+                base_doc, load(stored), doc, stored.checksum)
+            merged = True
+            # Snapshot the post-concurrent state before writing over it — a
+            # user autosave inside SNAPSHOT_INTERVAL must never silently
+            # overwrite post-AI state without a restorable version.
+            force_checkpoint = True
+        # Full-history mode is sticky: once enabled it can never be turned
+        # off again (the toggle confirms this with the user).
+        if not doc.get("full_history"):
+            try:
+                if load(stored).get("full_history"):
+                    doc["full_history"] = True
+            except (ValueError, OSError):
+                pass
+        latest = stored.versions[0] if stored.versions else None
+        snapshotted = False
+        snap = None
+        last_snapshot_at = latest.created_at if latest else None
+        if last_snapshot_at is not None and last_snapshot_at.tzinfo is None:
+            # SQLite returns naive datetimes; utcnow() is timezone-aware.
+            last_snapshot_at = last_snapshot_at.replace(tzinfo=UTC)
+        if (not skip_snapshot
+                and (force_checkpoint or last_snapshot_at is None
+                     or utcnow() - last_snapshot_at > SNAPSHOT_INTERVAL)):
+            snap = file_service.snapshot_version(stored, source, note=note)
+            snapshotted = True
+
+        if snapshotted and doc.get("full_history"):
+            # Embed the pre-save state in the file itself (without nested
+            # history — otherwise the file would grow exponentially) so every
+            # collaborator's sync reconstructs the full history.
+            try:
+                prev = load(stored)
+            except (ValueError, OSError):
+                prev = None
+            if prev is not None:
+                prev = {k: v for k, v in prev.items()
+                        if k != "synced_history"}
+                entries = [e for e in (doc.get("synced_history") or [])
+                           if isinstance(e, dict)]
+                entries.append({
+                    "version": snap.version if snap else None,
+                    "created_at": utcnow().isoformat(),
+                    "source": snap.source if snap else source,
+                    "note": note,
+                    "checksum": stored.checksum,
+                    "doc": prev,
+                })
+                doc["synced_history"] = entries[-MAX_EMBEDDED_HISTORY:]
+
+        data = serialize(doc)
+        path = file_service.file_path(stored)
+        # Already inside the file lock (see above). Atomic write (tmp +
+        # replace): a crash or concurrent reader never sees a half-written
+        # notebook. Binary mode: no newline translation, so the
+        # verification hash matches exactly.
         tmp_path = f"{path}.tmp-{uuid.uuid4().hex}"
         with open(tmp_path, "wb") as fh:
             fh.write(data.encode("utf-8"))
@@ -558,13 +721,13 @@ def save_document(stored, doc, force_checkpoint=False, note="", source="edit",
                 pass
             raise ValueError("Notebook write failed verification.")
         os.replace(tmp_path, path)
-    stored.size = os.path.getsize(path)
-    stored.checksum = hashlib.sha256(data.encode("utf-8")).hexdigest()
-    stored.updated_at = utcnow()
-    db.session.commit()
-    indexing_service.enqueue_index([stored.id])
-    file_service.refresh_shadow(stored)
-    return snapshotted
+        stored.size = os.path.getsize(path)
+        stored.checksum = hashlib.sha256(data.encode("utf-8")).hexdigest()
+        stored.updated_at = utcnow()
+        db.session.commit()
+        indexing_service.enqueue_index([stored.id])
+        file_service.refresh_shadow(stored)
+        return SaveResult(snapshotted, merged, resurrected, doc)
 
 
 def save_document_ai(stored, doc, note="AI edits"):

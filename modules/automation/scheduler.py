@@ -87,9 +87,14 @@ def tick(app):
                 if random.random() < 0.05:
                     import time as _t
                     _t.sleep(random.uniform(0, 2))
-                runtime.start_run(wf, user, trigger="schedule", app=app,
-                                  trigger_file_id=wf.schedule_file_id,
-                                  params=profile)
+                # Atomic check-and-start: a concurrent tick may have
+                # launched this workflow after due_workflows() checked.
+                with _lock:
+                    if runtime.has_active_run(wf.id):
+                        continue
+                    runtime.start_run(wf, user, trigger="schedule", app=app,
+                                      trigger_file_id=wf.schedule_file_id,
+                                      params=profile)
                 launched += 1
             except Exception:  # noqa: BLE001 - one workflow must not kill tick
                 app.logger.exception("Automation schedule failed for %s", wf.id)

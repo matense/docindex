@@ -23,13 +23,14 @@ Because dashboards are StoredFiles they get ownership, drives/folders,
 trash, FileVersion history, FTS search and the AI agent's core tools free.
 """
 
+import copy
 import hashlib
 import json
 import os
 import threading
 import time
 import uuid
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 from flask import g, has_app_context
@@ -105,7 +106,8 @@ def new_card(type="kpi", title="", prompt=""):
 
 def empty_dashboard(title="Untitled dashboard"):
     return {"version": 1, "title": title or "Untitled dashboard",
-            "cards": [], "attachments": [], "createdFileIds": []}
+            "cards": [], "attachments": [], "createdFileIds": [],
+            "ai_lock": False, "ai_hidden": False}
 
 
 def _snap_size(card):
@@ -274,6 +276,10 @@ def validate(doc):
     doc["title"] = str(doc.get("title") or "Untitled dashboard"
                        )[:TITLE_MAX_CHARS]
     doc["version"] = 1
+    # AI access flags: ai_lock blocks AI edits, ai_hidden blocks all AI
+    # access (read, search and listing) to this dashboard.
+    doc["ai_lock"] = bool(doc.get("ai_lock"))
+    doc["ai_hidden"] = bool(doc.get("ai_hidden"))
     concurrency = doc.get("concurrency", DEFAULT_CONCURRENCY)
     if isinstance(concurrency, bool) or not isinstance(concurrency, int):
         raise ValueError("concurrency must be an integer.")
@@ -344,6 +350,48 @@ def extract(source):
             parts.append(text)
     parts.extend(a.get("name", "") for a in doc.get("attachments", []))
     return "\n".join(p for p in parts if p)
+
+
+def ai_error(stored, write=False):
+    """Error message when the AI may not touch this dashboard, else None.
+
+    ai_hidden blocks every access (the dashboard is invisible to the AI);
+    ai_lock blocks only mutations. Corrupt/unreadable dashboards are treated
+    as accessible — the normal read errors apply.
+    """
+    try:
+        doc = load(stored)
+    except (ValueError, OSError):
+        return None
+    if doc.get("ai_hidden"):
+        return ("This dashboard is hidden from the AI by the user — do not "
+                "read or mention its content. Tell the user they can unhide "
+                "it with the eye button in the dashboard toolbar.")
+    if write and doc.get("ai_lock"):
+        return ("This dashboard is LOCKED against AI edits by the user. Do "
+                "not generate or propose the content in chat — just tell "
+                "the user the dashboard is locked and ask them to unlock it "
+                "with the lock button in the dashboard toolbar, then repeat "
+                "the request.")
+    return None
+
+
+def access_flags(stored):
+    """(ai_lock, ai_hidden) booleans, for AI tool listings. Unreadable
+    dashboards report no flags."""
+    try:
+        document = load(stored)
+    except (ValueError, OSError):
+        return False, False
+    return bool(document.get("ai_lock")), bool(document.get("ai_hidden"))
+
+
+def ai_file_guard(_user, stored):
+    """Core guard hook (registered with agent_service): hides hidden
+    dashboards from every core AI tool (read, grep, search, list)."""
+    if stored.extension != EXTENSION:
+        return None
+    return ai_error(stored)
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +755,97 @@ def run_elapsed(file_id, run_id):
     if start is None:
         return None
     return round(time.monotonic() - start, 1)
+
+
+# Run-owned card keys: written by background runs, never user intent.
+# A stale Builder full-doc save must never wipe these — merge_run_owned()
+# keeps the newer side's values (D1 per-field-merge precedent).
+RUN_OWNED_CARD_KEYS = ("result", "status", "ranAt", "trace", "runId",
+                       "ranSecs")
+
+
+def _ran_at_newer(server_ran, incoming_ran):
+    """Whether the server card's run is strictly newer than the incoming
+    snapshot's. ranAt is utcnow().isoformat(); parsed comparison first,
+    lexicographic fallback for foreign shapes."""
+    if not server_ran:
+        return False
+    if not incoming_ran:
+        return True
+    try:
+        return (datetime.fromisoformat(str(server_ran))
+                > datetime.fromisoformat(str(incoming_ran)))
+    except (ValueError, TypeError):
+        return str(server_ran) > str(incoming_ran)
+
+
+def _server_run_wins(server, incoming):
+    """Whether the live card's run-owned fields beat the incoming snapshot.
+
+    A live running state always beats a non-running snapshot (the status
+    poll and run-status endpoint read it mid-run). Both sides running with
+    different runIds means the snapshot belongs to an older run — the live
+    run wins. Same runId on both sides falls through to the ranAt compare.
+    Intent: the decision is card-level, not field-level — run fields are
+    written atomically by the settle path, so they move as a unit. A
+    strictly newer incoming ranAt wins for the incoming side (symmetric
+    newer-wins; unreachable from the Builder today, which only ever holds
+    older snapshots). An exact ranAt tie falls to incoming (same run or
+    neither side ever ran — nothing newer to protect).
+    """
+    if server.get("status") == "running":
+        if incoming.get("status") != "running":
+            return True
+        if server.get("runId") != incoming.get("runId"):
+            return True
+    return _ran_at_newer(server.get("ranAt"), incoming.get("ranAt"))
+
+
+def merge_run_owned(current_doc, incoming_doc, union_cards=False):
+    """Fold newer background-run state into a stale full-doc save.
+
+    For each card present on both sides, the newer side's run-owned keys
+    (result, status, ranAt, trace, runId, ranSecs) win; structural keys
+    (title, prompt, sizes, inputs, ...) always follow the incoming save
+    (user intent). createdFileIds is an append-only registry — unioned
+    (incoming order first), since a stale snapshot can only lack newer
+    ids, never intentionally remove them (clearing goes only through
+    clear_artifacts, never through full-doc saves).
+
+    Server-only cards (added concurrently, e.g. by an AI tool or another
+    tab) are union-preserved at their live positions (D1 cells precedent)
+    when union_cards is True. The caller sets it only on checksum mismatch
+    — proof someone else wrote since the snapshot — so plain user card
+    deletions (checksums match) stand. A missing base checksum means no
+    evidence either way: membership follows the incoming save.
+    """
+    server_by_id = {c.get("id"): c for c in current_doc.get("cards", [])}
+    for card in incoming_doc.get("cards", []):
+        server = server_by_id.get(card.get("id"))
+        if server is None:
+            continue
+        if _server_run_wins(server, card):
+            for key in RUN_OWNED_CARD_KEYS:
+                if key in server:
+                    card[key] = copy.deepcopy(server[key])
+                else:
+                    card.pop(key, None)
+    if union_cards:
+        present = {c.get("id") for c in incoming_doc.get("cards", [])}
+        merged = list(incoming_doc.get("cards", []))
+        for index, card in enumerate(current_doc.get("cards", [])):
+            if card.get("id") not in present:
+                merged.insert(min(index, len(merged)), copy.deepcopy(card))
+                present.add(card.get("id"))
+        incoming_doc["cards"] = merged
+    seen, merged_ids = set(), []
+    for fid in (list(incoming_doc.get("createdFileIds", []))
+                + list(current_doc.get("createdFileIds", []))):
+        if fid not in seen:
+            seen.add(fid)
+            merged_ids.append(fid)
+    incoming_doc["createdFileIds"] = merged_ids
+    return incoming_doc
 
 
 def _structural_shape(doc):

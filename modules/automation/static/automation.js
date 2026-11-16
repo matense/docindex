@@ -120,7 +120,9 @@
             if (!node) return;
             const refs = new Set();
             scanRefs(node.config || {}, refs);
-            refs.delete('n' + dfId);  // self-reference
+            // Self-reference (custom graph id or the 'nX' convention).
+            refs.delete(exportIds[dfId] || ('n' + dfId));
+            refs.delete('n' + dfId);
             if (refs.size) out[dfId] = [...refs];
         });
         return out;
@@ -691,10 +693,15 @@
     // `port`, only the edge arriving on that input port is considered
     // (the Join node needs the columns of in1 and in2 separately).
     function upstreamFileId(dfId, port) {
+        const gid = exportIds[dfId] || ('n' + dfId);
         const edge = exportGraph().edges.find(e =>
-            e.to === 'n' + dfId && (!port || e.to_port === port));
+            e.to === gid && (!port || e.to_port === port));
         if (!edge) return null;
-        const srcData = nodeData(edge.from.replace(/^n/, ''));
+        // edge.from is a graph id (custom or 'nX') — map it back to the
+        // canvas id before reading the node.
+        const srcDf = refDfId(edge.from);
+        if (srcDf == null) return null;
+        const srcData = nodeData(srcDf);
         if (!srcData || srcData.type !== 'input.file') return null;
         const fid = (srcData.config || {}).file_id;
         return fid ? parseInt(fid, 10) : null;
@@ -720,7 +727,8 @@
         if (port || !root.dataset.workflowId || !root.dataset.upstreamShapeUrl) return;
         apiFetch(root.dataset.upstreamShapeUrl + '?workflow_id=' +
               encodeURIComponent(root.dataset.workflowId) +
-              '&node=' + encodeURIComponent('n' + nodeId), null, { silent: true })
+              '&node=' + encodeURIComponent(
+                  exportIds[nodeId] || ('n' + nodeId)), null, { silent: true })
             .then(shape => {
                 if (shape && shape.certain && (shape.columns || []).length) {
                     cb(shape.columns.map(String));
@@ -1532,7 +1540,8 @@
                 t.value = (currentVal && currentVal !== '__custom__')
                     ? currentVal : '';
                 const refs = exportGraph().nodes
-                    .filter(n => n.id !== 'n' + nodeId)
+                    .filter(n => n.id !== (exportIds[nodeId] ||
+                                           ('n' + nodeId)))
                     .map(n => '{{ ' + n.id + ' }}');
                 if (refs.length) attachDatalist(
                     t, refs, `wf-refs-${nodeId}-${field.name}`);
@@ -1721,7 +1730,8 @@
             input.type = 'text';
             input.className = 'input input-bordered input-sm w-full font-mono';
             const refs = exportGraph().nodes
-                .filter(n => n.id !== 'n' + nodeId)
+                .filter(n => n.id !== (exportIds[nodeId] ||
+                                       ('n' + nodeId)))
                 .map(n => '{{ ' + n.id + ' }}');
             if (refs.length) {
                 attachDatalist(input, refs,
@@ -1874,14 +1884,15 @@
 
         // The AI chat includes this when it asks about the open node.
         window.currentWorkflowNode = {
-            id: 'n' + dfId, type, label: spec.label || type,
+            id: exportIds[dfId] || ('n' + dfId), type,
+            label: spec.label || type,
         };
 
         const head = document.getElementById('wf-config-head');
         head.innerHTML =
             `<span class="wf-node-ico wf-cat-${spec.category || 'Input'}"><i class="fas ${spec.icon || 'fa-cube'}"></i></span>` +
             `<div class="flex-1 min-w-0"><div class="font-bold text-sm truncate">${esc(spec.label || type)}</div>` +
-            `<div class="text-[10px] opacity-40 font-mono">n${dfId} · ${esc(type)}</div></div>`;
+            `<div class="text-[10px] opacity-40 font-mono">${esc(exportIds[dfId] || ('n' + dfId))} · ${esc(type)}</div></div>`;
 
         const desc = document.getElementById('wf-config-desc');
         if (spec.description) {
@@ -1985,7 +1996,7 @@
         }
         const hint = document.createElement('div');
         hint.className = 'wf-ref-tip';
-        hint.innerHTML = `<i class="fas fa-link"></i> Use <code>{{ n${dfId} }}</code>` +
+        hint.innerHTML = `<i class="fas fa-link"></i> Use <code>{{ ${esc(exportIds[dfId] || ('n' + dfId))} }}</code>` +
             ` in other nodes to insert this node's output.`;
         form.appendChild(hint);
 
@@ -2148,12 +2159,24 @@
         document.getElementById('wf-output-modal').showModal();
     }
 
-    // Sub-graph = the node plus every ancestor feeding it (BFS backwards).
+    // Sub-graph = the node plus every ancestor feeding it (BFS backwards
+    // over wires AND {{ ref }} template references — a template-only
+    // dependency carries data at run time even with no wire drawn).
     function ancestorsOf(dfId, graph) {
-        const want = 'n' + dfId;
+        const want = exportIds[dfId] || ('n' + dfId);
         const incoming = {};
         graph.edges.forEach(e => {
             (incoming[e.to] = incoming[e.to] || []).push(e);
+        });
+        const byId = {};
+        graph.nodes.forEach(n => { byId[n.id] = n; });
+        const refDeps = {};
+        graph.nodes.forEach(n => {
+            const refs = new Set();
+            scanRefs(n.config || {}, refs);
+            refs.delete(n.id);  // self-reference
+            refs.delete('in');  // fan-in scope name, not a node
+            refDeps[n.id] = [...refs].filter(r => byId[r]);
         });
         const keep = new Set([want]);
         const queue = [want];
@@ -2163,6 +2186,12 @@
                 if (!keep.has(e.from)) {
                     keep.add(e.from);
                     queue.push(e.from);
+                }
+            });
+            (refDeps[cur] || []).forEach(r => {
+                if (!keep.has(r)) {
+                    keep.add(r);
+                    queue.push(r);
                 }
             });
         }
@@ -2249,7 +2278,7 @@
         wfConsoleOpen();
         clearNodeStates();
         setLive(true);
-        wfConsoleLog(`run up to node n${dfId} — ${graph.nodes.length} node(s)…`);
+        wfConsoleLog(`run up to node ${exportIds[dfId] || ('n' + dfId)} — ${graph.nodes.length} node(s)…`);
         const body = document.getElementById('wf-preview-body');
         body.innerHTML = '<div class="text-xs opacity-40 text-center py-6">' +
             '<i class="fas fa-circle-notch fa-spin"></i> running…</div>';
@@ -2265,7 +2294,10 @@
             const data = await resp.json().catch(() => ({}));
             if (resp.ok && data.outputs) {
                 Object.entries(data.outputs).forEach(([nid, ports]) => {
-                    nodeOutputs[nid.replace(/^n/, '')] = ports;
+                    // Server keys are graph ids (custom or 'nX') — map back
+                    // to the canvas id that owns the DOM node.
+                    const canvasId = refDfId(nid);
+                    nodeOutputs[canvasId != null ? canvasId : nid] = ports;
                 });
             }
             // Replay the run on the canvas: wires flow while live, then each
@@ -2305,7 +2337,11 @@
     }
 
     function nodeCard(nid) {
-        const el = document.getElementById('node-' + String(nid || '').replace(/^n/, ''));
+        // nid is a graph id (custom or 'nX') — map it back to the canvas
+        // id that owns the DOM node.
+        let df = refDfId(String(nid == null ? '' : nid));
+        if (df == null) df = String(nid || '').replace(/^n/, '');
+        const el = document.getElementById('node-' + df);
         return el ? el.querySelector('.wf-node-card') : null;
     }
 

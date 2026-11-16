@@ -687,6 +687,205 @@
 
     let currentUnmount = null;
 
+    // Editor UI state (_editing) is not content — it must not count
+    // as a remote change (or a conflict) when reconciling.
+    function cellSig(cell) {
+        return JSON.stringify(cell, (k, v) =>
+            (k === "_editing" ? undefined : v));
+    }
+
+    // Pure decision: does the live document provably contain everything a
+    // flagged unload flush attempted? Only a YES clears the flag silently.
+    // A base match alone proves nothing for a dirty flush (the flush may
+    // never have arrived), so it banners like anything unproven. Exposed on
+    // NotebookEditor for the node harness (round-3 decision table).
+    function flushedContentConfirmed(pending, liveDoc) {
+        if (!pending || pending.unverifiable) return false;
+        if (pending.base === undefined) return false;  // pre-round-3 flag
+        const liveById = new Map();
+        ((liveDoc && liveDoc.cells) || []).forEach((c) =>
+            liveById.set(c.id, cellSig(c)));
+        for (const ch of (pending.changed || [])) {
+            if (liveById.get(ch.id) !== ch.sig) return false;
+        }
+        for (const id of (pending.deleted || [])) {
+            if (liveById.has(id)) return false;
+        }
+        const flags = pending.flags || {};
+        for (const k of Object.keys(flags)) {
+            if (JSON.stringify((liveDoc || {})[k])
+                    !== JSON.stringify(flags[k])) return false;
+        }
+        return true;
+    }
+
+    // Image paste/drop wiring for one Quill instance — factored to module
+    // scope so the node harness (tests/notebook_image_harness.js) can drive
+    // the shipped logic, failure injection included, with fakes.
+    //
+    // Why this shape (verified against the vendored Quill 2.0.3 source):
+    // - Quill's Clipboard listens for "paste" on quill.root (bubble) and
+    //   bails when defaultPrevented; its Uploader listens for "drop" on
+    //   quill.root (bubble) with NO defaultPrevented check and embeds
+    //   PNG/JPEG files as base64 via FileReader (async — the <img> appears
+    //   after event handlers return). A bubble-phase preventDefault would
+    //   therefore be too late AND duplicate (Quill's base64 + our upload).
+    // - Our listeners attach to `holder` (an ancestor of the editor root)
+    //   in the CAPTURE phase, so they run before Quill's own. Image-only
+    //   pastes and file-image drops are preventDefaulted (plus
+    //   stopPropagation for drop, which Quill would otherwise also consume)
+    //   and uploaded; everything else flows to Quill untouched.
+    // - Whatever Quill still embeds as data: (mixed HTML pastes, HTML
+    //   drags with no files, legacy base64 reopened in the editor) is
+    //   caught by the MutationObserver + explicit sweep and converted the
+    //   same way.
+    // - An upload NEVER destroys the original: img.src is replaced only on
+    //   success; every failure path leaves the image in place and surfaces
+    //   an error status only.
+    function wireImageUploads(quill, ctx) {
+        const defer = ctx.defer || ((fn) => setTimeout(fn, 0));
+        const doFetch = ctx.fetchFn
+            || (typeof fetch === "function" ? fetch : null);
+        const doApiFetch = ctx.apiFetch
+            || (typeof window !== "undefined" ? window.apiFetch : null);
+
+        function uploadImageFile(file, onOk, onErr) {
+            const fd = new FormData();
+            const name = (file && file.name)
+                || ("pasted-image-" + Date.now() + ".png");
+            fd.append("file", file, name);
+            doApiFetch(ctx.assetsUrl, { method: "POST", body: fd },
+                { silent: true })
+                .then((d) => {
+                    if (d && d.ok) {
+                        onOk(d.url);
+                    } else {
+                        ctx.setStatus("error",
+                            (d && d.error) || "image upload failed");
+                        if (onErr) onErr(d);
+                    }
+                })
+                .catch(() => {
+                    ctx.setStatus("error", "image upload failed");
+                    if (onErr) onErr(null);
+                });
+        }
+
+        function insertImageUrl(url) {
+            const range = quill.getSelection(true);
+            quill.insertEmbed(range.index, "image", url, "user");
+        }
+
+        // Upload one data: image in place. src is replaced ONLY on success;
+        // every failure path leaves the original src untouched (and clears
+        // the in-flight flag so a later sweep may retry).
+        function replaceWithUpload(img) {
+            if (!img || img.getAttribute("data-nb-uploading")) return;
+            const src = img.getAttribute("src");
+            if (!src || src.indexOf("data:") !== 0) return;
+            img.setAttribute("data-nb-uploading", "1");
+            const settle = (url) => {
+                img.removeAttribute("data-nb-uploading");
+                if (url) {
+                    img.setAttribute("src", url);
+                    ctx.cell.content = quill.root.innerHTML;
+                    ctx.scheduleSave();
+                }
+            };
+            if (!doFetch) {
+                ctx.setStatus("error", "image upload failed");
+                settle(null);
+                return;
+            }
+            doFetch(src).then((r) => r.blob()).then(
+                (blob) => uploadImageFile(blob, settle,
+                    () => settle(null)),
+                () => {
+                    ctx.setStatus("error", "image upload failed");
+                    settle(null);
+                });
+        }
+
+        function sweepDataUrlImages() {
+            quill.root.querySelectorAll('img[src^="data:"]')
+                .forEach(replaceWithUpload);
+        }
+
+        // Capture on the holder (ancestor of the editor root): runs before
+        // Quill's own bubble listeners on quill.root.
+        ctx.holder.addEventListener("paste", (e) => {
+            const items = (e.clipboardData
+                && e.clipboardData.items) || [];
+            const images = [];
+            for (const item of items) {
+                if (item.kind === "file"
+                        && (item.type || "").indexOf("image/") === 0) {
+                    const f = item.getAsFile();
+                    if (f) images.push(f);
+                }
+            }
+            if (!images.length) {
+                // Plain or HTML paste: Quill inserts it; the observer (and
+                // this sweep) convert any embedded data: image.
+                defer(sweepDataUrlImages);
+                return;
+            }
+            const types = (e.clipboardData
+                && e.clipboardData.types) || [];
+            const imageOnly = !types.some(
+                (t) => String(t).toLowerCase() !== "files");
+            if (!imageOnly) {
+                // Mixed paste (image + text/HTML): never preventDefault —
+                // that would drop the pasted text. Quill inserts the
+                // fragment; the observer converts the image(s).
+                defer(sweepDataUrlImages);
+                return;
+            }
+            e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+            images.forEach((f) => uploadImageFile(f, insertImageUrl));
+        }, true);
+
+        ctx.holder.addEventListener("drop", (e) => {
+            const dt = e.dataTransfer;
+            const images = [];
+            if (dt && dt.files) {
+                for (const f of dt.files) {
+                    if ((f.type || "").indexOf("image/") === 0) {
+                        images.push(f);
+                    }
+                }
+            }
+            if (!images.length) {
+                // HTML drag (e.g. an image from a web page) carries no
+                // file — let it insert, then sweep (no preventDefault: the
+                // drop must land).
+                defer(sweepDataUrlImages);
+                return;
+            }
+            e.preventDefault();
+            // Required, not belt-and-braces: Quill's own drop listener has
+            // no defaultPrevented check and would ALSO embed the file as
+            // base64 (duplicate + bloat).
+            if (e.stopPropagation) e.stopPropagation();
+            images.forEach((f) => uploadImageFile(f, insertImageUrl));
+        }, true);
+
+        if (typeof MutationObserver === "function") {
+            const observer = new MutationObserver(() => {
+                sweepDataUrlImages();
+            });
+            observer.observe(quill.root,
+                { childList: true, subtree: true, attributes: true,
+                  attributeFilter: ["src"] });
+        } else {
+            defer(sweepDataUrlImages);
+        }
+
+        return { uploadImageFile: uploadImageFile,
+                 sweepDataUrlImages: sweepDataUrlImages };
+    }
+
     function mount(root, opts) {
         // Re-mount safety (SPA revisits): tear down the previous instance
         // first — its listeners/timers would otherwise outlive its DOM.
@@ -707,6 +906,95 @@
         // Content checksum — compared against the server to detect external
         // (AI tool) edits while the notebook is open.
         let lastChecksum = opts.checksum || "";
+        // Checksum the server had when our in-memory doc last fully matched
+        // it — sent as base_checksum so a stale autosave merges instead of
+        // wiping concurrent (AI) edits. Only advances on a clean sync; a
+        // remote update that keeps an actively-edited cell aside leaves the
+        // old base so the next save takes the server merge/409 path.
+        let saveBase = opts.checksum || "";
+        // Deep copy of the doc the current base describes — sent as base_doc
+        // so the server can 3-way merge a stale save. saveBase/baseDoc only
+        // advance together on a clean sync; a divergent sync pins both so
+        // the next save takes the merge/409 path.
+        let baseDoc = (opts.doc && Array.isArray(opts.doc.cells))
+            ? JSON.parse(JSON.stringify(opts.doc))
+            : { version: 1, title: "", cells: [] };
+        let conflictRetries = 0;
+        // Set when 409 retries are exhausted: stop the auto-retry loop
+        // (edits stay in memory + flagged) until fresh user intent arrives.
+        let saveHold = false;
+        // Set when a rebase kept local content over a true conflict: the
+        // next successful save says so instead of going silently.
+        let keptLocalNote = false;
+        // Unload-time saves are fire-and-forget (keepalive responses are
+        // unreadable), and a dirty editor never polls so it cannot know it
+        // is stale. Every dirty flush — and every exhausted 409 — flags
+        // the next load to verify, versioned with the attempted checksum
+        // so a provably-clean load clears it silently.
+        const pendingConflictKey = "nb_pending_conflict_" + opts.fileId;
+        function flagPendingConflict() {
+            // Versioned with WHAT we attempted: the base plus every content
+            // change vs that base, so the next load can PROVE landing (all
+            // changed content present) instead of guessing from base
+            // equality — which proves nothing for a dirty flush, since the
+            // flush may never have arrived. Oversized payloads fall back to
+            // always-banner (safe direction).
+            try {
+                const baseSigs = new Map(
+                    (baseDoc.cells || []).map((c) => [c.id, cellSig(c)]));
+                const localIds = new Set();
+                const changed = [];
+                (doc.cells || []).forEach((c) => {
+                    localIds.add(c.id);
+                    if (cellSig(c) !== baseSigs.get(c.id)) {
+                        changed.push({ id: c.id, sig: cellSig(c) });
+                    }
+                });
+                const deleted = (baseDoc.cells || []).map((c) => c.id)
+                    .filter((id) => !localIds.has(id));
+                const flags = {};
+                ["title", "ai_lock", "ai_hidden", "full_history"]
+                    .forEach((k) => {
+                        if (JSON.stringify(doc[k])
+                                !== JSON.stringify(baseDoc[k])) {
+                            flags[k] = doc[k];
+                        }
+                    });
+                const payload = { at: Date.now(), base: saveBase || "",
+                    changed: changed, deleted: deleted, flags: flags };
+                if (JSON.stringify(payload).length > 200000) {
+                    localStorage.setItem(pendingConflictKey,
+                        JSON.stringify({ at: Date.now(),
+                            base: saveBase || "", unverifiable: true }));
+                } else {
+                    localStorage.setItem(pendingConflictKey,
+                        JSON.stringify(payload));
+                }
+            } catch (err) { /* private mode etc. — best effort */ }
+        }
+        function clearPendingConflict() {
+            try { localStorage.removeItem(pendingConflictKey); }
+            catch (err) { /* best effort */ }
+        }
+        function checkPendingConflict() {
+            let pending = null;
+            try {
+                pending = JSON.parse(
+                    localStorage.getItem(pendingConflictKey) || "null");
+            } catch (err) { pending = null; }
+            if (!pending) return;
+            // Clear silently ONLY on proof the flagged content landed: every
+            // changed cell/flag present with flushed content, every flushed
+            // delete absent. A base match alone proves nothing (a lost
+            // flush leaves the server exactly at the base), so unproven
+            // flags banner until the next successful save verifies.
+            if (flushedContentConfirmed(pending, opts.doc)) {
+                clearPendingConflict();
+                return;
+            }
+            setStatus("error", "previous session may have closed with unsynced"
+                + " changes — verify against History, then keep editing");
+        }
 
         // ------------------------------------------------------------------
         // Saving
@@ -730,6 +1018,8 @@
 
         function scheduleSave() {
             dirty = true;
+            saveHold = false;  // fresh user intent always retries
+            conflictRetries = 0;  // ...and re-arms the bounded 409 retry
             setStatus("dirty");
             clearTimeout(timer);
             timer = setTimeout(() => save(false), 800);
@@ -739,44 +1029,94 @@
             if (saving) { dirty = true; return; }
             saving = true;
             setStatus("saving");
+            // Snapshot exactly what is sent: on success THIS becomes the next
+            // base (or the server's exact merged doc does). Later keystrokes
+            // must never move the base under a flight.
+            const outgoing = JSON.parse(JSON.stringify(doc));
             try {
                 // RAW fetch: the error status shows data.error || resp.status,
                 // so HTTP status and body are both needed (apiFetch conflates).
+                // base_checksum + base_doc let the server 3-way merge (or
+                // 409) a stale write instead of wiping concurrent AI edits.
                 const resp = await fetch(opts.saveUrl, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        doc: doc,
+                        doc: outgoing,
                         force_checkpoint: !!forceCheckpoint,
                         note: forceCheckpoint ? "Manual checkpoint" : "",
+                        base_checksum: saveBase,
+                        base_doc: baseDoc,
                     }),
                 });
                 const data = await resp.json();
                 if (resp.ok && data.ok) {
                     dirty = false;
-                    if (data.checksum) lastChecksum = data.checksum;
+                    saveHold = false;
+                    conflictRetries = 0;
+                    if (data.checksum) lastChecksum = saveBase = data.checksum;
+                    if (data.merged && data.doc) {
+                        baseDoc = data.doc;
+                        if (!dirty) applyRemoteDoc(data.doc, data.checksum);
+                    } else {
+                        baseDoc = outgoing;
+                    }
+                    const extras = [];
+                    if (data.merged) extras.push("merged");
+                    if (data.resurrected && data.resurrected.length) {
+                        extras.push("deleted cell kept — re-delete to remove");
+                    }
+                    if (keptLocalNote) {
+                        extras.push("kept your edit over a concurrent change");
+                    }
+                    keptLocalNote = false;
                     const time = (data.saved_at || "").slice(11, 19);
-                    setStatus("saved", time);
+                    setStatus("saved", [time].concat(extras)
+                        .filter(Boolean).join(" · "));
+                    clearPendingConflict();
                     if (window.spaInvalidate) window.spaInvalidate();
+                } else if (resp.status === 409 && data.conflict && data.doc
+                        && data.checksum && conflictRetries < 2) {
+                    // True overlap: adopt the server doc keeping EVERY local
+                    // change — including typed cells the user already blurred
+                    // out of — then retry with the fresh base. The server
+                    // snapshotted its side when it answered 409, so neither
+                    // side is lost.
+                    conflictRetries += 1;
+                    keptLocalNote = rebaseLocalToServer(
+                        data.doc, data.checksum);
+                    saving = false;
+                    return save(forceCheckpoint);
                 } else {
+                    if (resp.status === 409) {
+                        // Retries exhausted: stop the loop, keep the edits
+                        // in memory, flag the next load to verify.
+                        saveHold = true;
+                        flagPendingConflict();
+                    }
                     setStatus("error", data.error || resp.status);
                 }
             } catch (err) {
                 setStatus("error");
             }
             saving = false;
-            if (dirty) scheduleSave();
+            if (dirty && !saveHold) scheduleSave();
         }
 
         function flushSync() {
             if (!dirty) return;
             try {
-                // RAW fetch: keepalive fire-and-forget during SPA teardown;
-                // apiFetch would await JSON and toast on failure.
+                // keepalive is fire-and-forget: the response (including a
+                // 409) can never be read. Non-conflicting unloads still
+                // merge server-side via the base; every dirty flush flags
+                // the next load to verify (versioned — a provably-clean
+                // load clears it). Best effort by browser design.
+                flagPendingConflict();
                 fetch(opts.saveUrl, {
                     method: "POST", keepalive: true,
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ doc: doc }),
+                    body: JSON.stringify({ doc: doc, base_checksum: saveBase,
+                        base_doc: baseDoc }),
                 });
                 dirty = false;
             } catch (err) { /* best effort */ }
@@ -795,6 +1135,7 @@
         function detach() {
             window.removeEventListener("beforeunload", onBeforeUnload);
             document.removeEventListener("keydown", onKeydown);
+            window.removeEventListener("notebook_changed", onNotebookChanged);
         }
         window.addEventListener("beforeunload", onBeforeUnload);
         document.addEventListener("keydown", onKeydown);
@@ -889,9 +1230,194 @@
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
         renderAccessButtons();
+        checkPendingConflict();
+
+        function activeCellIds() {
+            const ids = new Set();
+            doc.cells.forEach((c) => { if (c._editing) ids.add(c.id); });
+            const ae = document.activeElement;
+            const anchor = ae && ae.closest
+                ? ae.closest(".nb-cell") : null;
+            if (anchor && anchor.dataset.cellId) ids.add(anchor.dataset.cellId);
+            return ids;
+        }
+
+        // Adopt a remote document without destroying the active editor:
+        // only the affected .nb-cell nodes are patched, added or removed.
+        // Model and view stay consistent by construction: a cell whose DOM
+        // node must keep the editor (focused/editing) also keeps its local
+        // model content, which pins the save base so the next save takes
+        // the server merge/409 path instead of silently overwriting the
+        // remote change.
+        // keepAllLocal (409 rebase only): full base-aware 3-way — every
+        // local change wins, including typed-then-blurred cells that are no
+        // longer focused. True same-cell conflicts keep the local version
+        // and report keptLocal so the next save says so. Returns the
+        // outcome; the caller decides base advancement.
+        function applyRemoteDoc(remoteDoc, remoteChecksum, keepAllLocal) {
+            if (!remoteDoc || !Array.isArray(remoteDoc.cells)) {
+                return { diverged: false, keptLocal: false };
+            }
+            const baseById = new Map(
+                (baseDoc.cells || []).map((c) => [c.id, c]));
+            const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));
+            const localById = new Map(doc.cells.map((c) => [c.id, c]));
+            const active = activeCellIds();
+            let diverged = false;
+            let keptLocal = false;
+            const keepAside = (cell) => {
+                diverged = true;
+                keptLocal = true;
+                return cell;
+            };
+            const nextCells = [];
+            const seen = new Set();
+            remoteDoc.cells.forEach((rc) => {
+                const id = rc.id;
+                seen.add(id);
+                const b = baseById.get(id);
+                const l = localById.get(id);
+                if (!l) { nextCells.push(rc); return; }
+                if (cellSig(l) === cellSig(rc)) { nextCells.push(rc); return; }
+                // A focused/editing cell keeps its local content so the
+                // model always matches what the (preserved) editor shows.
+                if (active.has(id)) { nextCells.push(keepAside(l)); return; }
+                if (!keepAllLocal) { nextCells.push(rc); return; }
+                if (!b) { nextCells.push(keepAside(l)); return; }
+                if (cellSig(b) === cellSig(rc)) {
+                    diverged = true;  // only local changed → keep it
+                    nextCells.push(l);
+                    return;
+                }
+                if (cellSig(b) === cellSig(l)) {
+                    nextCells.push(rc);  // only server changed → adopt
+                    return;
+                }
+                nextCells.push(keepAside(l));  // both changed → local wins
+            });
+            // Local cells unknown to the server: the editor's own adds, and
+            // cells with an open editor, always survive; a server-side
+            // delete the user never touched is honoured, while a cell the
+            // user changed is kept (the retry then 409s loudly if the
+            // server also changed it — no silent drop either way).
+            localById.forEach((l, id) => {
+                if (seen.has(id) || remoteIds.has(id)) return;
+                if (active.has(id)) {
+                    diverged = true;
+                    nextCells.push(l);
+                    return;
+                }
+                const b = baseById.get(id);
+                if (!b) {
+                    diverged = true;
+                    nextCells.push(l);  // user's own add
+                } else if (cellSig(b) !== cellSig(l)) {
+                    nextCells.push(keepAside(l));  // edited vs deleted
+                }
+                // else: server deleted, user untouched → honour the delete.
+            });
+            doc.cells = nextCells;
+            doc.title = remoteDoc.title;
+            doc.ai_lock = !!remoteDoc.ai_lock;
+            doc.ai_hidden = !!remoteDoc.ai_hidden;
+            if (remoteDoc.full_history && !doc.full_history) {
+                doc.full_history = true;
+                renderFullHistButton();
+            }
+            renderAccessButtons();
+            lastChecksum = remoteChecksum;
+            if (!diverged) {
+                saveBase = remoteChecksum;
+                baseDoc = JSON.parse(JSON.stringify(remoteDoc));
+            }
+            window.dispatchEvent(new CustomEvent("notebook_changed", {
+                detail: { fileId: opts.fileId, checksum: remoteChecksum },
+            }));
+            patchCellNodes();
+            renderToc();
+            return { diverged: diverged, keptLocal: keptLocal };
+        }
+
+        // Reconcile the DOM with doc.cells: update, add or remove only the
+        // affected .nb-cell nodes, then rebuild the insert bars so their
+        // positions match. Nodes holding the active editor (or focus) are
+        // left alone; existing nodes are moved, never cloned, so focus and
+        // editor state survive. Cell action handlers resolve their index
+        // dynamically, so patched ordering stays correct.
+        function patchCellNodes() {
+            const focused = document.activeElement;
+            const active = activeCellIds();
+            const existing = new Map();
+            cellsEl.querySelectorAll(":scope > .nb-cell").forEach((n) => {
+                if (n.dataset.cellId) existing.set(n.dataset.cellId, n);
+            });
+            cellsEl.querySelectorAll(":scope > .nb-add-bar").forEach((b) => {
+                b.remove();
+            });
+            const liveIds = new Set(doc.cells.map((c) => c.id));
+            existing.forEach((node, id) => {
+                if (!liveIds.has(id) && !active.has(id)
+                        && !node.contains(focused)) {
+                    node.remove();
+                    existing.delete(id);
+                }
+            });
+            const frag = document.createDocumentFragment();
+            doc.cells.forEach((cell, i) => {
+                frag.appendChild(makeAddBar(i));
+                let node = existing.get(cell.id);
+                if (node && !node.isConnected) node = null;
+                if (!node) {
+                    node = renderCell(cell, i);
+                } else if (!active.has(cell.id) && !node.contains(focused)
+                        && node._nbSig !== cellSig(cell)) {
+                    renderCellBody(node, cell);
+                }
+                node._nbSig = cellSig(cell);
+                frag.appendChild(node);
+            });
+            frag.appendChild(makeAddBar(doc.cells.length));
+            cellsEl.appendChild(frag);
+        }
+
+        // Conflict resolution after a 409: adopt the server document like a
+        // poll would, but keep EVERY local change (base-aware 3-way, not
+        // just the focused cells) and always advance the save base — the
+        // kept-aside cells are intentional overwrites being retried, and
+        // the server snapshotted its state when it answered 409. Returns
+        // whether any true conflict kept the local version (surfaced on
+        // the next successful save).
+        function rebaseLocalToServer(serverDoc, serverChecksum) {
+            const before = { title: doc.title, ai_lock: !!doc.ai_lock,
+                ai_hidden: !!doc.ai_hidden,
+                full_history: !!doc.full_history };
+            const outcome = applyRemoteDoc(serverDoc, serverChecksum, true);
+            ["title", "ai_lock", "ai_hidden", "full_history"].forEach((k) => {
+                if (before[k] !== baseDoc[k]) doc[k] = before[k];
+            });
+            saveBase = serverChecksum;
+            baseDoc = JSON.parse(JSON.stringify(serverDoc));
+            dirty = true;
+            return outcome.keptLocal;
+        }
+
+        // notebook_changed is dispatched for every adopted remote state
+        // (poll or rebase); this listener owns the "updated remotely"
+        // status, so the event is genuinely consumed in-slice. The poll
+        // is the cross-boundary emission leg (AI tool saves only change
+        // server state; the editor learns of them by polling /doc), and
+        // this window event is the in-page distribution leg — future
+        // consumers (toasts, index badges) hook the same event.
+        function onNotebookChanged(e) {
+            if (!e || !e.detail || e.detail.fileId !== opts.fileId) return;
+            const short = String(e.detail.checksum || "").slice(0, 7);
+            setStatus("saved", "updated remotely"
+                + (short ? " · " + short : ""));
+        }
+        window.addEventListener("notebook_changed", onNotebookChanged);
 
         // External-change watch: when the AI (or another tab) edits this
-        // notebook, refresh the view in place — unsaved local edits win.
+        // notebook, patch only the affected cells — unsaved local edits win.
         async function pollRemote() {
             if (!alive()) { clearInterval(pollTimer); return; }
             const data = await apiFetch(opts.docUrl, null, { silent: true });
@@ -899,19 +1425,7 @@
             try {
                 if (data.checksum === lastChecksum) return;
                 if (dirty || saving) return;  // local edits take precedence
-                doc.cells = data.doc.cells;
-                doc.title = data.doc.title;
-                doc.ai_lock = !!data.doc.ai_lock;
-                doc.ai_hidden = !!data.doc.ai_hidden;
-                if (data.doc.full_history && !doc.full_history) {
-                    doc.full_history = true;
-                    renderFullHistButton();
-                }
-                renderAccessButtons();
-                lastChecksum = data.checksum;
-                doc.cells.forEach((c) => { c._editing = false; });
-                render();
-                setStatus("saved", "updated remotely");
+                applyRemoteDoc(data.doc, data.checksum);
             } catch (err) { /* malformed payload — try again next tick */ }
         }
         const pollTimer = setInterval(pollRemote, 5000);
@@ -1076,7 +1590,8 @@
             grip.title = "Drag to reorder";
             grip.draggable = true;
             grip.addEventListener("dragstart", (e) => {
-                e.dataTransfer.setData("text/nb-cell", String(index));
+                e.dataTransfer.setData("text/nb-cell",
+                    String(doc.cells.indexOf(cell)));
                 // Payload for the AI chat: dropping a cell there references it.
                 e.dataTransfer.setData("application/x-docindex-cell",
                     JSON.stringify({
@@ -1116,16 +1631,20 @@
                 }));
             }
             actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
-                if (index > 0) {
-                    doc.cells.splice(index, 1);
-                    doc.cells.splice(index - 1, 0, cell);
+                // Dynamic index: per-cell patching can reorder nodes without
+                // re-rendering, so never trust the render-time closure.
+                const i = doc.cells.indexOf(cell);
+                if (i > 0) {
+                    doc.cells.splice(i, 1);
+                    doc.cells.splice(i - 1, 0, cell);
                     render(); scheduleSave();
                 }
             }));
             actions.appendChild(mkBtn("fa-arrow-down", "Move down", () => {
-                if (index < doc.cells.length - 1) {
-                    doc.cells.splice(index, 1);
-                    doc.cells.splice(index + 1, 0, cell);
+                const i = doc.cells.indexOf(cell);
+                if (i >= 0 && i < doc.cells.length - 1) {
+                    doc.cells.splice(i, 1);
+                    doc.cells.splice(i + 1, 0, cell);
                     render(); scheduleSave();
                 }
             }));
@@ -1134,7 +1653,8 @@
                     ? window.uiConfirm("Delete this cell?", { danger: true })
                     : Promise.resolve(window.confirm("Delete this cell?")));
                 if (!ok) return;
-                doc.cells.splice(index, 1);
+                const i = doc.cells.indexOf(cell);
+                if (i >= 0) doc.cells.splice(i, 1);
                 render(); scheduleSave();
             }, true));
             head.appendChild(actions);
@@ -1166,13 +1686,15 @@
                 wrap.style.boxShadow = "";
                 const from = parseInt(e.dataTransfer.getData("text/nb-cell"), 10);
                 if (isNaN(from)) return;
-                let to = index + (wrap.dataset.dropPos === "after" ? 1 : 0);
+                let to = doc.cells.indexOf(cell)
+                    + (wrap.dataset.dropPos === "after" ? 1 : 0);
                 if (to === from || to === from + 1) return;  // dropped in place
                 const moved = doc.cells.splice(from, 1)[0];
                 if (from < to) to -= 1;
                 doc.cells.splice(to, 0, moved);
                 render(); scheduleSave();
             });
+            wrap._nbSig = cellSig(cell);
             return wrap;
         }
 
@@ -1547,6 +2069,10 @@
             loadQuill(() => {
                 if (!document.body.contains(holder)) return;  // page swapped away
                 let quill;
+                // Shared image uploader (paste/drop/sweep wiring below) —
+                // assigned synchronously after Quill construction, before
+                // any click can reach the toolbar.
+                let uploadImageFile = null;
                 const handlers = {
                     // Images are uploaded as real files next to the notebook
                     // (same drive/folder) and embedded by URL.
@@ -1557,20 +2083,11 @@
                         input.onchange = () => {
                             const file = input.files && input.files[0];
                             if (!file) return;
-                            const fd = new FormData();
-                            fd.append("file", file);
-                            apiFetch(opts.assetsUrl, { method: "POST", body: fd }, { silent: true })
-                                .then((d) => {
-                                    if (d && d.ok) {
-                                        const range = quill.getSelection(true);
-                                        quill.insertEmbed(range.index, "image",
-                                            d.url, "user");
-                                    } else {
-                                        setStatus("error",
-                                            (d && d.error) || "image upload failed");
-                                    }
-                                })
-                                .catch(() => setStatus("error", "image upload failed"));
+                            uploadImageFile(file, (url) => {
+                                const range = quill.getSelection(true);
+                                quill.insertEmbed(range.index, "image",
+                                    url, "user");
+                            });
                         };
                         input.click();
                     },
@@ -1604,6 +2121,17 @@
                     cell.content = quill.root.innerHTML;
                     scheduleSave();
                 });
+                // Pasted/dropped images become real files via the shared
+                // uploader (capture-phase interception + data: sweep +
+                // observer backstop) — see wireImageUploads.
+                const imgUp = wireImageUploads(quill, {
+                    holder: holder,
+                    assetsUrl: opts.assetsUrl,
+                    setStatus: setStatus,
+                    scheduleSave: scheduleSave,
+                    cell: cell,
+                });
+                uploadImageFile = imgUp.uploadImageFile;
                 // NOTE: don't exit edit mode on blur — Quill's pickers blur
                 // the editor root while opening, which would destroy the
                 // editor mid-click. Blur just saves; the pencil header
@@ -2295,5 +2823,7 @@
     window.NotebookEditor = {
         mount: mount,
         unmount: () => { if (currentUnmount) currentUnmount(); },
+        flushedContentConfirmed: flushedContentConfirmed,
+        wireImageUploads: wireImageUploads,
     };
 })();

@@ -1,6 +1,7 @@
 """Automation module routes: workflow list, editor, runs."""
 
 import json
+import re
 
 from flask import (
     Blueprint,
@@ -20,7 +21,7 @@ from app.models import Drive, Folder, StoredFile
 
 from . import engine, examples, nodes, runtime
 from .models import AutomationFolder, AutomationRun, AutomationWorkflow
-from .registry import active_node_types, palette
+from .registry import _NODE_TYPES, active_node_types, palette
 
 bp = Blueprint("automation", __name__,
                template_folder="templates", static_folder="static")
@@ -259,18 +260,40 @@ def example_use(key):
         engine.validate_graph(graph, active_node_types())
     except engine.WorkflowError as exc:
         # E.g. the example needs a module that is disabled (notebooks).
-        return render_template("automation/list.html",
-                               workflows=(AutomationWorkflow.query
-                                          .filter_by(user_id=current_user.id)
-                                          .order_by(AutomationWorkflow
-                                                    .updated_at.desc()).all()),
+        # Name the owning module so the user knows what to enable, and
+        # render the full list view (same context as index) — a partial
+        # context 500s on the missing template vars.
+        detail = str(exc)
+        unknown = re.search(r"Unknown node type '([^']+)'", detail)
+        owner = (_NODE_TYPES.get(unknown.group(1), {}).get("module")
+                 if unknown else None)
+        if owner and owner != "automation":
+            detail = (f"{detail} The '{owner}' module is disabled — "
+                      "enable it to use this example.")
+        workflows = (AutomationWorkflow.query
+                     .filter_by(user_id=current_user.id)
+                     .order_by(AutomationWorkflow
+                               .updated_at.desc()).all())
+        folders, _by_id, flat_folders = _folder_tree()
+        counts = dict(
+            db.session.query(AutomationWorkflow.folder_id,
+                             db.func.count(AutomationWorkflow.id))
+            .filter(AutomationWorkflow.user_id == current_user.id)
+            .group_by(AutomationWorkflow.folder_id).all())
+        wf_by_folder = {}
+        for w in workflows:
+            wf_by_folder.setdefault(w.folder_id, []).append(w)
+        return render_template("automation/list.html", workflows=workflows,
                                examples=examples.EXAMPLES,
                                recent_runs=(AutomationRun.query
                                             .filter_by(user_id=current_user.id)
                                             .order_by(AutomationRun.id.desc())
                                             .limit(10).all()),
+                               folders=folders, flat_folders=flat_folders,
+                               folder_counts=counts, q="",
+                               wf_by_folder=wf_by_folder, visible=None,
                                example_error=f"Cannot use "
-                                             f"'{example['name']}': {exc}"), 400
+                                             f"'{example['name']}': {detail}"), 400
     workflow = AutomationWorkflow(
         user_id=current_user.id, name=example["name"][:160],
         description=example["description"], graph=json.dumps(graph))
@@ -801,7 +824,8 @@ def diagnose(workflow_id):
 def preview(workflow_id):
     """Execute a graph fragment (e.g. a node and its ancestors) without
     persisting a run — the editor's right-click "run up to this node".
-    With dry_run=true, save/output nodes are stubbed (no files written)."""
+    With dry_run=true, save/output nodes are stubbed (no files written),
+    run inputs fall back to placeholders, and copy/move nodes are no-ops."""
     _owned_workflow(workflow_id)  # ownership check only
     data = request.get_json(silent=True) or {}
     raw = data.get("graph")
@@ -834,6 +858,45 @@ def preview(workflow_id):
                     spec = node_types[tname]["spec"]
                     node_types[tname] = {"spec": spec,
                                          "executor": _dry_save(tname),
+                                         "module": node_types[tname]["module"]}
+            # Stub run inputs so a fragment previews without answers, and
+            # no-op the file movers so nothing is relocated on dry runs.
+            def _dry_param(ctx, config, inputs):
+                name = (config.get("param") or "").strip() or "param"
+                kind = config.get("kind") or "text"
+                if kind == "file":
+                    ctx["log"](f"[dry run] run input '{name}' (file) skipped")
+                    return engine.p_files([])
+                value = (config.get("default") or "[dry run]").strip() \
+                    or "[dry run]"
+                ctx["log"](f"[dry run] run input '{name}' → '{value}'")
+                return engine.p_text(value)
+
+            def _dry_drive(ctx, config, inputs):
+                name = (config.get("param") or "").strip() or "drive"
+                ctx["log"](f"[dry run] drive input '{name}' skipped")
+                return engine.p_drive(0, "[dry run]")
+
+            def _dry_trigger(ctx, config, inputs):
+                ctx["log"]("[dry run] trigger input skipped")
+                return engine.p_text("[dry run trigger]")
+
+            def _dry_transfer(kind):
+                def _run(ctx, config, inputs):
+                    ctx["log"](f"[dry run] would {kind} (no files touched)")
+                    if "in" in inputs:
+                        return inputs["in"]
+                    return engine.p_text(f"[dry run] {kind}")
+                return _run
+            for tname, stub in (
+                    ("input.param", _dry_param),
+                    ("input.drive", _dry_drive),
+                    ("input.trigger", _dry_trigger),
+                    ("output.copy_file", _dry_transfer("copy")),
+                    ("output.move_file", _dry_transfer("move"))):
+                if tname in node_types:
+                    spec = node_types[tname]["spec"]
+                    node_types[tname] = {"spec": spec, "executor": stub,
                                          "module": node_types[tname]["module"]}
         outputs, results, created = engine.execute_graph(
             graph, {"user": current_user, "app": current_app},

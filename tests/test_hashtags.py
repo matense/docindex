@@ -1,9 +1,12 @@
 import io
 import json
+from collections import Counter
 from unittest.mock import patch
 
+from sqlalchemy import event
+
 from app.extensions import db
-from app.models import Drive, StoredFile, User
+from app.models import Drive, FileIndex, StoredFile, User
 from app.services import agent_service, hashtag_service, search_service
 
 
@@ -306,3 +309,36 @@ def test_agent_search_results_include_hashtags(auth_client, app, user):
         assert result["total"] == 1
         assert len(result["results"]) == 1
         assert result["results"][0]["tags"] == ["searchable"]
+
+
+def test_get_all_tags_matches_full_row_reference(auth_client, app, user):
+    """get_all_tags() must return the same counts as counting full rows,
+    without selecting the bulky extracted_text column."""
+    _upload(auth_client, "g1.txt", b"first file body")
+    _upload(auth_client, "g2.txt", b"second file body")
+    with app.app_context():
+        files = StoredFile.query.order_by(StoredFile.id).all()
+        hashtag_service.set_tags(files[0], ["common", "alpha"], source="user")
+        hashtag_service.set_tags(files[1], ["common", "beta"], source="user")
+        user_obj = db.session.get(User, user)
+        # Reference: parse every full FileIndex row in Python.
+        expected = Counter()
+        for index in FileIndex.query.all():
+            for tag in hashtag_service.get_tags(index):
+                expected[tag] += 1
+        expected = sorted(expected.items(), key=lambda kv: (-kv[1], kv[0]))
+
+        stmts = []
+        engine = db.engine
+
+        def _rec(conn, cursor, statement, params, context, executemany):
+            stmts.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _rec)
+        try:
+            got = hashtag_service.get_all_tags(user_obj)
+        finally:
+            event.remove(engine, "before_cursor_execute", _rec)
+        assert got == expected
+        assert expected == [("common", 2), ("alpha", 1), ("beta", 1)]
+        assert not any("extracted_text" in s for s in stmts), stmts

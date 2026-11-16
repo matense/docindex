@@ -332,3 +332,27 @@ def test_selection_move_and_copy_refuse_synced_drive(auth_client, app, user):
     with app.app_context():
         # nothing was moved or copied
         assert StoredFile.query.filter_by(name="orig.txt").count() == 1
+
+
+def test_index_listing_defers_extracted_text(auth_client, app):
+    """The drive listing renders the same file names without selecting
+    the bulky extracted_text column."""
+    from sqlalchemy import event
+    _upload(auth_client, "listed-a.txt", b"alpha listing body")
+    _upload(auth_client, "listed-b.txt", b"beta listing body")
+    stmts = []
+    with app.app_context():
+        engine = db.engine
+
+    def _rec(conn, cursor, statement, params, context, executemany):
+        stmts.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _rec)
+    try:
+        resp = auth_client.get("/")
+    finally:
+        event.remove(engine, "before_cursor_execute", _rec)
+    assert resp.status_code == 200
+    assert b"listed-a.txt" in resp.data
+    assert b"listed-b.txt" in resp.data
+    assert not any("extracted_text" in s for s in stmts), stmts

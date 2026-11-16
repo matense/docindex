@@ -5,6 +5,12 @@ payloads ({"columns", "rows"}) and returns one; pandas does the heavy
 lifting via engine.table_to_df / df_to_table.
 """
 
+import ast
+import keyword
+import re
+
+from modules.pyrun.evaluate import evaluate as _pyrun_evaluate
+
 from .engine import (
     WorkflowError,
     as_table,
@@ -19,6 +25,10 @@ from .registry import register_node_type
 
 _AGG_FUNCS = {"sum": "sum", "count": "count", "avg": "mean",
               "min": "min", "max": "max"}
+
+# Compute-column row cap: each row is a full pyrun interpreter run, so the
+# ceiling sits an order of magnitude below the 100k iteration budget.
+_TABLE_COMPUTE_MAX_ROWS = 10000
 
 
 def _require_column(df, name, node_label):
@@ -221,12 +231,117 @@ def _exec_table_compute(ctx, config, inputs):
         raise WorkflowError("Configure the new column name and its formula.")
     if new_column in df.columns:
         raise WorkflowError(f"Column '{new_column}' already exists.")
+    if len(df) > _TABLE_COMPUTE_MAX_ROWS:
+        raise WorkflowError(
+            f"Compute column: the table has {len(df)} rows, which exceeds "
+            f"the limit of {_TABLE_COMPUTE_MAX_ROWS} rows per run — "
+            "slice the table to fewer rows first and run again.")
+    mapping = _formula_column_map(list(df.columns))
+    rewritten = _rewrite_formula(formula, mapping)
+    columns = [str(c) for c in df.columns]
+    values = []
+    for i in range(len(df)):
+        variables = {mapping[c]: _formula_cell(df.iat[i, j])
+                     for j, c in enumerate(columns)}
+        outcome = _pyrun_evaluate(rewritten, variables=variables)
+        if not outcome.get("ok"):
+            raise WorkflowError("The formula could not be evaluated: "
+                                f"{outcome.get('error')}")
+        values.append(outcome.get("value"))
     try:
-        df[new_column] = df.eval(formula, engine="python")
-    except Exception as exc:  # pandas raises several exception types
+        df[new_column] = values
+    except Exception as exc:
         raise WorkflowError(f"The formula could not be evaluated: {exc}") from exc
     ctx["log"](f"computed column '{new_column}' = {formula}")
     return p_table(**df_to_table(df))
+
+
+_BACKTICK_FORMULA_RE = re.compile(r"`([^`\n]+)`")
+
+
+def _formula_column_map(columns):
+    """Map each table column to a pyrun-safe variable name.
+
+    Columns that are already plain identifiers (non-keyword, no "__"
+    prefix) keep their name so formulas — and sandbox error messages —
+    stay readable; anything else (spaces, punctuation, keywords,
+    dunder-looking headers) gets a generated ``col_<n>`` alias that
+    cannot collide with a real column name.
+    """
+    originals = [str(c) for c in columns]
+    taken = set(originals)
+    mapping = {}
+    used = set()
+    for i, name in enumerate(originals):
+        if (name.isidentifier() and not keyword.iskeyword(name)
+                and not name.startswith("__") and name not in used):
+            safe = name
+        else:
+            safe = f"col_{i}"
+            while safe in used or safe in taken:
+                safe += "_"
+        mapping[name] = safe
+        used.add(safe)
+    return mapping
+
+
+class _FormulaRenamer(ast.NodeTransformer):
+    """Rewrite bare column references to their sandbox-safe aliases."""
+
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load) and node.id in self.mapping:
+            return ast.copy_location(
+                ast.Name(id=self.mapping[node.id], ctx=ast.Load()), node)
+        return node
+
+
+def _rewrite_formula(formula, mapping):
+    """Resolve backtick-quoted columns and alias bare column names.
+
+    The result is a plain expression over safe identifiers; anything
+    else in the text (attribute access, calls, subscripts) is left for
+    the pyrun sandbox to accept or deny — there is no local allowlist
+    to keep in sync.
+    """
+    def _backticked(match):
+        name = match.group(1)
+        if name not in mapping:
+            raise WorkflowError(f"Compute column: unknown column '{name}'.")
+        return mapping[name]
+
+    rewritten = _BACKTICK_FORMULA_RE.sub(_backticked, formula)
+    if "`" in rewritten:
+        raise WorkflowError("Compute column: unbalanced backticks in formula.")
+    try:
+        tree = ast.parse(rewritten, mode="eval")
+    except (SyntaxError, ValueError) as exc:
+        raise WorkflowError(
+            f"The formula could not be evaluated: {exc}") from exc
+    return ast.unparse(_FormulaRenamer(mapping).visit(tree))
+
+
+def _formula_cell(value):
+    """Coerce one DataFrame cell to a JSON value for the sandbox."""
+    if isinstance(value, str):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            value = item()
+        except (AttributeError, TypeError, ValueError):
+            pass
+    if value is None:
+        return None
+    try:
+        import pandas as _pd
+        if _pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def _exec_save_table(ctx, config, inputs):

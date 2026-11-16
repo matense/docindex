@@ -202,6 +202,7 @@
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
             dirty: false, saving: false, saveTimer: null, saveError: "",
+            pollTimer: null,
             ptrOp: null, pickFor: null, pendingDelCard: null, usageHi: null, els: {}
         };
         if (!Array.isArray(S.doc.cards)) S.doc.cards = [];
@@ -209,6 +210,7 @@
 
         buildSkeleton(S);
         renderAll(S);
+        startBuilderStatusPoll(S);
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -238,6 +240,10 @@
 
         root._dashTeardown = function () {
             ac.abort();
+            if (S.pollTimer) {
+                clearInterval(S.pollTimer);
+                S.pollTimer = null;
+            }
             try { window.removeEventListener("beforeunload", S._onUnload); } catch (e) { /* noop */ }
             root._dashTeardown = null;
             root._dash = null;
@@ -288,6 +294,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 doc: S.doc,
+                base_checksum: S.checksum || null,
                 force_checkpoint: !!forceCheckpoint,
                 note: forceCheckpoint ? "Manual checkpoint" : ""
             })
@@ -324,7 +331,8 @@
             fetch(S.opts.saveUrl, {
                 method: "POST", keepalive: true,
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ doc: S.doc })
+                body: JSON.stringify({ doc: S.doc,
+                    base_checksum: S.checksum || null })
             });
             S.dirty = false;
         } catch (e) { /* best effort */ }
@@ -355,6 +363,102 @@
         closeRefPick(S);
         renderAttach(S);
         renderGrid(S);
+    }
+
+    // D3: fold newer background-run state into the Builder's local doc.
+    // Pure merge (node-testable): for each card on both sides the newer
+    // side's run-owned keys win as a unit (card-level, not field-level —
+    // the settle path writes them atomically); structural keys (title,
+    // prompt, sizes, inputs) always stay local (user intent).
+    // Both sides running with different runIds means the local snapshot
+    // belongs to an older run — remote wins; same runId falls back to
+    // ranAt (tie keeps local: same run or neither ever ran). The ranAt
+    // string compare relies on the server's identical utcnow().isoformat()
+    // format. createdFileIds unions (append-only; cleared only via the
+    // dedicated endpoint, never through full-doc saves).
+    // Never touches S.checksum — the caller takes it from the doc fetch.
+    function mergeRunOwned(S, remote) {
+        var byId = {};
+        ((remote && remote.cards) || []).forEach(function (c) {
+            byId[c.id] = c;
+        });
+        var changed = [];
+        (S.doc.cards || []).forEach(function (card) {
+            var rc = byId[card.id];
+            if (!rc) return;
+            var bothRunning = rc.status === "running" &&
+                card.status === "running";
+            var remoteRunWins = (bothRunning && rc.runId !== card.runId) ||
+                (rc.status === "running" && card.status !== "running");
+            var remoteNewer = !!rc.ranAt &&
+                (!card.ranAt || rc.ranAt > card.ranAt);
+            if (remoteRunWins || remoteNewer) {
+                ["result", "status", "ranAt", "trace",
+                    "runId", "ranSecs"].forEach(function (k) {
+                    if (rc[k] !== undefined) {
+                        card[k] = JSON.parse(JSON.stringify(rc[k]));
+                    } else { delete card[k]; }
+                });
+                changed.push(card.id);
+            }
+        });
+        var seen = {}, ids = [];
+        ((S.doc.createdFileIds || [])
+            .concat((remote && remote.createdFileIds) || [])
+        ).forEach(function (fid) {
+            if (!seen[fid]) { seen[fid] = true; ids.push(fid); }
+        });
+        S.doc.createdFileIds = ids;
+        return changed;
+    }
+
+    // D3: the Builder subscribes to the card-change channel (aggregate
+    // status poll, View precedent; statusUrl/docUrl arrive via edit.html
+    // opts and VIEW_STATUS_MS shares this IIFE scope). On change the full
+    // doc is re-read and only run-owned fields merge in — local structural
+    // edits are never clobbered and footers update in place (no re-render:
+    // focus stays). Out of scope by design: cards added/removed elsewhere
+    // do NOT propagate through this channel (unknown/removed ids never
+    // trigger a doc fetch) — they appear/disappear on reload or save.
+    function startBuilderStatusPoll(S) {
+        if (!S.opts.statusUrl) return;
+        S.pollTimer = setInterval(function () {
+            if (!document.body.contains(S.root)) {
+                clearInterval(S.pollTimer);
+                S.pollTimer = null;
+                return;
+            }
+            fetch(S.opts.statusUrl, { headers: { "Accept": "application/json" } })
+                .then(function (resp) { return resp.json(); })
+                .then(function (data) {
+                    if (!data || !data.ok || !data.cards) return;
+                    var stale = Object.keys(data.cards).some(function (id) {
+                        var card = cardById(S.doc, id);
+                        var remote = data.cards[id];
+                        return card && remote &&
+                            (card.status !== remote.status ||
+                                card.ranAt !== remote.ranAt);
+                    });
+                    if (!stale) return;
+                    fetch(S.opts.docUrl, { headers: { "Accept": "application/json" } })
+                        .then(function (resp) { return resp.json(); })
+                        .then(function (doc) {
+                            if (!doc || !doc.ok || !doc.doc) return;
+                            var changed = mergeRunOwned(S, doc.doc);
+                            if (doc.checksum) S.checksum = doc.checksum;
+                            changed.forEach(function (id) {
+                                var node = gridCardEl(S, id);
+                                var card = cardById(S.doc, id);
+                                if (node && card) {
+                                    var ran = node.querySelector(".dash-ran");
+                                    if (ran) ran.textContent = ranFull(card);
+                                }
+                            });
+                        })
+                        .catch(function () { /* next tick */ });
+                })
+                .catch(function () { /* next tick */ });
+        }, VIEW_STATUS_MS);
     }
 
     function buildSkeleton(S) {
@@ -1781,7 +1885,7 @@
             charts: {}, observers: [], timers: [],
             inFlight: {}, runAllActive: false, runAllStop: false, els: {},
             live: {}, consoleFor: null, consoleLive: null,
-            consoleReader: null, consoleDismissed: false
+            consoleReaders: {}, consoleDismissed: false
         };
         if (!Array.isArray(V.doc.cards)) V.doc.cards = [];
         if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
@@ -1814,10 +1918,7 @@
             ac.abort();
             stopViewTimers(V);
             destroyViewCharts(V);
-            if (V.consoleReader) {
-                try { V.consoleReader.cancel(); } catch (e) { /* noop */ }
-                V.consoleReader = null;
-            }
+            cancelConsoleReaders(V);
             V.consoleLive = null;
             root._dashTeardown = null;
             root._dash = null;
@@ -2063,6 +2164,25 @@
         return V.live[cardId];
     }
 
+    function setConsoleReader(V, cardId, reader) {
+        if (!V.consoleReaders) V.consoleReaders = {};
+        V.consoleReaders[cardId] = reader;
+    }
+
+    function clearConsoleReader(V, cardId, reader) {
+        if (!V.consoleReaders) return;
+        if (!reader || V.consoleReaders[cardId] === reader) {
+            delete V.consoleReaders[cardId];
+        }
+    }
+
+    function cancelConsoleReaders(V) {
+        Object.keys(V.consoleReaders || {}).forEach(function (cardId) {
+            try { V.consoleReaders[cardId].cancel(); } catch (e) { /* noop */ }
+        });
+        V.consoleReaders = {};
+    }
+
     function livePopupHTML(buf, live) {
         var head = '<div class="dash-console-pop-head"><span>Run console · ' +
             (live ? "live · " : "") + buf.frames.length +
@@ -2108,10 +2228,11 @@
         var buf = V.live[cardId];
         var frames = 0;
         var settled = false;
+        var reader = null;
         var finishLive = function (ok) {
             if (settled) return;
             settled = true;
-            V.consoleReader = null;
+            clearConsoleReader(V, cardId, reader);
             V.consoleLive = null;
             buf.done = true;
             if (ok) {
@@ -2137,8 +2258,8 @@
             if (!resp.ok || !resp.body || !resp.body.getReader) {
                 throw new Error("no stream");
             }
-            var reader = resp.body.getReader();
-            V.consoleReader = reader;
+            reader = resp.body.getReader();
+            setConsoleReader(V, cardId, reader);
             var decoder = new TextDecoder();
             var buf = "";
             var pumpStream = function () {
@@ -2169,11 +2290,11 @@
         }).catch(function () {
             if (V.consoleDismissed) {
                 V.consoleDismissed = false;
-                V.consoleReader = null;
+                clearConsoleReader(V, cardId, reader);
                 V.consoleLive = null;
                 finishViewRun(V, cardId, done);
             } else if (!settled && frames === 0) {
-                V.consoleReader = null;
+                clearConsoleReader(V, cardId, reader);
                 V.consoleLive = null;
                 closeConsole(V);
                 fallback();
@@ -2758,6 +2879,18 @@
         V.timers.push(timer);
     }
 
+    // Same-card concurrency is impossible, so the per-card reader map holds
+    // at most one live reader per card (i.e. per run): both stream call
+    // sites refuse in-flight/running cards synchronously through
+    // canStartCardRun below, the run button is disabled while running, and
+    // the server rejects a second start with 409 under the dashboard lock
+    // before the client ever creates a reader (resp.ok gate in
+    // streamCardRun). A sequential re-run only clears its own entry via
+    // clearConsoleReader's identity guard.
+    function canStartCardRun(V, card) {
+        return !!card && !V.inFlight[card.id] && card.status !== "running";
+    }
+
     function finishViewRun(V, cardId, done) {
         fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
             .then(function (resp) { return resp.json(); })
@@ -2782,7 +2915,7 @@
     function refreshCard(V, cardId) {
         var card = cardById(V.doc, cardId);
         if (!card) return;
-        if (V.inFlight[cardId] || card.status === "running") {
+        if (!canStartCardRun(V, card)) {
             viewToast(V, "This card is already running — wait.");
             return;
         }
@@ -2859,7 +2992,7 @@
                     active++;
                     paint();
                     var card = cardById(V.doc, id);
-                    if (!card || V.inFlight[id] || card.status === "running") {
+                    if (!canStartCardRun(V, card)) {
                         settle();
                         return;
                     }
@@ -2981,6 +3114,8 @@
 
     window.DashboardEditor = {
         mount: mount,
+        mergeRunOwned: mergeRunOwned,
+        startBuilderStatusPoll: startBuilderStatusPoll,
         CARD_TYPES: CARD_TYPES,
         TYPE_META: TYPE_META,
         WIDTH_STEPS: WIDTH_STEPS,

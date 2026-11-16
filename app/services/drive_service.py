@@ -168,43 +168,58 @@ def trash_drive(user, drive_id):
     (anything already in the trash beforehand stays there). Mirror synced
     drives skip the trash and are removed immediately instead — the real
     files are never touched. Shared (writable sync) drives trash normally
-    (rows only).
+    (rows only). The whole batch is committed once, so a mid-loop failure
+    rolls everything back instead of leaving a half-trashed drive.
     Returns (drive, error)."""
-    from . import file_service, sync_service
+    from . import file_service, search_service, sync_service
     drive = Drive.query.filter_by(id=drive_id, user_id=user.id).first()
     if not drive or drive.deleted_at is not None:
         return None, "Drive not found."
     if drive.is_readonly:
         sync_service.remove_synced_drive(drive)
         return drive, None
+    targets = (StoredFile.query
+               .filter_by(drive_id=drive.id, user_id=user.id)
+               .filter(StoredFile.deleted_at.is_(None)).all())
+    for stored in targets:
+        if file_service.is_readonly_file(stored):
+            raise ValueError(f"File '{stored.name}' is read-only.")
     now = utcnow()
     drive.deleted_at = now
     db.session.flush()
-    for stored in (StoredFile.query
-                   .filter_by(drive_id=drive.id, user_id=user.id)
-                   .filter(StoredFile.deleted_at.is_(None)).all()):
-        file_service.delete_file(stored)  # own timestamp + FTS cleanup
+    for stored in targets:
         stored.deleted_at = now  # same stamp as the drive (joint restore)
+        db.session.flush()
+        search_service.fts_delete(stored.id, commit=False)
     db.session.commit()
+    file_service.invalidate_dupe_cache(user.id, drive.id)
     return drive, None
 
 
 def restore_drive(user, drive_id):
-    """Undo a soft-delete, including the files trashed with the drive.
-    Returns the drive or None."""
-    from . import file_service
+    """Undo a soft-delete, including the files trashed with the drive
+    (matched by the batch stamp — files trashed beforehand keep their own
+    stamp and stay trashed). Committed once. Returns the drive or None."""
+    from . import file_service, search_service
     drive = (Drive.query.filter_by(id=drive_id, user_id=user.id)
              .filter(Drive.deleted_at.isnot(None)).first())
     if drive is None:
         return None
     trashed_at = drive.deleted_at
+    batch = (StoredFile.query
+             .filter_by(drive_id=drive.id, user_id=user.id,
+                        deleted_at=trashed_at).all())
+    for stored in batch:
+        if file_service.is_readonly_file(stored):
+            raise ValueError(f"File '{stored.name}' is read-only.")
     drive.deleted_at = None
     db.session.flush()
-    for stored in (StoredFile.query
-                   .filter_by(drive_id=drive.id, user_id=user.id,
-                              deleted_at=trashed_at).all()):
-        file_service.restore_file(stored)
+    for stored in batch:
+        stored.deleted_at = None
+        db.session.flush()
+        search_service.fts_upsert(stored.id, commit=False)
     db.session.commit()
+    file_service.invalidate_dupe_cache(user.id, drive.id)
     return drive
 
 

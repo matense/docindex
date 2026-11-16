@@ -44,11 +44,14 @@ _live = {}
 # the task's stream endpoint). Events are NDJSON-shaped dicts; None is the
 # end-of-stream sentinel.
 _subscribers = {}
-# task_id -> deque of recent broadcast events. A window (re)opened mid-run
-# subscribes late and would otherwise miss everything emitted while it was
-# away; the stream endpoint replays this buffer first so the reopened chat
-# rebuilds live state (partial thinking, running tool chip) and continues
-# live from there. Bounded per task, dropped when the task finishes.
+# task_id -> deque of recent UNPERSISTED live events. A window (re)opened
+# mid-run subscribes late and would otherwise miss everything emitted while
+# it was away; the stream endpoint replays this buffer first so the reopened
+# chat rebuilds live state (partial thinking, running tool chip) and
+# continues live from there. Completed messages are NOT replayed: every
+# persisted message already reaches the reopened window through the
+# conversation transcript, so buffering it too would render it twice.
+# Bounded per task, dropped when the task finishes.
 _replay = {}
 _REPLAY_MAX = 400
 _lock = threading.Lock()
@@ -85,10 +88,18 @@ def unsubscribe(task_id, q):
             _subscribers.pop(task_id, None)
 
 
-def _broadcast(task_id, event):
+def _broadcast(task_id, event, buffer=True):
+    """Deliver a live event to subscribers, buffering it for late ones.
+
+    ``buffer=False`` is for events whose content is already persisted as a
+    ChatMessage: live subscribers still receive them, but they are kept out
+    of the replay buffer — a window reopened mid-run loads them from the
+    conversation transcript instead, so buffering them too would render
+    them twice.
+    """
     # The None end-of-stream sentinel is live-only, never replayed.
     with _lock:
-        if event is not None:
+        if event is not None and buffer:
             buf = _replay.get(task_id)
             if buf is None:
                 buf = _replay[task_id] = collections.deque(maxlen=_REPLAY_MAX)
@@ -96,6 +107,23 @@ def _broadcast(task_id, event):
         subs = list(_subscribers.get(task_id, ()))
     for q in subs:
         q.put(event)
+
+
+def _drop_replay(task_id, *types):
+    """Drop buffered events of the given types for a task.
+
+    Used when a thinking/answer block completes: its token events are now
+    superseded by the persisted whole message, so a late subscriber must
+    not replay the stale partials (it loads the message from the
+    transcript instead).
+    """
+    with _lock:
+        buf = _replay.get(task_id)
+        if not buf:
+            return
+        _replay[task_id] = collections.deque(
+            (ev for ev in buf if ev.get("type") not in types),
+            maxlen=_REPLAY_MAX)
 
 
 # Extended budget for per-message "long horizon" runs: the run gets at
@@ -532,7 +560,10 @@ def _run_task(task_id, app):
     )
 
     conv_id = task.conversation_id
-    pending_step = None  # {"label", "detail"} waiting for its tool_result
+    # The in-flight step row: persisted the moment the step arrives (so a
+    # window reopened mid-run sees it in the transcript), with the tool
+    # summary appended when the result lands.
+    pending_step = None
     answer = None
     stopped = False
     pending_usage = []  # ("usage" event payloads) not yet linked to a message
@@ -567,10 +598,9 @@ def _run_task(task_id, app):
         nonlocal pending_step
         if pending_step is None:
             return
-        text = f"{pending_step['label']}: {pending_step['detail']}"
         if summary:
-            text += f" → {summary}"
-        persist("step", text)
+            pending_step.content += f" → {summary}"
+            db.session.commit()
         pending_step = None
 
     try:
@@ -582,6 +612,7 @@ def _run_task(task_id, app):
         block_tokens = None  # None | "thinking" | "answer" (migrate logic)
         for kind, payload in events:
             ev = None
+            buffer = True  # False once the event's content is persisted
             if kind == "thinking_token":
                 block_tokens = "thinking"
                 ev = {"type": "thinking_token", "content": payload}
@@ -590,10 +621,12 @@ def _run_task(task_id, app):
                 ev = {"type": "answer_token", "content": payload}
             elif kind == "thinking":
                 persist("thinking", payload)
+                _drop_replay(task_id, "thinking_token")
                 if block_tokens != "thinking":
                     ev = {"type": "thinking", "content": payload}
                     if block_tokens == "answer":
                         ev["migrate"] = True
+                    buffer = False
                 block_tokens = None
             elif kind == "tool_start":
                 # Broadcast before the tool runs: a chat window watching this
@@ -603,16 +636,20 @@ def _run_task(task_id, app):
             elif kind == "step":
                 block_tokens = None
                 flush_step()  # a step without result (stay sane)
-                pending_step = payload
+                pending_step = persist(
+                    "step",
+                    f"{payload.get('label')}: {payload.get('detail')}")
                 _live_update(task_id,
                              steps=_live.get(task_id, {}).get("steps", 0) + 1,
                              current=f"{payload.get('label')}: "
                                      f"{payload.get('detail')}")
                 ev = {"type": "step", "step": payload}
+                buffer = False
             elif kind == "tool_result":
                 flush_step(payload.get("summary"))
                 _live_update(task_id, current=None)
                 ev = {"type": "tool_result", "result": payload}
+                buffer = False
             elif kind == "ui_action":
                 # Browser-side signal (e.g. automation canvas refresh) —
                 # broadcast live, but not persisted as a chat message.
@@ -621,6 +658,7 @@ def _run_task(task_id, app):
                 # Automatic context compaction — visible in the transcript.
                 persist("notice", payload)
                 ev = {"type": "notice", "content": payload}
+                buffer = False
             elif kind == "stopped":
                 block_tokens = None
                 stopped = True
@@ -630,6 +668,7 @@ def _run_task(task_id, app):
                 ev = {"type": "answer", "answer": "⏹ " + payload,
                       "conversation_id": conv_id, "model": model_name,
                       "usage": answer_usage}
+                buffer = False
             elif kind == "usage":
                 # Token spend of one model call — persisted, never broadcast
                 # (the totals ride on the final answer event instead).
@@ -641,11 +680,13 @@ def _run_task(task_id, app):
                 flush_step()
                 msg = persist("assistant", answer, model=model_name)
                 flush_usage(msg.id)
+                _drop_replay(task_id, "answer_token")
                 ev = {"type": "answer", "answer": answer,
                       "conversation_id": conv_id, "model": model_name,
                       "usage": answer_usage}
+                buffer = False
             if ev is not None:
-                _broadcast(task_id, ev)
+                _broadcast(task_id, ev, buffer=buffer)
         flush_step()
         flush_usage()  # calls whose answer never materialized (e.g. stopped
         # mid-tool): still real spend, counted globally without a message link
@@ -660,7 +701,7 @@ def _run_task(task_id, app):
         full = msg if not details else msg + "\n\n" + details
         err_msg = persist("assistant", f"⚠ {full}", model=model_name)
         flush_usage(err_msg.id)
-        _broadcast(task_id, {"type": "error", "error": full})
+        _broadcast(task_id, {"type": "error", "error": full}, buffer=False)
         task.status = "error"
         task.error = msg[:500]
         task.finished_at = utcnow()

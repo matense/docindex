@@ -10,6 +10,18 @@ from app.models import Drive, Folder, StoredFile, User
 from app.services import agent_service, file_service, search_service, sync_service
 
 
+@pytest.fixture(autouse=True)
+def _sync_tests_run_as_admin(app, user):
+    """sync-create is admin-only: run this module's sync tests as an admin.
+
+    (Follows the tests/test_modules.py `_make_admin` convention; scoped to
+    this module so no other test file is affected.)
+    """
+    with app.app_context():
+        db.session.get(User, user).is_admin = True
+        db.session.commit()
+
+
 @pytest.fixture()
 def local_folder(tmp_path):
     """A real folder on disk with a small file tree."""
@@ -684,3 +696,206 @@ def test_captions_toggle_disables_ai_captioning(auth_client, app, local_folder):
         caption_mock.assert_not_called()
         db.session.refresh(pic)
         assert pic.index.status == "ok"
+
+
+# --- S2 (argon P0): admin-only sync-create + blocked-path hardening ---
+
+def _non_admin_client(client, app):
+    """Log in a second, non-admin user on a fresh client."""
+    with app.app_context():
+        u = User(username="bob", email="bob@example.com")
+        u.set_password("password123")
+        db.session.add(u)
+        db.session.commit()
+    client.post("/login", data={"username": "bob", "password": "password123"})
+    return client
+
+
+def test_sync_create_rejects_non_admin(client, app, local_folder):
+    bob = _non_admin_client(client, app)
+    resp = bob.post("/drives/sync-create", data={"path": local_folder})
+    assert resp.status_code == 403
+    with app.app_context():
+        assert Drive.query.filter(
+            Drive.source_path.isnot(None)).count() == 0
+
+
+def test_basedir_and_parents_blocked_even_with_roots(monkeypatch):
+    basedir = os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(sync_service.__file__), "..", "..")))
+    # Even if the admin allowlist names the basedir, it stays blocked.
+    monkeypatch.setenv("SYNC_ALLOWED_ROOTS", basedir)
+    abs_path, error = sync_service.validate_path(basedir)
+    assert abs_path is None
+    assert error is not None
+    parent = os.path.dirname(basedir)
+    abs_path, error = sync_service.validate_path(parent)
+    assert abs_path is None
+    assert error is not None
+
+
+def test_sync_walk_skips_blocked_dirs(auth_client, app, local_folder,
+                                      monkeypatch):
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive_id = Drive.query.filter(
+            Drive.source_path.isnot(None)).one().id
+    nested = os.path.join(local_folder, "evil")
+    os.makedirs(nested, exist_ok=True)
+    with open(os.path.join(nested, "evil.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("evil content")
+    real_blocked = sync_service._blocked_dirs
+    monkeypatch.setattr(sync_service, "_blocked_dirs",
+                        lambda: set(real_blocked())
+                        | {os.path.realpath(nested)})
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        sync_service.sync_drive(drive)
+    with app.app_context():
+        assert StoredFile.query.filter_by(name="evil.txt").count() == 0
+
+
+def test_sync_now_refuses_non_admin_on_legacy_root_drive(auth_client, app,
+                                                         user, monkeypatch):
+    """A legacy drive rooted at `/` (creatable before S2) must not sync for
+    a non-admin: sync_now is admin-only, so no walk is ever started.
+    start_sync is stubbed so this test never touches the real filesystem
+    (it also proves the refusal happens before any sync attempt)."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    def fake_start_sync(drive, app=None):
+        calls.append(drive.id)
+        return SimpleNamespace(state="done", stats={"added": 0, "updated": 0,
+                                                    "removed": 0,
+                                                    "skipped": 0})
+
+    monkeypatch.setattr(sync_service, "start_sync", fake_start_sync)
+    with app.app_context():
+        db.session.get(User, user).is_admin = False
+        db.session.commit()
+        drive = Drive(name="legacy-root", user_id=user, source_path="/")
+        db.session.add(drive)
+        db.session.commit()
+        did = drive.id
+    resp = auth_client.post(f"/drives/{did}/sync")
+    assert resp.status_code == 403
+    assert calls == []  # the route's only sync path is start_sync
+
+
+# --- D4 (argon P0): sync cleanup must purge FTS/embedding orphans ---
+
+def _fts_count(app, file_id):
+    with app.app_context():
+        return db.session.execute(db.text(
+            "SELECT count(*) FROM idx.file_fts WHERE rowid = :id"),
+            {"id": file_id}).scalar()
+
+
+def test_sync_vanish_cleans_index_rows(auth_client, app, local_folder):
+    """A file deleted on disk must leave no orphan FTS, embedding or
+    index-job rows after sync_drive removes its DB row."""
+    from app.models import FileEmbedding, IndexJob
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        hello = StoredFile.query.filter_by(name="hello.txt").one()
+        fid = hello.id
+        db.session.add(FileEmbedding(
+            file_id=fid, chunk_index=0, text="t", text_hash="h",
+            embedding=b"\x00\x01", model="t", dims=1))
+        db.session.add(IndexJob(file_id=fid, status="pending"))
+        db.session.commit()
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        drive_id = drive.id
+        fts_on = search_service.fts_available()
+    if fts_on:
+        assert _fts_count(app, fid) == 1  # indexed on first sync
+    else:
+        pytest.skip("FTS5 unavailable")
+
+    os.remove(os.path.join(local_folder, "hello.txt"))
+    with app.app_context():
+        drive = db.session.get(Drive, drive_id)
+        stats = sync_service.sync_drive(drive)
+    assert stats["removed"] == 1
+    with app.app_context():
+        assert db.session.get(StoredFile, fid) is None
+        assert FileEmbedding.query.filter_by(file_id=fid).count() == 0
+        assert IndexJob.query.filter_by(file_id=fid).count() == 0
+        assert _fts_count(app, fid) == 0
+
+
+def test_remove_synced_drive_drops_embeddings(auth_client, app, local_folder):
+    """Removing a synced drive clears FileEmbedding rows with everything
+    else (IndexJob/FTS were already handled) — real files untouched."""
+    from app.models import FileEmbedding
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        drive_id = drive.id
+        for stored in StoredFile.query.filter_by(drive_id=drive_id).all():
+            db.session.add(FileEmbedding(
+                file_id=stored.id, chunk_index=0, text="t", text_hash="h",
+                embedding=b"\x00\x01", model="t", dims=1))
+        db.session.commit()
+        assert FileEmbedding.query.count() == 3
+
+    resp = auth_client.post(f"/drives/{drive_id}/remove",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert FileEmbedding.query.count() == 0
+    assert os.path.exists(os.path.join(local_folder, "hello.txt"))
+
+
+# --- B5 (argon P1): single-pass os.walk in sync_drive ---
+
+def test_sync_walks_once(auth_client, app, local_folder, monkeypatch):
+    """sync_drive must enumerate the tree with a single os.walk (no
+    separate _count_files pre-pass) and produce the identical result."""
+    import os as _os
+
+    real_walk = _os.walk
+    roots = []
+
+    def counting_walk(top, *args, **kwargs):
+        roots.append(_os.path.realpath(top))
+        yield from real_walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(sync_service.os, "walk", counting_walk)
+    _sync_create(auth_client, local_folder)
+
+    expected_root = _os.path.realpath(local_folder)
+    sync_walks = [r for r in roots if r == expected_root]
+    assert len(sync_walks) == 1
+
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        names = {f.name for f in
+                 StoredFile.query.filter_by(drive_id=drive.id).all()}
+        assert names == {"hello.txt", "notes.md", "inner.txt"}
+        # progress reporting still works: total known, fully processed
+        status = sync_service.get_status(drive.id)
+        assert status["state"] == "done"
+        assert status["percent"] == 100
+        assert status["total"] == status["processed"] == 3
+
+
+def test_sync_resets_provider_progress_before_enumeration(auth_client, app,
+                                                          local_folder):
+    """Provider pre_sync percent updates leave job.total/processed on the
+    0-100 scale; enumeration must reset them, not accumulate (100+N)."""
+    _sync_create(auth_client, local_folder)
+    with app.app_context():
+        drive = Drive.query.filter(Drive.source_path.isnot(None)).one()
+        job = sync_service._SyncJob(drive.id, drive.name)
+        # simulate provider pre_sync percent updates (see _sync_worker)
+        job.total = 100
+        job.processed = 100
+        job.current = "Cloning..."
+        sync_service.sync_drive(drive, job=job)
+    assert job.total == job.processed == 3
+    assert job.percent == 100
+

@@ -1,4 +1,5 @@
 import os
+import sqlite3
 
 from flask import Flask
 from sqlalchemy import event
@@ -43,6 +44,20 @@ def _get_config_with_modules(directory=None, x_arg=None, opts=None):
 migrate.get_config = _get_config_with_modules
 
 
+def _skip_startup_tasks():
+    """True inside the one-shot migration CLI process (see Dockerfile).
+
+    `flask --app run.py db upgrade heads` imports run.py, which calls
+    create_app() at module level. Without this guard the import itself
+    would run auto_upgrade (a second `alembic upgrade heads` before the
+    explicit command) plus queue recovery and the janitor thread in a
+    process that exits immediately. The flag is set only for the migrate
+    command, so the normal server path is unchanged.
+    """
+    return os.environ.get(
+        "DOCINDEX_SKIP_STARTUP_TASKS", "").lower() in ("1", "true", "yes")
+
+
 def format_duration(seconds):
     """Human duration: '420 ms', '3.25s', '1m 05.34s', '1h 02m 03s'.
 
@@ -85,6 +100,39 @@ def _index_db_path(uri):
     return root + "_index" + (ext or ".sqlite")
 
 
+def _ensure_persistent_wal(db_uri, index_path):
+    """Set `journal_mode=WAL` once at startup; it persists in the files.
+
+    WAL mode is stored in each database file's header, so every later
+    connection (including each fresh NullPool checkout) inherits it with
+    no per-checkout PRAGMA. Best-effort: never block startup (read-only
+    filesystems, `:memory:` test DBs, unparseable URIs).
+    """
+    paths = set()
+    if db_uri and db_uri.startswith("sqlite"):
+        try:
+            from sqlalchemy.engine.url import make_url
+
+            db_path = make_url(db_uri).database
+        except Exception:  # noqa: BLE001 - unparseable URI: nothing to persist
+            db_path = None
+        if db_path:
+            paths.add(db_path)
+    if index_path:
+        paths.add(index_path)
+    for path in sorted(paths):
+        if not path or path == ":memory:":
+            continue
+        try:
+            raw = sqlite3.connect(path)
+            try:
+                raw.execute("PRAGMA journal_mode=WAL")
+            finally:
+                raw.close()
+        except Exception:  # noqa: BLE001 - WAL is an optimization, not startup-critical
+            continue
+
+
 def _sqlite_listener(index_path):
     """Per-engine connect listener: pragmas + ATTACH of the index db.
 
@@ -93,27 +141,23 @@ def _sqlite_listener(index_path):
     everywhere. One SQLite connection = one transaction across both
     files, so meta + index writes stay atomic.
 
-    The listener is (re-)registered on every create_app call on purpose:
-    ATTACH is per-connection, and a fresh connection never carries `idx`,
-    so DETACH-then-ATTACH is idempotent no matter how many listeners pile
-    up. (A guard keyed by id(engine) would be wrong — CPython reuses ids
-    of garbage-collected engines, silently skipping the listener for new
-    engines, e.g. across hundreds of test apps.)
+    `journal_mode=WAL` is persistent in the database files, so it is set
+    once at startup (_ensure_persistent_wal), not per checkout. There is
+    likewise no DETACH: this listener only ever runs on a brand-new
+    DBAPI connection, which never carries `idx`, so DETACH always fails
+    (swallowed) and is pure per-checkout overhead. `synchronous` and
+    `busy_timeout` are per-connection settings and stay here; ATTACH is
+    per-connection by nature and stays too.
     """
+
     def _on_connect(dbapi_conn, _connection_record):
         """Avoid 'database is locked' errors under concurrent requests."""
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         if index_path is not None:
-            try:
-                cursor.execute("DETACH DATABASE idx")
-            except Exception:  # noqa: BLE001 - not attached: the common case
-                pass
             quoted = "'" + index_path.replace("'", "''") + "'"
             cursor.execute(f"ATTACH DATABASE {quoted} AS idx")
-            cursor.execute("PRAGMA idx.journal_mode=WAL")
             cursor.execute("PRAGMA idx.synchronous=NORMAL")
             cursor.execute("PRAGMA idx.busy_timeout=30000")
         cursor.close()
@@ -139,16 +183,23 @@ def create_app(config_class=Config):
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
             engine = db.engine
-            listener = _sqlite_listener(_index_db_path(
-                app.config["SQLALCHEMY_DATABASE_URI"]))
+            index_path = _index_db_path(
+                app.config["SQLALCHEMY_DATABASE_URI"])
+            listener = _sqlite_listener(index_path)
             event.listens_for(engine, "connect")(listener)
+            # WAL persists in the database files: set once here, not on
+            # every checkout (NullPool opens a fresh connection per checkout).
+            _ensure_persistent_wal(
+                app.config["SQLALCHEMY_DATABASE_URI"], index_path)
 
     # Keep the schema current on startup: users who pull new code but forget
     # `flask db upgrade` would otherwise get "no such column" 500s on every
     # page. Alembic's upgrade is a no-op when the DB is already at head, and
     # unknown revisions are reported without rewriting migration stamps.
-    # Skipped in tests (they build the schema with db.create_all()).
-    if not app.config.get("TESTING"):
+    # Skipped in tests (they build the schema with db.create_all()) and in
+    # the migration CLI process (it runs `db upgrade` explicitly; the
+    # import-time auto_upgrade would be a duplicate migration).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import db_maintenance
         try:
             db_maintenance.auto_upgrade(app)
@@ -182,7 +233,8 @@ def create_app(config_class=Config):
 
     # Resume any indexing work left over from a previous run (crash/restart):
     # "running" jobs go back to "pending" and drainers pick them up.
-    if app.config.get("INDEX_ASYNC", True):
+    # Skipped in the migration CLI process (no worker threads there).
+    if app.config.get("INDEX_ASYNC", True) and not _skip_startup_tasks():
         from .services import indexing_service
         try:
             indexing_service.recover_interrupted(app)
@@ -190,8 +242,9 @@ def create_app(config_class=Config):
             app.logger.exception("Index queue recovery failed")
 
     # Long-horizon AI tasks left queued/running by a previous process are
-    # marked "interrupted" (their threads died with it).
-    if not app.config.get("TESTING"):
+    # marked "interrupted" (their threads died with it). Skipped in the
+    # migration CLI process (short-lived: no recovery writes there).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import ai_task_service
         try:
             ai_task_service.recover_interrupted(app)
@@ -199,8 +252,9 @@ def create_app(config_class=Config):
             app.logger.exception("AI task recovery failed")
 
     # Trash janitor: hourly pass purging items older than 30 days for users
-    # who opted into automatic purge (default off).
-    if not app.config.get("TESTING"):
+    # who opted into automatic purge (default off). Skipped in the migration
+    # CLI process (no janitor thread in a process that exits immediately).
+    if not _skip_startup_tasks() and not app.config.get("TESTING"):
         from .services import trash_service
         try:
             trash_service.start_auto_purge(app)
