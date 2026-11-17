@@ -3343,6 +3343,16 @@ def test_builder_popup_editor_hooks():
     assert "hljs" in src and "python" in src
     assert 'data-zone="edit-save"' in src and 'data-zone="edit-close"' in src
     assert 'data-dlg="edit"' in src
+    # Close lifecycle: dirty → confirm, no double-prompt, guard survives.
+    assert "Discard changes?" in src
+    assert "S._edit.saved = true" in src
+    assert "ctrlKey" in src and "metaKey" in src
+    assert "scheduleSave(S)" in src
+    # Highlight fallback: plain textarea stands if hljs fails.
+    assert "window.hljs.highlight" in src
+    assert "plain-text fallback stands" in src
+    # Popup inputs honor the same caps as the card fields.
+    assert "maxlength=\"' + cap + '\"" in src
     assert "data-tpage-btn" in src and "dash-pager-info" in src
 
 

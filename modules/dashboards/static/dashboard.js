@@ -607,19 +607,24 @@
         });
         // Native close (Esc/backdrop) of the popup editor also honors
         // unsaved changes — reopen + confirm instead of silent loss.
+        // The guard state lives in S._edit until a close is confirmed or
+        // saved; reopening restores it so a second Esc is guarded too.
         S.els.dlgEdit.addEventListener("close", function () {
             var st = S._edit;
             S._edit = null;
             if (!st || st.saved) return;
             var cur = S.els.editBody.querySelector("textarea");
-            if (!cur || cur.value === String(st.card[st.field] || "")) return;
+            if (!cur || cur.value === st.initial) return;
             confirmDialog(S, {
                 title: "Discard changes?",
                 bodyHTML: "<p>Closing drops the unsaved edits.</p>",
                 okLabel: "Discard",
                 okClass: "btn-error"
             }).then(function (yes) {
-                if (!yes) openDialog(S.els.dlgEdit);
+                if (!yes) {
+                    S._edit = st;
+                    openDialog(S.els.dlgEdit);
+                }
             });
         });
     }
@@ -907,15 +912,16 @@
                 '<div class="dash-codeedit"><pre class="dash-codeedit-hl" aria-hidden="true">' +
                 '<code class="language-python"></code></pre>' +
                 '<textarea class="dash-codeedit-in" spellcheck="false" ' +
+                'maxlength="' + cap + '" ' +
                 'aria-label="Card script (pyrun)"></textarea></div>';
             ta = body.querySelector(".dash-codeedit-in");
             var code = body.querySelector(".dash-codeedit-hl code");
             var paint = function () {
                 code.textContent = ta.value + "\n";
                 try {
-                    if (window.hljs && hljs.highlight) {
+                    if (window.hljs && window.hljs.highlight) {
                         code.innerHTML =
-                            hljs.highlight(ta.value, { language: "python" }).value + "\n";
+                            window.hljs.highlight(ta.value, { language: "python" }).value + "\n";
                     }
                 } catch (e) { /* plain-text fallback stands */ }
                 var pre = code.parentNode;
@@ -940,11 +946,13 @@
             paint();
         } else {
             body.innerHTML =
-                '<textarea class="dash-edit-text" aria-label="Card prompt"></textarea>';
+                '<textarea class="dash-edit-text" maxlength="' + cap + '" ' +
+                'aria-label="Card prompt"></textarea>';
             ta = body.querySelector(".dash-edit-text");
             ta.value = initial;
         }
-        S._edit = { card: card, field: field, cap: cap, saved: false };
+        S._edit = { card: card, field: field, cap: cap,
+                    initial: initial, saved: false };
         S.els.editSave.onclick = function () {
             card[field] = ta.value.slice(0, cap);
             S._edit.saved = true;
@@ -966,8 +974,9 @@
                     okLabel: "Discard",
                     okClass: "btn-error"
                 }).then(function (yes) {
-                    if (yes) S.els.dlgEdit.close();
-                    else openDialog(S.els.dlgEdit);
+                    if (!yes) return;
+                    S._edit.saved = true;
+                    S.els.dlgEdit.close();
                 });
                 return;
             }
