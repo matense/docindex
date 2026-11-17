@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=14" in body
-    assert "?v=30" in body
+    assert "?v=31" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -4392,11 +4392,59 @@ def test_builder_poll_adopts_structural_edits(app, auth_client, user,
              + "structural.cards[0].prompt = 'Q';"
              + "\nvar added = JSON.parse(JSON.stringify(base));"
              + "added.cards.push({id: 'c2', type: 'kpi'});"
+             + "\nvar regOnly = JSON.parse(JSON.stringify(base));"
+             + "regOnly.createdFileIds = [9];"
+             + "regOnly.cards[0].runId = '1:abc';"
              + "\nconsole.log(JSON.stringify(["
              + "structuralSig(base) === structuralSig(runOnly),"
              + "structuralSig(base) !== structuralSig(structural),"
-             + "structuralSig(base) !== structuralSig(added)]));")
+             + "structuralSig(base) !== structuralSig(added),"
+             + "structuralSig(base) === structuralSig(regOnly)]));")
     out = subprocess.run(["node", "-e", probe], capture_output=True,
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout.strip()) == [True, True, True]
+    assert json.loads(out.stdout.strip()) == [True, True, True, True]
+
+
+def test_builder_poll_defers_while_editing():
+    """Fix round 1: the wholesale adopt never fires while the popup card
+    editor or a Settings drawer is open — the shared refresh leg gates on
+    builderBusy, and drawer close flushes at once (toggle capture)."""
+    import re
+    import shutil
+    import subprocess
+    src = _dash_js_src()
+    assert "builderBusy" in src
+    gate = re.search(r"function refreshFromServer\(S\) \{(.*?)\n    \}",
+                     src, re.S)
+    assert gate, "refreshFromServer missing"
+    assert "builderBusy(S)" in gate.group(1)
+    flush = re.search(
+        r"addEventListener\(\"toggle\", function \(e\) \{(.*?)\n"
+        r"        \}, \{ signal: ac\.signal, capture: true \}\);",
+        src, re.S)
+    assert flush, "drawer-close flush listener missing"
+    assert "dash-settings" in flush.group(1)
+    assert "refreshFromServer(S)" in flush.group(1)
+    busy = re.search(r"function builderBusy\(S\) \{(.*?)\n    \}", src, re.S)
+    assert busy, "builderBusy helper missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (busy.group(0)
+             + "\nvar closed = { _edit: null, els: {},"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar editing = { _edit: { card: 1 }, els: {},"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar dlgOpen = { _edit: null,"
+             + " els: { dlgEdit: { open: true } },"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar drawerOpen = { _edit: null, els: {}, root: {"
+             + " querySelector: function () { return { querySelector:"
+             + " function () { return {}; } }; } } };"
+             + "\nconsole.log(JSON.stringify(["
+             + "builderBusy(closed), builderBusy(editing),"
+             + "builderBusy(dlgOpen), builderBusy(drawerOpen)]));")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [False, True, True, True]

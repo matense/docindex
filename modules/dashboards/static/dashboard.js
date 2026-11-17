@@ -309,6 +309,18 @@
             if (!document.body.contains(S.root)) return;
             onDashUiAction(S, e);
         }, { signal: ac.signal });
+        // Fix round 1: flush on Settings-drawer close. A drawer open with
+        // no typed change yet leaves S clean, so adopts wait in
+        // builderBusy; closing retries at once instead of on the next 5s
+        // tick (capture: toggle skips bubble). An editor close needs no
+        // flush — S._edit clears and the next tick adopts.
+        S.root.addEventListener("toggle", function (e) {
+            if (!document.body.contains(S.root)) return;
+            var t = e && e.target;
+            if (t && t.classList && t.classList.contains("dash-settings") && !t.open) {
+                refreshFromServer(S);
+            }
+        }, { signal: ac.signal, capture: true });
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -625,10 +637,13 @@
 
     // C6: structural fingerprint of a dashboard document — everything
     // except the run-owned keys mergeRunOwned adopts (result, status,
-    // ranAt, trace, runId, ranSecs). Two docs share a signature exactly
-    // when only background-run state differs, so the Builder poll can
-    // tell an AI chat structural edit (adopt wholesale) from a run
-    // settling (merge footers in place). Pure and node-testable.
+    // ranAt, trace, runId, ranSecs) and the append-only createdFileIds
+    // registry (a run minting artifacts must not count as structural —
+    // mergeRunOwned already unions the registry). Two docs share a
+    // signature exactly when only background-run state differs, so the
+    // Builder poll can tell an AI chat structural edit (adopt wholesale)
+    // from a run settling (merge footers in place). Pure and
+    // node-testable.
     var RUN_OWNED_KEYS = ["result", "status", "ranAt", "trace",
         "runId", "ranSecs"];
     function structuralCard(card) {
@@ -647,7 +662,6 @@
             concurrency: doc.concurrency || 0,
             variables: doc.variables || {},
             attachments: doc.attachments || [],
-            createdFileIds: doc.createdFileIds || [],
             cards: (doc.cards || []).map(structuralCard)
         });
     }
@@ -663,6 +677,20 @@
             }
         });
         return ids;
+    }
+
+    // Fix round 1: the Builder is "busy" while the popup card editor is
+    // open (S._edit, cleared on confirmed close) or a per-card Settings
+    // drawer stands open. Typed input already marks S.dirty, but a drawer
+    // open with nothing typed yet leaves S.doc untouched — adopting a
+    // remote doc then would rebuild the grid (renderAll) underneath the
+    // open drawer/editor. Pure enough to node-probe with fake S objects.
+    function builderBusy(S) {
+        if (S._edit) return true;
+        if (S.els.dlgEdit && S.els.dlgEdit.open) return true;
+        var grid = S.root && S.root.querySelector
+            ? S.root.querySelector('[data-zone="grid"]') : null;
+        return !!(grid && grid.querySelector("details.dash-settings[open]"));
     }
 
     // D3: the Builder subscribes to the card-change channel (aggregate
@@ -719,10 +747,11 @@
     // Shared fetch-and-adopt leg for the checksum poll and the
     // dashboard_changed push below (notebooks refreshFromServer mirror):
     // run-only drift merges footers in place, structural drift is
-    // adopted wholesale — never while the user holds unsaved work.
+    // adopted wholesale — never while the user holds unsaved work or an
+    // editor/drawer is open (the next poll tick or drawer close retries).
     function refreshFromServer(S) {
         if (!document.body.contains(S.root)) return Promise.resolve(false);
-        if (S.dirty || S.saving) return Promise.resolve(false);
+        if (S.dirty || S.saving || builderBusy(S)) return Promise.resolve(false);
         return fetch(S.opts.docUrl, { headers: { "Accept": "application/json" } })
             .then(function (resp) { return resp.json(); })
             .then(function (doc) {
