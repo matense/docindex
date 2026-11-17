@@ -9,8 +9,10 @@
     let specByType = {};      // node type -> spec
     let stagger = 0;          // placement offset for palette clicks
     let nodeOutputs = {};     // dfId -> {port: text} from the last preview run
+    let nodeRich = {};        // dfId -> {port: rich} table/JSON structs
     let currentUnmount = null; // teardown of the live mount (SPA-safe re-mount)
     let versionPollTimer = null;
+    let liveRunTimer = null;  // 1.5 s status poll during full runs
     let resizeRO = null;
 
     // ------------------------------------------------------------------
@@ -2369,6 +2371,42 @@
     }
     function onDocKeydown(e) {
         if (e.key === 'Escape') closeContextMenu();
+        // Keyboard shortcuts (Ctrl+S save, Ctrl+Enter run, Ctrl+D
+        // duplicate node) — preventDefault first so the browser never
+        // hijacks them (save dialog, bookmark, address bar).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            const k = (e.key || '').toLowerCase();
+            if (k === 's') {
+                e.preventDefault();
+                document.getElementById('wf-save').click();
+            } else if (k === 'enter') {
+                e.preventDefault();
+                document.getElementById('wf-run').click();
+            } else if (k === 'd') {
+                e.preventDefault();
+                const sel = selectedDfId();
+                if (sel != null) duplicateNode(sel);
+            }
+            return;
+        }
+        // Single-key canvas shortcuts (F fit to view, L toggle console) —
+        // never while typing in a field.
+        if (e.target && e.target.closest &&
+            e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === 'F' || e.key === 'f') fitView();
+        else if (e.key === 'L' || e.key === 'l') {
+            document.getElementById('wf-console').classList.toggle('hidden');
+        }
+    }
+
+    // The canvas-selected node (Drawflow `.selected`), for Ctrl+D.
+    function selectedDfId() {
+        const canvas = document.getElementById('drawflow');
+        const sel = canvas ? canvas.querySelector('.drawflow-node.selected') : null;
+        if (!sel) return null;
+        const id = parseInt(String(sel.id).replace('node-', ''), 10);
+        return Number.isNaN(id) ? null : id;
     }
 
     function duplicateNode(dfId) {
@@ -2395,10 +2433,66 @@
         scheduleRefRender();
     }
 
+    // Rich port rendering: `table` outputs become scrollable HTML tables
+    // (with row/column counts), `json` becomes formatted JSON, everything
+    // else stays a plain <pre> text block. `rich` is the matching
+    // preview_rich entry — undefined for old runs and plain kinds.
+    function renderPortOutput(container, text, rich) {
+        if (rich && rich.kind === 'table') {
+            const cols = rich.columns || [];
+            const rows = rich.rows || [];
+            const meta = document.createElement('div');
+            meta.className = 'text-[10px] uppercase tracking-wide opacity-50';
+            meta.textContent = `${rich.total_rows} row(s) × ` +
+                `${rich.total_columns} column(s)` +
+                (rich.truncated ? ` — showing first ${rows.length}` : '');
+            container.appendChild(meta);
+            const wrap = document.createElement('div');
+            wrap.className = 'overflow-auto max-h-80 rounded-lg border border-base-content/10';
+            const table = document.createElement('table');
+            table.className = 'wf-rich-table table-auto w-full text-xs';
+            const thead = document.createElement('thead');
+            const hr = document.createElement('tr');
+            cols.forEach(c => {
+                const th = document.createElement('th');
+                th.className = 'text-left font-semibold px-2 py-1 border-b border-base-content/10 opacity-70';
+                th.textContent = c;
+                hr.appendChild(th);
+            });
+            thead.appendChild(hr);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                (r || []).forEach(cell => {
+                    const td = document.createElement('td');
+                    td.className = 'px-2 py-1 border-b border-base-content/5';
+                    td.textContent = cell == null ? '' : String(cell);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            wrap.appendChild(table);
+            container.appendChild(wrap);
+            return;
+        }
+        const pre = document.createElement('pre');
+        pre.className = 'wf-preview-output';
+        if (rich && rich.kind === 'json' && rich.data !== undefined) {
+            pre.textContent = typeof rich.data === 'string'
+                ? rich.data : JSON.stringify(rich.data, null, 2);
+        } else {
+            pre.textContent = text;
+        }
+        container.appendChild(pre);
+    }
+
     // Show the output the node produced in the last preview run.
     function viewOutput(dfId) {
         const ports = nodeOutputs[dfId];
         if (!ports) return;
+        const richPorts = nodeRich[dfId] || {};
         const data = nodeData(dfId);
         const spec = data ? specByType[data.type] : null;
         document.getElementById('wf-output-title').innerHTML =
@@ -2414,10 +2508,7 @@
                 lbl.textContent = 'port: ' + port;
                 body.appendChild(lbl);
             }
-            const pre = document.createElement('pre');
-            pre.className = 'wf-preview-output';
-            pre.textContent = ports[port];
-            body.appendChild(pre);
+            renderPortOutput(body, ports[port], richPorts[port]);
         });
         document.getElementById('wf-output-modal').showModal();
     }
@@ -2536,6 +2627,70 @@
         }
     }
 
+    // Live highlight during full runs: poll the run status every 1.5 s so
+    // nodes transition running → ok/err live on the canvas (and their
+    // outputs land in nodeOutputs/nodeRich for View output).
+    function liveRunStatusUrl(runId) {
+        // /m/automation/<id>/run -> /m/automation/runs/<runId>/status
+        const base = (root.dataset.runUrl || '').replace(/\/\d+\/run\/?$/, '');
+        return (base || '/m/automation') + '/runs/' + runId + '/status';
+    }
+
+    function pollFullRun(runId) {
+        if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
+        clearNodeStates();
+        setLive(true);
+        const seen = {};  // graphId -> last applied status
+        const tick = async () => {
+            let data = null;
+            try {
+                const resp = await fetch(liveRunStatusUrl(runId));
+                if (resp.ok) data = await resp.json();
+            } catch { /* offline - keep polling */ }
+            if (!data) return;
+            (data.log || []).forEach(entry => {
+                if (seen[entry.node] === entry.status) return;
+                seen[entry.node] = entry.status;
+                if (entry.status === 'running') {
+                    markNode(entry.node, 'running', entry.label);
+                } else if (entry.status === 'done') {
+                    markNode(entry.node, 'ok', entry.label);
+                    wfConsoleLog(
+                        `${entry.label || entry.node} — done (${entry.ms || 0} ms)`,
+                        'success');
+                } else if (entry.status === 'error') {
+                    markNode(entry.node, 'err', entry.label);
+                    wfConsoleLog(
+                        `${entry.label || entry.node} — ERROR: ${entry.summary || ''}`,
+                        'error');
+                } else if (entry.status === 'skipped') {
+                    markNode(entry.node, null);
+                }
+            });
+            if (data.node_outputs) {
+                Object.entries(data.node_outputs).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeOutputs[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (data.node_rich) {
+                Object.entries(data.node_rich).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeRich[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (data.status && data.status !== 'queued' && data.status !== 'running') {
+                if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
+                setTimeout(() => setLive(false), 400);
+                setTimeout(fadeOkBadges, 4500);
+                wfConsoleLog(`run #${runId} finished: ${data.status}.`,
+                             data.status === 'done' ? 'success' : 'error');
+            }
+        };
+        liveRunTimer = setInterval(tick, 1500);
+        tick();
+    }
+
     async function runUpToNode(dfId) {
         const graph = ancestorsOf(dfId, exportGraph());
         wfConsoleOpen();
@@ -2561,6 +2716,12 @@
                     // to the canvas id that owns the DOM node.
                     const canvasId = refDfId(nid);
                     nodeOutputs[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (resp.ok && data.rich) {
+                Object.entries(data.rich).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeRich[canvasId != null ? canvasId : nid] = ports;
                 });
             }
             // Replay the run on the canvas: wires flow while live, then each
@@ -2729,6 +2890,7 @@
         specByType = {};
         stagger = 0;
         nodeOutputs = {};
+        nodeRich = {};
         (window.automationEditorData.palette || []).forEach(spec => {
             specByType[spec.type] = spec;
         });
@@ -2745,6 +2907,18 @@
          'connectionRemoved'].forEach(ev => {
             try { editor.on(ev, () => markDirty()); } catch {}
         });
+        // Drawflow fires nodeRemoved for EVERY removal path (context-menu
+        // delete, the × badge, keyboard): drop the orphaned id maps here
+        // so View-output and ref chips never address a ghost node.
+        try {
+            editor.on('nodeRemoved', id => {
+                const key = String(id == null ? '' : id)
+                    .replace(/^node-/, '');
+                delete exportIds[key];
+                delete nodeOutputs[key];
+                delete nodeRich[key];
+            });
+        } catch {}
         // Reference wires follow nodes, zoom and pan (rAF-throttled).
         ['nodeMoved', 'zoom', 'translate', 'nodeCreated', 'nodeRemoved',
          'connectionCreated', 'connectionRemoved'].forEach(ev => {
@@ -3015,6 +3189,8 @@
             window.uiToast('Workflow running in the background — track it in the bottom-right card.',
                            'info');
             if (window.automationRunsPoll) window.automationRunsPoll();
+            // Live canvas highlight for this full run (1.5 s status poll).
+            pollFullRun(data.run_id);
         }
 
         document.getElementById('wf-check').addEventListener('click', async () => {
@@ -3195,6 +3371,7 @@
             _redrawTimers.forEach(clearTimeout);
             _redrawTimers = [];
             clearTimeout(_dirtyTimer);
+            if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
             if (versionPollTimer) { clearInterval(versionPollTimer); versionPollTimer = null; }
             if (resizeRO) { try { resizeRO.disconnect(); } catch {} resizeRO = null; }
             document.removeEventListener('click', onDocClick);
@@ -3211,5 +3388,6 @@
     window.AutomationEditor = {
         mount,
         unmount: () => { if (currentUnmount) currentUnmount(); },
+        fitView,
     };
 })();

@@ -874,6 +874,8 @@ def _exec_copy_file(ctx, config, inputs, outputs=None):
     if error:
         raise WorkflowError(error)
     ctx["log"](f"copied to '{drive.name}'")
+    ctx.setdefault("created_files", []).append(
+        {"file_id": copy.id, "name": copy.name})
     return p_files([{"file_id": copy.id, "name": copy.name}])
 
 
@@ -1309,6 +1311,8 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
             ctx["log"](f"appended a cell to notebook "
                        f"'{document.get('title', stored.name)}'")
         doc.save_document_ai(stored, document, note="Automation run")
+        ctx.setdefault("created_files", []).append(
+            {"file_id": stored.id, "name": stored.name})
         return p_files([{"file_id": stored.id, "name": stored.name}])
 
     # Create a new notebook in the configured drive.
@@ -1332,6 +1336,8 @@ def _exec_notebook_output(ctx, config, inputs, outputs):
     except ValueError as exc:
         raise WorkflowError(str(exc)) from exc
     ctx["log"](f"created notebook '{name}'")
+    ctx.setdefault("created_files", []).append(
+        {"file_id": stored.id, "name": stored.name})
     return p_files([{"file_id": stored.id, "name": stored.name}])
 
 
