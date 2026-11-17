@@ -3366,6 +3366,10 @@ def test_builder_card_content_first():
     assert "dash-settings" in src
     assert 'data-f="expand-prompt"' in src
     assert 'data-f="expand-script"' in src
+    assert "if (scriptToggle)" in src  # guard: workflow cards omit the checkbox
+    assert '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' in src
+    assert "on = full agent · off = 1 LLM call" in src
+    assert "truncation flagged" not in src  # long hint trimmed to one line
     with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
               encoding="utf-8") as fh:
         css = fh.read()

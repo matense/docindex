@@ -844,12 +844,16 @@
             openEditor(S, card, "prompt");
         });
         var scriptToggle = d.querySelector('[data-f="script_enabled"]');
-        scriptToggle.addEventListener("change", function () {
-            card.script_enabled = scriptToggle.checked;
-            if (card.script === undefined || card.script === null) card.script = "";
-            renderGrid(S);
-            scheduleSave(S);
-        });
+        // Workflow cards omit the checkbox (linked picker stays visible
+        // instead); guard so their renderer never null-derefs.
+        if (scriptToggle) {
+            scriptToggle.addEventListener("change", function () {
+                card.script_enabled = scriptToggle.checked;
+                if (card.script === undefined || card.script === null) card.script = "";
+                renderGrid(S);
+                scheduleSave(S);
+            });
+        }
         var scriptInput = d.querySelector('[data-f="script"]');
         scriptInput.addEventListener("input", function () {
             card.script = scriptInput.value.slice(0, MAX_SCRIPT);
