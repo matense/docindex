@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=9" in body
-    assert "?v=23" in body
+    assert "?v=10" in body
+    assert "?v=24" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -3353,6 +3353,23 @@ def test_builder_popup_editor_hooks():
     assert "plain-text fallback stands" in src
     # Popup inputs honor the same caps as the card fields.
     assert "maxlength=\"' + cap + '\"" in src
+
+
+def test_builder_card_content_first():
+    """Content-first builder card: labeled Edit pills open the popup;
+    script/tools/workflow controls live in a Settings drawer (workflow
+    cards keep the linked picker visible); expand hooks are kept."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-edit-btn" in src and ">Edit</button>" in src
+    assert "dash-settings" in src
+    assert 'data-f="expand-prompt"' in src
+    assert 'data-f="expand-script"' in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".dash-edit-btn" in css
     assert "data-tpage-btn" in src and "dash-pager-info" in src
 
 

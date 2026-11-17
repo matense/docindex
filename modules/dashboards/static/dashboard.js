@@ -789,36 +789,41 @@
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
             '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
             '<div data-f="promptwrap"' + (card.script_enabled ? ' style="display:none"' : "") + '>' +
-            '<div class="dash-prompt-label">Card prompt' +
-            ' <button type="button" class="dash-expand" data-f="expand-prompt" title="Edit in popup" aria-label="Edit prompt in popup">' +
-            '<i class="fas fa-expand"></i></button></div>' +
+            '<div class="dash-prompt-label"><span>Card prompt</span>' +
+            '<button type="button" class="dash-edit-btn" data-f="expand-prompt" title="Edit in popup" aria-label="Edit prompt in popup">' +
+            '<i class="fas fa-expand"></i>Edit</button></div>' +
             '<textarea class="dash-prompt" data-f="prompt" maxlength="' + MAX_PROMPT + '" rows="3" ' +
             'placeholder="' + esc(m.ph) + '">' + esc(card.prompt || "") + "</textarea></div>" +
             '<div data-f="scriptwrap"' + (card.script_enabled ? "" : ' style="display:none"') + '>' +
-            '<div class="dash-prompt-label">Script <span class="opacity-60">— runs instead of the prompt</span>' +
-            ' <button type="button" class="dash-expand" data-f="expand-script" title="Edit in popup" aria-label="Edit script in popup">' +
-            '<i class="fas fa-expand"></i></button></div>' +
+            '<div class="dash-prompt-label"><span>Script <span class="opacity-60">— runs instead of the prompt</span></span>' +
+            '<button type="button" class="dash-edit-btn" data-f="expand-script" title="Edit in popup" aria-label="Edit script in popup">' +
+            '<i class="fas fa-expand"></i>Edit</button></div>' +
             '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="3" ' +
             'placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
-            '<label class="dash-script-toggle"' + (card.type === "workflow" ? ' style="display:none"' : "") + '>' +
-            '<input type="checkbox" data-f="script_enabled"' +
-            (card.script_enabled ? " checked" : "") + (card.type === "workflow" ? " disabled" : "") +
-            '> Script card</label>' +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
-            wfBlock +
+            (card.type === "workflow"
+                ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
+                : "") +
+            '<details class="dash-settings"><summary>⚙ Settings</summary>' +
+            (card.type === "workflow" ? "" :
+                '<label class="dash-script-toggle">' +
+                '<input type="checkbox" data-f="script_enabled"' +
+                (card.script_enabled ? " checked" : "") +
+                "> Script card</label>") +
             '<div class="dash-tools"><b>tools</b>' +
             '<div class="dash-toggle' + (card.tools ? " on" : "") + '" data-f="tools" role="switch" tabindex="0" ' +
             'aria-checked="' + (card.tools ? "true" : "false") + '" aria-label="Card tools" ' +
             'title="on = full agent; off = 1 LLM call"></div>' +
-            "<span>" + (card.tools ? "<b>on</b> · full agent" : "<b>off</b> · 1 LLM call") + "</span>" +
+            "<span>" + (card.tools ? "<b>on</b>" : "<b>off</b>") + "</span>" +
             '<label class="dash-maxsteps" title="max agent steps for this card (empty = auto)">' +
             'max steps <input type="number" class="dash-maxsteps-in" data-f="maxsteps" ' +
             'min="1" max="128" step="1" placeholder="auto" ' +
             'aria-label="Max AI steps" value="' +
             (card.maxSteps === null || card.maxSteps === undefined ? "" : esc(card.maxSteps)) + '">' +
             "</label>" +
-            '<span class="dash-tools-hint">on = full agent (reads files mid-run, more capable) · ' +
-            "off = 1 LLM call over pre-injected context (cheaper/faster, truncation flagged)</span></div>" +
+            '<span class="dash-tools-hint">on = full agent · off = 1 LLM call</span></div>' +
+            (card.type === "workflow" ? "" : wfBlock) +
+            "</details>" +
             '<div class="dash-foot"><i class="fas fa-clock opacity-50"></i><span class="dash-ran">' + esc(ranFull(card)) + "</span>" +
             '<button type="button" class="btn btn-ghost btn-xs gap-1 ml-auto text-error" data-f="del">' +
             '<i class="fas fa-xmark"></i> delete</button></div>' +

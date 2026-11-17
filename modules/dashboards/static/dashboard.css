@@ -162,11 +162,22 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
     overflow-y: auto;
     min-height: 76px;
 }
-.dash-expand {
-    background: none; border: none; cursor: pointer;
-    opacity: .45; font-size: 11px; padding: 0 2px; color: inherit;
+.dash-prompt-label { display: flex; align-items: center; gap: 8px; }
+.dash-edit-btn {
+    margin-left: auto; font-size: 12px; font-weight: 700;
+    padding: 3px 12px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid rgba(127, 127, 127, .4); background: rgba(127, 127, 127, .12);
+    color: inherit; cursor: pointer;
 }
-.dash-expand:hover { opacity: 1; }
+.dash-edit-btn:hover { background: rgba(127, 127, 127, .25); }
+.dash-edit-btn i { margin-right: 4px; font-size: 11px; }
+.dash-settings {
+    border: 1px solid rgba(127, 127, 127, .22); border-radius: 10px;
+    padding: 6px 10px; margin-top: 8px;
+}
+.dash-settings summary { cursor: pointer; font-size: 12.5px; font-weight: 700; opacity: .75; }
+.dash-settings .dash-tools { margin-top: 6px; }
+.dash-settings .dash-script-toggle { margin-top: 2px; }
 
 /* Popup editor */
 .dash-edit-text {
