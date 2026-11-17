@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=10" in body
-    assert "?v=24" in body
+    assert "?v=25" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
