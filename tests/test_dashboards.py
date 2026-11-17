@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=10" in body
-    assert "?v=25" in body
+    assert "?v=11" in body
+    assert "?v=26" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -1329,8 +1329,10 @@ def test_dashboard_ui_ships_in_english():
 
 
 def test_prompt_textareas_autogrow():
-    """Task 9 (user scope): card prompt + workflow-params textareas grow
-    with their content instead of clipping at a fixed height."""
+    """Task 9 (user scope): card prompt textareas grow with their content
+    instead of clipping at a fixed height. Task C2 removed the manual
+    workflow-params textarea (params now go through the contract form),
+    so the growth wiring lives on the prompt textarea + the picker."""
     import re
     import shutil
     import subprocess
@@ -1339,9 +1341,10 @@ def test_prompt_textareas_autogrow():
         src = fh.read()
     match = re.search(r"function autoGrow\(el\) \{(.*?)\n    \}", src, re.S)
     assert match, "autoGrow helper missing"
-    # Wired to both prompt textareas: card prompt + workflow params.
+    # Wired to the card prompt textarea (input + post-append fit).
     assert src.count("autoGrow(") >= 3
-    assert "dash-prompt" in src and "dash-wf-params" in src
+    assert "dash-prompt" in src and "dash-wf-select" in src
+    assert "dash-wf-params" not in src  # C2: manual JSON textarea gone
     if shutil.which("node") is None:
         pytest.skip("node not available")
     probe = (match.group(0) +
@@ -1910,6 +1913,14 @@ def test_stream_workflow_registers_artifacts(app, auth_client, user,
     monkeypatch.setattr(dash_tools.engine_service, "run_card",
                         lambda stored, card, uid: (
                             {"text": "w"}, [created_id], []))
+    # C2 streams workflow progress through iter_workflow_events (not a
+    # single run_card call), so the stub feeds the new seam.
+    def fake_workflow_events(stored, card, run_user):
+        yield {"t": "done", "card_id": card.get("id"),
+               "result": {"text": "w"}, "trace": [],
+               "artifact_ids": [created_id]}
+    monkeypatch.setattr(dash_tools.engine_service, "iter_workflow_events",
+                        fake_workflow_events)
     resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
                             json={"card_id": cid}, buffered=False)
     assert resp.status_code == 200
@@ -3760,3 +3771,99 @@ def test_row_equalization_caps_markdown():
     assert "snap-guide" in src or "grid-guide" in src
     assert "dash-size-menu" in src  # badge opens a quick-select dropdown
     assert "3×1" in src and "12×4" in src  # quick-select presets
+
+
+# ---------------------------------------------------------------------------
+# Task C2: guided workflow picker + live run progress
+# ---------------------------------------------------------------------------
+
+def _dash_js_src():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _workflow_config_region(src):
+    """The linked-workflow field block (wfFields): from its grid wrapper
+    to the Settings drawer that follows it."""
+    start = src.index("dash-wf-grid")
+    end = src.index("dash-settings", start)
+    return src[start:end]
+
+
+def test_workflow_picker_uses_dropdown_and_contract():
+    src = _dash_js_src()
+    assert "AutomationRunForm" in src and "run-contract" in src
+    assert "dash-wf-select" in src  # <select> of the user's workflows
+    region = _workflow_config_region(src)
+    assert 'data-f="wfparams"' not in region  # manual JSON textarea gone
+    assert 'inputmode="numeric"' not in region  # raw numeric id gone
+
+
+def test_workflows_endpoint_lists_owned(app, auth_client, user, enabled):
+    wid = _workflow_id(app, user)
+    with app.app_context():
+        db.session.add(ModuleState(name="automation", enabled=True))
+        db.session.commit()
+    body = auth_client.get("/m/dashboards/workflows").get_json()
+    assert body["ok"] and body["automation_enabled"]
+    assert {"id", "name"} <= set(body["workflows"][0])
+    assert wid in {w["id"] for w in body["workflows"]}
+
+
+def test_workflows_endpoint_fails_closed_when_automation_off(
+        app, auth_client, user, enabled):
+    body = auth_client.get("/m/dashboards/workflows").get_json()
+    assert not body["ok"] and not body["automation_enabled"]
+    assert "automation" in body["error"].lower()
+
+
+def test_workflow_stream_deleted_midrun(app, auth_client, user, enabled,
+                                        monkeypatch):
+    """C2: a workflow deleted mid-run settles the card error and the SSE
+    stream still closes cleanly (done frame, no hang, no 500)."""
+    dash_engine = _engine()
+    wid = _workflow_id(app, user)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+
+    real_start = dash_engine.start_workflow_run
+
+    def start_then_delete(workflow, run_user, params, **kw):
+        run = real_start(workflow, run_user, params, **kw)
+        with app.app_context():
+            doomed = db.session.get(
+                dash_engine._automation_models().AutomationWorkflow, wid)
+            db.session.delete(doomed)
+            db.session.commit()
+        return run
+
+    monkeypatch.setattr(dash_engine, "start_workflow_run", start_then_delete)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert card["result"]["error"]
+
+
+def test_workflow_stream_emits_node_progress(app, auth_client, user,
+                                             enabled, fake_ai):
+    """C2: a workflow stream surfaces intermediate node progress frames
+    (live console) before the done frame — not a silent wait."""
+    wid = _workflow_id(app, user)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    body = b"".join(resp.response).decode()
+    assert '"t": "step"' in body
+    assert '"t": "done"' in body
+    assert _card(app, fid, cid)["status"] == "done"

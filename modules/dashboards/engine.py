@@ -511,11 +511,123 @@ def complete_once(user, messages):
     return (msg.get("content") or ""), (msg.get("usage") or {})
 
 
-def start_workflow_run(workflow, user, params):
+def start_workflow_run(workflow, user, params, trigger_file_id=None):
     """Launch an automation run for a workflow card; returns the run row."""
     runtime = _automation_runtime()
     return runtime.start_run(workflow, user, trigger="dashboard",
+                             trigger_file_id=trigger_file_id,
                              params=params or None)
+
+
+def iter_workflow_events(stored, card, user):
+    """Run a workflow card, yielding per-node progress frames then done.
+
+    Frames mirror ``iter_run_events`` (``{"t": "step", index, label,
+    detail, card_id}`` per fresh automation log entry, then ``{"t":
+    "done", "result", "trace", "artifact_ids", "card_id"}``). A missing
+    workflow or bad params raises MissingInputError; a run that vanishes
+    mid-wait (deleting a workflow cascades its runs) raises ValueError —
+    the stream route settles both onto the card as error and closes.
+    """
+    doc = doc_service.load(stored)
+    files = resolve_inputs(stored, doc, card)
+    workflow_ref = (card.get("inputs") or {}).get("workflow") or {}
+    try:
+        workflow_id = int(workflow_ref.get("workflow_id"))
+    except (TypeError, ValueError):
+        raise MissingInputError(
+            "This card has no valid workflow reference — "
+            "re-open the Builder and pick a workflow.")
+    models = _automation_models()
+    workflow = (models.AutomationWorkflow.query
+                .filter_by(id=workflow_id, user_id=user.id).first())
+    if workflow is None:
+        raise MissingInputError(
+            f"Missing input: workflow #{workflow_id} was deleted or is not "
+            f"yours — pick another workflow in the Builder.")
+    params = workflow_ref.get("params") or {}
+    if not isinstance(params, dict):
+        raise ValueError("Card workflow params must be an object.")
+    workflow_name = workflow.name
+    run = start_workflow_run(workflow, user, params,
+                             trigger_file_id=workflow_ref.get(
+                                 "trigger_file_id"))
+    seen = 0
+    deadline = time.monotonic() + RUN_POLL_TIMEOUT_S
+    while True:
+        # populate_existing: the worker commits on its own session, so the
+        # identity-mapped row would read stale without a forced re-fetch; a
+        # deleted workflow cascades its runs, which then reads as None.
+        live = (db.session.query(models.AutomationRun)
+                .populate_existing()
+                .filter_by(id=run.id, user_id=user.id).first())
+        if live is None:
+            raise ValueError(f"Workflow run #{run.id} disappeared.")
+        try:
+            entries = json.loads(live.log or "[]")
+        except ValueError:
+            entries = []
+        if not isinstance(entries, list):
+            entries = []
+        for pos in range(seen, len(entries)):
+            entry = entries[pos] if isinstance(entries[pos], dict) else {}
+            yield {"t": "step", "index": pos,
+                   "label": entry.get("label") or entry.get("node") or "node",
+                   "detail": entry.get("summary") or entry.get("status") or "",
+                   "card_id": card.get("id")}
+        seen = len(entries)
+        if live.status not in ("queued", "running"):
+            break
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Workflow run #{run.id} did not finish in time.")
+        time.sleep(RUN_POLL_INTERVAL_S)
+    result, artifact_ids = _collect_workflow_result(
+        live, workflow_name, card, user)
+    yield {"t": "done", "card_id": card.get("id"), "result": result,
+           "trace": [], "artifact_ids": artifact_ids}
+
+
+def _collect_workflow_result(live, workflow_name, card, user):
+    """Turn a finished automation run into a card result + artifacts.
+
+    Raises ValueError when the run did not finish cleanly (the caller
+    surfaces it on the card); returns (result_dict, [artifact_file_ids]).
+    """
+    if live.status != "done":
+        detail = (live.error or f"the run {live.status}").strip()
+        raise ValueError(
+            f"Workflow '{workflow_name}' {live.status}: {detail} "
+            f"(hint: re-open the Builder if the workflow changed).")
+    try:
+        output = json.loads(live.output or "{}")
+    except ValueError:
+        output = {}
+    artifact_ids = []
+    for ref in output.get("files") or []:
+        fid = ref.get("file_id") if isinstance(ref, dict) else None
+        try:
+            fid = int(fid)
+        except (TypeError, ValueError):
+            continue
+        target = db.session.get(StoredFile, fid)
+        if (target is not None and target.user_id == user.id
+                and target.deleted_at is None and fid not in artifact_ids):
+            artifact_ids.append(fid)
+    prompt = (card.get("prompt") or "").strip()
+    text = None
+    if prompt:
+        summary = json.dumps(
+            output.get("results", []))[:8000]
+        text, usage = complete_once(
+            user, [{"role": "user",
+                    "content": f"{prompt}\n\n--- Workflow output ---\n"
+                               f"{summary}"}])
+        _record_usage(user.id, [usage])
+    return {"workflow": {"run_id": live.id,
+                         "results": output.get("results", []),
+                         "files": output.get("files") or []},
+            "text": text}, artifact_ids
 
 
 def _pyrun_evaluate(code, files):
@@ -715,58 +827,18 @@ def _run_script_card(stored, doc, card, user, files):
 
 
 def _run_workflow_card(stored, doc, card, user, workflow_ref, files):
-    try:
-        workflow_id = int(workflow_ref.get("workflow_id"))
-    except (TypeError, ValueError):
-        raise MissingInputError(
-            "This card has no valid workflow reference — "
-            "re-open the Builder and pick a workflow.")
-    models = _automation_models()
-    workflow = (models.AutomationWorkflow.query
-                .filter_by(id=workflow_id, user_id=user.id).first())
-    if workflow is None:
-        raise MissingInputError(
-            f"Missing input: workflow #{workflow_id} was deleted or is not "
-            f"yours — pick another workflow in the Builder.")
-    params = workflow_ref.get("params") or {}
-    if not isinstance(params, dict):
-        raise ValueError("Card workflow params must be an object.")
-    run = start_workflow_run(workflow, user, params)
-    run = _wait_for_run(run.id, user.id)
-    if run.status != "done":
-        detail = (run.error or f"the run {run.status}").strip()
-        raise ValueError(
-            f"Workflow '{workflow.name}' {run.status}: {detail} "
-            f"(hint: re-open the Builder if the workflow changed).")
-    try:
-        output = json.loads(run.output or "{}")
-    except ValueError:
-        output = {}
-    artifact_ids = []
-    for ref in output.get("files") or []:
-        fid = ref.get("file_id") if isinstance(ref, dict) else None
-        try:
-            fid = int(fid)
-        except (TypeError, ValueError):
-            continue
-        target = db.session.get(StoredFile, fid)
-        if (target is not None and target.user_id == user.id
-                and target.deleted_at is None and fid not in artifact_ids):
-            artifact_ids.append(fid)
-    prompt = (card.get("prompt") or "").strip()
-    text = None
-    if prompt:
-        summary = json.dumps(
-            output.get("results", []))[:8000]
-        text, usage = complete_once(
-            user, [{"role": "user",
-                    "content": f"{prompt}\n\n--- Workflow output ---\n"
-                               f"{summary}"}])
-        _record_usage(user.id, [usage])
-    return {"workflow": {"run_id": run.id,
-                         "results": output.get("results", []),
-                         "files": output.get("files", [])},
-            "text": text}, artifact_ids
+    # Single execution path with the streamed variant: consume the event
+    # iterator and keep the final frame (progress frames feed the live
+    # console only; the snapshot settles result + artifacts). Inputs are
+    # re-resolved inside the iterator; the pre-resolved args stay in the
+    # signature for the run_card call shape.
+    del doc, workflow_ref, files
+    result, artifact_ids = None, []
+    for frame in iter_workflow_events(stored, card, user):
+        if frame.get("t") == "done":
+            result = frame.get("result")
+            artifact_ids = frame.get("artifact_ids") or []
+    return result, artifact_ids
 
 
 def _wait_for_run(run_id, user_id):

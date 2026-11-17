@@ -306,13 +306,14 @@ dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; 
 .dash-wf summary { cursor: pointer; font-size: 12.5px; font-weight: 600; opacity: .8; }
 .dash-wf summary:hover { opacity: 1; }
 .dash-wf-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.dash-wf-id, .dash-wf-params {
+.dash-wf-select {
     width: 100%; font-size: 13px; border-radius: 8px; padding: 6px 9px; color: inherit;
     background: rgba(127, 127, 127, .08); border: 1px solid rgba(127, 127, 127, .2);
-    font-family: ui-monospace, monospace;
 }
-.dash-wf-params { overflow-y: hidden; resize: vertical; }
-.dash-wf-id:focus, .dash-wf-params:focus { outline: none; border-color: var(--dtype); }
+.dash-wf-select:focus { outline: none; border-color: var(--dtype); }
+.dash-wf-select:disabled { opacity: .65; cursor: not-allowed; }
+.dash-wf-row { display: flex; align-items: center; gap: 8px; }
+.dash-wf-summary { font-size: 12px; opacity: .6; }
 
 /* ---------- tools toggle ---------- */
 .dash-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }

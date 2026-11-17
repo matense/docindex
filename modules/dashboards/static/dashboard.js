@@ -155,6 +155,89 @@
         return (inputs.workflow && typeof inputs.workflow === "object") ? inputs.workflow : null;
     }
 
+    function wfName(S, id) {
+        var list = (S.workflows && S.workflows.list) || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].id) === String(id)) return list[i].name || "";
+        }
+        return "";
+    }
+
+    function wfOptionsHTML(S, selectedId) {
+        var st = S.workflows || { loaded: false, enabled: true, list: [] };
+        if (st.loaded && !st.enabled) {
+            return '<option value="">Automation is disabled</option>';
+        }
+        var h = '<option value="">— pick a workflow —</option>';
+        var seen = false;
+        (st.list || []).forEach(function (w) {
+            var sel = String(w.id) === String(selectedId) ? " selected" : "";
+            if (sel) seen = true;
+            h += '<option value="' + esc(w.id) + '"' + sel + ">" +
+                esc(w.name || ("workflow #" + w.id)) + "</option>";
+        });
+        if (selectedId !== "" && !seen) {
+            var missing = "workflow #" + esc(selectedId);
+            if (st.loaded) missing = "⚠ " + missing + " (deleted?)";
+            h += '<option value="' + esc(selectedId) + '" selected>' +
+                missing + "</option>";
+        }
+        return h;
+    }
+
+    function wfSummaryText(wf) {
+        if (!wf || wf.workflow_id === undefined || wf.workflow_id === null ||
+                String(wf.workflow_id) === "") return "no workflow linked";
+        var n = wf.params && typeof wf.params === "object" ? Object.keys(wf.params).length : 0;
+        var s = n === 1 ? "1 input configured" : n + " inputs configured";
+        if (wf.trigger_file_id) s += " + file";
+        return s;
+    }
+
+    function loadWorkflows(S) {
+        fetch(S.moduleBase + "/workflows", { headers: { "Accept": "application/json" } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                data = data || {};
+                S.workflows = {
+                    loaded: true,
+                    enabled: data.ok === true,
+                    list: Array.isArray(data.workflows) ? data.workflows : [],
+                    error: data.error || ""
+                };
+                renderGrid(S);
+            })
+            .catch(function () {
+                S.workflows = {
+                    loaded: true, enabled: false, list: [],
+                    error: "Could not load workflows — is the automation module enabled?"
+                };
+                renderGrid(S);
+            });
+    }
+
+    // Lazily load the shared Automation run form (the dashboards bundle
+    // must boot even when automation is disabled, so the dependency is
+    // fetched on demand, never statically). Calls back with true when
+    // window.AutomationRunForm is usable.
+    function ensureRunForm(S, cb) {
+        if (window.AutomationRunForm) { cb(true); return; }
+        if (S._rfLoading) { S._rfQueue.push(cb); return; }
+        S._rfLoading = true;
+        S._rfQueue = [cb];
+        var done = function (ok) {
+            S._rfLoading = false;
+            var q = S._rfQueue || [];
+            S._rfQueue = [];
+            q.forEach(function (fn) { fn(ok && !!window.AutomationRunForm); });
+        };
+        var s = document.createElement("script");
+        s.src = "/m/automation/static/run_form.js";
+        s.onload = function () { done(true); };
+        s.onerror = function () { done(false); };
+        document.head.appendChild(s);
+    }
+
     function isDanglingRef(r) {
         return typeof r === "string" && r.indexOf("att-") !== 0 && !/^[0-9a-f]{12}$/.test(r);
     }
@@ -207,6 +290,8 @@
             root: root, opts: opts, base: base, moduleBase: moduleBase,
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
+            workflows: { loaded: false, enabled: true, list: [], error: "" },
+            _rfLoading: false, _rfQueue: [],
             dirty: false, saving: false, saveTimer: null, saveError: "",
             pollTimer: null,
             ptrOp: null, pickFor: null, pendingDelCard: null, usageHi: null, els: {}
@@ -216,6 +301,7 @@
 
         buildSkeleton(S);
         renderAll(S);
+        loadWorkflows(S);
         startBuilderStatusPoll(S);
 
         document.addEventListener("keydown", function (e) {
@@ -726,8 +812,11 @@
         h += '<button type="button" class="dash-chip-btn" data-addref="' + esc(card.id) + '" title="reference an attachment on this card">+ file</button>';
         var wf = cardWorkflow(card);
         if (wf && wf.workflow_id !== undefined && wf.workflow_id !== null && String(wf.workflow_id) !== "") {
+            var wfLabel = "workflow #" + wf.workflow_id;
+            var wfKnown = wfName(S, wf.workflow_id);
+            if (wfKnown) wfLabel += " · " + wfKnown;
             h += '<span class="dash-ref"><i class="fas fa-gear opacity-50"></i>' +
-                "<span>workflow #" + esc(wf.workflow_id) + "</span>" +
+                "<span>" + esc(wfLabel) + "</span>" +
                 '<button type="button" class="dash-chip-btn" data-unwf="' + esc(card.id) + '" title="remove workflow reference">×</button></span>';
         } else if (card.type === "workflow") {
             h += '<span class="dash-ref dash-ref-missing">⚙ pick a workflow…</span>';
@@ -744,12 +833,10 @@
             var node = buildCard(S, card);
             g.appendChild(node);
             // Fit after insertion: a detached textarea reports
-            // scrollHeight 0, so fitting inside buildCard no-ops. Skip
-            // hidden fields (e.g. workflow params inside a closed
-            // <details>) — they keep their rows default until opened.
-            // Prompt/script stay a compact fixed 3 rows in the card;
-            // full editing lives in the popup editor.
-            node.querySelectorAll(".dash-wf-params")
+            // scrollHeight 0, so fitting inside buildCard no-ops. Long
+            // prompts grow instead of clipping at their 3 rows (compact
+            // prompts are untouched); full editing lives in the popup.
+            node.querySelectorAll(".dash-prompt")
                 .forEach(function (el) {
                     if (el.offsetParent !== null) autoGrow(el);
                 });
@@ -767,17 +854,15 @@
         d.style.minHeight = (120 + card.h * 32) + "px";
         var wf = cardWorkflow(card);
         var wfId = wf && wf.workflow_id !== undefined && wf.workflow_id !== null ? String(wf.workflow_id) : "";
-        var wfParams = "";
-        try {
-            wfParams = wf && wf.params !== undefined ? JSON.stringify(wf.params || {}) : "";
-        } catch (e) { wfParams = ""; }
         var wfFields =
             '<div class="dash-wf-grid">' +
-            '<input type="text" inputmode="numeric" class="dash-wf-id" data-f="wfid" ' +
-            'placeholder="workflow id (e.g. 12)" value="' + esc(wfId) + '" aria-label="Workflow ID">' +
-            '<textarea class="dash-wf-params" data-f="wfparams" rows="2" ' +
-            'placeholder="params JSON, e.g. {&quot;month&quot;: &quot;2026-11&quot;}" ' +
-            'aria-label="Workflow params (JSON)">' + esc(wfParams) + "</textarea>" +
+            '<select class="dash-wf-select" data-f="wfid" aria-label="Linked workflow">' +
+            wfOptionsHTML(S, wfId) + "</select>" +
+            '<div class="dash-wf-row">' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1 dash-wf-config" data-f="wfconfig" ' +
+            'title="Configure the workflow inputs (saved on this card)">' +
+            '<i class="fas fa-sliders"></i>Configure inputs…</button>' +
+            '<span class="dash-wf-summary" data-f="wfsummary">' + esc(wfSummaryText(wf)) + "</span></div>" +
             '<div class="dash-field-err hidden" data-f="wferr"></div></div>';
         var wfBlock = card.type === "workflow"
             ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
@@ -844,6 +929,7 @@
         var promptInput = d.querySelector('[data-f="prompt"]');
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
+            autoGrow(promptInput);
             scheduleSave(S);
         });
         d.querySelector('[data-f="expand-prompt"]').addEventListener("click", function () {
@@ -1026,65 +1112,104 @@
     }
 
     function bindWorkflowFields(S, d, card) {
-        var idInput = d.querySelector('[data-f="wfid"]');
-        var paramsInput = d.querySelector('[data-f="wfparams"]');
+        var sel = d.querySelector('[data-f="wfid"]');
+        var cfgBtn = d.querySelector('[data-f="wfconfig"]');
         var errEl = d.querySelector('[data-f="wferr"]');
-        if (!idInput || !paramsInput) return;
-        paramsInput.addEventListener("input", function () { autoGrow(paramsInput); });
+        if (!sel || !cfgBtn) return;
         var showErr = function (msg) {
             if (!msg) {
                 errEl.classList.add("hidden");
                 errEl.textContent = "";
-                idInput.classList.remove("dash-invalid");
-                paramsInput.classList.remove("dash-invalid");
+                sel.classList.remove("dash-invalid");
             } else {
                 errEl.classList.remove("hidden");
                 errEl.textContent = msg;
             }
         };
-        var commit = function () {
-            var rawId = idInput.value.trim();
-            var rawParams = paramsInput.value.trim();
-            if (rawId === "" && rawParams === "") {
-                // No workflow ref — drop the key entirely.
-                if (card.inputs) delete card.inputs.workflow;
-                showErr("");
-                if (card.inputs && Object.keys(card.inputs).length === 0) card.inputs = { attachments: cardRefs(card) };
-                renderGrid(S);
-                scheduleSave(S);
-                return;
-            }
-            var wid = Number(rawId);
-            if (rawId === "" || !/^\d+$/.test(rawId)) {
-                idInput.classList.add("dash-invalid");
-                showErr("The workflow id must be a number (or clear both fields to remove the reference).");
-                return;
-            }
-            var params = {};
-            if (rawParams !== "") {
-                try {
-                    params = JSON.parse(rawParams);
-                } catch (e) {
-                    paramsInput.classList.add("dash-invalid");
-                    showErr("Params is not valid JSON — fix it before saving.");
-                    return;
-                }
-                if (params === null || typeof params !== "object" || Array.isArray(params)) {
-                    paramsInput.classList.add("dash-invalid");
-                    showErr("Params must be a JSON object (e.g. {\"month\": \"2026-11\"}).");
-                    return;
-                }
-            }
+        // Automation disabled: fail closed — the select already says so,
+        // the config button explains instead of opening a dead form.
+        var st = S.workflows || { loaded: false, enabled: true };
+        if (st.loaded && !st.enabled) {
+            sel.disabled = true;
+            showErr(st.error || "The automation module is disabled — enable it to link a workflow.");
+        }
+        sel.addEventListener("change", function () {
+            var v = sel.value;
             if (!card.inputs || typeof card.inputs !== "object") card.inputs = {};
             if (!Array.isArray(card.inputs.attachments)) card.inputs.attachments = cardRefs(card);
-            card.inputs.workflow = { workflow_id: wid, params: params };
+            if (v === "") {
+                // No workflow ref — drop the key entirely.
+                delete card.inputs.workflow;
+                if (Object.keys(card.inputs).length === 0) card.inputs = { attachments: cardRefs(card) };
+            } else {
+                // A new link starts with blank params — a previous
+                // workflow's answers rarely apply to the next one.
+                card.inputs.workflow = { workflow_id: Number(v), params: {} };
+            }
             showErr("");
             renderGrid(S);
             scheduleSave(S);
-        };
-        // Commit on blur (not on every keystroke) so half-typed JSON never persists.
-        idInput.addEventListener("change", commit);
-        paramsInput.addEventListener("change", commit);
+        });
+        cfgBtn.addEventListener("click", function () {
+            var wid = sel.value;
+            if (wid === "") {
+                sel.classList.add("dash-invalid");
+                showErr("Pick a workflow first, then configure its inputs.");
+                return;
+            }
+            showErr("");
+            cfgBtn.disabled = true;
+            var restore = function () { cfgBtn.disabled = false; };
+            ensureRunForm(S, function (ok) {
+                if (!ok || !window.AutomationRunForm) {
+                    restore();
+                    showErr("The automation run form is unavailable — enable the automation module and retry.");
+                    return;
+                }
+                fetch("/m/automation/" + encodeURIComponent(wid) + "/run-contract",
+                    { headers: { "Accept": "application/json" } })
+                    .then(function (r) { return r.json(); })
+                    .then(function (contract) {
+                        restore();
+                        if (!contract || typeof contract !== "object" || contract.error) {
+                            showErr((contract && contract.error) ||
+                                "Could not load the run contract — is the automation module enabled?");
+                            return;
+                        }
+                        var wf = cardWorkflow(card) || {};
+                        window.AutomationRunForm.open({
+                            title: "Configure workflow inputs",
+                            subtitle: "Saved on this card — used every run.",
+                            contract: contract,
+                            drives: contract.drives || [],
+                            initialParams: (wf.params && typeof wf.params === "object") ? wf.params : {},
+                            allowTriggerPicker: true,
+                            submitLabel: "Save inputs",
+                            onSubmit: function (res) {
+                                if (!card.inputs || typeof card.inputs !== "object") card.inputs = {};
+                                if (!Array.isArray(card.inputs.attachments)) {
+                                    card.inputs.attachments = cardRefs(card);
+                                }
+                                var ref = card.inputs.workflow || {};
+                                ref.workflow_id = Number(wid);
+                                ref.params = (res && res.params) || {};
+                                if (res && res.triggerFileId) {
+                                    ref.trigger_file_id = res.triggerFileId;
+                                } else {
+                                    delete ref.trigger_file_id;
+                                }
+                                card.inputs.workflow = ref;
+                                renderGrid(S);
+                                scheduleSave(S);
+                            }
+                        });
+                    })
+                    .catch(function () {
+                        restore();
+                        showErr("Could not load the run contract — is the automation module enabled?");
+                    });
+            });
+        });
     }
 
     function bindRefButtons(S, scope, card) {

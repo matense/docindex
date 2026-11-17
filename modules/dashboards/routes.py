@@ -276,6 +276,26 @@ def _browse_file_entry(stored):
             "mime": stored.mime_type, "size": stored.size}
 
 
+@bp.get("/workflows")
+def list_workflows():
+    """Workflows the Builder picker may link: [{id, name}] of the user's
+    own workflows, newest first. Read-only. Automation disabled →
+    automation_enabled:false with a fail-closed message so the picker never
+    renders a dead form."""
+    from app.services import module_service
+    if not module_service.is_enabled("automation"):
+        return jsonify({"ok": False, "automation_enabled": False,
+                        "error": "The automation module is disabled — "
+                                 "enable it to link a workflow."})
+    models = engine_service._automation_models()
+    workflows = (models.AutomationWorkflow.query
+                 .filter_by(user_id=current_user.id)
+                 .order_by(models.AutomationWorkflow.updated_at.desc()).all())
+    return jsonify({"ok": True, "automation_enabled": True,
+                    "workflows": [{"id": workflow.id, "name": workflow.name}
+                                  for workflow in workflows]})
+
+
 @bp.get("/browse/drives")
 def browse_drives():
     """Drives the picker may browse: own, non-trashed, by name."""
@@ -726,24 +746,57 @@ def run_card_stream(file_id):
                 "workflow") or {}
             if card_snapshot.get("type") == "workflow" or \
                     workflow_ref.get("workflow_id"):
-                trace, artifact_ids = [], []
+                it = engine_service.iter_workflow_events(
+                    live, card_snapshot, live_user)
                 try:
-                    result, artifact_ids, trace = engine_service.run_card(
-                        live, card_snapshot, live_user.id)
-                    _settle_stream_card(stored_id, card_id, "done",
-                                        result, trace, artifact_ids)
+                    for frame in it:
+                        if frame.get("t") == "done":
+                            _settle_stream_card(
+                                stored_id, card_id, "done",
+                                frame.get("result"),
+                                frame.get("trace") or [],
+                                frame.get("artifact_ids") or [])
+                            yield "data: " + json.dumps(
+                                {"t": "done", "card_id": card_id,
+                                 "result": frame.get("result"),
+                                 "trace": frame.get("trace") or []},
+                                default=str) + "\n\n"
+                            return
+                        yield "data: " + json.dumps(frame,
+                                                    default=str) + "\n\n"
+                except GeneratorExit:
+                    # Disconnect mid-run: keep consuming so the card still
+                    # settles (mirrors the prompt drain below); the frames
+                    # are simply not consumed.
+                    try:
+                        for frame in it:
+                            if frame.get("t") == "done":
+                                _settle_stream_card(
+                                    stored_id, card_id, "done",
+                                    frame.get("result"),
+                                    frame.get("trace") or [],
+                                    frame.get("artifact_ids") or [])
+                                return
+                    except Exception:  # noqa: BLE001 - drain must settle
+                        db.session.rollback()
+                        _settle_stream_card(
+                            stored_id, card_id, "error",
+                            {"error": "The run failed."}, [])
                 except engine_service.MissingInputError as exc:
                     result = {"error": str(exc)}
                     _settle_stream_card(stored_id, card_id, "error",
                                         result, [])
+                    yield "data: " + json.dumps(
+                        {"t": "done", "card_id": card_id, "result": result,
+                         "trace": []}) + "\n\n"
                 except Exception as exc:  # noqa: BLE001
                     db.session.rollback()
                     result = {"error": (str(exc) or "The run failed.")[:500]}
                     _settle_stream_card(stored_id, card_id, "error",
                                         result, [])
-                yield "data: " + json.dumps(
-                    {"t": "done", "result": result, "trace": trace},
-                    default=str) + "\n\n"
+                    yield "data: " + json.dumps(
+                        {"t": "done", "card_id": card_id, "result": result,
+                         "trace": []}) + "\n\n"
                 return
             if card_snapshot.get("script_enabled") and \
                     card_snapshot.get("type") != "workflow":
