@@ -716,6 +716,19 @@ def test_composer_structure_unified():
     assert "ai-send-btn" in html
 
 
+def test_ai_page_container_keeps_composer_in_view():
+    """Full-page chat must own the viewport slot instead of inheriting
+    the scroll-page container (min-h-full + 256px pb-64), which pushes
+    the composer below the fold on empty chats."""
+    import re
+    html = _read_template("app/templates/search/ai.html")
+    m = re.search(r"page_container_class\s*%\}\s*(.*?)\s*\{%",
+                 html, re.S)
+    assert m, "ai.html must override page_container_class"
+    assert "pb-64" not in m.group(1)
+    assert "h-full" in m.group(1)
+
+
 # ------------------------------------------------- mention mid-string (C3)
 
 
