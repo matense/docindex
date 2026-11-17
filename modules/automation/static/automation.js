@@ -1,4 +1,4 @@
-/* Automation editor — Drawflow canvas + palette + per-node config modal.
+/* Automation editor — Drawflow canvas + palette + per-node config inspector.
    Vanilla IIFE mounted on demand (SPA-safe: the inline bootstrap in
    editor.html appends this script once and caches the API on window). */
 (function () {
@@ -9,8 +9,10 @@
     let specByType = {};      // node type -> spec
     let stagger = 0;          // placement offset for palette clicks
     let nodeOutputs = {};     // dfId -> {port: text} from the last preview run
+    let nodeRich = {};        // dfId -> {port: rich} table/JSON structs
     let currentUnmount = null; // teardown of the live mount (SPA-safe re-mount)
     let versionPollTimer = null;
+    let liveRunTimer = null;  // 1.5 s status poll during full runs
     let resizeRO = null;
 
     // ------------------------------------------------------------------
@@ -34,6 +36,7 @@
             `<span class="min-w-0 flex-1">` +
             `<span class="wf-node-label block">${esc(spec.label || type)}</span>` +
             `<span class="wf-node-summary block"></span>` +
+            `<code class="wf-node-id"></code>` +
             `</span>` +
             `<span class="wf-node-kind"></span>` +
             `<i class="fas fa-pen wf-node-edit" title="Double-click to configure"></i>` +
@@ -53,11 +56,15 @@
         (spec.inputs || []).forEach((p, i) => {
             el.querySelectorAll(`.input_${i + 1}`).forEach(s => {
                 s.title = `${p.name}: ${p.kind || 'any'}${p.multiple ? ' (many wires)' : ''}`;
+                s.dataset.kind = p.kind || 'any';
+                s.dataset.multiple = p.multiple ? '1' : '0';
             });
         });
         (spec.outputs || []).forEach((p, i) => {
             el.querySelectorAll(`.output_${i + 1}`).forEach(s => {
                 s.title = `${p.name}: ${p.kind || 'any'}`;
+                s.dataset.kind = p.kind || 'any';
+                s.dataset.multiple = p.multiple ? '1' : '0';
             });
         });
     }
@@ -133,6 +140,7 @@
         refRaf = requestAnimationFrame(() => {
             refRaf = 0;
             renderRefWires();
+            renderMinimap();
         });
     }
 
@@ -419,6 +427,8 @@
             const kind = ((specByType[data.type] || {}).outputs || [])[0];
             const kindEl = el.querySelector('.wf-node-kind');
             if (kindEl) kindEl.textContent = kind ? kind.kind || '' : '';
+            const badge = el.querySelector('.wf-node-id');
+            if (badge) badge.textContent = exportIds[dfId] || ('n' + dfId);
             decoratePorts(dfId, specByType[data.type]);
         }
     }
@@ -495,6 +505,209 @@
         [150, 500, 1200, 2500].forEach(ms => _redrawTimers.push(setTimeout(run, ms)));
         if (document.fonts && document.fonts.ready) {
             document.fonts.ready.then(run).catch(() => {});
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Canvas HUD: zoom / fit-to-view / auto-layout / minimap
+    // ------------------------------------------------------------------
+    function applyView() {
+        if (!editor || !editor.precanvas) return;
+        editor.precanvas.style.transform =
+            'translate(' + editor.canvas_x + 'px, ' +
+            editor.canvas_y + 'px) scale(' + editor.zoom + ')';
+        editor.zoom_last_value = editor.zoom;
+        scheduleRefRender();
+    }
+
+    // Scale + center the canvas so every node is visible. Named for
+    // reuse: the `F` keyboard shortcut calls this exact helper.
+    function fitView() {
+        if (!editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        let minX = Infinity, minY = Infinity,
+            maxX = -Infinity, maxY = -Infinity;
+        ids.forEach(dfId => {
+            const n = data[dfId];
+            const el = document.getElementById('node-' + dfId);
+            const w = el && el.offsetWidth ? el.offsetWidth : 200;
+            const h = el && el.offsetHeight ? el.offsetHeight : 90;
+            minX = Math.min(minX, n.pos_x);
+            minY = Math.min(minY, n.pos_y);
+            maxX = Math.max(maxX, n.pos_x + w);
+            maxY = Math.max(maxY, n.pos_y + h);
+        });
+        const canvas = document.getElementById('drawflow');
+        const rect = canvas ? canvas.getBoundingClientRect()
+            : { width: 800, height: 600 };
+        if (!rect.width || !rect.height) return;
+        const pad = 60;
+        const bw = Math.max(1, maxX - minX);
+        const bh = Math.max(1, maxY - minY);
+        const zMin = editor.zoom_min || 0.5;
+        const zMax = editor.zoom_max || 1.6;
+        editor.zoom = Math.min(zMax, Math.max(zMin, Math.min(
+            (rect.width - pad * 2) / bw,
+            (rect.height - pad * 2) / bh)));
+        editor.canvas_x = rect.width / 2 - (minX + maxX) / 2 * editor.zoom;
+        editor.canvas_y = rect.height / 2 - (minY + maxY) / 2 * editor.zoom;
+        applyView();
+        redrawAllConnections();
+    }
+
+    // Arrange nodes in topological columns, left to right (Kahn
+    // layers), then redraw the wires for their new positions.
+    function autoLayout() {
+        if (!editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        const succ = {}, indeg = {};
+        ids.forEach(id => { succ[id] = []; indeg[id] = 0; });
+        ids.forEach(id => {
+            Object.values((data[id] || {}).outputs || {}).forEach(out => {
+                (out.connections || []).forEach(c => {
+                    const to = String(c.node);
+                    if ((to in succ) && !succ[id].includes(to)) {
+                        succ[id].push(to);
+                        indeg[to] += 1;
+                    }
+                });
+            });
+        });
+        const layer = {};
+        let frontier = ids.filter(id => indeg[id] === 0).sort();
+        let depth = 0;
+        while (frontier.length) {
+            const next = [];
+            frontier.forEach(id => { layer[id] = depth; });
+            frontier.forEach(id => {
+                succ[id].forEach(to => {
+                    indeg[to] -= 1;
+                    if (indeg[to] === 0) next.push(to);
+                });
+            });
+            frontier = [...new Set(next)].sort();
+            depth += 1;
+        }
+        // Leftover nodes are on a cycle: park them in a final column.
+        ids.forEach(id => { if (!(id in layer)) layer[id] = depth; });
+        const cols = {};
+        ids.forEach(id => {
+            (cols[layer[id]] = cols[layer[id]] || []).push(id);
+        });
+        Object.values(cols).forEach(col => col.sort(
+            (a, b) => data[a].pos_y - data[b].pos_y));
+        const X0 = 80, Y0 = 80, DX = 320, DY = 200;
+        Object.keys(cols).map(Number).sort((a, b) => a - b)
+            .forEach(col => {
+                cols[col].forEach((id, row) => {
+                    const x = X0 + col * DX, y = Y0 + row * DY;
+                    data[id].pos_x = x;
+                    data[id].pos_y = y;
+                    const el = document.getElementById('node-' + id);
+                    if (el) {
+                        el.style.left = x + 'px';
+                        el.style.top = y + 'px';
+                    }
+                });
+            });
+        markDirty();
+        redrawAllConnections();
+        scheduleRefRender();
+    }
+
+    // Compact 160x100px SVG minimap (bottom-right): one dot per node,
+    // one line per wire, plus the current viewport outline. Refreshed
+    // from scheduleRefRender() so it tracks every canvas change.
+    function renderMinimap() {
+        const svg = document.getElementById('wf-minimap');
+        if (!svg || !editor) return;
+        let data = {};
+        try {
+            data = editor.drawflow.drawflow[editor.module].data || {};
+        } catch { return; }
+        const W = 160, H = 100, NS = 'http://www.w3.org/2000/svg';
+        svg.innerHTML = '';
+        const ids = Object.keys(data);
+        if (!ids.length) return;
+        const size = dfId => {
+            const el = document.getElementById('node-' + dfId);
+            return {
+                w: el && el.offsetWidth ? el.offsetWidth : 200,
+                h: el && el.offsetHeight ? el.offsetHeight : 90,
+            };
+        };
+        let minX = Infinity, minY = Infinity,
+            maxX = -Infinity, maxY = -Infinity;
+        ids.forEach(dfId => {
+            const n = data[dfId], s = size(dfId);
+            minX = Math.min(minX, n.pos_x);
+            minY = Math.min(minY, n.pos_y);
+            maxX = Math.max(maxX, n.pos_x + s.w);
+            maxY = Math.max(maxY, n.pos_y + s.h);
+        });
+        const bw = Math.max(1, maxX - minX);
+        const bh = Math.max(1, maxY - minY);
+        const s = Math.min((W - 16) / bw, (H - 16) / bh);
+        const ox = (W - bw * s) / 2 - minX * s;
+        const oy = (H - bh * s) / 2 - minY * s;
+        const X = x => ox + x * s, Y = y => oy + y * s;
+        // Wires first (under the nodes).
+        ids.forEach(dfId => {
+            const n = data[dfId];
+            const s0 = size(dfId);
+            const x1 = X(n.pos_x + s0.w / 2), y1 = Y(n.pos_y + s0.h / 2);
+            Object.values(n.outputs || {}).forEach(out => {
+                (out.connections || []).forEach(c => {
+                    const t = data[String(c.node)];
+                    if (!t) return;
+                    const st = size(String(c.node));
+                    const line = document.createElementNS(NS, 'line');
+                    line.setAttribute('x1', x1);
+                    line.setAttribute('y1', y1);
+                    line.setAttribute('x2', X(t.pos_x + st.w / 2));
+                    line.setAttribute('y2', Y(t.pos_y + st.h / 2));
+                    line.setAttribute('stroke', 'currentColor');
+                    line.setAttribute('stroke-opacity', '0.35');
+                    line.setAttribute('stroke-width', '1');
+                    svg.appendChild(line);
+                });
+            });
+        });
+        ids.forEach(dfId => {
+            const n = data[dfId], sn = size(dfId);
+            const r = document.createElementNS(NS, 'rect');
+            r.setAttribute('x', X(n.pos_x));
+            r.setAttribute('y', Y(n.pos_y));
+            r.setAttribute('width', Math.max(2, sn.w * s));
+            r.setAttribute('height', Math.max(2, sn.h * s));
+            r.setAttribute('rx', 2);
+            r.setAttribute('fill', 'currentColor');
+            r.setAttribute('fill-opacity', '0.55');
+            svg.appendChild(r);
+        });
+        // Viewport outline.
+        const canvas = document.getElementById('drawflow');
+        if (canvas && editor.zoom) {
+            const rect = canvas.getBoundingClientRect();
+            const v = document.createElementNS(NS, 'rect');
+            v.setAttribute('x', X(-editor.canvas_x / editor.zoom));
+            v.setAttribute('y', Y(-editor.canvas_y / editor.zoom));
+            v.setAttribute('width', rect.width / editor.zoom * s);
+            v.setAttribute('height', rect.height / editor.zoom * s);
+            v.setAttribute('fill', 'none');
+            v.setAttribute('stroke', 'currentColor');
+            v.setAttribute('stroke-width', '1');
+            svg.appendChild(v);
         }
     }
 
@@ -675,7 +888,7 @@
     }
 
     // ------------------------------------------------------------------
-    // Config modal
+    // Config inspector (slide-over drawer)
     // ------------------------------------------------------------------
     // Friendly names for payload kinds, used in the per-node help chips.
     const KIND_LABELS = {
@@ -1466,6 +1679,48 @@
         return wrap;
     }
 
+    // Clickable upstream {{ nX }} reference chips above prompt/template
+    // textareas — clicking one inserts the reference at the cursor
+    // position in the textarea (other nodes' ids, self excluded).
+    function refChipsRow(nodeId, input, fieldName) {
+        const row = document.createElement('div');
+        row.className = 'wf-ref-chips flex flex-wrap gap-1';
+        const self = exportIds[nodeId] || ('n' + nodeId);
+        const refs = exportGraph().nodes
+            .map(n => n.id)
+            .filter(id => id !== self);
+        if (!refs.length) {
+            row.classList.add('hidden');
+            return row;
+        }
+        const label = document.createElement('span');
+        label.className = 'text-[10px] opacity-50 self-center mr-1';
+        label.textContent = 'Insert ref:';
+        row.appendChild(label);
+        refs.forEach(id => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'wf-ref-chip btn btn-ghost btn-xs font-mono';
+            b.textContent = '{{ ' + id + ' }}';
+            b.title = 'Insert reference to node ' + id + ' at the cursor';
+            b.addEventListener('click', () => {
+                const token = '{{ ' + id + ' }}';
+                const start = input.selectionStart != null
+                    ? input.selectionStart : input.value.length;
+                const end = input.selectionEnd != null
+                    ? input.selectionEnd : input.value.length;
+                input.value = input.value.slice(0, start) +
+                    token + input.value.slice(end);
+                updateConfig(nodeId, fieldName, input.value);
+                input.focus();
+                const pos = start + token.length;
+                try { input.setSelectionRange(pos, pos); } catch {}
+            });
+            row.appendChild(b);
+        });
+        return row;
+    }
+
     function fieldWidget(field, value, nodeId) {
         if (field.kind === 'conditions') {
             return conditionsWidget(field, nodeId);
@@ -1770,6 +2025,9 @@
             input.focus();
         };
         wrap.appendChild(fieldHead(field));
+        if (field.kind === 'textarea') {
+            wrap.appendChild(refChipsRow(nodeId, input, field.name));
+        }
         wrap.appendChild(input);
         if (field.presets && field.presets.length && apply) {
             wrap.appendChild(presetPills(field.presets, apply));
@@ -2001,7 +2259,7 @@
         form.appendChild(hint);
 
         // Conditional fields (show_when) + cell pickers that follow the
-        // notebook selection — active while this modal is open.
+        // notebook selection — active while this inspector is open.
         configChangeHook = (changedId, fieldName) => {
             if (changedId !== dfId) return;
             applyFieldVisibility(spec, dfId);
@@ -2014,11 +2272,14 @@
             }
         };
         applyFieldVisibility(spec, dfId);
-        const modal = document.getElementById('wf-config-modal');
-        modal.addEventListener('close', () => {
+        // Right-hand slide-over inspector (not a blocking modal): the
+        // canvas stays readable beside the drawer while editing.
+        const drawer = document.getElementById('wf-inspector');
+        const closeInspector = () => {
+            drawer.classList.add('hidden');
             configChangeHook = null;
             window.currentWorkflowNode = null;
-        }, { once: true });
+        };
 
         // Done validates this node's required fields first: empty required
         // fields are highlighted and the popup stays open.
@@ -2044,11 +2305,15 @@
                         `Fill in: ${missing.map(f => f.label).join(', ')}`, 'error');
                     return;
                 }
-                modal.close();
+                closeInspector();
             };
         }
+        const closeBtn = document.getElementById('wf-config-close');
+        if (closeBtn) closeBtn.onclick = () => closeInspector();
+        const cancelBtn = document.getElementById('wf-config-cancel');
+        if (cancelBtn) cancelBtn.onclick = () => closeInspector();
 
-        modal.showModal();
+        drawer.classList.remove('hidden');
         applyShapeHints(dfId, type);
     }
 
@@ -2106,6 +2371,42 @@
     }
     function onDocKeydown(e) {
         if (e.key === 'Escape') closeContextMenu();
+        // Keyboard shortcuts (Ctrl+S save, Ctrl+Enter run, Ctrl+D
+        // duplicate node) — preventDefault first so the browser never
+        // hijacks them (save dialog, bookmark, address bar).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            const k = (e.key || '').toLowerCase();
+            if (k === 's') {
+                e.preventDefault();
+                document.getElementById('wf-save').click();
+            } else if (k === 'enter') {
+                e.preventDefault();
+                document.getElementById('wf-run').click();
+            } else if (k === 'd') {
+                e.preventDefault();
+                const sel = selectedDfId();
+                if (sel != null) duplicateNode(sel);
+            }
+            return;
+        }
+        // Single-key canvas shortcuts (F fit to view, L toggle console) —
+        // never while typing in a field.
+        if (e.target && e.target.closest &&
+            e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === 'F' || e.key === 'f') fitView();
+        else if (e.key === 'L' || e.key === 'l') {
+            document.getElementById('wf-console').classList.toggle('hidden');
+        }
+    }
+
+    // The canvas-selected node (Drawflow `.selected`), for Ctrl+D.
+    function selectedDfId() {
+        const canvas = document.getElementById('drawflow');
+        const sel = canvas ? canvas.querySelector('.drawflow-node.selected') : null;
+        if (!sel) return null;
+        const id = parseInt(String(sel.id).replace('node-', ''), 10);
+        return Number.isNaN(id) ? null : id;
     }
 
     function duplicateNode(dfId) {
@@ -2132,10 +2433,66 @@
         scheduleRefRender();
     }
 
+    // Rich port rendering: `table` outputs become scrollable HTML tables
+    // (with row/column counts), `json` becomes formatted JSON, everything
+    // else stays a plain <pre> text block. `rich` is the matching
+    // preview_rich entry — undefined for old runs and plain kinds.
+    function renderPortOutput(container, text, rich) {
+        if (rich && rich.kind === 'table') {
+            const cols = rich.columns || [];
+            const rows = rich.rows || [];
+            const meta = document.createElement('div');
+            meta.className = 'text-[10px] uppercase tracking-wide opacity-50';
+            meta.textContent = `${rich.total_rows} row(s) × ` +
+                `${rich.total_columns} column(s)` +
+                (rich.truncated ? ` — showing first ${rows.length}` : '');
+            container.appendChild(meta);
+            const wrap = document.createElement('div');
+            wrap.className = 'overflow-auto max-h-80 rounded-lg border border-base-content/10';
+            const table = document.createElement('table');
+            table.className = 'wf-rich-table table-auto w-full text-xs';
+            const thead = document.createElement('thead');
+            const hr = document.createElement('tr');
+            cols.forEach(c => {
+                const th = document.createElement('th');
+                th.className = 'text-left font-semibold px-2 py-1 border-b border-base-content/10 opacity-70';
+                th.textContent = c;
+                hr.appendChild(th);
+            });
+            thead.appendChild(hr);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                (r || []).forEach(cell => {
+                    const td = document.createElement('td');
+                    td.className = 'px-2 py-1 border-b border-base-content/5';
+                    td.textContent = cell == null ? '' : String(cell);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            wrap.appendChild(table);
+            container.appendChild(wrap);
+            return;
+        }
+        const pre = document.createElement('pre');
+        pre.className = 'wf-preview-output';
+        if (rich && rich.kind === 'json' && rich.data !== undefined) {
+            pre.textContent = typeof rich.data === 'string'
+                ? rich.data : JSON.stringify(rich.data, null, 2);
+        } else {
+            pre.textContent = text;
+        }
+        container.appendChild(pre);
+    }
+
     // Show the output the node produced in the last preview run.
     function viewOutput(dfId) {
         const ports = nodeOutputs[dfId];
         if (!ports) return;
+        const richPorts = nodeRich[dfId] || {};
         const data = nodeData(dfId);
         const spec = data ? specByType[data.type] : null;
         document.getElementById('wf-output-title').innerHTML =
@@ -2151,10 +2508,7 @@
                 lbl.textContent = 'port: ' + port;
                 body.appendChild(lbl);
             }
-            const pre = document.createElement('pre');
-            pre.className = 'wf-preview-output';
-            pre.textContent = ports[port];
-            body.appendChild(pre);
+            renderPortOutput(body, ports[port], richPorts[port]);
         });
         document.getElementById('wf-output-modal').showModal();
     }
@@ -2273,6 +2627,70 @@
         }
     }
 
+    // Live highlight during full runs: poll the run status every 1.5 s so
+    // nodes transition running → ok/err live on the canvas (and their
+    // outputs land in nodeOutputs/nodeRich for View output).
+    function liveRunStatusUrl(runId) {
+        // /m/automation/<id>/run -> /m/automation/runs/<runId>/status
+        const base = (root.dataset.runUrl || '').replace(/\/\d+\/run\/?$/, '');
+        return (base || '/m/automation') + '/runs/' + runId + '/status';
+    }
+
+    function pollFullRun(runId) {
+        if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
+        clearNodeStates();
+        setLive(true);
+        const seen = {};  // graphId -> last applied status
+        const tick = async () => {
+            let data = null;
+            try {
+                const resp = await fetch(liveRunStatusUrl(runId));
+                if (resp.ok) data = await resp.json();
+            } catch { /* offline - keep polling */ }
+            if (!data) return;
+            (data.log || []).forEach(entry => {
+                if (seen[entry.node] === entry.status) return;
+                seen[entry.node] = entry.status;
+                if (entry.status === 'running') {
+                    markNode(entry.node, 'running', entry.label);
+                } else if (entry.status === 'done') {
+                    markNode(entry.node, 'ok', entry.label);
+                    wfConsoleLog(
+                        `${entry.label || entry.node} — done (${entry.ms || 0} ms)`,
+                        'success');
+                } else if (entry.status === 'error') {
+                    markNode(entry.node, 'err', entry.label);
+                    wfConsoleLog(
+                        `${entry.label || entry.node} — ERROR: ${entry.summary || ''}`,
+                        'error');
+                } else if (entry.status === 'skipped') {
+                    markNode(entry.node, null);
+                }
+            });
+            if (data.node_outputs) {
+                Object.entries(data.node_outputs).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeOutputs[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (data.node_rich) {
+                Object.entries(data.node_rich).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeRich[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (data.status && data.status !== 'queued' && data.status !== 'running') {
+                if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
+                setTimeout(() => setLive(false), 400);
+                setTimeout(fadeOkBadges, 4500);
+                wfConsoleLog(`run #${runId} finished: ${data.status}.`,
+                             data.status === 'done' ? 'success' : 'error');
+            }
+        };
+        liveRunTimer = setInterval(tick, 1500);
+        tick();
+    }
+
     async function runUpToNode(dfId) {
         const graph = ancestorsOf(dfId, exportGraph());
         wfConsoleOpen();
@@ -2298,6 +2716,12 @@
                     // to the canvas id that owns the DOM node.
                     const canvasId = refDfId(nid);
                     nodeOutputs[canvasId != null ? canvasId : nid] = ports;
+                });
+            }
+            if (resp.ok && data.rich) {
+                Object.entries(data.rich).forEach(([nid, ports]) => {
+                    const canvasId = refDfId(nid);
+                    nodeRich[canvasId != null ? canvasId : nid] = ports;
                 });
             }
             // Replay the run on the canvas: wires flow while live, then each
@@ -2466,6 +2890,7 @@
         specByType = {};
         stagger = 0;
         nodeOutputs = {};
+        nodeRich = {};
         (window.automationEditorData.palette || []).forEach(spec => {
             specByType[spec.type] = spec;
         });
@@ -2482,6 +2907,18 @@
          'connectionRemoved'].forEach(ev => {
             try { editor.on(ev, () => markDirty()); } catch {}
         });
+        // Drawflow fires nodeRemoved for EVERY removal path (context-menu
+        // delete, the × badge, keyboard): drop the orphaned id maps here
+        // so View-output and ref chips never address a ghost node.
+        try {
+            editor.on('nodeRemoved', id => {
+                const key = String(id == null ? '' : id)
+                    .replace(/^node-/, '');
+                delete exportIds[key];
+                delete nodeOutputs[key];
+                delete nodeRich[key];
+            });
+        } catch {}
         // Reference wires follow nodes, zoom and pan (rAF-throttled).
         ['nodeMoved', 'zoom', 'translate', 'nodeCreated', 'nodeRemoved',
          'connectionCreated', 'connectionRemoved'].forEach(ev => {
@@ -2524,7 +2961,7 @@
                 setTimeout(() => redrawAllConnections(), 350));
         }
 
-        // Double-click (or the pencil icon) opens the configuration popup;
+        // Double-click (or the pencil icon) opens the inspector drawer;
         // single click stays free for selecting/dragging.
         const canvas = document.getElementById('drawflow');
         canvas.addEventListener('dblclick', e => {
@@ -2638,9 +3075,43 @@
             }
         });
 
+        // Highlight compatible input sockets while dragging a wire out of
+        // an output socket (same KIND_ACCEPTS rules as connectionCreated).
+        canvas.addEventListener('mousedown', e => {
+            const out = e.target.closest('.output');
+            if (!out || !canvas.contains(out)) return;
+            const outKind = out.dataset.kind || 'any';
+            canvas.querySelectorAll('.input').forEach(inp => {
+                const inKind = inp.dataset.kind || 'any';
+                const accepts = KIND_ACCEPTS[inKind];
+                if (!accepts || accepts.includes(outKind)) inp.classList.add('wf-drop-ok');
+            });
+        });
+        document.addEventListener('mouseup', clearDropMarks);
+        function clearDropMarks() {
+            canvas.querySelectorAll('.input.wf-drop-ok').forEach(
+                inp => inp.classList.remove('wf-drop-ok'));
+        }
+
         document.getElementById('wf-console-toggle').addEventListener('click', () => {
             document.getElementById('wf-console').classList.toggle('hidden');
         });
+        // Canvas HUD (bottom-left): zoom controls, fit-to-view, auto-layout.
+        const hud = (name, fn) => {
+            const b = root.querySelector(`[data-hud="${name}"]`);
+            if (b) b.addEventListener('click', fn);
+        };
+        hud('zoom-in', () => { editor.zoom_in(); });
+        hud('zoom-out', () => { editor.zoom_out(); });
+        hud('reset', () => {
+            editor.zoom_reset();
+            editor.canvas_x = 0;
+            editor.canvas_y = 0;
+            applyView();
+        });
+        hud('fit', () => fitView());
+        hud('layout', () => autoLayout());
+
         document.getElementById('wf-console-close').addEventListener('click', () => {
             document.getElementById('wf-console').classList.add('hidden');
         });
@@ -2718,6 +3189,8 @@
             window.uiToast('Workflow running in the background — track it in the bottom-right card.',
                            'info');
             if (window.automationRunsPoll) window.automationRunsPoll();
+            // Live canvas highlight for this full run (1.5 s status poll).
+            pollFullRun(data.run_id);
         }
 
         document.getElementById('wf-check').addEventListener('click', async () => {
@@ -2844,8 +3317,8 @@
         // Fallback: a version poll catches edits made while no chat
         // window was open to forward the event (dock runs, other tabs).
         const applyRemote = async attempt => {
-            const configOpen = document.getElementById('wf-config-modal');
-            if (configOpen && configOpen.open) {
+            const configOpen = document.getElementById('wf-inspector');
+            if (configOpen && !configOpen.classList.contains('hidden')) {
                 if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
                 return;  // don't clobber a config form the user is editing
             }
@@ -2898,10 +3371,12 @@
             _redrawTimers.forEach(clearTimeout);
             _redrawTimers = [];
             clearTimeout(_dirtyTimer);
+            if (liveRunTimer) { clearInterval(liveRunTimer); liveRunTimer = null; }
             if (versionPollTimer) { clearInterval(versionPollTimer); versionPollTimer = null; }
             if (resizeRO) { try { resizeRO.disconnect(); } catch {} resizeRO = null; }
             document.removeEventListener('click', onDocClick);
             document.removeEventListener('keydown', onDocKeydown);
+            document.removeEventListener('mouseup', clearDropMarks);
             window.removeEventListener('docindex-ui-action', onUiAction);
             editor = null;
             root = null;
@@ -2913,5 +3388,6 @@
     window.AutomationEditor = {
         mount,
         unmount: () => { if (currentUnmount) currentUnmount(); },
+        fitView,
     };
 })();

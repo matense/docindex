@@ -197,7 +197,9 @@ def _execute(run_id, app):
         run.output = json.dumps({
             "results": results, "files": created,
             # Per-node output previews — the run page shows them in a popup.
-            "node_outputs": engine.preview_outputs(outputs)})
+            "node_outputs": engine.preview_outputs(outputs),
+            # Structured table/JSON previews for rich rendering.
+            "node_rich": engine.preview_rich(outputs)})
         run.status = "done"
     except engine._Stopped:
         run.status = "stopped"

@@ -3704,3 +3704,189 @@ def test_example_use_without_module_shows_error_not_500(auth_client, app, user,
     # template context).
     r = auth_client.post("/m/automation/examples/summarize-to-notebook/use")
     assert r.status_code in (200, 302, 400) and b"notebooks" in r.data.lower()
+
+
+# ---------------------------------------------------------------------------
+# B1: list page + file picker fixes (static pins)
+# ---------------------------------------------------------------------------
+
+def read(rel):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, rel), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_list_counts_direct_children_only():
+    html = read("modules/automation/templates/automation/list.html")
+    assert ":scope > summary .auto-count" in html
+    assert ":scope > div > [data-wf-id]" in html
+
+
+def test_single_background_menu_with_folder_selector():
+    html = read("modules/automation/templates/automation/list.html")
+    assert html.count("function openBackgroundMenu") == 1
+    assert "details.auto-folder" in html
+    assert "details.automation-tree" not in html
+
+
+def test_run_form_up_navigates_parent():
+    src = read("modules/automation/static/run_form.js")
+    assert "crumbs[crumbs.length - 2]" in src
+
+
+# ---------------------------------------------------------------------------
+# B2: canvas HUD — zoom/fit/layout + minimap (static pins)
+# ---------------------------------------------------------------------------
+
+def test_canvas_hud_present():
+    html = read("modules/automation/templates/automation/editor.html")
+    for token in ["data-hud=", "100%", "fa-expand", "fa-wand-magic-sparkles"]:
+        assert token in html
+
+
+def test_canvas_hud_calls_redraw():
+    src = read("modules/automation/static/automation.js")
+    assert "redrawAllConnections" in src and "minimap" in src.lower()
+
+
+# ---------------------------------------------------------------------------
+# B3: typed sockets + node ID badges (static pins)
+# ---------------------------------------------------------------------------
+
+def test_node_id_badges_and_typed_sockets():
+    src = read("modules/automation/static/automation.js")
+    assert "wf-node-id" in src and ("exportIds[dfId]" in src or '("n" + dfId)' in src)
+    assert 'dataset.kind' in src and 'dataset.multiple' in src
+
+
+# ---------------------------------------------------------------------------
+# B4: slide-over inspector + upstream ref chips (static pins)
+# ---------------------------------------------------------------------------
+
+def test_inspector_is_config_only():
+    html = read("modules/automation/templates/automation/editor.html")
+    assert "wf-inspector" in html and "w-96" in html
+    src = read("modules/automation/static/automation.js")
+    assert "wf-ref-chip" in src or "upstream" in src.lower()
+
+
+# ---------------------------------------------------------------------------
+# B5: live run highlight + rich previews + shortcuts (static + engine pins)
+# ---------------------------------------------------------------------------
+
+def test_created_files_covers_copy_and_notebook(app, user, notebooks_enabled):
+    # All four file-producing sinks land in `created` exactly once.
+    drive_id = _drive(app, user, name="Sinks")
+    dst_id = _drive(app, user, name="Archive")
+    fid_csv = _make_file(app, user, "four.csv", "a,b\n1,2\n")
+    fid_png = _make_file(app, user, "four.png", "fake png bytes")
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        nb = nb_doc.create_notebook(
+            user_obj, drive, "Sink Log",
+            cells=[nb_doc.new_cell("markdown", "# start")])
+        nb_id = nb.id
+        graph = {"nodes": [
+            {"id": "t1", "type": "input.text",
+             "config": {"content": "file body", "format": "text"}},
+            {"id": "save", "type": "output.save_file",
+             "config": {"name": "s1.txt", "drive_id": str(drive_id)}},
+            {"id": "fcsv", "type": "input.file",
+             "config": {"file_id": str(fid_csv)}},
+            {"id": "stab", "type": "output.save_table",
+             "config": {"name": "tab", "format": "csv",
+                        "drive_id": str(drive_id)}},
+            {"id": "fpng", "type": "input.file",
+             "config": {"file_id": str(fid_png)}},
+            {"id": "cp", "type": "output.copy_file",
+             "config": {"drive_id": str(dst_id)}},
+            {"id": "t2", "type": "input.text",
+             "config": {"content": "nb cell", "format": "text"}},
+            {"id": "nb", "type": "notebook.output",
+             "config": {"notebook_id": nb_id, "mode": "append"}},
+        ], "edges": [
+            {"from": "t1", "from_port": "out", "to": "save", "to_port": "in"},
+            {"from": "fcsv", "from_port": "out",
+             "to": "stab", "to_port": "in"},
+            {"from": "fpng", "from_port": "out", "to": "cp", "to_port": "in"},
+            {"from": "t2", "from_port": "out", "to": "nb", "to_port": "in"},
+        ]}
+        _, _, created = _execute(graph, app, user)
+        assert len(created) == 4  # no double-counting across sinks
+        names = {c["name"] for c in created}
+        assert names >= {"s1.txt", "tab.csv", "four.png", "Sink_Log.pdocnb"}
+        ids = [c["file_id"] for c in created]
+        assert len(set(ids)) == 4
+        # A brand-new notebook is recorded too (not just appends).
+        _, _, created2 = _execute({"nodes": [
+            {"id": "t", "type": "input.text",
+             "config": {"content": "fresh nb", "format": "text"}},
+            {"id": "nb2", "type": "notebook.output",
+             "config": {"notebook_id": "", "mode": "append",
+                        "name": "Fresh Sink", "drive_id": drive_id}},
+        ], "edges": [{"from": "t", "from_port": "out",
+                     "to": "nb2", "to_port": "in"}]}, app, user)
+        assert len(created2) == 1
+        assert db.session.get(StoredFile,
+                              created2[0]["file_id"]) is not None
+
+
+def test_live_run_wiring():
+    src = read("modules/automation/static/automation.js")
+    assert "runs/" in src and "/status" in src
+    assert "Ctrl+Enter" in src or "ctrl+enter" in src.lower()
+
+
+def test_preview_rich_tables_and_json():
+    outputs = {
+        "t": {"out": {"kind": "table", "data": {
+            "columns": ["a", "b"], "rows": [[1, 2], [3, 4]]}}},
+        "j": {"out": {"kind": "json", "data": {"x": [1, 2]}}},
+        "s": {"out": {"kind": "text", "data": "hi"}},
+    }
+    rich = engine.preview_rich(outputs)
+    assert rich["t"]["out"]["columns"] == ["a", "b"]
+    assert rich["t"]["out"]["total_rows"] == 2
+    assert rich["t"]["out"]["total_columns"] == 2
+    assert rich["j"]["out"]["data"] == {"x": [1, 2]}
+    assert "s" not in rich  # plain text needs no struct
+
+
+def test_run_status_exposes_node_rich(auth_client, app, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _make_file(app, user, "rich.csv", "a,b\n1,2\n3,4\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "s", "type": "output.save_table",
+         "config": {"name": "rich-out", "format": "csv",
+                    "drive_id": str(drive_id)}},
+    ], "edges": [{"from": "f", "from_port": "out",
+                 "to": "s", "to_port": "in"}]}
+    wf_id = _workflow(app, user, graph)
+    resp = auth_client.post(f"/m/automation/{wf_id}/run")
+    assert resp.status_code == 200
+    data = auth_client.get(
+        f"/m/automation/runs/{resp.get_json()['run_id']}/status").get_json()
+    assert data["status"] == "done"
+    table = data["node_rich"]["f"]["out"]
+    assert table["kind"] == "table"
+    assert table["columns"] == ["a", "b"]
+    assert table["total_rows"] == 2
+
+
+def test_rich_previews_and_shortcuts_wiring():
+    src = read("modules/automation/static/automation.js")
+    # 1.5 s live poll of the run status during full runs.
+    assert "1500" in src
+    # Shortcuts: save / run / duplicate / fit / console.
+    assert "Ctrl+S" in src and "Ctrl+D" in src
+    assert "'F'" in src or '"F"' in src
+    # Drawflow removal cleans the id maps (covers every removal path).
+    assert "editor.on('nodeRemoved'" in src
+    assert "delete exportIds[" in src and "delete nodeOutputs[" in src
+    # Rich table/JSON rendering in the editor output popup.
+    assert "wf-rich-table" in src and "JSON.stringify" in src
+    html = read("modules/automation/templates/automation/run.html")
+    assert "node_rich" in html and "createElement('table')" in html

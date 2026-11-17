@@ -234,8 +234,8 @@
             dst.appendChild(row);
             [srcBlock, dstBlock].forEach((blk) => {
                 if (!blk) return;
-                const badge = blk.querySelector(':scope > summary .badge');
-                if (badge) badge.textContent = blk.querySelectorAll('[data-wf-id]').length;
+                const badge = blk.querySelector(':scope > summary .auto-count');
+                if (badge) badge.textContent = blk.querySelectorAll(':scope > div > [data-wf-id]').length;
             });
         } catch (e) {
             location.reload();
@@ -359,8 +359,8 @@
         });
         item('New folder…', 'fa-folder-plus', () => inlineCreate(null, null));
         sep();
-        item('Expand all', 'fa-angles-down', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = true));
-        item('Collapse all', 'fa-angles-up', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = false));
+        item('Expand all', 'fa-angles-down', () => tree.querySelectorAll('details.auto-folder').forEach(d => d.open = true));
+        item('Collapse all', 'fa-angles-up', () => tree.querySelectorAll('details.auto-folder').forEach(d => d.open = false));
         sep();
         item('Clean up empty folders', 'fa-broom', () => {
             const doIt = () => postForm(BASE + 'folders/cleanup', {});
@@ -499,25 +499,6 @@
                                  { danger: true }).then(ok => { if (ok) doIt(); });
             } else { doIt(); }
         }, { danger: true });
-        openMenu(x, y);
-    }
-    function openBackgroundMenu(x, y) {
-        item('New automation…', 'fa-plus', () => {
-            const m = document.getElementById('wf-new-modal');
-            if (m) m.showModal();
-        });
-        item('New folder…', 'fa-folder-plus', () => inlineCreate(null, null));
-        sep();
-        item('Expand all', 'fa-angles-down', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = true));
-        item('Collapse all', 'fa-angles-up', () => tree.querySelectorAll('details.automation-tree').forEach(d => d.open = false));
-        sep();
-        item('Clean up empty folders', 'fa-broom', () => {
-            const doIt = () => postForm(BASE + 'folders/cleanup', {});
-            if (window.uiConfirm) {
-                window.uiConfirm('Delete every empty folder (no automations, no subfolders)?')
-                    .then(ok => { if (ok) doIt(); });
-            } else { doIt(); }
-        });
         openMenu(x, y);
     }
     tree.addEventListener('contextmenu', (e) => {
