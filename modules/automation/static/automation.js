@@ -1,4 +1,4 @@
-/* Automation editor — Drawflow canvas + palette + per-node config modal.
+/* Automation editor — Drawflow canvas + palette + per-node config inspector.
    Vanilla IIFE mounted on demand (SPA-safe: the inline bootstrap in
    editor.html appends this script once and caches the API on window). */
 (function () {
@@ -886,7 +886,7 @@
     }
 
     // ------------------------------------------------------------------
-    // Config modal
+    // Config inspector (slide-over drawer)
     // ------------------------------------------------------------------
     // Friendly names for payload kinds, used in the per-node help chips.
     const KIND_LABELS = {
@@ -1677,6 +1677,48 @@
         return wrap;
     }
 
+    // Clickable upstream {{ nX }} reference chips above prompt/template
+    // textareas — clicking one inserts the reference at the cursor
+    // position in the textarea (other nodes' ids, self excluded).
+    function refChipsRow(nodeId, input, fieldName) {
+        const row = document.createElement('div');
+        row.className = 'wf-ref-chips flex flex-wrap gap-1';
+        const self = exportIds[nodeId] || ('n' + nodeId);
+        const refs = exportGraph().nodes
+            .map(n => n.id)
+            .filter(id => id !== self);
+        if (!refs.length) {
+            row.classList.add('hidden');
+            return row;
+        }
+        const label = document.createElement('span');
+        label.className = 'text-[10px] opacity-50 self-center mr-1';
+        label.textContent = 'Insert ref:';
+        row.appendChild(label);
+        refs.forEach(id => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'wf-ref-chip btn btn-ghost btn-xs font-mono';
+            b.textContent = '{{ ' + id + ' }}';
+            b.title = 'Insert reference to node ' + id + ' at the cursor';
+            b.addEventListener('click', () => {
+                const token = '{{ ' + id + ' }}';
+                const start = input.selectionStart != null
+                    ? input.selectionStart : input.value.length;
+                const end = input.selectionEnd != null
+                    ? input.selectionEnd : input.value.length;
+                input.value = input.value.slice(0, start) +
+                    token + input.value.slice(end);
+                updateConfig(nodeId, fieldName, input.value);
+                input.focus();
+                const pos = start + token.length;
+                try { input.setSelectionRange(pos, pos); } catch {}
+            });
+            row.appendChild(b);
+        });
+        return row;
+    }
+
     function fieldWidget(field, value, nodeId) {
         if (field.kind === 'conditions') {
             return conditionsWidget(field, nodeId);
@@ -1981,6 +2023,9 @@
             input.focus();
         };
         wrap.appendChild(fieldHead(field));
+        if (field.kind === 'textarea') {
+            wrap.appendChild(refChipsRow(nodeId, input, field.name));
+        }
         wrap.appendChild(input);
         if (field.presets && field.presets.length && apply) {
             wrap.appendChild(presetPills(field.presets, apply));
@@ -2212,7 +2257,7 @@
         form.appendChild(hint);
 
         // Conditional fields (show_when) + cell pickers that follow the
-        // notebook selection — active while this modal is open.
+        // notebook selection — active while this inspector is open.
         configChangeHook = (changedId, fieldName) => {
             if (changedId !== dfId) return;
             applyFieldVisibility(spec, dfId);
@@ -2225,11 +2270,14 @@
             }
         };
         applyFieldVisibility(spec, dfId);
-        const modal = document.getElementById('wf-config-modal');
-        modal.addEventListener('close', () => {
+        // Right-hand slide-over inspector (not a blocking modal): the
+        // canvas stays readable beside the drawer while editing.
+        const drawer = document.getElementById('wf-inspector');
+        const closeInspector = () => {
+            drawer.classList.add('hidden');
             configChangeHook = null;
             window.currentWorkflowNode = null;
-        }, { once: true });
+        };
 
         // Done validates this node's required fields first: empty required
         // fields are highlighted and the popup stays open.
@@ -2255,11 +2303,15 @@
                         `Fill in: ${missing.map(f => f.label).join(', ')}`, 'error');
                     return;
                 }
-                modal.close();
+                closeInspector();
             };
         }
+        const closeBtn = document.getElementById('wf-config-close');
+        if (closeBtn) closeBtn.onclick = () => closeInspector();
+        const cancelBtn = document.getElementById('wf-config-cancel');
+        if (cancelBtn) cancelBtn.onclick = () => closeInspector();
 
-        modal.showModal();
+        drawer.classList.remove('hidden');
         applyShapeHints(dfId, type);
     }
 
@@ -2735,7 +2787,7 @@
                 setTimeout(() => redrawAllConnections(), 350));
         }
 
-        // Double-click (or the pencil icon) opens the configuration popup;
+        // Double-click (or the pencil icon) opens the inspector drawer;
         // single click stays free for selecting/dragging.
         const canvas = document.getElementById('drawflow');
         canvas.addEventListener('dblclick', e => {
@@ -3089,8 +3141,8 @@
         // Fallback: a version poll catches edits made while no chat
         // window was open to forward the event (dock runs, other tabs).
         const applyRemote = async attempt => {
-            const configOpen = document.getElementById('wf-config-modal');
-            if (configOpen && configOpen.open) {
+            const configOpen = document.getElementById('wf-inspector');
+            if (configOpen && !configOpen.classList.contains('hidden')) {
                 if (attempt < 5) setTimeout(() => applyRemote(attempt + 1), 2000);
                 return;  // don't clobber a config form the user is editing
             }

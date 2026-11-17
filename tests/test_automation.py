@@ -3757,3 +3757,14 @@ def test_node_id_badges_and_typed_sockets():
     src = read("modules/automation/static/automation.js")
     assert "wf-node-id" in src and ("exportIds[dfId]" in src or '("n" + dfId)' in src)
     assert 'dataset.kind' in src and 'dataset.multiple' in src
+
+
+# ---------------------------------------------------------------------------
+# B4: slide-over inspector + upstream ref chips (static pins)
+# ---------------------------------------------------------------------------
+
+def test_inspector_is_config_only():
+    html = read("modules/automation/templates/automation/editor.html")
+    assert "wf-inspector" in html and "w-96" in html
+    src = read("modules/automation/static/automation.js")
+    assert "wf-ref-chip" in src or "upstream" in src.lower()
