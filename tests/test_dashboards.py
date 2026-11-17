@@ -3745,3 +3745,18 @@ def test_parse_script_result_maps_none_to_empty():
     """Fix wave: a None script value coerces to "" — never a literal
     "None" snapshot."""
     assert _engine()._parse_script_result("kpi", None) == {"text": ""}
+
+
+# ---------------------------------------------------------------------------
+# Task C1: row equalization + snap guides + size presets
+# ---------------------------------------------------------------------------
+
+def test_row_equalization_caps_markdown():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "c.h === first.h" in src  # same-row rule, type check dropped
+    assert "c.type === first.type" not in src  # no same-type gate
+    assert "snap-guide" in src or "grid-guide" in src
+    assert "dash-size-menu" in src  # badge opens a quick-select dropdown
+    assert "3×1" in src and "12×4" in src  # quick-select presets

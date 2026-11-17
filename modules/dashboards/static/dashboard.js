@@ -26,6 +26,9 @@
 
     var GRID_COLUMNS = 12;
     var WIDTH_STEPS = [3, 4, 6, 8, 12];
+    // Quick-select size presets for the Builder size badge (Task C1).
+    // Applied through snapW/clampN so per-type minima still hold.
+    var SIZE_PRESETS = ["3×1", "4×2", "6×3", "8×3", "12×4"];
     // Per-type minima. Widths follow the mockup steps; heights follow the
     // server MIN_SIZE (chart needs h>=3 — a chart at h=2 is 400-rejected).
     var MIN_W = { kpi: 3, table: 4, list: 3, chart: 6, markdown: 4, workflow: 6 };
@@ -733,6 +736,7 @@
     }
 
     function renderGrid(S) {
+        closeSizeMenu();
         closeRefPick(S);
         var g = S.els.grid;
         g.innerHTML = "";
@@ -787,7 +791,7 @@
             '<input type="text" class="dash-title" data-f="title" maxlength="' + MAX_TITLE + '" ' +
             'value="' + esc(card.title || "") + '" aria-label="Card title" placeholder="Card title">' +
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
-            '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
+            '<button type="button" class="dash-csize" data-f="size" style="border:0;color:inherit;font:inherit;cursor:pointer" title="size (width × height) — click for presets" aria-haspopup="menu">' + card.w + "×" + card.h + "</button></div>" +
             '<div data-f="promptwrap"' + (card.script_enabled ? ' style="display:none"' : "") + '>' +
             '<div class="dash-prompt-label"><span>Card prompt</span>' +
             '<button type="button" class="dash-edit-btn" data-f="expand-prompt" title="Edit in popup" aria-label="Edit prompt in popup">' +
@@ -917,6 +921,7 @@
         bindWorkflowFields(S, d, card);
         bindRefButtons(S, d, card);
         bindHandles(S, d, card);
+        bindSizeMenu(S, card, d.querySelector('[data-f="size"]'));
         return d;
     }
 
@@ -1243,9 +1248,14 @@
         return S.els.grid.querySelector('[data-card="' + id + '"]');
     }
 
-    // Same type + same h sharing a row get the row's max height so their
-    // footers line up even when content varies (1- vs 2-line labels).
-    // Different h (or mixed types) intentionally keep natural heights.
+    // Same h sharing a row get the row's max height so their footers
+    // (pager, run stamps) line up even when content varies. The measured
+    // offsetHeight already includes pager footers and the 56px KPI numerals.
+    // Row matching keys on the grid model (c.h), never on measured pixels,
+    // so the Settings drawer's collapsed height stays out of matching.
+    // Different h intentionally keeps natural heights. Markdown cards cap at
+    // their own content height + card padding instead of stretching a tiny
+    // note to the row height.
     function equalizeRowHeights(grid, cards) {
         if (!grid) return;
         var nodes = Array.prototype.slice.call(
@@ -1273,15 +1283,148 @@
             if (!first) return;
             var same = row.nodes.every(function (n) {
                 var c = byId[key(n)];
-                return c && c.type === first.type && c.h === first.h;
+                return c && c.h === first.h;
             });
             if (!same) return;
-            var max = row.nodes.reduce(function (m, n) {
-                return Math.max(m, n.offsetHeight);
-            }, 0);
-            if (max > 0) row.nodes.forEach(function (n) {
-                n.style.height = max + "px";
+            // Natural heights first: offsetHeight covers pager footers and
+            // the 56px KPI numerals, so the row max lines up real content.
+            var natural = row.nodes.map(function (n) { return n.offsetHeight; });
+            var max = Math.max.apply(null, natural.concat([0]));
+            if (max > 0) row.nodes.forEach(function (n, i) {
+                var c = byId[key(n)];
+                // Markdown cap: content height + padding, never the row max.
+                var target = (c && c.type === "markdown")
+                    ? Math.min(max, natural[i])
+                    : max;
+                n.style.height = target + "px";
             });
+        });
+    }
+
+    // 12-column snap guide overlay (Task C1): a translucent column grid
+    // behind the cards, visible only during drag/resize gestures.
+    function ensureGuideStyle() {
+        if (document.getElementById("dash-snap-guide-style")) return;
+        var st = document.createElement("style");
+        st.id = "dash-snap-guide-style";
+        st.textContent =
+            ".dash-grid.dash-guiding { position: relative; }\n" +
+            ".dash-snap-guide { position: absolute; top: 0; left: 0; right: 0; bottom: 0; " +
+            "z-index: 0; display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; " +
+            "pointer-events: none; }\n" +
+            ".dash-snap-guide > div { border-radius: 12px; " +
+            "background: rgba(99,102,241,.10); " +
+            "border: 1px dashed rgba(99,102,241,.45); }\n";
+        document.head.appendChild(st);
+    }
+
+    function showSnapGuide(grid) {
+        if (!grid || grid.querySelector('[data-snap-guide="1"]')) return;
+        ensureGuideStyle();
+        var guide = document.createElement("div");
+        guide.className = "dash-snap-guide";
+        guide.setAttribute("data-snap-guide", "1");
+        guide.setAttribute("aria-hidden", "true");
+        for (var i = 0; i < GRID_COLUMNS; i++) {
+            guide.appendChild(document.createElement("div"));
+        }
+        if (grid.firstChild) grid.insertBefore(guide, grid.firstChild);
+        else grid.appendChild(guide);
+        grid.classList.add("dash-guiding");
+    }
+
+    function hideSnapGuide(grid) {
+        if (!grid) return;
+        var guide = grid.querySelector('[data-snap-guide="1"]');
+        if (guide && guide.parentNode) guide.parentNode.removeChild(guide);
+        grid.classList.remove("dash-guiding");
+    }
+
+    // Size badge quick-select (Task C1): the badge is a button; picking a
+    // preset snaps w/h through the grid validator (snapW/clampN) so
+    // per-type minima (MIN_W/MIN_H) and WIDTH_STEPS still hold.
+    function sizePresetWH(preset) {
+        var parts = String(preset).split("×");
+        return { w: parseInt(parts[0], 10) || 3, h: parseInt(parts[1], 10) || 2 };
+    }
+
+    function applySizePreset(S, card, preset) {
+        var wh = sizePresetWH(preset);
+        card.w = snapW(wh.w, MIN_W[card.type] || 3);
+        card.h = clampN(wh.h, MIN_H[card.type] || 2, MAX_H);
+        renderGrid(S);
+        scheduleSave(S);
+        toast(S, "card " + card.w + "×" + card.h);
+    }
+
+    function closeSizeMenu() {
+        var open = document.querySelector('[data-size-menu="1"]');
+        if (open && open.parentNode) open.parentNode.removeChild(open);
+        if (closeSizeMenu._doc) {
+            document.removeEventListener("pointerdown", closeSizeMenu._doc, true);
+            closeSizeMenu._doc = null;
+        }
+        if (closeSizeMenu._esc) {
+            document.removeEventListener("keydown", closeSizeMenu._esc, true);
+            closeSizeMenu._esc = null;
+        }
+    }
+
+    function openSizeMenu(S, card, badge) {
+        closeSizeMenu();
+        var menu = document.createElement("div");
+        menu.className = "dash-size-menu glass-panel";
+        menu.setAttribute("data-size-menu", "1");
+        menu.setAttribute("role", "menu");
+        menu.setAttribute("aria-label", "Card size presets");
+        var r = badge.getBoundingClientRect();
+        menu.style.cssText = "position:fixed;z-index:200;display:flex;" +
+            "flex-direction:column;gap:2px;min-width:96px;padding:6px;" +
+            "top:" + Math.max(8, r.bottom + 4) + "px;left:" + Math.max(8, r.left) + "px;";
+        SIZE_PRESETS.forEach(function (p) {
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "btn btn-ghost btn-xs";
+            b.setAttribute("role", "menuitem");
+            var cur = (card.w + "×" + card.h) === p;
+            b.textContent = (cur ? "✓ " : "") + p;
+            if (cur) b.setAttribute("aria-current", "true");
+            b.title = cur ? "current size" : "resize to " + p;
+            b.addEventListener("click", function (e) {
+                e.stopPropagation();
+                closeSizeMenu();
+                applySizePreset(S, card, p);
+                focusHandle(S, card.id, false);
+            });
+            menu.appendChild(b);
+        });
+        document.body.appendChild(menu);
+        var mr = menu.getBoundingClientRect();
+        if (mr.right > window.innerWidth - 8) {
+            menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + "px";
+        }
+        if (mr.bottom > window.innerHeight - 8) {
+            menu.style.top = Math.max(8, r.top - mr.height - 4) + "px";
+        }
+        closeSizeMenu._doc = function (e) {
+            if (!menu.contains(e.target)) closeSizeMenu();
+        };
+        document.addEventListener("pointerdown", closeSizeMenu._doc, true);
+        closeSizeMenu._esc = function (e) {
+            if (e.key === "Escape") { closeSizeMenu(); badge.focus(); }
+        };
+        document.addEventListener("keydown", closeSizeMenu._esc, true);
+    }
+
+    function bindSizeMenu(S, card, badge) {
+        if (!badge) return;
+        badge.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (document.querySelector('[data-size-menu="1"]')) {
+                closeSizeMenu();
+                return;
+            }
+            openSizeMenu(S, card, badge);
         });
     }
 
@@ -1354,6 +1497,7 @@
         node.style.width = r.width + "px";
         node.style.height = r.height + "px";
         grid.classList.add("sorting");
+        showSnapGuide(grid);
         document.body.classList.add("dash-grabbing");
         S.ptrOp = {
             kind: "drag", id: id, node: node, ph: ph, originNext: node.nextSibling,
@@ -1452,6 +1596,7 @@
         if (!op) return;
         if (op.node) cleanupFloat(S, op.node);
         S.els.grid.classList.remove("sorting");
+        hideSnapGuide(S.els.grid);
         window.removeEventListener("pointermove", S._onPtrMove);
         S.ptrOp = null;
     }
@@ -1465,6 +1610,7 @@
             if (op.ph.parentNode) op.ph.remove();
             cleanupFloat(S, op.node);
             grid.classList.remove("sorting");
+            hideSnapGuide(grid);
             window.removeEventListener("pointermove", S._onPtrMove);
             S.ptrOp = null;
             focusHandle(S, op.id, false);
@@ -1482,6 +1628,7 @@
         op.ph.remove();
         cleanupFloat(S, op.node);
         S.els.grid.classList.remove("sorting");
+        hideSnapGuide(S.els.grid);
         window.removeEventListener("pointermove", S._onPtrMove);
         S.ptrOp = null;
         syncOrderFromDOM(S);
@@ -1504,6 +1651,7 @@
         e.stopPropagation();
         var r = node.getBoundingClientRect();
         document.body.classList.add("dash-grabbing");
+        showSnapGuide(S.els.grid);
         S.ptrOp = {
             kind: "resize", id: id, type: card.type, node: node,
             startX: e.clientX, startY: e.clientY,
