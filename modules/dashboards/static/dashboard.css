@@ -564,3 +564,21 @@ dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; 
 .dash-var code { opacity: .65; white-space: nowrap; }
 .dash-var-input { width: 130px; }
 .dash-varbar .dash-hint { margin-left: auto; }
+
+/* C6: AI access toggles — tinted when active (notebooks nb-on mirror). */
+#dash-lock-btn.dash-on { color: oklch(var(--wa)); }
+#dash-hide-btn.dash-on { color: oklch(var(--in)); }
+
+/* C6: AI live flash — cards adopted from a remote (AI chat) edit pulse
+   briefly so the author sees what changed (notebooks ai-live-flash
+   mirror). The class is added by flashDashCards and removed on a timer;
+   no revert control — Builder edits restore through version history. */
+.dash-flash {
+    animation: dash-ai-flash 1.1s ease-in-out 3;
+    outline: 2px solid oklch(var(--p));
+    outline-offset: 2px; border-radius: .75rem;
+}
+@keyframes dash-ai-flash {
+    0%, 100% { box-shadow: 0 0 0 0 oklch(var(--p) / 0); }
+    50% { box-shadow: 0 0 0 4px oklch(var(--p) / .45); }
+}

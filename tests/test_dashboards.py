@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=13" in body
-    assert "?v=29" in body
+    assert "?v=14" in body
+    assert "?v=30" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -4196,3 +4196,207 @@ def test_wizard_js_wiring():
     assert "dash-wizard" in src
     html = _list_html()
     assert "dashboard.js" in html
+
+
+# ---------------------------------------------------------------------------
+# Task C6: AI guards + live Builder poll
+# ---------------------------------------------------------------------------
+
+def _edit_html():
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "edit.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _dash_css():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_ai_hidden_blocks_all_tools(app, user, enabled):
+    """C6: a hidden dashboard refuses every file_id AI tool path, and the
+    list tool drops it. (Creating a dashboard takes no file_id, so it
+    stays usable — hiding applies per dashboard, not to creation.)"""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Secret")
+    cid = _add_card(app, fid, title="KPI")
+    att = _attach_file(app, fid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "hidden" in tools._tool_read(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_update(
+            user_obj, {"file_id": fid, "title": "x"}, None)["error"]
+        assert "hidden" in tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi"}, None)["error"]
+        assert "hidden" in tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                       "title": "x"}, None)["error"]
+        assert "hidden" in tools._tool_delete_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)["error"]
+        assert "hidden" in tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "y.txt",
+                       "content": "y"}, None)["error"]
+        assert "hidden" in tools._tool_detach_file(
+            user_obj, {"file_id": fid,
+                       "attachment_id": att["id"]}, None)["error"]
+        assert "hidden" in tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)["error"]
+        assert "hidden" in tools._tool_run_all(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)["error"]
+        listing = tools._tool_list(user_obj, {}, None)
+        assert not any(n["id"] == fid for n in listing["dashboards"])
+
+
+def test_ai_lock_blocks_all_edits_but_allows_reads(app, user, enabled):
+    """C6: a locked dashboard refuses every AI mutation path with the
+    unlock message, while read/list/recommend stay usable."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, title="KPI")
+    att = _attach_file(app, fid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_lock"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "error" not in tools._tool_read(
+            user_obj, {"file_id": fid}, None)
+        assert "error" not in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)
+        for out in (
+                tools._tool_update(
+                    user_obj, {"file_id": fid, "title": "x"}, None),
+                tools._tool_add_card(
+                    user_obj, {"file_id": fid, "type": "kpi"}, None),
+                tools._tool_update_card(
+                    user_obj, {"file_id": fid, "card_id": cid,
+                               "title": "x"}, None),
+                tools._tool_delete_card(
+                    user_obj, {"file_id": fid, "card_id": cid}, None),
+                tools._tool_attach_file(
+                    user_obj, {"file_id": fid, "name": "y.txt",
+                               "content": "y"}, None),
+                tools._tool_detach_file(
+                    user_obj, {"file_id": fid,
+                               "attachment_id": att["id"]}, None),
+                tools._tool_run_card(
+                    user_obj, {"file_id": fid, "card_id": cid}, None),
+                tools._tool_run_all(
+                    user_obj, {"file_id": fid}, None)):
+            assert "locked" in out["error"].lower()
+
+
+def test_ai_tool_mutations_emit_dashboard_changed(app, user, enabled):
+    """C6 push leg: structural AI edits carry a dashboard_changed ui event
+    (the agent service turns it into docindex-ui-action so the open
+    Builder refreshes at once instead of waiting for the poll tick)."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                       "title": "K"}, None)
+        assert added["ui"]["type"] == "dashboard_changed"
+        assert added["ui"]["file_id"] == fid
+        cid = added["card"]["id"]
+        renamed = tools._tool_update(
+            user_obj, {"file_id": fid, "title": "New"}, None)
+        assert renamed["ui"]["type"] == "dashboard_changed"
+        tweaked = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                       "title": "K2"}, None)
+        assert tweaked["ui"]["type"] == "dashboard_changed"
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "n.txt",
+                       "content": "n"}, None)
+        assert attached["ui"]["type"] == "dashboard_changed"
+        detached = tools._tool_detach_file(
+            user_obj, {"file_id": fid,
+                       "attachment_id": attached["attached"]["id"]},
+            None)
+        assert detached["ui"]["type"] == "dashboard_changed"
+        removed = tools._tool_delete_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+        assert removed["ui"]["type"] == "dashboard_changed"
+        assert "ui" not in tools._tool_read(
+            user_obj, {"file_id": fid}, None)
+        assert "ui" not in tools._tool_list(user_obj, {}, None)
+
+
+def test_builder_toolbar_ai_toggles(app, auth_client, user, enabled):
+    """C6: the Builder toolbar carries dashboard-level AI lock/hide
+    toggles (per-card Settings drawers cannot host dashboard flags);
+    the read-only View toolbar offers none."""
+    builder = auth_client.get(
+        f"/m/dashboards/{_create(app, user, _drive(app, user))}").data.decode()
+    assert "dash-lock-btn" in builder and "dash-hide-btn" in builder
+    fid = _create(app, user, _drive(app, user))
+    view = auth_client.get(
+        f"/m/dashboards/{fid}?mode=view").data.decode()
+    assert "dash-lock-btn" not in view and "dash-hide-btn" not in view
+    src = _dash_js_src()
+    assert "dash-lock-btn" in src and "dash-hide-btn" in src
+    assert "ai_lock" in src and "ai_hidden" in src
+    assert ".dash-on" in _dash_css()
+
+
+def test_builder_poll_adopts_structural_edits(app, auth_client, user,
+                                              enabled):
+    """C6: the status channel carries the checksum, and the Builder poll
+    adopts remote structural (AI chat) edits live when it holds no
+    unsaved work — run-only changes still merge footers in place."""
+    import re
+    import shutil
+    import subprocess
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    body = auth_client.get(f"/m/dashboards/{fid}/status").get_json()
+    assert body["ok"] and body["checksum"]
+    src = _dash_js_src()
+    assert "structuralSig" in src  # structural fingerprint helper
+    assert "dashboard_changed" in src  # push leg: ui event listener
+    assert "docindex-ui-action" in src
+    match = re.search(
+        r"var RUN_OWNED_KEYS = (\[.*?\]);\s*"
+        r"(function structuralCard\(card\) \{.*?\n    \})\s*"
+        r"(function structuralSig\(doc\) \{.*?\n    \})",
+        src, re.S)
+    assert match, "structuralSig helpers missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0)
+             + "\nvar base = {title: 'T', ai_lock: false, ai_hidden: false,"
+             + " variables: {}, attachments: [],"
+             + " cards: [{id: 'c1', type: 'kpi', title: 'K', prompt: 'P',"
+             + " result: null, status: 'idle', ranAt: null}]};"
+             + "\nvar runOnly = JSON.parse(JSON.stringify(base));"
+             + "runOnly.cards[0].result = {text: '3'};"
+             + "runOnly.cards[0].status = 'done';"
+             + "runOnly.cards[0].ranAt = '2026-01-01T00:00:00';"
+             + "\nvar structural = JSON.parse(JSON.stringify(base));"
+             + "structural.cards[0].prompt = 'Q';"
+             + "\nvar added = JSON.parse(JSON.stringify(base));"
+             + "added.cards.push({id: 'c2', type: 'kpi'});"
+             + "\nconsole.log(JSON.stringify(["
+             + "structuralSig(base) === structuralSig(runOnly),"
+             + "structuralSig(base) !== structuralSig(structural),"
+             + "structuralSig(base) !== structuralSig(added)]));")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True, True, True]

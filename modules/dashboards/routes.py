@@ -1015,7 +1015,8 @@ def dashboard_status(file_id):
     running = [cid for cid, state in cards.items()
                if state["status"] == "running"]
     return jsonify({"ok": True, "dashboard_id": stored.id,
-                    "running": running, "cards": cards})
+                    "running": running, "cards": cards,
+                    "checksum": stored.checksum})
 
 
 # ---------------------------------------------------------------------------

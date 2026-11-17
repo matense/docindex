@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Dashboards{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=13">
+<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=14">
 {% endblock %}
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="dash-root">
@@ -37,6 +37,16 @@
            class="btn btn-ghost btn-sm gap-1" title="Version history">
             <i class="fas fa-clock-rotate-left"></i> History
         </a>
+        {% if dash_mode != 'view' %}
+        <button id="dash-lock-btn" class="btn btn-ghost btn-sm btn-square"
+                title="The AI can edit this dashboard — click to lock">
+            <i class="fas fa-lock-open"></i>
+        </button>
+        <button id="dash-hide-btn" class="btn btn-ghost btn-sm btn-square"
+                title="Visible to the AI — click to hide">
+            <i class="fas fa-eye"></i>
+        </button>
+        {% endif %}
     </div>
 
     <!-- Mount point: the DashboardEditor (Tasks 5-6) renders cards here. -->
@@ -72,7 +82,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=29')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=30')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();

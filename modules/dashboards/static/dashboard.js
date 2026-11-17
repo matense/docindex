@@ -304,6 +304,11 @@
         loadWorkflows(S);
         startBuilderStatusPoll(S);
         wireTitleInput(S);
+        wireAccessButtons(S);
+        document.addEventListener("docindex-ui-action", function (e) {
+            if (!document.body.contains(S.root)) return;
+            onDashUiAction(S, e);
+        }, { signal: ac.signal });
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -527,6 +532,50 @@
         titleEl.addEventListener("blur", function () { commit(); });
     }
 
+    // --- AI access flags (lock edits / hide entirely) ---------------
+    // Dashboard-level toggles in the Builder toolbar (notebooks nb-lock /
+    // nb-hide mirror — but dashboard-level, since the Settings drawer is
+    // per-card and ai_lock/ai_hidden are per-dashboard). The flags ride
+    // the normal autosave; the guard messages in doc.ai_error point at
+    // these lock/eye buttons.
+    function renderAccessButtons(S) {
+        var lockBtn = S.root.querySelector("#dash-lock-btn");
+        if (lockBtn) {
+            var locked = !!(S.doc && S.doc.ai_lock);
+            lockBtn.innerHTML = '<i class="fas ' +
+                (locked ? "fa-lock" : "fa-lock-open") + '"></i>';
+            lockBtn.classList.toggle("dash-on", locked);
+            lockBtn.title = locked
+                ? "AI edits locked — click to unlock"
+                : "The AI can edit this dashboard — click to lock";
+        }
+        var hideBtn = S.root.querySelector("#dash-hide-btn");
+        if (hideBtn) {
+            var hidden = !!(S.doc && S.doc.ai_hidden);
+            hideBtn.innerHTML = '<i class="fas ' +
+                (hidden ? "fa-eye-slash" : "fa-eye") + '"></i>';
+            hideBtn.classList.toggle("dash-on", hidden);
+            hideBtn.title = hidden
+                ? "Hidden from the AI — click to make visible"
+                : "Visible to the AI — click to hide";
+        }
+    }
+    function wireAccessButtons(S) {
+        renderAccessButtons(S);
+        var lockBtn = S.root.querySelector("#dash-lock-btn");
+        if (lockBtn) lockBtn.addEventListener("click", function () {
+            S.doc.ai_lock = !S.doc.ai_lock;
+            renderAccessButtons(S);
+            scheduleSave(S);
+        });
+        var hideBtn = S.root.querySelector("#dash-hide-btn");
+        if (hideBtn) hideBtn.addEventListener("click", function () {
+            S.doc.ai_hidden = !S.doc.ai_hidden;
+            renderAccessButtons(S);
+            scheduleSave(S);
+        });
+    }
+
     // D3: fold newer background-run state into the Builder's local doc.
     // Pure merge (node-testable): for each card on both sides the newer
     // side's run-owned keys win as a unit (card-level, not field-level —
@@ -574,14 +623,135 @@
         return changed;
     }
 
+    // C6: structural fingerprint of a dashboard document — everything
+    // except the run-owned keys mergeRunOwned adopts (result, status,
+    // ranAt, trace, runId, ranSecs). Two docs share a signature exactly
+    // when only background-run state differs, so the Builder poll can
+    // tell an AI chat structural edit (adopt wholesale) from a run
+    // settling (merge footers in place). Pure and node-testable.
+    var RUN_OWNED_KEYS = ["result", "status", "ranAt", "trace",
+        "runId", "ranSecs"];
+    function structuralCard(card) {
+        var out = {};
+        Object.keys(card || {}).sort().forEach(function (k) {
+            if (RUN_OWNED_KEYS.indexOf(k) === -1) out[k] = card[k];
+        });
+        return out;
+    }
+    function structuralSig(doc) {
+        doc = doc || {};
+        return JSON.stringify({
+            title: doc.title || "",
+            ai_lock: !!doc.ai_lock,
+            ai_hidden: !!doc.ai_hidden,
+            concurrency: doc.concurrency || 0,
+            variables: doc.variables || {},
+            attachments: doc.attachments || [],
+            createdFileIds: doc.createdFileIds || [],
+            cards: (doc.cards || []).map(structuralCard)
+        });
+    }
+    function structuralChangedIds(localDoc, remoteDoc) {
+        var byId = {};
+        ((localDoc && localDoc.cards) || []).forEach(function (c) {
+            byId[c.id] = JSON.stringify(structuralCard(c));
+        });
+        var ids = [];
+        ((remoteDoc && remoteDoc.cards) || []).forEach(function (c) {
+            if (byId[c.id] !== JSON.stringify(structuralCard(c))) {
+                ids.push(c.id);
+            }
+        });
+        return ids;
+    }
+
     // D3: the Builder subscribes to the card-change channel (aggregate
     // status poll, View precedent; statusUrl/docUrl arrive via edit.html
     // opts and VIEW_STATUS_MS shares this IIFE scope). On change the full
     // doc is re-read and only run-owned fields merge in — local structural
     // edits are never clobbered and footers update in place (no re-render:
-    // focus stays). Out of scope by design: cards added/removed elsewhere
-    // do NOT propagate through this channel (unknown/removed ids never
-    // trigger a doc fetch) — they appear/disappear on reload or save.
+    // focus stays).
+    // C6: the status channel now also carries the checksum, so AI chat
+    // structural edits (cards added/removed/edited, title, variables,
+    // flags) propagate through this channel too — when the Builder holds
+    // no unsaved work the remote doc is adopted wholesale and changed
+    // cards flash (notebooks live-flash mirror). A dirty Builder keeps
+    // the run-owned merge so the next save heals via union_cards.
+    function updateRunFooters(S, changed) {
+        changed.forEach(function (id) {
+            var node = gridCardEl(S, id);
+            var card = cardById(S.doc, id);
+            if (node && card) {
+                var ran = node.querySelector(".dash-ran");
+                if (ran) ran.textContent = ranFull(card);
+            }
+        });
+    }
+
+    function flashDashCards(S, ids) {
+        (ids || []).forEach(function (id) {
+            var node = gridCardEl(S, id);
+            if (node && node.isConnected) node.classList.add("dash-flash");
+        });
+        setTimeout(function () {
+            (ids || []).forEach(function (id) {
+                var node = gridCardEl(S, id);
+                if (node) node.classList.remove("dash-flash");
+            });
+        }, 3400);
+    }
+
+    function adoptRemoteDoc(S, remote, checksum) {
+        var changed = structuralChangedIds(S.doc, remote);
+        S.doc = remote;
+        if (checksum) S.checksum = checksum;
+        S.dirty = false;
+        setStatus(S, "saved", "updated remotely");
+        var titleEl = S.root.querySelector("#dash-title");
+        if (titleEl && document.activeElement !== titleEl) {
+            titleEl.value = S.doc.title || "";
+        }
+        renderAccessButtons(S);
+        renderAll(S);
+        flashDashCards(S, changed);
+    }
+
+    // Shared fetch-and-adopt leg for the checksum poll and the
+    // dashboard_changed push below (notebooks refreshFromServer mirror):
+    // run-only drift merges footers in place, structural drift is
+    // adopted wholesale — never while the user holds unsaved work.
+    function refreshFromServer(S) {
+        if (!document.body.contains(S.root)) return Promise.resolve(false);
+        if (S.dirty || S.saving) return Promise.resolve(false);
+        return fetch(S.opts.docUrl, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (doc) {
+                if (!doc || !doc.ok || !doc.doc || !doc.checksum) return false;
+                if (doc.checksum === S.checksum) return false;
+                if (structuralSig(S.doc) !== structuralSig(doc.doc)) {
+                    adoptRemoteDoc(S, doc.doc, doc.checksum);
+                    return true;
+                }
+                var changed = mergeRunOwned(S, doc.doc);
+                S.checksum = doc.checksum;
+                updateRunFooters(S, changed);
+                return changed.length > 0;
+            })
+            .catch(function () { return false; });
+    }
+
+    // Push leg (notebooks onDocIndexUiAction mirror): AI tool saves emit
+    // dashboard_changed (agent service ui_action → ai_core.js
+    // docindex-ui-action), so the Builder refreshes at once instead of
+    // waiting for the next poll tick.
+    function onDashUiAction(S, e) {
+        var d = e && e.detail;
+        if (!d || d.type !== "dashboard_changed") return;
+        var fid = d.file_id !== undefined ? d.file_id : d.fileId;
+        if (fid !== S.opts.dashboardId) return;
+        refreshFromServer(S);
+    }
+
     function startBuilderStatusPoll(S) {
         if (!S.opts.statusUrl) return;
         S.pollTimer = setInterval(function () {
@@ -594,6 +764,11 @@
                 .then(function (resp) { return resp.json(); })
                 .then(function (data) {
                     if (!data || !data.ok || !data.cards) return;
+                    if (data.checksum && data.checksum !== S.checksum &&
+                            !S.dirty && !S.saving) {
+                        refreshFromServer(S);
+                        return;
+                    }
                     var stale = Object.keys(data.cards).some(function (id) {
                         var card = cardById(S.doc, id);
                         var remote = data.cards[id];
@@ -608,14 +783,7 @@
                             if (!doc || !doc.ok || !doc.doc) return;
                             var changed = mergeRunOwned(S, doc.doc);
                             if (doc.checksum) S.checksum = doc.checksum;
-                            changed.forEach(function (id) {
-                                var node = gridCardEl(S, id);
-                                var card = cardById(S.doc, id);
-                                if (node && card) {
-                                    var ran = node.querySelector(".dash-ran");
-                                    if (ran) ran.textContent = ranFull(card);
-                                }
-                            });
+                            updateRunFooters(S, changed);
                         })
                         .catch(function () { /* next tick */ });
                 })

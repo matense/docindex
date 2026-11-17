@@ -226,7 +226,14 @@ def _save_and_report(user, file_id, mutate):
         doc_service.save_document_ai(stored, document)
     except ValueError as exc:
         return {"error": str(exc)}
-    return {"ok": True, "file_id": stored.id, **outcome}
+    # Push leg for the Builder live poll: the agent service turns a "ui"
+    # dict into a ui_action stream event, ai_core.js re-dispatches it as
+    # docindex-ui-action, and the open Builder refreshes from /doc at once
+    # (the 5s checksum poll stays as fallback). Mirrors notebooks
+    # notebook_changed.
+    return {"ok": True, "file_id": stored.id,
+            "ui": {"type": "dashboard_changed",
+                   "file_id": stored.id}, **outcome}
 
 
 def _tool_list(user, args, drive):
@@ -478,7 +485,8 @@ def _tool_attach_file(user, args, drive):
     except ValueError as exc:
         return {"error": str(exc)}
     return {"ok": True, "file_id": stored.id, "attached": attached,
-            "total_attachments": len(document.get("attachments", []))}
+            "total_attachments": len(document.get("attachments", [])),
+            "ui": {"type": "dashboard_changed", "file_id": stored.id}}
 
 
 def _tool_detach_file(user, args, drive):
@@ -505,7 +513,8 @@ def _tool_detach_file(user, args, drive):
     except ValueError as exc:
         return {"error": str(exc)}
     return {"ok": True, "file_id": stored.id, **result,
-            "total_attachments": len(document.get("attachments", []))}
+            "total_attachments": len(document.get("attachments", [])),
+            "ui": {"type": "dashboard_changed", "file_id": stored.id}}
 
 
 def _settle_run(stored, card_id, run_id, user_id):
