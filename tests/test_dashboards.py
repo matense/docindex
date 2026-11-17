@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=14" in body
-    assert "?v=32" in body
+    assert "?v=33" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -3412,6 +3412,10 @@ def test_builder_card_script_overlay():
     # Highlight fallback: plain textarea stands if hljs fails.
     assert "window.hljs.highlight" in src
     assert "never silent" in src
+    # Inline palette: spans carry their own color so no stylesheet,
+    # override or contrast theme can wash them out.
+    assert "HL_COLORS" in src
+    assert "forced-color-adjust" in css
     # Popup inputs honor the same caps as the card fields.
     assert "maxlength=\"' + cap + '\"" in src
 

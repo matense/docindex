@@ -196,6 +196,7 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
     min-height: 240px;
     background: #0d1117;
     color: #e6edf3;
+    forced-color-adjust: none;
 }
 .dash-codeedit-hl code { background: none; padding: 0; }
 /* Compact card variant: fixed 3-row height matching the old textarea. */

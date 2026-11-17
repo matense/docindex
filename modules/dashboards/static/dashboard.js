@@ -1283,14 +1283,35 @@
     // missing the plain textarea stands — and it says so ("missing" when
     // the library never loaded, "error: <msg>" when highlighting threw),
     // surfaced in the popup subtitle and the console, never silent.
+    // Inline github-dark palette (same hexes as the vendored theme):
+    // spans carry their own color so no missing/overridden stylesheet
+    // or OS contrast theme can wash them out. Unmapped classes inherit
+    // the pre's base color.
+    var HL_COLORS = {
+        keyword: "#ff7b72", doctag: "#ff7b72",
+        "template-tag": "#ff7b72", "template-variable": "#ff7b72",
+        type: "#ff7b72", title: "#d2a8ff", "title.function_": "#d2a8ff",
+        "title.class_": "#d2a8ff", attr: "#79c0ff", attribute: "#79c0ff",
+        literal: "#79c0ff", number: "#79c0ff", operator: "#79c0ff",
+        "selector-attr": "#79c0ff", "selector-class": "#79c0ff",
+        "selector-id": "#79c0ff", variable: "#79c0ff",
+        string: "#a5d6ff", regexp: "#a5d6ff", built_in: "#ffa657",
+        symbol: "#ffa657", comment: "#8b949e", code: "#8b949e",
+        formula: "#8b949e", name: "#7ee787", quote: "#8b949e",
+        "selector-pseudo": "#7ee787", "selector-tag": "#7ee787",
+        subst: "#c9d6ff", section: "#1f6feb", bullet: "#f2cc60",
+        emphasis: "#c9d6ff", strong: "#c9d6ff", addition: "#aff5b4",
+        deletion: "#ffdcd7"
+    };
     function paintScriptHighlight(ta, codeEl) {
         codeEl.textContent = ta.value + "\n";
-        var state = "missing";
+        var state = "ok";
         try {
             if (window.hljs && window.hljs.highlight) {
                 codeEl.innerHTML =
                     window.hljs.highlight(ta.value, { language: "python" }).value + "\n";
-                state = "ok";
+            } else {
+                state = "missing";
             }
         } catch (e) {
             state = "error: " + (e && e.message ? e.message : e);
@@ -1298,7 +1319,13 @@
                 console.warn("[dash] script highlight failed:", e);
             }
         }
-        if (state !== "ok" && window.console && console.warn) {
+        if (state === "ok") {
+            codeEl.querySelectorAll("span[class]").forEach(function (s) {
+                var m = /\bhljs-([A-Za-z_]+)/.exec(s.className || "");
+                var col = m && HL_COLORS[m[1]];
+                if (col) s.style.color = col;
+            });
+        } else if (window.console && console.warn) {
             console.warn("[dash] script highlight unavailable (" + state + ")");
         }
         var pre = codeEl.parentNode;
