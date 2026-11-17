@@ -528,6 +528,14 @@
             '<button type="button" class="btn" data-close>Cancel</button>' +
             '<button type="button" class="btn btn-error" data-zone="del-ok">Delete everything</button>' +
             "</div></div></dialog>" +
+            '<dialog class="modal" data-dlg="edit"><div class="modal-box glass-panel max-w-3xl">' +
+            '<h3 class="font-bold text-lg mb-1" data-zone="edit-title"></h3>' +
+            '<p class="dash-hint mb-3" data-zone="edit-sub"></p>' +
+            '<div data-zone="edit-body"></div>' +
+            '<div class="modal-action">' +
+            '<button type="button" class="btn" data-zone="edit-close">Close</button>' +
+            '<button type="button" class="btn btn-primary" data-zone="edit-save">Save</button>' +
+            "</div></div></dialog>" +
             '<div class="dash-toast glass-panel" data-zone="toast" role="status"></div>' +
             '<div class="dash-refpick glass-panel hidden" data-zone="refpick"></div>' +
             "</div>";
@@ -540,9 +548,13 @@
             linkTree: q("link-tree"),
             dlgAdd: dg("add"), dlgLink: dg("link"), dlgConfirm: dg("confirm"),
             dlgCleanup: dg("cleanup"), dlgDelete: dg("delete"),
+            dlgEdit: dg("edit"),
             cfTitle: q("cf-title"), cfBody: q("cf-body"), cfOk: q("cf-ok"),
             cuBody: q("cu-body"), cuOk: q("cu-ok"),
-            delBody: q("del-body"), delOk: q("del-ok")
+            delBody: q("del-body"), delOk: q("del-ok"),
+            editTitle: q("edit-title"), editSub: q("edit-sub"),
+            editBody: q("edit-body"), editClose: q("edit-close"),
+            editSave: q("edit-save")
         };
         S.els.typeGrid.innerHTML = CARD_TYPES.map(function (t) {
             var m = TYPE_META[t];
@@ -592,6 +604,23 @@
         S.els.dlgLink.addEventListener("close", function () {
             if (S._linkOpener && document.body.contains(S._linkOpener)) S._linkOpener.focus();
             S._linkOpener = null;
+        });
+        // Native close (Esc/backdrop) of the popup editor also honors
+        // unsaved changes — reopen + confirm instead of silent loss.
+        S.els.dlgEdit.addEventListener("close", function () {
+            var st = S._edit;
+            S._edit = null;
+            if (!st || st.saved) return;
+            var cur = S.els.editBody.querySelector("textarea");
+            if (!cur || cur.value === String(st.card[st.field] || "")) return;
+            confirmDialog(S, {
+                title: "Discard changes?",
+                bodyHTML: "<p>Closing drops the unsaved edits.</p>",
+                okLabel: "Discard",
+                okClass: "btn-error"
+            }).then(function (yes) {
+                if (!yes) openDialog(S.els.dlgEdit);
+            });
         });
     }
 
@@ -709,7 +738,9 @@
             // scrollHeight 0, so fitting inside buildCard no-ops. Skip
             // hidden fields (e.g. workflow params inside a closed
             // <details>) — they keep their rows default until opened.
-            node.querySelectorAll(".dash-prompt, .dash-script, .dash-wf-params")
+            // Prompt/script stay a compact fixed 3 rows in the card;
+            // full editing lives in the popup editor.
+            node.querySelectorAll(".dash-wf-params")
                 .forEach(function (el) {
                     if (el.offsetParent !== null) autoGrow(el);
                 });
@@ -753,12 +784,16 @@
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
             '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
             '<div data-f="promptwrap"' + (card.script_enabled ? ' style="display:none"' : "") + '>' +
-            '<div class="dash-prompt-label">Card prompt</div>' +
-            '<textarea class="dash-prompt" data-f="prompt" maxlength="' + MAX_PROMPT + '" ' +
+            '<div class="dash-prompt-label">Card prompt' +
+            ' <button type="button" class="dash-expand" data-f="expand-prompt" title="Edit in popup" aria-label="Edit prompt in popup">' +
+            '<i class="fas fa-expand"></i></button></div>' +
+            '<textarea class="dash-prompt" data-f="prompt" maxlength="' + MAX_PROMPT + '" rows="3" ' +
             'placeholder="' + esc(m.ph) + '">' + esc(card.prompt || "") + "</textarea></div>" +
             '<div data-f="scriptwrap"' + (card.script_enabled ? "" : ' style="display:none"') + '>' +
-            '<div class="dash-prompt-label">Script <span class="opacity-60">— runs instead of the prompt</span></div>' +
-            '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="4" ' +
+            '<div class="dash-prompt-label">Script <span class="opacity-60">— runs instead of the prompt</span>' +
+            ' <button type="button" class="dash-expand" data-f="expand-script" title="Edit in popup" aria-label="Edit script in popup">' +
+            '<i class="fas fa-expand"></i></button></div>' +
+            '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="3" ' +
             'placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
             '<label class="dash-script-toggle"' + (card.type === "workflow" ? ' style="display:none"' : "") + '>' +
             '<input type="checkbox" data-f="script_enabled"' +
@@ -793,8 +828,10 @@
         var promptInput = d.querySelector('[data-f="prompt"]');
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
-            autoGrow(promptInput);
             scheduleSave(S);
+        });
+        d.querySelector('[data-f="expand-prompt"]').addEventListener("click", function () {
+            openEditor(S, card, "prompt");
         });
         var scriptToggle = d.querySelector('[data-f="script_enabled"]');
         scriptToggle.addEventListener("change", function () {
@@ -806,8 +843,10 @@
         var scriptInput = d.querySelector('[data-f="script"]');
         scriptInput.addEventListener("input", function () {
             card.script = scriptInput.value.slice(0, MAX_SCRIPT);
-            autoGrow(scriptInput);
             scheduleSave(S);
+        });
+        d.querySelector('[data-f="expand-script"]').addEventListener("click", function () {
+            openEditor(S, card, "script");
         });
         var toolsEl = d.querySelector('[data-f="tools"]');
         var flipTools = function () {
@@ -846,6 +885,97 @@
         bindRefButtons(S, d, card);
         bindHandles(S, d, card);
         return d;
+    }
+
+    // Popup editor for prompt/script fields: compact 3-row previews in the
+    // card, full editing in a modal with Save/Close. Script editing layers
+    // a transparent textarea over hljs-highlighted Python (scroll-synced,
+    // same metrics); if hljs is unavailable the plain textarea stands.
+    function openEditor(S, card, field) {
+        var isScript = field === "script";
+        var cap = isScript ? MAX_SCRIPT : MAX_PROMPT;
+        var initial = String(card[field] || "");
+        S.els.editTitle.textContent = (card.title || card.type) +
+            (isScript ? " — script" : " — prompt");
+        S.els.editSub.textContent = isScript
+            ? "Python (pyrun) over this card's attachments — Ctrl+Enter saves."
+            : "Natural-language instruction for this card — Ctrl+Enter saves.";
+        var body = S.els.editBody;
+        var ta;
+        if (isScript) {
+            body.innerHTML =
+                '<div class="dash-codeedit"><pre class="dash-codeedit-hl" aria-hidden="true">' +
+                '<code class="language-python"></code></pre>' +
+                '<textarea class="dash-codeedit-in" spellcheck="false" ' +
+                'aria-label="Card script (pyrun)"></textarea></div>';
+            ta = body.querySelector(".dash-codeedit-in");
+            var code = body.querySelector(".dash-codeedit-hl code");
+            var paint = function () {
+                code.textContent = ta.value + "\n";
+                try {
+                    if (window.hljs && hljs.highlight) {
+                        code.innerHTML =
+                            hljs.highlight(ta.value, { language: "python" }).value + "\n";
+                    }
+                } catch (e) { /* plain-text fallback stands */ }
+                var pre = code.parentNode;
+                pre.scrollTop = ta.scrollTop;
+                pre.scrollLeft = ta.scrollLeft;
+            };
+            ta.addEventListener("input", paint);
+            ta.addEventListener("scroll", function () {
+                var pre = code.parentNode;
+                pre.scrollTop = ta.scrollTop;
+                pre.scrollLeft = ta.scrollLeft;
+            });
+            ta.addEventListener("keydown", function (e) {
+                if (e.key === "Tab") {
+                    e.preventDefault();
+                    var s = ta.selectionStart, t = ta.selectionEnd;
+                    ta.setRangeText("  ", s, t, "end");
+                    paint();
+                }
+            });
+            ta.value = initial;
+            paint();
+        } else {
+            body.innerHTML =
+                '<textarea class="dash-edit-text" aria-label="Card prompt"></textarea>';
+            ta = body.querySelector(".dash-edit-text");
+            ta.value = initial;
+        }
+        S._edit = { card: card, field: field, cap: cap, saved: false };
+        S.els.editSave.onclick = function () {
+            card[field] = ta.value.slice(0, cap);
+            S._edit.saved = true;
+            S.els.dlgEdit.close();
+            renderGrid(S);
+            scheduleSave(S);
+        };
+        ta.addEventListener("keydown", function (e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                S.els.editSave.onclick();
+            }
+        });
+        var doClose = function () {
+            if (ta.value !== initial && !(S._edit && S._edit.saved)) {
+                confirmDialog(S, {
+                    title: "Discard changes?",
+                    bodyHTML: "<p>Closing drops the unsaved edits.</p>",
+                    okLabel: "Discard",
+                    okClass: "btn-error"
+                }).then(function (yes) {
+                    if (yes) S.els.dlgEdit.close();
+                    else openDialog(S.els.dlgEdit);
+                });
+                return;
+            }
+            S.els.dlgEdit.close();
+        };
+        S.els.editClose.onclick = doClose;
+        openDialog(S.els.dlgEdit);
+        ta.focus();
     }
 
     function bindWorkflowFields(S, d, card) {

@@ -3318,22 +3318,32 @@ def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
     assert seen["files"] == {}  # no attachments → empty files map
 
 
-def test_kpi_view_sign_classes_and_pager_hooks():
-    """KPI/table view polish: delta sign classes branch in viewKpiHTML,
-    pager renders with page-size 50, CSS carries the KPI treatment."""
+def test_kpi_view_sign_classes():
+    """KPI view polish: delta sign classes branch in viewKpiHTML and the
+    CSS carries the big-number treatment."""
     with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
               encoding="utf-8") as fh:
         src = fh.read()
     assert "kpiDeltaClass" in src
     assert "dash-kpi-d-pos" in src and "dash-kpi-d-neg" in src
-    assert "TABLE_PAGE_SIZE = 50" in src
-    assert "data-tpage-btn" in src and "dash-pager-info" in src
     with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
               encoding="utf-8") as fh:
         css = fh.read()
     assert "clamp(36px, 4vw, 56px)" in css
     assert "dash-kpi-d-pos" in css and "dash-kpi-d-neg" in css
     assert ".dash-pager" in css
+
+
+def test_builder_popup_editor_hooks():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "openEditor" in src
+    assert "dash-codeedit" in src and "dash-codeedit-in" in src
+    assert "hljs" in src and "python" in src
+    assert 'data-zone="edit-save"' in src and 'data-zone="edit-close"' in src
+    assert 'data-dlg="edit"' in src
+    assert "data-tpage-btn" in src and "dash-pager-info" in src
 
 
 def test_script_value_dict_coerces_to_kpi():
