@@ -472,6 +472,13 @@ def iter_run_events(stored, card, user):
     refs = (card.get("inputs") or {}).get("attachments") or []
     if not prompt and not refs:
         raise ValueError("Card has no prompt and no inputs — nothing to run.")
+    variables = {}
+    if stored is not None:
+        try:
+            variables = _doc_variables(doc_service.load(stored))
+        except (ValueError, OSError):
+            variables = {}
+    prompt = substitute_variables(prompt, variables)
     lines = [prompt] if prompt else ["Summarize the attached files."]
     if refs:
         if stored is None:
@@ -528,7 +535,7 @@ def start_workflow_run(workflow, user, params, trigger_file_id=None):
                              params=params or None)
 
 
-def iter_workflow_events(stored, card, user):
+def iter_workflow_events(stored, card, user, variables=None):
     """Run a workflow card, yielding per-node progress frames then done.
 
     Frames mirror ``iter_run_events`` (``{"t": "step", index, label,
@@ -540,6 +547,8 @@ def iter_workflow_events(stored, card, user):
     """
     doc = doc_service.load(stored)
     files = resolve_inputs(stored, doc, card)
+    if variables is None:
+        variables = _doc_variables(doc)
     workflow_ref = (card.get("inputs") or {}).get("workflow") or {}
     try:
         workflow_id = int(workflow_ref.get("workflow_id"))
@@ -592,12 +601,13 @@ def iter_workflow_events(stored, card, user):
                 f"Workflow run #{run.id} did not finish in time.")
         time.sleep(RUN_POLL_INTERVAL_S)
     result, artifact_ids = _collect_workflow_result(
-        live, workflow_name, card, user)
+        live, workflow_name, card, user, variables)
     yield {"t": "done", "card_id": card.get("id"), "result": result,
            "trace": [], "artifact_ids": artifact_ids}
 
 
-def _collect_workflow_result(live, workflow_name, card, user):
+def _collect_workflow_result(live, workflow_name, card, user,
+                             variables=None):
     """Turn a finished automation run into a card result + artifacts.
 
     Raises ValueError when the run did not finish cleanly (the caller
@@ -623,7 +633,8 @@ def _collect_workflow_result(live, workflow_name, card, user):
         if (target is not None and target.user_id == user.id
                 and target.deleted_at is None and fid not in artifact_ids):
             artifact_ids.append(fid)
-    prompt = (card.get("prompt") or "").strip()
+    prompt = substitute_variables(
+        (card.get("prompt") or ""), variables).strip()
     text = None
     if prompt:
         summary = json.dumps(
@@ -723,6 +734,66 @@ def _record_usage(user_id, usages):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard variables — {{ name }} substitution into prompts and scripts
+# ---------------------------------------------------------------------------
+
+_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def substitute_variables(text, variables):
+    """Replace ``{{ name }}`` placeholders with the dashboard's variable
+    values — one helper for prompts AND script source, so script cards
+    stay consistent with prompt cards. Unknown names stay literal (a
+    removed variable never crashes a run); None renders as empty text.
+    ``db.tables()`` needs no substitution (it takes no prompt text).
+    """
+    if not text or not variables:
+        return text
+    if not isinstance(variables, dict):
+        return text
+
+    def _replace(match):
+        name = match.group(1)
+        if name not in variables:
+            return match.group(0)
+        value = variables[name]
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    return _VAR_RE.sub(_replace, text)
+
+
+def card_uses_variable(card, name):
+    """Whether a card's prompt or script source references ``{{ name }}``
+    (word-exact: ``{{ regional }}`` does not match ``region``). The View
+    filter bar re-runs only these cards when the value changes."""
+    if not doc_service.VARIABLE_NAME_RE.match(name or ""):
+        return False
+    probe = re.compile(r"\{\{\s*" + re.escape(name) + r"\s*\}\}")
+    return bool(probe.search(card.get("prompt") or "")
+                or probe.search(card.get("script") or ""))
+
+
+def affected_cards(doc, changed):
+    """Ids of cards referencing any of the changed variable names — the
+    affected-only set the View filter bar re-runs (the rest keep their
+    snapshots)."""
+    names = [changed] if isinstance(changed, str) else list(changed or [])
+    return [card.get("id") for card in doc.get("cards", [])
+            if any(card_uses_variable(card, name) for name in names)]
+
+
+def _doc_variables(doc):
+    """The doc's variables mapping (never None, never non-dict)."""
+    variables = (doc.get("variables") or {}) if isinstance(doc, dict) \
+        else {}
+    return variables if isinstance(variables, dict) else {}
+
+
+# ---------------------------------------------------------------------------
 # Card execution — returns (result_dict, [new_artifact_file_ids])
 # ---------------------------------------------------------------------------
 
@@ -739,23 +810,28 @@ def run_card(stored, card, user_id):
         raise ValueError("Dashboard owner not found.")
     doc = doc_service.load(stored)
     files = resolve_inputs(stored, doc, card)
+    variables = _doc_variables(doc)
     workflow_ref = (card.get("inputs") or {}).get("workflow") or {}
     if card.get("type") == "workflow" or workflow_ref.get("workflow_id"):
         result, artifact_ids = _run_workflow_card(stored, doc, card, user,
-                                                 workflow_ref, files)
+                                                  workflow_ref, files, variables)
         return result, artifact_ids, []
     if card.get("script_enabled") and card.get("type") != "workflow":
         from app.services import module_service
         if not module_service.is_enabled("pyrun"):
             raise ValueError("The pyrun module is disabled — enable pyrun "
                              "to run script cards.")
-        result, trace = _run_script_card(stored, doc, card, user, files)
+        result, trace = _run_script_card(stored, doc, card, user, files,
+                                           variables)
         return result, [], trace
-    return _run_prompt_card(stored, doc, card, user, files)
+    return _run_prompt_card(stored, doc, card, user, files, variables)
 
 
-def _run_prompt_card(stored, doc, card, user, files):
-    prompt = (card.get("prompt") or "").strip()
+def _run_prompt_card(stored, doc, card, user, files, variables=None):
+    if variables is None:
+        variables = _doc_variables(doc)
+    prompt = substitute_variables(
+        (card.get("prompt") or ""), variables).strip()
     if not prompt and not files:
         raise ValueError("Card has no prompt and no inputs — nothing to run.")
     refs = (card.get("inputs") or {}).get("attachments") or []
@@ -792,7 +868,7 @@ def _run_prompt_card(stored, doc, card, user, files):
     return result, [], []
 
 
-def _run_script_card(stored, doc, card, user, files):
+def _run_script_card(stored, doc, card, user, files, variables=None):
     """Execute a script card in the pyrun sandbox, no prompt, no AI steps.
 
     Attachments map to pyrun files positionally in card attachment order:
@@ -804,8 +880,10 @@ def _run_script_card(stored, doc, card, user, files):
     coerces into the card type's snapshot contract; script errors raise
     ValueError for the card's visible error state.
     """
-    del stored, doc, user  # ownership/files resolved by the caller
-    script = card.get("script") or ""
+    del stored, user  # ownership/files resolved by the caller
+    if variables is None:
+        variables = _doc_variables(doc)
+    script = substitute_variables(card.get("script") or "", variables)
     if not script.strip():
         raise ValueError("Script card has no script — add one or turn "
                          "the toggle off.")
@@ -835,15 +913,16 @@ def _run_script_card(stored, doc, card, user, files):
     return result, trace
 
 
-def _run_workflow_card(stored, doc, card, user, workflow_ref, files):
+def _run_workflow_card(stored, doc, card, user, workflow_ref, files,
+                       variables=None):
     # Single execution path with the streamed variant: consume the event
     # iterator and keep the final frame (progress frames feed the live
     # console only; the snapshot settles result + artifacts). Inputs are
     # re-resolved inside the iterator; the pre-resolved args stay in the
     # signature for the run_card call shape.
-    del doc, workflow_ref, files
+    del workflow_ref, files
     result, artifact_ids = None, []
-    for frame in iter_workflow_events(stored, card, user):
+    for frame in iter_workflow_events(stored, card, user, variables):
         if frame.get("t") == "done":
             result = frame.get("result")
             artifact_ids = frame.get("artifact_ids") or []

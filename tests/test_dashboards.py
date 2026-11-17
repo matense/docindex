@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=12" in body
-    assert "?v=27" in body
+    assert "?v=13" in body
+    assert "?v=28" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -3951,3 +3951,131 @@ def test_dashboard_title_input_wired():
     src = _dash_js_src()
     assert "dash-title" in html and "renameUrl" in html
     assert "dash-title" in src and "renameUrl" in src
+
+
+# ---------------------------------------------------------------------------
+# Task C4: dashboard variables + View filter bar
+# ---------------------------------------------------------------------------
+
+def test_variables_substitute_and_rerun_affected_only(
+        app, auth_client, user, enabled, fake_ai, monkeypatch):
+    """C4 (brief + review focus 4): {{ region }} substitutes into the prompt
+    AND the script source before each run; after a value change only cards
+    referencing the variable re-run — the rest keep status done + ranAt."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["code"] = code
+        return {"ok": True, "value": "script says " + code}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    var_cid = _add_card(app, fid, type="kpi", title="Regional",
+                        prompt="Count incidents in {{ region }}")
+    plain_cid = _add_card(app, fid, type="kpi", title="Static",
+                          prompt="Count everything")
+    script_cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, script_cid,
+                           script="res = '{{ region }}'\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["variables"] = {"region": "north"}
+        dash_doc.save_document(stored, doc)
+
+    assert _run_and_finish(app, auth_client, fid,
+                           var_cid) == {"text": "3 open incidents"}
+    assert "north" in fake_ai["agent_prompt"]
+    assert "{{ region }}" not in fake_ai["agent_prompt"]
+    assert _run_and_finish(app, auth_client, fid, script_cid)
+    assert "north" in seen["code"]
+    assert "{{" not in seen["code"]
+
+    resp = auth_client.post(f"/m/dashboards/{fid}/run", json={"all": True})
+    assert resp.status_code == 200
+    for cid in (var_cid, plain_cid, script_cid):
+        assert _card(app, fid, cid)["status"] == "done"
+    plain_ran_at = _card(app, fid, plain_cid)["ranAt"]
+
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["variables"] = {"region": "south"}
+        dash_doc.save_document(stored, doc)
+        affected = dash_engine.affected_cards(doc, ["region"])
+    assert set(affected) == {var_cid, script_cid}
+
+    # The View filter bar runs only the affected cards (never a blind all).
+    for cid in affected:
+        _run_and_finish(app, auth_client, fid, cid)
+    assert "south" in fake_ai["agent_prompt"]
+    assert "south" in seen["code"]
+    untouched = _card(app, fid, plain_cid)
+    assert untouched["status"] == "done"
+    assert untouched["ranAt"] == plain_ran_at
+
+
+def test_variables_reject_bad_shape():
+    doc = dash_doc.empty_dashboard("T")
+    with pytest.raises(ValueError):
+        dash_doc.validate({**doc, "variables": ["not", "an", "object"]})
+
+
+def test_variables_validate_scalars_and_names():
+    """C4: variables default to {}, accept scalar defaults, reject bad
+    names and non-scalar values (C5 pre-fill contract)."""
+    doc = dash_doc.empty_dashboard("T")
+    assert dash_doc.validate(dict(doc))["variables"] == {}
+    good = dash_doc.validate({**doc, "variables": {
+        "region": "north", "limit": 10, "ratio": 1.5,
+        "flag": True, "empty": None}})
+    assert good["variables"] == {"region": "north", "limit": 10,
+                                 "ratio": 1.5, "flag": True, "empty": None}
+    for bad in ({"a b": 1}, {"": 1}, {"9lives": 1}, {"region": {"n": 1}},
+                {"region": ["x"]}, {"region": "x" * 2001}):
+        with pytest.raises(ValueError):
+            dash_doc.validate({**doc, "variables": bad})
+
+
+def test_variables_substitute_helper():
+    """C4 (delta): one substitution helper serves prompts AND script
+    source, so script cards stay consistent; unknown names stay literal."""
+    dash_engine = _engine()
+    sub = dash_engine.substitute_variables
+    assert sub("Hi {{ region }}!", {"region": "north"}) == "Hi north!"
+    assert sub("{{a}}{{ a }}", {"a": 1}) == "11"
+    assert sub("Keep {{ unknown }}.", {}) == "Keep {{ unknown }}."
+    assert sub("v={{v}}", {"v": None}) == "v="
+    assert sub("res = '{{ region }}'", {"region": "s"}) == "res = 's'"
+    assert sub("", {"a": 1}) == ""
+    uses = dash_engine.card_uses_variable
+    assert uses({"prompt": "x {{ region }}", "script": ""}, "region")
+    assert uses({"prompt": "", "script": "v='{{region}}'"}, "region")
+    assert not uses({"prompt": "no refs", "script": ""}, "region")
+    assert not uses({"prompt": "{{ regional }}", "script": ""}, "region")
+
+
+def test_view_filter_bar_present():
+    """C4: View mode renders a variables filter bar that re-runs only
+    cards referencing a changed variable (affected-only, rest untouched)."""
+    src = _dash_js_src()
+    assert "dash-varbar" in src  # bar mount in the View skeleton
+    assert "cardUsesVariable" in src  # prompt/script reference scan
+    assert "runAffected" in src  # affected-only re-run entry point
+
+
+def test_script_tool_documents_variables():
+    """C4 (delta): the script tool description documents {{ var }}
+    substitution (db.tables() needs none — it takes no prompt text)."""
+    with open(os.path.join(_DASH_DIR, "tools.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find('"script": {"type": "string"')
+    assert i >= 0
+    region = src[i:i + 1200]
+    assert "{{" in region and "variable" in region.lower()

@@ -738,7 +738,10 @@ _CARD_FIELDS = {
                               "and the prompt is ignored. Attachments seed "
                               "scratch tables t0..tN in card order — probe "
                               "them with db.tables(), never try/except over "
-                              "guessed t-names (sandbox errors abort)."},
+                              "guessed t-names (sandbox errors abort). "
+                              "Dashboard variables {{ name }} substitute "
+                              "into the script source before each run, the "
+                              "same as into prompts."},
     "w": {"type": "integer",
           "description": "Width in grid columns (1-12, snapped)."},
     "h": {"type": "integer", "description": "Height in grid rows."},

@@ -553,3 +553,14 @@ dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; 
 /* C3: client-side chart view switcher (bar/line/doughnut, no re-run). */
 .dash-chart-switch { display: flex; gap: 4px; }
 .dash-chart-switch .btn-active { background: rgba(127, 127, 127, .18); }
+
+/* C4: dashboard variables filter bar (View mode). */
+.dash-varbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dash-varbar.hidden { display: none; }
+.dash-varbar-label { display: inline-flex; align-items: center; gap: 6px;
+    font-weight: 600; font-size: 12px; opacity: .7; white-space: nowrap; }
+.dash-var { display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; }
+.dash-var code { opacity: .65; white-space: nowrap; }
+.dash-var-input { width: 130px; }
+.dash-varbar .dash-hint { margin-left: auto; }

@@ -2431,6 +2431,7 @@
         if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
 
         buildViewSkeleton(V);
+        renderVarBar(V);
         renderViewGrid(V);
         startViewStatusPoll(V);
         wireTitleInput(V);
@@ -2471,6 +2472,10 @@
     function stopViewTimers(V) {
         V.timers.forEach(function (t) { clearInterval(t); });
         V.timers = [];
+        if (V.varTimer) {
+            clearTimeout(V.varTimer);
+            V.varTimer = null;
+        }
         V.observers.forEach(function (o) { try { o.disconnect(); } catch (e) { /* noop */ } });
         V.observers = [];
     }
@@ -2514,6 +2519,7 @@
             }).join("") + "</select></label>" +
             '<span class="dash-hint" data-vzone="runall-state"></span>' +
             "</div>" +
+            '<div class="dash-varbar glass-panel rounded-2xl px-4 py-2 hidden" data-vzone="varbar" aria-label="Dashboard variables"></div>' +
             '<div class="dash-grid" data-vzone="grid"></div>' +
             '<div class="dash-console-pop glass-panel hidden" data-vzone="console" role="dialog" aria-label="Run console"></div>' +
             '<div class="dash-toast glass-panel" data-vzone="toast" role="status"></div>' +
@@ -2521,6 +2527,7 @@
         var q = function (sel) { return holder.querySelector('[data-vzone="' + sel + '"]'); };
         V.els = {
             holder: holder, grid: q("grid"), toast: q("toast"),
+            varbar: q("varbar"),
             consolePop: q("console"),
             runAllBtn: holder.querySelector('[data-vact="runall"]'),
             stopAllBtn: holder.querySelector('[data-vact="stopall"]'),
@@ -2558,6 +2565,139 @@
         }).catch(function () {
             viewToast(V, "Save concurrency failed: network error.", true);
         });
+    }
+
+    // -- variables filter bar: inputs for each {{ name }} definition.
+    // Changing a value saves the doc, then re-runs only cards whose
+    // prompt/script references it (runAffected) — the rest keep their
+    // snapshots (review §3.4 focus 4).
+
+    function varEscapeRe(s) {
+        return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function cardUsesVariable(card, name) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name || "")) return false;
+        var re = new RegExp("\\{\\{\\s*" + varEscapeRe(name) +
+            "\\s*\\}\\}");
+        return re.test(card.prompt || "") || re.test(card.script || "");
+    }
+
+    function renderVarBar(V) {
+        var bar = V.els.varbar;
+        if (!bar) return;
+        var vars = (V.doc.variables &&
+            typeof V.doc.variables === "object") ? V.doc.variables : {};
+        var names = Object.keys(vars);
+        if (!names.length) {
+            bar.classList.add("hidden");
+            bar.innerHTML = "";
+            return;
+        }
+        bar.classList.remove("hidden");
+        var h = '<span class="dash-varbar-label">' +
+            '<i class="fas fa-sliders"></i> Variables</span>';
+        h += names.map(function (n) {
+            var v = vars[n];
+            var s = (v === null || v === undefined) ? "" : String(v);
+            return '<label class="dash-var" title="Cards using {{' + esc(n) +
+                '}} re-run when this changes">' +
+                "<code>{{" + esc(n) + "}}</code>" +
+                '<input type="text" class="input input-bordered input-xs dash-var-input" ' +
+                'data-var-name="' + esc(n) + '" value="' + esc(s) + '" ' +
+                'aria-label="Variable ' + esc(n) + '"></label>';
+        }).join("");
+        h += '<span class="dash-hint">Changing a value re-runs only the ' +
+            "cards using it.</span>";
+        bar.innerHTML = h;
+        bar.querySelectorAll("[data-var-name]").forEach(function (input) {
+            input.addEventListener("input", function () {
+                scheduleVarApply(V);
+            });
+            input.addEventListener("change", function () {
+                applyVarBar(V);
+            });
+        });
+    }
+
+    function scheduleVarApply(V) {
+        if (V.varTimer) clearTimeout(V.varTimer);
+        V.varTimer = setTimeout(function () {
+            V.varTimer = null;
+            applyVarBar(V);
+        }, 800);
+    }
+
+    function coerceVarValue(raw, prev) {
+        var s = String(raw === null || raw === undefined ? "" : raw);
+        if (typeof prev === "number") {
+            var n = Number(s.trim());
+            return (s.trim() !== "" && isFinite(n)) ? n : s;
+        }
+        if (typeof prev === "boolean") {
+            if (/^(true|1|yes)$/i.test(s.trim())) return true;
+            if (/^(false|0|no)$/i.test(s.trim())) return false;
+            return s;
+        }
+        return s;
+    }
+
+    function applyVarBar(V) {
+        var bar = V.els.varbar;
+        if (!bar || bar.classList.contains("hidden")) return;
+        if (V.varTimer) {
+            clearTimeout(V.varTimer);
+            V.varTimer = null;
+        }
+        if (V.runAllActive) {
+            viewToast(V, "A run is already in progress — wait and try again.");
+            return;
+        }
+        var prev = (V.doc.variables &&
+            typeof V.doc.variables === "object") ? V.doc.variables : {};
+        var next = {};
+        var changed = [];
+        bar.querySelectorAll("[data-var-name]").forEach(function (input) {
+            var n = input.getAttribute("data-var-name");
+            var val = coerceVarValue(input.value, prev[n]);
+            next[n] = val;
+            if (String(val) !== String(prev[n])) changed.push(n);
+        });
+        if (!changed.length) return;
+        V.doc.variables = next;
+        fetch(V.opts.saveUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ doc: V.doc })
+        }).then(function (resp) {
+            return resp.json().then(function (data) {
+                return { resp: resp, data: data };
+            });
+        }).then(function (out) {
+            if (out.resp.ok && out.data && out.data.ok) {
+                if (window.spaInvalidate) window.spaInvalidate();
+                runAffected(V, changed);
+            } else {
+                viewToast(V, "Save variables failed: " +
+                    ((out.data && out.data.error) || out.resp.status), true);
+                reloadVarBar(V);
+            }
+        }).catch(function () {
+            viewToast(V, "Save variables failed: network error.", true);
+            reloadVarBar(V);
+        });
+    }
+
+    function reloadVarBar(V) {
+        fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                if (data && data.ok && data.doc) {
+                    V.doc.variables = data.doc.variables || {};
+                    renderVarBar(V);
+                }
+            })
+            .catch(function () { /* bar keeps the typed values */ });
     }
 
     function renderViewGrid(V) {
@@ -3720,6 +3860,34 @@
             viewToast(V, "No cards to run.");
             return;
         }
+        startRunQueue(V, ids, null);
+    }
+
+    // Affected-only re-run for the variables filter bar: only cards whose
+    // prompt/script references a changed variable run; the rest keep
+    // their snapshots (review §3.4 focus 4).
+    function runAffected(V, changed) {
+        if (V.runAllActive) {
+            viewToast(V, "A run is already in progress — wait and try again.");
+            return;
+        }
+        var ids = (V.doc.cards || []).filter(function (c) {
+            return changed.some(function (n) {
+                return cardUsesVariable(c, n);
+            });
+        }).map(function (c) { return c.id; });
+        if (!ids.length) {
+            viewToast(V, "No cards use " + changed.map(function (n) {
+                return "{{" + n + "}}";
+            }).join(", ") + ".");
+            return;
+        }
+        startRunQueue(V, ids, ids.length +
+            (ids.length === 1 ? " affected card updated."
+                : " affected cards updated."));
+    }
+
+    function startRunQueue(V, ids, doneMsg) {
         var cap = viewCap(V.doc);
         var sel = V.els.capSel;
         if (sel) sel.value = String(cap);
@@ -3742,7 +3910,7 @@
             finished++;
             active--;
             if (V.runAllStop && active === 0) return abortRunAll(V, finished, total);
-            if (finished >= total && active === 0) return endRunAll(V, total);
+            if (finished >= total && active === 0) return endRunAll(V, total, doneMsg);
             paint();
             pump();
         };
@@ -3785,21 +3953,22 @@
                     });
                 })(queue.shift());
             }
-            if (!queue.length && active === 0 && finished >= total) endRunAll(V, total);
+            if (!queue.length && active === 0 && finished >= total) endRunAll(V, total, doneMsg);
         };
 
         paint();
         pump();
     }
 
-    function endRunAll(V, total) {
+    function endRunAll(V, total, doneMsg) {
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
         V.els.stopAllBtn.classList.add("hidden");
         V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
-        viewToast(V, total + (total === 1 ? " card updated." : " cards updated."));
+        viewToast(V, doneMsg ||
+            (total + (total === 1 ? " card updated." : " cards updated.")));
         if (window.spaInvalidate) window.spaInvalidate();
     }
 
