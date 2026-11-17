@@ -65,8 +65,11 @@ _OUTPUT_CONTRACTS = {
             + _NO_FILE_REFS),
     "chart": ("--- Output contract (chart card) ---\n"
               "Reply with ONLY a JSON object, no prose. Shape: "
-              '{"chart": {"kind": "bar|line|pie", "labels": [...up to 50...], '
+              '{"chart": {"kind": "bar|line|pie|doughnut|horizontalBar|area", '
+              '"labels": [...up to 50...], '
               '"datasets": [{"label": "...", "data": [numbers...]}]}}. '
+              "Kinds: bar, line, pie, doughnut, horizontalBar (bars run "
+              "left-to-right), area (filled line). "
               "If you must explain your reasoning, write it BEFORE the JSON "
               "and keep the JSON as one fenced ```json block. "
               + _NO_FILE_REFS),
@@ -77,6 +80,12 @@ _OUTPUT_CONTRACTS = {
               "Reply as plain rows, one per line, columns separated by "
               "' | ', first line the header. " + _NO_FILE_REFS),
 }
+
+# Chart kinds the view renderer knows how to draw (Chart.js v4: doughnut
+# is native; horizontalBar renders as bar with indexAxis "y"; area renders
+# as a filled line). Prompt and script cards coerce through the same
+# _parse_chart_result, so one allowlist covers both paths.
+_CHART_KINDS = ("bar", "line", "pie", "doughnut", "horizontalBar", "area")
 
 # Notebook chart-cell caps, mirrored for dashboard chart snapshots.
 _CHART_MAX_LABELS = 50
@@ -189,7 +198,7 @@ def _parse_chart_result(answer):
     if not isinstance(spec, dict):
         return {"text": answer}
     kind = spec.get("kind")
-    kind = kind if kind in ("bar", "line", "pie") else "bar"
+    kind = kind if kind in _CHART_KINDS else "bar"
     raw_labels = spec.get("labels")
     labels = ([str(label) for label in raw_labels]
               if isinstance(raw_labels, list) else [])

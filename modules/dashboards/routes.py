@@ -208,6 +208,38 @@ def save(file_id):
                     "checksum": stored.checksum})
 
 
+@bp.post("/<int:file_id>/rename")
+def rename(file_id):
+    """Inline title edit (mirrors the notebooks N1 rename shape): the file
+    name and doc["title"] stay in sync both ways through this one route —
+    no separate rename API. The extension is re-appended server-side, so
+    the title stored in the doc never carries it."""
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        abort(400, "Name is required.")
+    if not name.lower().endswith(f".{doc_service.EXTENSION}"):
+        name = f"{name}.{doc_service.EXTENSION}"
+    # Names live in StoredFile.name (String(255)) and flow to FTS — reject
+    # over-long renames instead of silently truncating one side of the
+    # name/title sync. doc["title"] caps at the same 255 (TITLE_MAX_CHARS),
+    # so the stripped title always fits.
+    if len(name) > 255:
+        abort(400, "Name is too long (max 255 characters).")
+    try:
+        document = doc_service.load(stored)
+    except ValueError as exc:
+        abort(400, str(exc))
+    document["title"] = name[: -(len(doc_service.EXTENSION) + 1)]
+    doc_service.save_document(stored, document)
+    stored.name = name
+    db.session.commit()
+    from app.services import search_service
+    search_service.fts_upsert(stored.id)  # filename is part of the FTS index
+    return redirect(url_for("dashboards.index"))
+
+
 @bp.post("/<int:file_id>/attachments")
 def attachments(file_id):
     """Attach a file: multipart upload (dashboard-owned) or {"file_id": N}

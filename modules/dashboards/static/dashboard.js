@@ -303,6 +303,7 @@
         renderAll(S);
         loadWorkflows(S);
         startBuilderStatusPoll(S);
+        wireTitleInput(S);
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -455,6 +456,75 @@
         closeRefPick(S);
         renderAttach(S);
         renderGrid(S);
+    }
+
+    // --- Inline title edit (notebooks N1 mirror) -----------------------
+    // Commits through the dashboards rename route, so the file name and
+    // doc["title"] stay in sync both ways. Enter or blur commits, Esc
+    // cancels. S.doc.title updates immediately; the rename bumps the
+    // checksum server-side, which is adopted as the new save base.
+    function wireTitleInput(S) {
+        var titleEl = S.root.querySelector("#dash-title");
+        if (!titleEl || !S.opts.renameUrl) return;
+        var editing = false;
+        function commit() {
+            if (!editing) return;
+            editing = false;
+            var value = (titleEl.value || "").trim() || S.doc.title || "";
+            titleEl.value = value;
+            titleEl.blur();
+            if (value === (S.doc.title || "")) return;
+            // The server strips a trailing `.pdash` before storing the
+            // title — strip it here too so the client never desyncs.
+            var clean = String(value).replace(/\.pdash$/i, "");
+            var fd = new FormData();
+            fd.append("name", value);
+            fetch(S.opts.renameUrl, { method: "POST", body: fd }).then(function (resp) {
+                if (!resp || !resp.ok) {
+                    titleEl.value = S.doc.title || "";
+                    toast(S, "Rename failed.", true);
+                    return;
+                }
+                S.doc.title = clean;
+                if (window.currentFile) {
+                    window.currentFile.name =
+                        value.toLowerCase().endsWith(".pdash")
+                            ? value : value + ".pdash";
+                }
+                if (window.spaInvalidate) window.spaInvalidate();
+                // Adopt the rename's checksum as the new base so the next
+                // autosave is a clean write instead of a merge. Best
+                // effort: a failed refresh leaves the stale base and the
+                // merge path still heals.
+                fetch(S.opts.docUrl, {
+                    headers: { "Accept": "application/json" }
+                }).then(function (r) {
+                    return r.json();
+                }).then(function (data) {
+                    if (data && data.ok && data.checksum) {
+                        S.checksum = data.checksum;
+                        if (data.doc) S.doc = data.doc;
+                        titleEl.value = S.doc.title || clean;
+                    }
+                }).catch(function () { /* best effort — merge path heals */ });
+            }).catch(function () {
+                titleEl.value = S.doc.title || "";
+                toast(S, "Rename failed: network error.", true);
+            });
+        }
+        titleEl.addEventListener("focus", function () { editing = true; });
+        titleEl.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                editing = false;
+                titleEl.value = S.doc.title || "";
+                titleEl.blur();
+            }
+        });
+        titleEl.addEventListener("blur", function () { commit(); });
     }
 
     // D3: fold newer background-run state into the Builder's local doc.
@@ -2363,6 +2433,7 @@
         buildViewSkeleton(V);
         renderViewGrid(V);
         startViewStatusPoll(V);
+        wireTitleInput(V);
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(V.root)) return;
@@ -3082,8 +3153,13 @@
         if (card.type === "kpi") {
             bodyEl.innerHTML = viewKpiHTML(res, text) + trunc;
         } else if (card.type === "table") {
-            bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
-            wireTablePager(bodyEl, res, text);
+            if (res.table && typeof res.table === "object" &&
+                    Array.isArray(res.table.headers || res.table.columns) &&
+                    (res.table.headers || res.table.columns).length) {
+                renderViewTable(V, card, bodyEl, res, trunc);
+            } else {
+                bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
+            }
         } else if (card.type === "list") {
             bodyEl.innerHTML = viewListHTML(res, text) + trunc;
         } else if (card.type === "chart") {
@@ -3143,54 +3219,185 @@
 
     var TABLE_PAGE_SIZE = 50;
 
-    function tablePagedHTML(res, text, page) {
-        var headers = res.table.headers || res.table.columns || [];
-        var rows = res.table.rows || [];
-        if (!Array.isArray(headers) || !Array.isArray(rows) || !headers.length) return null;
-        var total = (typeof res.total_rows === "number" && res.total_rows >= rows.length)
-            ? res.total_rows : rows.length;
-        var pages = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE));
-        page = Math.max(0, Math.min(pages - 1, page | 0));
-        var slice = rows.slice(page * TABLE_PAGE_SIZE, (page + 1) * TABLE_PAGE_SIZE);
-        var h = '<div data-ttable data-tpage="' + page + '">' +
-            viewTableHTML(headers.map(String), slice) +
-            '<div class="dash-pager">' +
-            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="-1"' +
-            (page <= 0 ? " disabled" : "") + ' aria-label="Previous table page">' +
-            '<i class="fas fa-chevron-left"></i></button>' +
-            '<span class="dash-pager-info">Page ' + (page + 1) + " of " + pages +
-            " · " + total + " rows" +
-            (res.truncated_rows ? " (showing first " + rows.length + ")" : "") + "</span>" +
-            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="+1"' +
-            (page >= pages - 1 ? " disabled" : "") + ' aria-label="Next table page">' +
-            '<i class="fas fa-chevron-right"></i></button>' +
-            "</div></div>";
-        return h;
+    function cmpTableCell(a, b) {
+        // Numeric-aware cell compare: two finite numbers sort numerically,
+        // everything else sorts case-insensitively as text.
+        var x = (a === null || a === undefined) ? "" : a;
+        var y = (b === null || b === undefined) ? "" : b;
+        var nx = parseFloat(x), ny = parseFloat(y);
+        if (x !== "" && y !== "" && isFinite(nx) && isFinite(ny)) return nx - ny;
+        var sx = String(x).toLowerCase(), sy = String(y).toLowerCase();
+        return sx < sy ? -1 : sx > sy ? 1 : 0;
     }
 
-    function wireTablePager(bodyEl, res, text) {
-        var wrap = bodyEl.querySelector("[data-ttable]");
-        if (!wrap) return;
-        wrap.querySelectorAll("[data-tpage-btn]").forEach(function (btn) {
+    function tableViewRows(res, state) {
+        // Filter + sort apply to the FULL snapshot rows (up to 500), never
+        // the visible page: the pager slices afterwards, and Download CSV
+        // exports these same rows — the filtered/sorted view, not the page.
+        var headers = res.table.headers || res.table.columns || [];
+        var rows = (res.table.rows || []).slice();
+        var q = String((state && state.filter) || "").toLowerCase();
+        if (q) {
+            rows = rows.filter(function (r) {
+                return (r || []).some(function (c) {
+                    return String(c === null || c === undefined ? "" : c)
+                        .toLowerCase().indexOf(q) >= 0;
+                });
+            });
+        }
+        var col = state ? state.sortCol : -1;
+        var dir = (state && state.sortDir === -1) ? -1 : 1;
+        if (col >= 0 && col < headers.length && rows.length > 1) {
+            rows = rows.slice().sort(function (a, b) {
+                return cmpTableCell(a[col], b[col]) * dir;
+            });
+        }
+        return { headers: headers.map(String), rows: rows };
+    }
+
+    function tableToCSV(headers, rows) {
+        // RFC-4180 quoting: quote fields holding a comma, quote or newline.
+        function q(v) {
+            var s = String(v === null || v === undefined ? "" : v);
+            return (/[",\n\r]/.test(s)) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }
+        return [headers.map(q).join(",")].concat(rows.map(function (r) {
+            return headers.map(function (_, i) { return q(r[i]); }).join(",");
+        })).join("\r\n");
+    }
+
+    function downloadCSV(filename, text) {
+        var blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename || "table.csv";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () {
+            try { URL.revokeObjectURL(a.href); } catch (e) { /* noop */ }
+            a.remove();
+        }, 0);
+    }
+
+    function tableStateFor(V, card) {
+        if (!V.tableState) V.tableState = {};
+        var st = V.tableState[card.id];
+        if (!st) {
+            st = { page: 0, sortCol: -1, sortDir: 1, filter: "" };
+            V.tableState[card.id] = st;
+        }
+        return st;
+    }
+
+    function renderViewTable(V, card, bodyEl, res, trunc) {
+        var st = tableStateFor(V, card);
+        var full = (res.table.rows || []).length;
+        var h = '<div data-dashtbl="' + esc(card.id) + '">';
+        if (full > 10) {
+            h += '<div class="dash-filter-row">' +
+                '<i class="fas fa-magnifying-glass opacity-50"></i>' +
+                '<input type="search" class="input input-bordered input-xs dash-filter" ' +
+                'data-dash-filter placeholder="Filter ' + full + ' rows…" ' +
+                'value="' + esc(st.filter) + '" aria-label="Filter table rows"></div>';
+        }
+        h += '<div data-dashtbl-body></div>' +
+            '<div class="dash-tbl-foot"><span class="dash-hint" data-dashtbl-count></span>' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-dash-csv ' +
+            'title="Download the filtered/sorted rows as CSV" ' +
+            'aria-label="Download table as CSV">' +
+            '<i class="fas fa-download"></i> Download CSV</button></div>';
+        h += "</div>" + trunc;
+        bodyEl.innerHTML = h;
+        paintViewTable(V, card, bodyEl, res, full);
+        var filterEl = bodyEl.querySelector("[data-dash-filter]");
+        if (filterEl) {
+            // The filter input survives repaints (only the table body is
+            // re-rendered), so typing never loses focus.
+            filterEl.addEventListener("input", function () {
+                st.filter = filterEl.value;
+                st.page = 0;  // a new filter restarts on page 1
+                paintViewTable(V, card, bodyEl, res, full);
+            });
+        }
+        var csvBtn = bodyEl.querySelector("[data-dash-csv]");
+        if (csvBtn) {
+            csvBtn.addEventListener("click", function () {
+                var view = tableViewRows(res, st);
+                var safe = String(card.title || "table")
+                    .replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "table";
+                downloadCSV(safe + ".csv", tableToCSV(view.headers, view.rows));
+            });
+        }
+    }
+
+    function paintViewTable(V, card, bodyEl, res, full) {
+        var slot = bodyEl.querySelector("[data-dashtbl-body]");
+        var count = bodyEl.querySelector("[data-dashtbl-count]");
+        if (!slot) return;
+        var st = tableStateFor(V, card);
+        var view = tableViewRows(res, st);
+        var pages = Math.max(1, Math.ceil(view.rows.length / TABLE_PAGE_SIZE));
+        st.page = Math.max(0, Math.min(pages - 1, st.page | 0));
+        var slice = view.rows.slice(st.page * TABLE_PAGE_SIZE,
+            (st.page + 1) * TABLE_PAGE_SIZE);
+        var h = '<div class="dash-vtable-wrap"><table class="dash-vtable">' +
+            "<thead><tr>" + view.headers.map(function (c, i) {
+                var arrow = st.sortCol === i
+                    ? (st.sortDir === -1 ? " &#9660;" : " &#9650;") : "";
+                return '<th><button type="button" class="dash-sort" data-dash-sort="' + i + '" ' +
+                    'title="Sort by ' + esc(c) + '" aria-label="Sort by ' + esc(c) + '">' +
+                    esc(c) + "<span aria-hidden=\"true\">" + arrow + "</span></button></th>";
+            }).join("") + "</tr></thead><tbody>";
+        if (!slice.length) {
+            h += '<tr><td colspan="' + Math.max(1, view.headers.length) +
+                '" class="opacity-50">No rows match the filter.</td></tr>';
+        }
+        h += slice.map(function (r) {
+            return "<tr>" + view.headers.map(function (_, i) {
+                var c = r[i];
+                return "<td>" + esc(c === null || c === undefined ? "" : c) + "</td>";
+            }).join("") + "</tr>";
+        }).join("") + "</tbody></table></div>";
+        h += '<div class="dash-pager">' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="-1"' +
+            (st.page <= 0 ? " disabled" : "") + ' aria-label="Previous table page">' +
+            '<i class="fas fa-chevron-left"></i></button>' +
+            '<span class="dash-pager-info">Page ' + (st.page + 1) + " of " + pages +
+            " · " + view.rows.length + " rows" +
+            (view.rows.length !== full ? " (filtered from " + full + ")" : "") +
+            (res.truncated_rows
+                ? " (showing first " + full +
+                    ((typeof res.total_rows === "number" && res.total_rows > full)
+                        ? " of " + res.total_rows : "") + ")"
+                : "") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="+1"' +
+            (st.page >= pages - 1 ? " disabled" : "") + ' aria-label="Next table page">' +
+            '<i class="fas fa-chevron-right"></i></button>' +
+            "</div>";
+        slot.innerHTML = h;
+        slot.querySelectorAll("[data-dash-sort]").forEach(function (btn) {
             btn.addEventListener("click", function () {
-                var next = parseInt(wrap.getAttribute("data-tpage"), 10) +
-                    parseInt(btn.getAttribute("data-tpage-btn"), 10);
-                var fresh = tablePagedHTML(res, text, next);
-                if (fresh === null) return;
-                var tmp = document.createElement("div");
-                tmp.innerHTML = fresh;
-                var node = tmp.firstChild;
-                wrap.parentNode.replaceChild(node, wrap);
-                wireTablePager(bodyEl, res, text);
+                var col = parseInt(btn.getAttribute("data-dash-sort"), 10);
+                if (st.sortCol === col) st.sortDir = -st.sortDir;
+                else { st.sortCol = col; st.sortDir = 1; }
+                paintViewTable(V, card, bodyEl, res, full);
             });
         });
+        slot.querySelectorAll("[data-tpage-btn]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                st.page += parseInt(btn.getAttribute("data-tpage-btn"), 10);
+                paintViewTable(V, card, bodyEl, res, full);
+            });
+        });
+        if (count) {
+            count.textContent = st.filter
+                ? view.rows.length + " of " + full + " rows match" : "";
+        }
     }
 
     function viewTableResultHTML(res, text) {
-        if (res.table && typeof res.table === "object") {
-            var html = tablePagedHTML(res, text, 0);
-            if (html !== null) return html;
-        }
+        // Structured snapshots render through renderViewTable (sort/filter/
+        // pager/CSV); this covers the legacy fallback shapes only.
         if (res.workflow && Array.isArray(res.workflow.results)) {
             var t = objectsToTable(res.workflow.results);
             if (t) return t + (text ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" : "");
@@ -3246,6 +3453,15 @@
         return h || '<div class="dash-empty">No content.</div>';
     }
 
+    // Chart kinds the engine accepts (engine._CHART_KINDS): Chart.js v4
+    // dropped the "horizontalBar" type — bars run horizontally through
+    // indexAxis "y" — and "area" is a filled line.
+    function chartRenderSpec(effKind) {
+        if (effKind === "horizontalBar") return { type: "bar", indexAxis: "y" };
+        if (effKind === "area") return { type: "line" };
+        return { type: effKind };
+    }
+
     // Chart: vendored Chart.js, fluid canvas. Mirrors the notebooks
     // renderChartView pattern (async load, contains-guard, dataset colors,
     // responsive + maintainAspectRatio false) plus a container
@@ -3269,7 +3485,27 @@
                 "<p>labels or datasets missing from the snapshot.</p></div>";
             return;
         }
-        bodyEl.innerHTML = '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
+        // Client-side View switcher (bar/line/doughnut): re-renders from the
+        // stored snapshot, never re-runs the card.
+        var switchKinds = ["bar", "line", "doughnut"];
+        if (!V.chartView) V.chartView = {};
+        var viewKind = V.chartView[card.id] || kind;
+        if (switchKinds.indexOf(viewKind) < 0) viewKind = kind;
+        var switchHTML = '<div class="dash-chart-switch" data-dash-chart-switch ' +
+            'role="group" aria-label="Chart view">' +
+            switchKinds.map(function (k) {
+                return '<button type="button" class="btn btn-ghost btn-xs' +
+                    (k === viewKind ? " btn-active" : "") + '" data-chart-kind="' + k +
+                    '" aria-label="Show as ' + k + '">' + k + "</button>";
+            }).join("") + "</div>";
+        bodyEl.innerHTML = switchHTML +
+            '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
+        bodyEl.querySelectorAll("[data-chart-kind]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                V.chartView[card.id] = btn.getAttribute("data-chart-kind");
+                renderViewChart(V, card, bodyEl, res, trunc);
+            });
+        });
         var wrap = bodyEl.querySelector(".dash-chart-wrap");
         var canvas = bodyEl.querySelector("canvas");
         // Height follows the card's h so sizes stay honest (h=3 renders
@@ -3283,13 +3519,14 @@
                 return;
             }
             try {
+                var pieLike = (viewKind === "pie" || viewKind === "doughnut");
                 var datasets = rawDs.map(function (ds, i) {
                     var label = String((ds && ds.label) || "");
                     var data = (ds && Array.isArray(ds.data) ? ds.data : []).map(function (v) {
                         var n = Number(v);
                         return isFinite(n) ? n : 0;
                     });
-                    if (kind === "pie") {
+                    if (pieLike) {
                         return {
                             label: label, data: data,
                             backgroundColor: data.map(function (_, j) { return viewColor(j, 0.85); })
@@ -3297,22 +3534,26 @@
                     }
                     return {
                         label: label, data: data,
-                        backgroundColor: kind === "line" ? viewColor(i, 0.25) : viewColor(i, 0.7),
+                        backgroundColor: viewKind === "line" ? viewColor(i, 0.25)
+                            : viewKind === "area" ? viewColor(i, 0.45)
+                            : viewColor(i, 0.7),
                         borderColor: viewColor(i),
                         borderWidth: 2,
-                        tension: kind === "line" ? 0.3 : 0,
-                        fill: kind === "line"
+                        tension: (viewKind === "line" || viewKind === "area") ? 0.3 : 0,
+                        fill: (viewKind === "line" || viewKind === "area")
                     };
                 });
                 if (V.charts[card.id]) {
                     try { V.charts[card.id].destroy(); } catch (e) { /* noop */ }
                 }
+                var rSpec = chartRenderSpec(viewKind);
                 var chart = new window.Chart(canvas, {
-                    type: kind,
+                    type: rSpec.type,
                     data: { labels: labels, datasets: datasets },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        indexAxis: rSpec.indexAxis || "x",
                         plugins: {
                             legend: { display: datasets.length > 1 },
                             title: { display: false }

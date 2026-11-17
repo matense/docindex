@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=11" in body
-    assert "?v=26" in body
+    assert "?v=12" in body
+    assert "?v=27" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -3867,3 +3867,87 @@ def test_workflow_stream_emits_node_progress(app, auth_client, user,
     assert '"t": "step"' in body
     assert '"t": "done"' in body
     assert _card(app, fid, cid)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Task C3: interactive table widgets + chart kinds + editable title
+# ---------------------------------------------------------------------------
+
+def test_chart_result_accepts_new_kinds():
+    dash_engine = _engine()
+    res = dash_engine._parse_chart_result(
+        '{"chart": {"kind": "doughnut", "labels": ["a"], '
+        '"datasets": [{"label": "x", "data": [1]}]}}')
+    assert res["chart"]["kind"] == "doughnut"
+
+
+def test_chart_script_result_accepts_new_kinds():
+    """C3 (controller pin): script cards coerce through the same chart
+    contract, so one engine change covers both paths."""
+    dash_engine = _engine()
+    for kind in ("doughnut", "horizontalBar", "area"):
+        value = {"chart": {"kind": kind, "labels": ["a"],
+                           "datasets": [{"label": "x", "data": [1]}]}}
+        res = dash_engine._parse_script_result("chart", value)
+        assert res["chart"]["kind"] == kind
+
+
+def test_chart_contract_lists_new_kinds():
+    dash_engine = _engine()
+    contract = dash_engine._OUTPUT_CONTRACTS["chart"]
+    for kind in ("doughnut", "horizontalBar", "area"):
+        assert kind in contract
+
+
+def test_view_widgets_present():
+    src = _dash_js_src()
+    assert "dash-sort" in src and "Download CSV" in src
+    assert "dash-chart-switch" in src or "chart-switch" in src
+
+
+def test_view_table_pager_composition():
+    """C3 (controller pin): sort covers the full snapshot rows (not the
+    visible page); the filter resets to page 1."""
+    src = _dash_js_src()
+    assert "tableViewRows" in src  # filtered+sorted FULL rows, paged after
+    assert "sortCol" in src and "sortDir" in src
+    assert "dash-filter" in src
+
+
+def test_csv_download_matches_view():
+    """C3 (review focus 3): Download CSV exports the filtered/sorted view
+    rows — the full snapshot, not the visible page."""
+    src = _dash_js_src()
+    assert "Download CSV" in src
+    assert "tableToCSV" in src
+    assert "data-dash-csv" in src
+
+
+def test_dashboard_rename_syncs_title_and_name(app, auth_client, user,
+                                               enabled):
+    """C3 (notebooks N1 mirror): POST /m/dashboards/<id>/rename syncs
+    stored.name and doc["title"] together through the same route shape."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    auth_client.post(f"/m/dashboards/{fid}/rename", data={"name": "novo"})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "novo.pdash"
+        assert dash_doc.load(stored)["title"] == "novo"
+    auth_client.post(f"/m/dashboards/{fid}/rename",
+                     data={"name": "  segundo  "})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "segundo.pdash"
+        assert dash_doc.load(stored)["title"] == "segundo"
+
+
+def test_dashboard_title_input_wired():
+    """C3: edit.html exposes an editable title input + renameUrl (no
+    static h1-only header), bound in the builder JS."""
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "edit.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    src = _dash_js_src()
+    assert "dash-title" in html and "renameUrl" in html
+    assert "dash-title" in src and "renameUrl" in src

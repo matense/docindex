@@ -524,3 +524,32 @@ dialog[data-dlg="link"] .dash-pickrow:disabled { opacity: .55; cursor: default; 
 [data-theme="light"] .dash-vtable thead th { background: rgba(15, 23, 42, .07); }
 [data-theme="light"] .dash-vtable td { border-top-color: rgba(15, 23, 42, .1); }
 [data-theme="light"] .dash-vtable tbody tr:nth-child(even) td { background: rgba(15, 23, 42, .035); }
+
+/* C3: editable dashboard title (static h1 became an input bound to
+   S.doc.title + stored.name through the rename route, N1 mirror). */
+.dash-title-input {
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 2px 8px; margin-left: -8px; font-size: 1rem; min-width: 0;
+}
+.dash-title-input:hover { border-color: rgba(127, 127, 127, .35); }
+.dash-title-input:focus {
+    outline: none; border-color: oklch(var(--p));
+    background: rgba(127, 127, 127, .08);
+}
+
+/* C3: interactive view tables — sortable headers, filter row, CSV footer. */
+.dash-sort {
+    background: none; border: 0; padding: 0; font: inherit; color: inherit;
+    cursor: pointer; display: inline-flex; gap: 4px; align-items: center;
+    text-transform: inherit; letter-spacing: inherit;
+    font-size: inherit; font-weight: inherit;
+}
+.dash-sort:hover { text-decoration: underline; }
+.dash-filter-row { display: flex; align-items: center; gap: 8px; }
+.dash-filter { flex: 1; min-width: 0; }
+.dash-tbl-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.dash-tbl-foot .btn { margin-left: auto; }
+
+/* C3: client-side chart view switcher (bar/line/doughnut, no re-run). */
+.dash-chart-switch { display: flex; gap: 4px; }
+.dash-chart-switch .btn-active { background: rgba(127, 127, 127, .18); }

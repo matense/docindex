@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ file.name }} - Dashboards{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=11">
+<link rel="stylesheet" href="{{ url_for('dashboards.static', filename='dashboard.css') }}?v=12">
 {% endblock %}
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="dash-root">
@@ -11,7 +11,9 @@
         <a href="{{ url_for('dashboards.index') }}" class="btn btn-ghost btn-sm btn-square"
            title="All dashboards"><i class="fas fa-arrow-left"></i></a>
         <div class="flex-1 min-w-0 dash-toolbar-doc">
-            <h1 class="font-bold truncate">{{ doc.title }}</h1>
+            <input id="dash-title" type="text" class="dash-title-input font-bold truncate w-full"
+                value="{{ doc.title }}" maxlength="255" autocomplete="off"
+                spellcheck="false" aria-label="Dashboard title" title="Click to rename" />
             <p class="text-xs opacity-40">
                 {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
             </p>
@@ -53,6 +55,7 @@
     const opts = {
         dashboardId: {{ file.id }},
         saveUrl: {{ url_for('dashboards.save', file_id=file.id)|tojson }},
+        renameUrl: {{ url_for('dashboards.rename', file_id=file.id)|tojson }},
         docUrl: {{ url_for('dashboards.document_json', file_id=file.id)|tojson }},
         runUrl: {{ ('/m/dashboards/%s/run' % file.id)|tojson }},
         statusUrl: {{ ('/m/dashboards/%s/status' % file.id)|tojson }},
@@ -69,7 +72,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=26')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=27')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();
