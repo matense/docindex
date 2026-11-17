@@ -26,6 +26,9 @@
 
     var GRID_COLUMNS = 12;
     var WIDTH_STEPS = [3, 4, 6, 8, 12];
+    // Quick-select size presets for the Builder size badge (Task C1).
+    // Applied through snapW/clampN so per-type minima still hold.
+    var SIZE_PRESETS = ["3×1", "4×2", "6×3", "8×3", "12×4"];
     // Per-type minima. Widths follow the mockup steps; heights follow the
     // server MIN_SIZE (chart needs h>=3 — a chart at h=2 is 400-rejected).
     var MIN_W = { kpi: 3, table: 4, list: 3, chart: 6, markdown: 4, workflow: 6 };
@@ -152,6 +155,89 @@
         return (inputs.workflow && typeof inputs.workflow === "object") ? inputs.workflow : null;
     }
 
+    function wfName(S, id) {
+        var list = (S.workflows && S.workflows.list) || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].id) === String(id)) return list[i].name || "";
+        }
+        return "";
+    }
+
+    function wfOptionsHTML(S, selectedId) {
+        var st = S.workflows || { loaded: false, enabled: true, list: [] };
+        if (st.loaded && !st.enabled) {
+            return '<option value="">Automation is disabled</option>';
+        }
+        var h = '<option value="">— pick a workflow —</option>';
+        var seen = false;
+        (st.list || []).forEach(function (w) {
+            var sel = String(w.id) === String(selectedId) ? " selected" : "";
+            if (sel) seen = true;
+            h += '<option value="' + esc(w.id) + '"' + sel + ">" +
+                esc(w.name || ("workflow #" + w.id)) + "</option>";
+        });
+        if (selectedId !== "" && !seen) {
+            var missing = "workflow #" + esc(selectedId);
+            if (st.loaded) missing = "⚠ " + missing + " (deleted?)";
+            h += '<option value="' + esc(selectedId) + '" selected>' +
+                missing + "</option>";
+        }
+        return h;
+    }
+
+    function wfSummaryText(wf) {
+        if (!wf || wf.workflow_id === undefined || wf.workflow_id === null ||
+                String(wf.workflow_id) === "") return "no workflow linked";
+        var n = wf.params && typeof wf.params === "object" ? Object.keys(wf.params).length : 0;
+        var s = n === 1 ? "1 input configured" : n + " inputs configured";
+        if (wf.trigger_file_id) s += " + file";
+        return s;
+    }
+
+    function loadWorkflows(S) {
+        fetch(S.moduleBase + "/workflows", { headers: { "Accept": "application/json" } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                data = data || {};
+                S.workflows = {
+                    loaded: true,
+                    enabled: data.ok === true,
+                    list: Array.isArray(data.workflows) ? data.workflows : [],
+                    error: data.error || ""
+                };
+                renderGrid(S);
+            })
+            .catch(function () {
+                S.workflows = {
+                    loaded: true, enabled: false, list: [],
+                    error: "Could not load workflows — is the automation module enabled?"
+                };
+                renderGrid(S);
+            });
+    }
+
+    // Lazily load the shared Automation run form (the dashboards bundle
+    // must boot even when automation is disabled, so the dependency is
+    // fetched on demand, never statically). Calls back with true when
+    // window.AutomationRunForm is usable.
+    function ensureRunForm(S, cb) {
+        if (window.AutomationRunForm) { cb(true); return; }
+        if (S._rfLoading) { S._rfQueue.push(cb); return; }
+        S._rfLoading = true;
+        S._rfQueue = [cb];
+        var done = function (ok) {
+            S._rfLoading = false;
+            var q = S._rfQueue || [];
+            S._rfQueue = [];
+            q.forEach(function (fn) { fn(ok && !!window.AutomationRunForm); });
+        };
+        var s = document.createElement("script");
+        s.src = "/m/automation/static/run_form.js";
+        s.onload = function () { done(true); };
+        s.onerror = function () { done(false); };
+        document.head.appendChild(s);
+    }
+
     function isDanglingRef(r) {
         return typeof r === "string" && r.indexOf("att-") !== 0 && !/^[0-9a-f]{12}$/.test(r);
     }
@@ -204,6 +290,8 @@
             root: root, opts: opts, base: base, moduleBase: moduleBase,
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             checksum: opts.checksum || "",
+            workflows: { loaded: false, enabled: true, list: [], error: "" },
+            _rfLoading: false, _rfQueue: [],
             dirty: false, saving: false, saveTimer: null, saveError: "",
             pollTimer: null,
             ptrOp: null, pickFor: null, pendingDelCard: null, usageHi: null, els: {}
@@ -213,7 +301,26 @@
 
         buildSkeleton(S);
         renderAll(S);
+        loadWorkflows(S);
         startBuilderStatusPoll(S);
+        wireTitleInput(S);
+        wireAccessButtons(S);
+        document.addEventListener("docindex-ui-action", function (e) {
+            if (!document.body.contains(S.root)) return;
+            onDashUiAction(S, e);
+        }, { signal: ac.signal });
+        // Fix round 1: flush on Settings-drawer close. A drawer open with
+        // no typed change yet leaves S clean, so adopts wait in
+        // builderBusy; closing retries at once instead of on the next 5s
+        // tick (capture: toggle skips bubble). An editor close needs no
+        // flush — S._edit clears and the next tick adopts.
+        S.root.addEventListener("toggle", function (e) {
+            if (!document.body.contains(S.root)) return;
+            var t = e && e.target;
+            if (t && t.classList && t.classList.contains("dash-settings") && !t.open) {
+                refreshFromServer(S);
+            }
+        }, { signal: ac.signal, capture: true });
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(S.root)) return;
@@ -368,6 +475,119 @@
         renderGrid(S);
     }
 
+    // --- Inline title edit (notebooks N1 mirror) -----------------------
+    // Commits through the dashboards rename route, so the file name and
+    // doc["title"] stay in sync both ways. Enter or blur commits, Esc
+    // cancels. S.doc.title updates immediately; the rename bumps the
+    // checksum server-side, which is adopted as the new save base.
+    function wireTitleInput(S) {
+        var titleEl = S.root.querySelector("#dash-title");
+        if (!titleEl || !S.opts.renameUrl) return;
+        var editing = false;
+        function commit() {
+            if (!editing) return;
+            editing = false;
+            var value = (titleEl.value || "").trim() || S.doc.title || "";
+            titleEl.value = value;
+            titleEl.blur();
+            if (value === (S.doc.title || "")) return;
+            // The server strips a trailing `.pdash` before storing the
+            // title — strip it here too so the client never desyncs.
+            var clean = String(value).replace(/\.pdash$/i, "");
+            var fd = new FormData();
+            fd.append("name", value);
+            fetch(S.opts.renameUrl, { method: "POST", body: fd }).then(function (resp) {
+                if (!resp || !resp.ok) {
+                    titleEl.value = S.doc.title || "";
+                    toast(S, "Rename failed.", true);
+                    return;
+                }
+                S.doc.title = clean;
+                if (window.currentFile) {
+                    window.currentFile.name =
+                        value.toLowerCase().endsWith(".pdash")
+                            ? value : value + ".pdash";
+                }
+                if (window.spaInvalidate) window.spaInvalidate();
+                // Adopt the rename's checksum as the new base so the next
+                // autosave is a clean write instead of a merge. Best
+                // effort: a failed refresh leaves the stale base and the
+                // merge path still heals.
+                fetch(S.opts.docUrl, {
+                    headers: { "Accept": "application/json" }
+                }).then(function (r) {
+                    return r.json();
+                }).then(function (data) {
+                    if (data && data.ok && data.checksum) {
+                        S.checksum = data.checksum;
+                        if (data.doc) S.doc = data.doc;
+                        titleEl.value = S.doc.title || clean;
+                    }
+                }).catch(function () { /* best effort — merge path heals */ });
+            }).catch(function () {
+                titleEl.value = S.doc.title || "";
+                toast(S, "Rename failed: network error.", true);
+            });
+        }
+        titleEl.addEventListener("focus", function () { editing = true; });
+        titleEl.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                editing = false;
+                titleEl.value = S.doc.title || "";
+                titleEl.blur();
+            }
+        });
+        titleEl.addEventListener("blur", function () { commit(); });
+    }
+
+    // --- AI access flags (lock edits / hide entirely) ---------------
+    // Dashboard-level toggles in the Builder toolbar (notebooks nb-lock /
+    // nb-hide mirror — but dashboard-level, since the Settings drawer is
+    // per-card and ai_lock/ai_hidden are per-dashboard). The flags ride
+    // the normal autosave; the guard messages in doc.ai_error point at
+    // these lock/eye buttons.
+    function renderAccessButtons(S) {
+        var lockBtn = S.root.querySelector("#dash-lock-btn");
+        if (lockBtn) {
+            var locked = !!(S.doc && S.doc.ai_lock);
+            lockBtn.innerHTML = '<i class="fas ' +
+                (locked ? "fa-lock" : "fa-lock-open") + '"></i>';
+            lockBtn.classList.toggle("dash-on", locked);
+            lockBtn.title = locked
+                ? "AI edits locked — click to unlock"
+                : "The AI can edit this dashboard — click to lock";
+        }
+        var hideBtn = S.root.querySelector("#dash-hide-btn");
+        if (hideBtn) {
+            var hidden = !!(S.doc && S.doc.ai_hidden);
+            hideBtn.innerHTML = '<i class="fas ' +
+                (hidden ? "fa-eye-slash" : "fa-eye") + '"></i>';
+            hideBtn.classList.toggle("dash-on", hidden);
+            hideBtn.title = hidden
+                ? "Hidden from the AI — click to make visible"
+                : "Visible to the AI — click to hide";
+        }
+    }
+    function wireAccessButtons(S) {
+        renderAccessButtons(S);
+        var lockBtn = S.root.querySelector("#dash-lock-btn");
+        if (lockBtn) lockBtn.addEventListener("click", function () {
+            S.doc.ai_lock = !S.doc.ai_lock;
+            renderAccessButtons(S);
+            scheduleSave(S);
+        });
+        var hideBtn = S.root.querySelector("#dash-hide-btn");
+        if (hideBtn) hideBtn.addEventListener("click", function () {
+            S.doc.ai_hidden = !S.doc.ai_hidden;
+            renderAccessButtons(S);
+            scheduleSave(S);
+        });
+    }
+
     // D3: fold newer background-run state into the Builder's local doc.
     // Pure merge (node-testable): for each card on both sides the newer
     // side's run-owned keys win as a unit (card-level, not field-level —
@@ -415,14 +635,152 @@
         return changed;
     }
 
+    // C6: structural fingerprint of a dashboard document — everything
+    // except the run-owned keys mergeRunOwned adopts (result, status,
+    // ranAt, trace, runId, ranSecs) and the append-only createdFileIds
+    // registry (a run minting artifacts must not count as structural —
+    // mergeRunOwned already unions the registry). Two docs share a
+    // signature exactly when only background-run state differs, so the
+    // Builder poll can tell an AI chat structural edit (adopt wholesale)
+    // from a run settling (merge footers in place). Pure and
+    // node-testable.
+    var RUN_OWNED_KEYS = ["result", "status", "ranAt", "trace",
+        "runId", "ranSecs"];
+    function structuralCard(card) {
+        var out = {};
+        Object.keys(card || {}).sort().forEach(function (k) {
+            if (RUN_OWNED_KEYS.indexOf(k) === -1) out[k] = card[k];
+        });
+        return out;
+    }
+    function structuralSig(doc) {
+        doc = doc || {};
+        return JSON.stringify({
+            title: doc.title || "",
+            ai_lock: !!doc.ai_lock,
+            ai_hidden: !!doc.ai_hidden,
+            concurrency: doc.concurrency || 0,
+            variables: doc.variables || {},
+            attachments: doc.attachments || [],
+            cards: (doc.cards || []).map(structuralCard)
+        });
+    }
+    function structuralChangedIds(localDoc, remoteDoc) {
+        var byId = {};
+        ((localDoc && localDoc.cards) || []).forEach(function (c) {
+            byId[c.id] = JSON.stringify(structuralCard(c));
+        });
+        var ids = [];
+        ((remoteDoc && remoteDoc.cards) || []).forEach(function (c) {
+            if (byId[c.id] !== JSON.stringify(structuralCard(c))) {
+                ids.push(c.id);
+            }
+        });
+        return ids;
+    }
+
+    // Fix round 1: the Builder is "busy" while the popup card editor is
+    // open (S._edit, cleared on confirmed close) or a per-card Settings
+    // drawer stands open. Typed input already marks S.dirty, but a drawer
+    // open with nothing typed yet leaves S.doc untouched — adopting a
+    // remote doc then would rebuild the grid (renderAll) underneath the
+    // open drawer/editor. Pure enough to node-probe with fake S objects.
+    function builderBusy(S) {
+        if (S._edit) return true;
+        if (S.els.dlgEdit && S.els.dlgEdit.open) return true;
+        var grid = S.root && S.root.querySelector
+            ? S.root.querySelector('[data-zone="grid"]') : null;
+        return !!(grid && grid.querySelector("details.dash-settings[open]"));
+    }
+
     // D3: the Builder subscribes to the card-change channel (aggregate
     // status poll, View precedent; statusUrl/docUrl arrive via edit.html
     // opts and VIEW_STATUS_MS shares this IIFE scope). On change the full
     // doc is re-read and only run-owned fields merge in — local structural
     // edits are never clobbered and footers update in place (no re-render:
-    // focus stays). Out of scope by design: cards added/removed elsewhere
-    // do NOT propagate through this channel (unknown/removed ids never
-    // trigger a doc fetch) — they appear/disappear on reload or save.
+    // focus stays).
+    // C6: the status channel now also carries the checksum, so AI chat
+    // structural edits (cards added/removed/edited, title, variables,
+    // flags) propagate through this channel too — when the Builder holds
+    // no unsaved work the remote doc is adopted wholesale and changed
+    // cards flash (notebooks live-flash mirror). A dirty Builder keeps
+    // the run-owned merge so the next save heals via union_cards.
+    function updateRunFooters(S, changed) {
+        changed.forEach(function (id) {
+            var node = gridCardEl(S, id);
+            var card = cardById(S.doc, id);
+            if (node && card) {
+                var ran = node.querySelector(".dash-ran");
+                if (ran) ran.textContent = ranFull(card);
+            }
+        });
+    }
+
+    function flashDashCards(S, ids) {
+        (ids || []).forEach(function (id) {
+            var node = gridCardEl(S, id);
+            if (node && node.isConnected) node.classList.add("dash-flash");
+        });
+        setTimeout(function () {
+            (ids || []).forEach(function (id) {
+                var node = gridCardEl(S, id);
+                if (node) node.classList.remove("dash-flash");
+            });
+        }, 3400);
+    }
+
+    function adoptRemoteDoc(S, remote, checksum) {
+        var changed = structuralChangedIds(S.doc, remote);
+        S.doc = remote;
+        if (checksum) S.checksum = checksum;
+        S.dirty = false;
+        setStatus(S, "saved", "updated remotely");
+        var titleEl = S.root.querySelector("#dash-title");
+        if (titleEl && document.activeElement !== titleEl) {
+            titleEl.value = S.doc.title || "";
+        }
+        renderAccessButtons(S);
+        renderAll(S);
+        flashDashCards(S, changed);
+    }
+
+    // Shared fetch-and-adopt leg for the checksum poll and the
+    // dashboard_changed push below (notebooks refreshFromServer mirror):
+    // run-only drift merges footers in place, structural drift is
+    // adopted wholesale — never while the user holds unsaved work or an
+    // editor/drawer is open (the next poll tick or drawer close retries).
+    function refreshFromServer(S) {
+        if (!document.body.contains(S.root)) return Promise.resolve(false);
+        if (S.dirty || S.saving || builderBusy(S)) return Promise.resolve(false);
+        return fetch(S.opts.docUrl, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (doc) {
+                if (!doc || !doc.ok || !doc.doc || !doc.checksum) return false;
+                if (doc.checksum === S.checksum) return false;
+                if (structuralSig(S.doc) !== structuralSig(doc.doc)) {
+                    adoptRemoteDoc(S, doc.doc, doc.checksum);
+                    return true;
+                }
+                var changed = mergeRunOwned(S, doc.doc);
+                S.checksum = doc.checksum;
+                updateRunFooters(S, changed);
+                return changed.length > 0;
+            })
+            .catch(function () { return false; });
+    }
+
+    // Push leg (notebooks onDocIndexUiAction mirror): AI tool saves emit
+    // dashboard_changed (agent service ui_action → ai_core.js
+    // docindex-ui-action), so the Builder refreshes at once instead of
+    // waiting for the next poll tick.
+    function onDashUiAction(S, e) {
+        var d = e && e.detail;
+        if (!d || d.type !== "dashboard_changed") return;
+        var fid = d.file_id !== undefined ? d.file_id : d.fileId;
+        if (fid !== S.opts.dashboardId) return;
+        refreshFromServer(S);
+    }
+
     function startBuilderStatusPoll(S) {
         if (!S.opts.statusUrl) return;
         S.pollTimer = setInterval(function () {
@@ -435,6 +793,11 @@
                 .then(function (resp) { return resp.json(); })
                 .then(function (data) {
                     if (!data || !data.ok || !data.cards) return;
+                    if (data.checksum && data.checksum !== S.checksum &&
+                            !S.dirty && !S.saving) {
+                        refreshFromServer(S);
+                        return;
+                    }
                     var stale = Object.keys(data.cards).some(function (id) {
                         var card = cardById(S.doc, id);
                         var remote = data.cards[id];
@@ -449,14 +812,7 @@
                             if (!doc || !doc.ok || !doc.doc) return;
                             var changed = mergeRunOwned(S, doc.doc);
                             if (doc.checksum) S.checksum = doc.checksum;
-                            changed.forEach(function (id) {
-                                var node = gridCardEl(S, id);
-                                var card = cardById(S.doc, id);
-                                if (node && card) {
-                                    var ran = node.querySelector(".dash-ran");
-                                    if (ran) ran.textContent = ranFull(card);
-                                }
-                            });
+                            updateRunFooters(S, changed);
                         })
                         .catch(function () { /* next tick */ });
                 })
@@ -723,8 +1079,11 @@
         h += '<button type="button" class="dash-chip-btn" data-addref="' + esc(card.id) + '" title="reference an attachment on this card">+ file</button>';
         var wf = cardWorkflow(card);
         if (wf && wf.workflow_id !== undefined && wf.workflow_id !== null && String(wf.workflow_id) !== "") {
+            var wfLabel = "workflow #" + wf.workflow_id;
+            var wfKnown = wfName(S, wf.workflow_id);
+            if (wfKnown) wfLabel += " · " + wfKnown;
             h += '<span class="dash-ref"><i class="fas fa-gear opacity-50"></i>' +
-                "<span>workflow #" + esc(wf.workflow_id) + "</span>" +
+                "<span>" + esc(wfLabel) + "</span>" +
                 '<button type="button" class="dash-chip-btn" data-unwf="' + esc(card.id) + '" title="remove workflow reference">×</button></span>';
         } else if (card.type === "workflow") {
             h += '<span class="dash-ref dash-ref-missing">⚙ pick a workflow…</span>';
@@ -733,6 +1092,7 @@
     }
 
     function renderGrid(S) {
+        closeSizeMenu();
         closeRefPick(S);
         var g = S.els.grid;
         g.innerHTML = "";
@@ -740,12 +1100,10 @@
             var node = buildCard(S, card);
             g.appendChild(node);
             // Fit after insertion: a detached textarea reports
-            // scrollHeight 0, so fitting inside buildCard no-ops. Skip
-            // hidden fields (e.g. workflow params inside a closed
-            // <details>) — they keep their rows default until opened.
-            // Prompt/script stay a compact fixed 3 rows in the card;
-            // full editing lives in the popup editor.
-            node.querySelectorAll(".dash-wf-params")
+            // scrollHeight 0, so fitting inside buildCard no-ops. Long
+            // prompts grow instead of clipping at their 3 rows (compact
+            // prompts are untouched); full editing lives in the popup.
+            node.querySelectorAll(".dash-prompt")
                 .forEach(function (el) {
                     if (el.offsetParent !== null) autoGrow(el);
                 });
@@ -763,17 +1121,15 @@
         d.style.minHeight = (120 + card.h * 32) + "px";
         var wf = cardWorkflow(card);
         var wfId = wf && wf.workflow_id !== undefined && wf.workflow_id !== null ? String(wf.workflow_id) : "";
-        var wfParams = "";
-        try {
-            wfParams = wf && wf.params !== undefined ? JSON.stringify(wf.params || {}) : "";
-        } catch (e) { wfParams = ""; }
         var wfFields =
             '<div class="dash-wf-grid">' +
-            '<input type="text" inputmode="numeric" class="dash-wf-id" data-f="wfid" ' +
-            'placeholder="workflow id (e.g. 12)" value="' + esc(wfId) + '" aria-label="Workflow ID">' +
-            '<textarea class="dash-wf-params" data-f="wfparams" rows="2" ' +
-            'placeholder="params JSON, e.g. {&quot;month&quot;: &quot;2026-11&quot;}" ' +
-            'aria-label="Workflow params (JSON)">' + esc(wfParams) + "</textarea>" +
+            '<select class="dash-wf-select" data-f="wfid" aria-label="Linked workflow">' +
+            wfOptionsHTML(S, wfId) + "</select>" +
+            '<div class="dash-wf-row">' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1 dash-wf-config" data-f="wfconfig" ' +
+            'title="Configure the workflow inputs (saved on this card)">' +
+            '<i class="fas fa-sliders"></i>Configure inputs…</button>' +
+            '<span class="dash-wf-summary" data-f="wfsummary">' + esc(wfSummaryText(wf)) + "</span></div>" +
             '<div class="dash-field-err hidden" data-f="wferr"></div></div>';
         var wfBlock = card.type === "workflow"
             ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
@@ -787,7 +1143,7 @@
             '<input type="text" class="dash-title" data-f="title" maxlength="' + MAX_TITLE + '" ' +
             'value="' + esc(card.title || "") + '" aria-label="Card title" placeholder="Card title">' +
             '<span class="dash-typepill">' + esc(m.label) + "</span>" +
-            '<span class="dash-csize" data-f="size" title="width × height in cells">' + card.w + "×" + card.h + "</span></div>" +
+            '<button type="button" class="dash-csize" data-f="size" style="border:0;color:inherit;font:inherit;cursor:pointer" title="size (width × height) — click for presets" aria-haspopup="menu">' + card.w + "×" + card.h + "</button></div>" +
             '<div data-f="promptwrap"' + (card.script_enabled ? ' style="display:none"' : "") + '>' +
             '<div class="dash-prompt-label"><span>Card prompt</span>' +
             '<button type="button" class="dash-edit-btn" data-f="expand-prompt" title="Edit in popup" aria-label="Edit prompt in popup">' +
@@ -840,6 +1196,7 @@
         var promptInput = d.querySelector('[data-f="prompt"]');
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
+            autoGrow(promptInput);
             scheduleSave(S);
         });
         d.querySelector('[data-f="expand-prompt"]').addEventListener("click", function () {
@@ -917,6 +1274,7 @@
         bindWorkflowFields(S, d, card);
         bindRefButtons(S, d, card);
         bindHandles(S, d, card);
+        bindSizeMenu(S, card, d.querySelector('[data-f="size"]'));
         return d;
     }
 
@@ -1021,65 +1379,104 @@
     }
 
     function bindWorkflowFields(S, d, card) {
-        var idInput = d.querySelector('[data-f="wfid"]');
-        var paramsInput = d.querySelector('[data-f="wfparams"]');
+        var sel = d.querySelector('[data-f="wfid"]');
+        var cfgBtn = d.querySelector('[data-f="wfconfig"]');
         var errEl = d.querySelector('[data-f="wferr"]');
-        if (!idInput || !paramsInput) return;
-        paramsInput.addEventListener("input", function () { autoGrow(paramsInput); });
+        if (!sel || !cfgBtn) return;
         var showErr = function (msg) {
             if (!msg) {
                 errEl.classList.add("hidden");
                 errEl.textContent = "";
-                idInput.classList.remove("dash-invalid");
-                paramsInput.classList.remove("dash-invalid");
+                sel.classList.remove("dash-invalid");
             } else {
                 errEl.classList.remove("hidden");
                 errEl.textContent = msg;
             }
         };
-        var commit = function () {
-            var rawId = idInput.value.trim();
-            var rawParams = paramsInput.value.trim();
-            if (rawId === "" && rawParams === "") {
-                // No workflow ref — drop the key entirely.
-                if (card.inputs) delete card.inputs.workflow;
-                showErr("");
-                if (card.inputs && Object.keys(card.inputs).length === 0) card.inputs = { attachments: cardRefs(card) };
-                renderGrid(S);
-                scheduleSave(S);
-                return;
-            }
-            var wid = Number(rawId);
-            if (rawId === "" || !/^\d+$/.test(rawId)) {
-                idInput.classList.add("dash-invalid");
-                showErr("The workflow id must be a number (or clear both fields to remove the reference).");
-                return;
-            }
-            var params = {};
-            if (rawParams !== "") {
-                try {
-                    params = JSON.parse(rawParams);
-                } catch (e) {
-                    paramsInput.classList.add("dash-invalid");
-                    showErr("Params is not valid JSON — fix it before saving.");
-                    return;
-                }
-                if (params === null || typeof params !== "object" || Array.isArray(params)) {
-                    paramsInput.classList.add("dash-invalid");
-                    showErr("Params must be a JSON object (e.g. {\"month\": \"2026-11\"}).");
-                    return;
-                }
-            }
+        // Automation disabled: fail closed — the select already says so,
+        // the config button explains instead of opening a dead form.
+        var st = S.workflows || { loaded: false, enabled: true };
+        if (st.loaded && !st.enabled) {
+            sel.disabled = true;
+            showErr(st.error || "The automation module is disabled — enable it to link a workflow.");
+        }
+        sel.addEventListener("change", function () {
+            var v = sel.value;
             if (!card.inputs || typeof card.inputs !== "object") card.inputs = {};
             if (!Array.isArray(card.inputs.attachments)) card.inputs.attachments = cardRefs(card);
-            card.inputs.workflow = { workflow_id: wid, params: params };
+            if (v === "") {
+                // No workflow ref — drop the key entirely.
+                delete card.inputs.workflow;
+                if (Object.keys(card.inputs).length === 0) card.inputs = { attachments: cardRefs(card) };
+            } else {
+                // A new link starts with blank params — a previous
+                // workflow's answers rarely apply to the next one.
+                card.inputs.workflow = { workflow_id: Number(v), params: {} };
+            }
             showErr("");
             renderGrid(S);
             scheduleSave(S);
-        };
-        // Commit on blur (not on every keystroke) so half-typed JSON never persists.
-        idInput.addEventListener("change", commit);
-        paramsInput.addEventListener("change", commit);
+        });
+        cfgBtn.addEventListener("click", function () {
+            var wid = sel.value;
+            if (wid === "") {
+                sel.classList.add("dash-invalid");
+                showErr("Pick a workflow first, then configure its inputs.");
+                return;
+            }
+            showErr("");
+            cfgBtn.disabled = true;
+            var restore = function () { cfgBtn.disabled = false; };
+            ensureRunForm(S, function (ok) {
+                if (!ok || !window.AutomationRunForm) {
+                    restore();
+                    showErr("The automation run form is unavailable — enable the automation module and retry.");
+                    return;
+                }
+                fetch("/m/automation/" + encodeURIComponent(wid) + "/run-contract",
+                    { headers: { "Accept": "application/json" } })
+                    .then(function (r) { return r.json(); })
+                    .then(function (contract) {
+                        restore();
+                        if (!contract || typeof contract !== "object" || contract.error) {
+                            showErr((contract && contract.error) ||
+                                "Could not load the run contract — is the automation module enabled?");
+                            return;
+                        }
+                        var wf = cardWorkflow(card) || {};
+                        window.AutomationRunForm.open({
+                            title: "Configure workflow inputs",
+                            subtitle: "Saved on this card — used every run.",
+                            contract: contract,
+                            drives: contract.drives || [],
+                            initialParams: (wf.params && typeof wf.params === "object") ? wf.params : {},
+                            allowTriggerPicker: true,
+                            submitLabel: "Save inputs",
+                            onSubmit: function (res) {
+                                if (!card.inputs || typeof card.inputs !== "object") card.inputs = {};
+                                if (!Array.isArray(card.inputs.attachments)) {
+                                    card.inputs.attachments = cardRefs(card);
+                                }
+                                var ref = card.inputs.workflow || {};
+                                ref.workflow_id = Number(wid);
+                                ref.params = (res && res.params) || {};
+                                if (res && res.triggerFileId) {
+                                    ref.trigger_file_id = res.triggerFileId;
+                                } else {
+                                    delete ref.trigger_file_id;
+                                }
+                                card.inputs.workflow = ref;
+                                renderGrid(S);
+                                scheduleSave(S);
+                            }
+                        });
+                    })
+                    .catch(function () {
+                        restore();
+                        showErr("Could not load the run contract — is the automation module enabled?");
+                    });
+            });
+        });
     }
 
     function bindRefButtons(S, scope, card) {
@@ -1243,9 +1640,14 @@
         return S.els.grid.querySelector('[data-card="' + id + '"]');
     }
 
-    // Same type + same h sharing a row get the row's max height so their
-    // footers line up even when content varies (1- vs 2-line labels).
-    // Different h (or mixed types) intentionally keep natural heights.
+    // Same h sharing a row get the row's max height so their footers
+    // (pager, run stamps) line up even when content varies. The measured
+    // offsetHeight already includes pager footers and the 56px KPI numerals.
+    // Row matching keys on the grid model (c.h), never on measured pixels,
+    // so the Settings drawer's collapsed height stays out of matching.
+    // Different h intentionally keeps natural heights. Markdown cards cap at
+    // their own content height + card padding instead of stretching a tiny
+    // note to the row height.
     function equalizeRowHeights(grid, cards) {
         if (!grid) return;
         var nodes = Array.prototype.slice.call(
@@ -1273,15 +1675,148 @@
             if (!first) return;
             var same = row.nodes.every(function (n) {
                 var c = byId[key(n)];
-                return c && c.type === first.type && c.h === first.h;
+                return c && c.h === first.h;
             });
             if (!same) return;
-            var max = row.nodes.reduce(function (m, n) {
-                return Math.max(m, n.offsetHeight);
-            }, 0);
-            if (max > 0) row.nodes.forEach(function (n) {
-                n.style.height = max + "px";
+            // Natural heights first: offsetHeight covers pager footers and
+            // the 56px KPI numerals, so the row max lines up real content.
+            var natural = row.nodes.map(function (n) { return n.offsetHeight; });
+            var max = Math.max.apply(null, natural.concat([0]));
+            if (max > 0) row.nodes.forEach(function (n, i) {
+                var c = byId[key(n)];
+                // Markdown cap: content height + padding, never the row max.
+                var target = (c && c.type === "markdown")
+                    ? Math.min(max, natural[i])
+                    : max;
+                n.style.height = target + "px";
             });
+        });
+    }
+
+    // 12-column snap guide overlay (Task C1): a translucent column grid
+    // behind the cards, visible only during drag/resize gestures.
+    function ensureGuideStyle() {
+        if (document.getElementById("dash-snap-guide-style")) return;
+        var st = document.createElement("style");
+        st.id = "dash-snap-guide-style";
+        st.textContent =
+            ".dash-grid.dash-guiding { position: relative; }\n" +
+            ".dash-snap-guide { position: absolute; top: 0; left: 0; right: 0; bottom: 0; " +
+            "z-index: 0; display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; " +
+            "pointer-events: none; }\n" +
+            ".dash-snap-guide > div { border-radius: 12px; " +
+            "background: rgba(99,102,241,.10); " +
+            "border: 1px dashed rgba(99,102,241,.45); }\n";
+        document.head.appendChild(st);
+    }
+
+    function showSnapGuide(grid) {
+        if (!grid || grid.querySelector('[data-snap-guide="1"]')) return;
+        ensureGuideStyle();
+        var guide = document.createElement("div");
+        guide.className = "dash-snap-guide";
+        guide.setAttribute("data-snap-guide", "1");
+        guide.setAttribute("aria-hidden", "true");
+        for (var i = 0; i < GRID_COLUMNS; i++) {
+            guide.appendChild(document.createElement("div"));
+        }
+        if (grid.firstChild) grid.insertBefore(guide, grid.firstChild);
+        else grid.appendChild(guide);
+        grid.classList.add("dash-guiding");
+    }
+
+    function hideSnapGuide(grid) {
+        if (!grid) return;
+        var guide = grid.querySelector('[data-snap-guide="1"]');
+        if (guide && guide.parentNode) guide.parentNode.removeChild(guide);
+        grid.classList.remove("dash-guiding");
+    }
+
+    // Size badge quick-select (Task C1): the badge is a button; picking a
+    // preset snaps w/h through the grid validator (snapW/clampN) so
+    // per-type minima (MIN_W/MIN_H) and WIDTH_STEPS still hold.
+    function sizePresetWH(preset) {
+        var parts = String(preset).split("×");
+        return { w: parseInt(parts[0], 10) || 3, h: parseInt(parts[1], 10) || 2 };
+    }
+
+    function applySizePreset(S, card, preset) {
+        var wh = sizePresetWH(preset);
+        card.w = snapW(wh.w, MIN_W[card.type] || 3);
+        card.h = clampN(wh.h, MIN_H[card.type] || 2, MAX_H);
+        renderGrid(S);
+        scheduleSave(S);
+        toast(S, "card " + card.w + "×" + card.h);
+    }
+
+    function closeSizeMenu() {
+        var open = document.querySelector('[data-size-menu="1"]');
+        if (open && open.parentNode) open.parentNode.removeChild(open);
+        if (closeSizeMenu._doc) {
+            document.removeEventListener("pointerdown", closeSizeMenu._doc, true);
+            closeSizeMenu._doc = null;
+        }
+        if (closeSizeMenu._esc) {
+            document.removeEventListener("keydown", closeSizeMenu._esc, true);
+            closeSizeMenu._esc = null;
+        }
+    }
+
+    function openSizeMenu(S, card, badge) {
+        closeSizeMenu();
+        var menu = document.createElement("div");
+        menu.className = "dash-size-menu glass-panel";
+        menu.setAttribute("data-size-menu", "1");
+        menu.setAttribute("role", "menu");
+        menu.setAttribute("aria-label", "Card size presets");
+        var r = badge.getBoundingClientRect();
+        menu.style.cssText = "position:fixed;z-index:200;display:flex;" +
+            "flex-direction:column;gap:2px;min-width:96px;padding:6px;" +
+            "top:" + Math.max(8, r.bottom + 4) + "px;left:" + Math.max(8, r.left) + "px;";
+        SIZE_PRESETS.forEach(function (p) {
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "btn btn-ghost btn-xs";
+            b.setAttribute("role", "menuitem");
+            var cur = (card.w + "×" + card.h) === p;
+            b.textContent = (cur ? "✓ " : "") + p;
+            if (cur) b.setAttribute("aria-current", "true");
+            b.title = cur ? "current size" : "resize to " + p;
+            b.addEventListener("click", function (e) {
+                e.stopPropagation();
+                closeSizeMenu();
+                applySizePreset(S, card, p);
+                focusHandle(S, card.id, false);
+            });
+            menu.appendChild(b);
+        });
+        document.body.appendChild(menu);
+        var mr = menu.getBoundingClientRect();
+        if (mr.right > window.innerWidth - 8) {
+            menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + "px";
+        }
+        if (mr.bottom > window.innerHeight - 8) {
+            menu.style.top = Math.max(8, r.top - mr.height - 4) + "px";
+        }
+        closeSizeMenu._doc = function (e) {
+            if (!menu.contains(e.target)) closeSizeMenu();
+        };
+        document.addEventListener("pointerdown", closeSizeMenu._doc, true);
+        closeSizeMenu._esc = function (e) {
+            if (e.key === "Escape") { closeSizeMenu(); badge.focus(); }
+        };
+        document.addEventListener("keydown", closeSizeMenu._esc, true);
+    }
+
+    function bindSizeMenu(S, card, badge) {
+        if (!badge) return;
+        badge.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (document.querySelector('[data-size-menu="1"]')) {
+                closeSizeMenu();
+                return;
+            }
+            openSizeMenu(S, card, badge);
         });
     }
 
@@ -1354,6 +1889,7 @@
         node.style.width = r.width + "px";
         node.style.height = r.height + "px";
         grid.classList.add("sorting");
+        showSnapGuide(grid);
         document.body.classList.add("dash-grabbing");
         S.ptrOp = {
             kind: "drag", id: id, node: node, ph: ph, originNext: node.nextSibling,
@@ -1452,6 +1988,7 @@
         if (!op) return;
         if (op.node) cleanupFloat(S, op.node);
         S.els.grid.classList.remove("sorting");
+        hideSnapGuide(S.els.grid);
         window.removeEventListener("pointermove", S._onPtrMove);
         S.ptrOp = null;
     }
@@ -1465,6 +2002,7 @@
             if (op.ph.parentNode) op.ph.remove();
             cleanupFloat(S, op.node);
             grid.classList.remove("sorting");
+            hideSnapGuide(grid);
             window.removeEventListener("pointermove", S._onPtrMove);
             S.ptrOp = null;
             focusHandle(S, op.id, false);
@@ -1482,6 +2020,7 @@
         op.ph.remove();
         cleanupFloat(S, op.node);
         S.els.grid.classList.remove("sorting");
+        hideSnapGuide(S.els.grid);
         window.removeEventListener("pointermove", S._onPtrMove);
         S.ptrOp = null;
         syncOrderFromDOM(S);
@@ -1504,6 +2043,7 @@
         e.stopPropagation();
         var r = node.getBoundingClientRect();
         document.body.classList.add("dash-grabbing");
+        showSnapGuide(S.els.grid);
         S.ptrOp = {
             kind: "resize", id: id, type: card.type, node: node,
             startX: e.clientX, startY: e.clientY,
@@ -2088,8 +2628,10 @@
         if (!Array.isArray(V.doc.attachments)) V.doc.attachments = [];
 
         buildViewSkeleton(V);
+        renderVarBar(V);
         renderViewGrid(V);
         startViewStatusPoll(V);
+        wireTitleInput(V);
 
         document.addEventListener("keydown", function (e) {
             if (!document.body.contains(V.root)) return;
@@ -2127,6 +2669,10 @@
     function stopViewTimers(V) {
         V.timers.forEach(function (t) { clearInterval(t); });
         V.timers = [];
+        if (V.varTimer) {
+            clearTimeout(V.varTimer);
+            V.varTimer = null;
+        }
         V.observers.forEach(function (o) { try { o.disconnect(); } catch (e) { /* noop */ } });
         V.observers = [];
     }
@@ -2170,6 +2716,7 @@
             }).join("") + "</select></label>" +
             '<span class="dash-hint" data-vzone="runall-state"></span>' +
             "</div>" +
+            '<div class="dash-varbar glass-panel rounded-2xl px-4 py-2 hidden" data-vzone="varbar" aria-label="Dashboard variables"></div>' +
             '<div class="dash-grid" data-vzone="grid"></div>' +
             '<div class="dash-console-pop glass-panel hidden" data-vzone="console" role="dialog" aria-label="Run console"></div>' +
             '<div class="dash-toast glass-panel" data-vzone="toast" role="status"></div>' +
@@ -2177,6 +2724,7 @@
         var q = function (sel) { return holder.querySelector('[data-vzone="' + sel + '"]'); };
         V.els = {
             holder: holder, grid: q("grid"), toast: q("toast"),
+            varbar: q("varbar"),
             consolePop: q("console"),
             runAllBtn: holder.querySelector('[data-vact="runall"]'),
             stopAllBtn: holder.querySelector('[data-vact="stopall"]'),
@@ -2214,6 +2762,139 @@
         }).catch(function () {
             viewToast(V, "Save concurrency failed: network error.", true);
         });
+    }
+
+    // -- variables filter bar: inputs for each {{ name }} definition.
+    // Changing a value saves the doc, then re-runs only cards whose
+    // prompt/script references it (runAffected) — the rest keep their
+    // snapshots (review §3.4 focus 4).
+
+    function varEscapeRe(s) {
+        return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function cardUsesVariable(card, name) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name || "")) return false;
+        var re = new RegExp("\\{\\{\\s*" + varEscapeRe(name) +
+            "\\s*\\}\\}");
+        return re.test(card.prompt || "") || re.test(card.script || "");
+    }
+
+    function renderVarBar(V) {
+        var bar = V.els.varbar;
+        if (!bar) return;
+        var vars = (V.doc.variables &&
+            typeof V.doc.variables === "object") ? V.doc.variables : {};
+        var names = Object.keys(vars);
+        if (!names.length) {
+            bar.classList.add("hidden");
+            bar.innerHTML = "";
+            return;
+        }
+        bar.classList.remove("hidden");
+        var h = '<span class="dash-varbar-label">' +
+            '<i class="fas fa-sliders"></i> Variables</span>';
+        h += names.map(function (n) {
+            var v = vars[n];
+            var s = (v === null || v === undefined) ? "" : String(v);
+            return '<label class="dash-var" title="Cards using {{' + esc(n) +
+                '}} re-run when this changes">' +
+                "<code>{{" + esc(n) + "}}</code>" +
+                '<input type="text" class="input input-bordered input-xs dash-var-input" ' +
+                'data-var-name="' + esc(n) + '" value="' + esc(s) + '" ' +
+                'aria-label="Variable ' + esc(n) + '"></label>';
+        }).join("");
+        h += '<span class="dash-hint">Changing a value re-runs only the ' +
+            "cards using it.</span>";
+        bar.innerHTML = h;
+        bar.querySelectorAll("[data-var-name]").forEach(function (input) {
+            input.addEventListener("input", function () {
+                scheduleVarApply(V);
+            });
+            input.addEventListener("change", function () {
+                applyVarBar(V);
+            });
+        });
+    }
+
+    function scheduleVarApply(V) {
+        if (V.varTimer) clearTimeout(V.varTimer);
+        V.varTimer = setTimeout(function () {
+            V.varTimer = null;
+            applyVarBar(V);
+        }, 800);
+    }
+
+    function coerceVarValue(raw, prev) {
+        var s = String(raw === null || raw === undefined ? "" : raw);
+        if (typeof prev === "number") {
+            var n = Number(s.trim());
+            return (s.trim() !== "" && isFinite(n)) ? n : s;
+        }
+        if (typeof prev === "boolean") {
+            if (/^(true|1|yes)$/i.test(s.trim())) return true;
+            if (/^(false|0|no)$/i.test(s.trim())) return false;
+            return s;
+        }
+        return s;
+    }
+
+    function applyVarBar(V) {
+        var bar = V.els.varbar;
+        if (!bar || bar.classList.contains("hidden")) return;
+        if (V.varTimer) {
+            clearTimeout(V.varTimer);
+            V.varTimer = null;
+        }
+        if (V.runAllActive) {
+            viewToast(V, "A run is already in progress — wait and try again.");
+            return;
+        }
+        var prev = (V.doc.variables &&
+            typeof V.doc.variables === "object") ? V.doc.variables : {};
+        var next = {};
+        var changed = [];
+        bar.querySelectorAll("[data-var-name]").forEach(function (input) {
+            var n = input.getAttribute("data-var-name");
+            var val = coerceVarValue(input.value, prev[n]);
+            next[n] = val;
+            if (String(val) !== String(prev[n])) changed.push(n);
+        });
+        if (!changed.length) return;
+        V.doc.variables = next;
+        fetch(V.opts.saveUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ doc: V.doc })
+        }).then(function (resp) {
+            return resp.json().then(function (data) {
+                return { resp: resp, data: data };
+            });
+        }).then(function (out) {
+            if (out.resp.ok && out.data && out.data.ok) {
+                if (window.spaInvalidate) window.spaInvalidate();
+                runAffected(V, changed);
+            } else {
+                viewToast(V, "Save variables failed: " +
+                    ((out.data && out.data.error) || out.resp.status), true);
+                reloadVarBar(V);
+            }
+        }).catch(function () {
+            viewToast(V, "Save variables failed: network error.", true);
+            reloadVarBar(V);
+        });
+    }
+
+    function reloadVarBar(V) {
+        fetch(V.opts.docUrl, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                if (data && data.ok && data.doc) {
+                    V.doc.variables = data.doc.variables || {};
+                    renderVarBar(V);
+                }
+            })
+            .catch(function () { /* bar keeps the typed values */ });
     }
 
     function renderViewGrid(V) {
@@ -2809,8 +3490,13 @@
         if (card.type === "kpi") {
             bodyEl.innerHTML = viewKpiHTML(res, text) + trunc;
         } else if (card.type === "table") {
-            bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
-            wireTablePager(bodyEl, res, text);
+            if (res.table && typeof res.table === "object" &&
+                    Array.isArray(res.table.headers || res.table.columns) &&
+                    (res.table.headers || res.table.columns).length) {
+                renderViewTable(V, card, bodyEl, res, trunc);
+            } else {
+                bodyEl.innerHTML = viewTableResultHTML(res, text) + trunc;
+            }
         } else if (card.type === "list") {
             bodyEl.innerHTML = viewListHTML(res, text) + trunc;
         } else if (card.type === "chart") {
@@ -2870,54 +3556,185 @@
 
     var TABLE_PAGE_SIZE = 50;
 
-    function tablePagedHTML(res, text, page) {
-        var headers = res.table.headers || res.table.columns || [];
-        var rows = res.table.rows || [];
-        if (!Array.isArray(headers) || !Array.isArray(rows) || !headers.length) return null;
-        var total = (typeof res.total_rows === "number" && res.total_rows >= rows.length)
-            ? res.total_rows : rows.length;
-        var pages = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE));
-        page = Math.max(0, Math.min(pages - 1, page | 0));
-        var slice = rows.slice(page * TABLE_PAGE_SIZE, (page + 1) * TABLE_PAGE_SIZE);
-        var h = '<div data-ttable data-tpage="' + page + '">' +
-            viewTableHTML(headers.map(String), slice) +
-            '<div class="dash-pager">' +
-            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="-1"' +
-            (page <= 0 ? " disabled" : "") + ' aria-label="Previous table page">' +
-            '<i class="fas fa-chevron-left"></i></button>' +
-            '<span class="dash-pager-info">Page ' + (page + 1) + " of " + pages +
-            " · " + total + " rows" +
-            (res.truncated_rows ? " (showing first " + rows.length + ")" : "") + "</span>" +
-            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="+1"' +
-            (page >= pages - 1 ? " disabled" : "") + ' aria-label="Next table page">' +
-            '<i class="fas fa-chevron-right"></i></button>' +
-            "</div></div>";
-        return h;
+    function cmpTableCell(a, b) {
+        // Numeric-aware cell compare: two finite numbers sort numerically,
+        // everything else sorts case-insensitively as text.
+        var x = (a === null || a === undefined) ? "" : a;
+        var y = (b === null || b === undefined) ? "" : b;
+        var nx = parseFloat(x), ny = parseFloat(y);
+        if (x !== "" && y !== "" && isFinite(nx) && isFinite(ny)) return nx - ny;
+        var sx = String(x).toLowerCase(), sy = String(y).toLowerCase();
+        return sx < sy ? -1 : sx > sy ? 1 : 0;
     }
 
-    function wireTablePager(bodyEl, res, text) {
-        var wrap = bodyEl.querySelector("[data-ttable]");
-        if (!wrap) return;
-        wrap.querySelectorAll("[data-tpage-btn]").forEach(function (btn) {
+    function tableViewRows(res, state) {
+        // Filter + sort apply to the FULL snapshot rows (up to 500), never
+        // the visible page: the pager slices afterwards, and Download CSV
+        // exports these same rows — the filtered/sorted view, not the page.
+        var headers = res.table.headers || res.table.columns || [];
+        var rows = (res.table.rows || []).slice();
+        var q = String((state && state.filter) || "").toLowerCase();
+        if (q) {
+            rows = rows.filter(function (r) {
+                return (r || []).some(function (c) {
+                    return String(c === null || c === undefined ? "" : c)
+                        .toLowerCase().indexOf(q) >= 0;
+                });
+            });
+        }
+        var col = state ? state.sortCol : -1;
+        var dir = (state && state.sortDir === -1) ? -1 : 1;
+        if (col >= 0 && col < headers.length && rows.length > 1) {
+            rows = rows.slice().sort(function (a, b) {
+                return cmpTableCell(a[col], b[col]) * dir;
+            });
+        }
+        return { headers: headers.map(String), rows: rows };
+    }
+
+    function tableToCSV(headers, rows) {
+        // RFC-4180 quoting: quote fields holding a comma, quote or newline.
+        function q(v) {
+            var s = String(v === null || v === undefined ? "" : v);
+            return (/[",\n\r]/.test(s)) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }
+        return [headers.map(q).join(",")].concat(rows.map(function (r) {
+            return headers.map(function (_, i) { return q(r[i]); }).join(",");
+        })).join("\r\n");
+    }
+
+    function downloadCSV(filename, text) {
+        var blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename || "table.csv";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () {
+            try { URL.revokeObjectURL(a.href); } catch (e) { /* noop */ }
+            a.remove();
+        }, 0);
+    }
+
+    function tableStateFor(V, card) {
+        if (!V.tableState) V.tableState = {};
+        var st = V.tableState[card.id];
+        if (!st) {
+            st = { page: 0, sortCol: -1, sortDir: 1, filter: "" };
+            V.tableState[card.id] = st;
+        }
+        return st;
+    }
+
+    function renderViewTable(V, card, bodyEl, res, trunc) {
+        var st = tableStateFor(V, card);
+        var full = (res.table.rows || []).length;
+        var h = '<div data-dashtbl="' + esc(card.id) + '">';
+        if (full > 10) {
+            h += '<div class="dash-filter-row">' +
+                '<i class="fas fa-magnifying-glass opacity-50"></i>' +
+                '<input type="search" class="input input-bordered input-xs dash-filter" ' +
+                'data-dash-filter placeholder="Filter ' + full + ' rows…" ' +
+                'value="' + esc(st.filter) + '" aria-label="Filter table rows"></div>';
+        }
+        h += '<div data-dashtbl-body></div>' +
+            '<div class="dash-tbl-foot"><span class="dash-hint" data-dashtbl-count></span>' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-dash-csv ' +
+            'title="Download the filtered/sorted rows as CSV" ' +
+            'aria-label="Download table as CSV">' +
+            '<i class="fas fa-download"></i> Download CSV</button></div>';
+        h += "</div>" + trunc;
+        bodyEl.innerHTML = h;
+        paintViewTable(V, card, bodyEl, res, full);
+        var filterEl = bodyEl.querySelector("[data-dash-filter]");
+        if (filterEl) {
+            // The filter input survives repaints (only the table body is
+            // re-rendered), so typing never loses focus.
+            filterEl.addEventListener("input", function () {
+                st.filter = filterEl.value;
+                st.page = 0;  // a new filter restarts on page 1
+                paintViewTable(V, card, bodyEl, res, full);
+            });
+        }
+        var csvBtn = bodyEl.querySelector("[data-dash-csv]");
+        if (csvBtn) {
+            csvBtn.addEventListener("click", function () {
+                var view = tableViewRows(res, st);
+                var safe = String(card.title || "table")
+                    .replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "table";
+                downloadCSV(safe + ".csv", tableToCSV(view.headers, view.rows));
+            });
+        }
+    }
+
+    function paintViewTable(V, card, bodyEl, res, full) {
+        var slot = bodyEl.querySelector("[data-dashtbl-body]");
+        var count = bodyEl.querySelector("[data-dashtbl-count]");
+        if (!slot) return;
+        var st = tableStateFor(V, card);
+        var view = tableViewRows(res, st);
+        var pages = Math.max(1, Math.ceil(view.rows.length / TABLE_PAGE_SIZE));
+        st.page = Math.max(0, Math.min(pages - 1, st.page | 0));
+        var slice = view.rows.slice(st.page * TABLE_PAGE_SIZE,
+            (st.page + 1) * TABLE_PAGE_SIZE);
+        var h = '<div class="dash-vtable-wrap"><table class="dash-vtable">' +
+            "<thead><tr>" + view.headers.map(function (c, i) {
+                var arrow = st.sortCol === i
+                    ? (st.sortDir === -1 ? " &#9660;" : " &#9650;") : "";
+                return '<th><button type="button" class="dash-sort" data-dash-sort="' + i + '" ' +
+                    'title="Sort by ' + esc(c) + '" aria-label="Sort by ' + esc(c) + '">' +
+                    esc(c) + "<span aria-hidden=\"true\">" + arrow + "</span></button></th>";
+            }).join("") + "</tr></thead><tbody>";
+        if (!slice.length) {
+            h += '<tr><td colspan="' + Math.max(1, view.headers.length) +
+                '" class="opacity-50">No rows match the filter.</td></tr>';
+        }
+        h += slice.map(function (r) {
+            return "<tr>" + view.headers.map(function (_, i) {
+                var c = r[i];
+                return "<td>" + esc(c === null || c === undefined ? "" : c) + "</td>";
+            }).join("") + "</tr>";
+        }).join("") + "</tbody></table></div>";
+        h += '<div class="dash-pager">' +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="-1"' +
+            (st.page <= 0 ? " disabled" : "") + ' aria-label="Previous table page">' +
+            '<i class="fas fa-chevron-left"></i></button>' +
+            '<span class="dash-pager-info">Page ' + (st.page + 1) + " of " + pages +
+            " · " + view.rows.length + " rows" +
+            (view.rows.length !== full ? " (filtered from " + full + ")" : "") +
+            (res.truncated_rows
+                ? " (showing first " + full +
+                    ((typeof res.total_rows === "number" && res.total_rows > full)
+                        ? " of " + res.total_rows : "") + ")"
+                : "") + "</span>" +
+            '<button type="button" class="btn btn-ghost btn-xs gap-1" data-tpage-btn="+1"' +
+            (st.page >= pages - 1 ? " disabled" : "") + ' aria-label="Next table page">' +
+            '<i class="fas fa-chevron-right"></i></button>' +
+            "</div>";
+        slot.innerHTML = h;
+        slot.querySelectorAll("[data-dash-sort]").forEach(function (btn) {
             btn.addEventListener("click", function () {
-                var next = parseInt(wrap.getAttribute("data-tpage"), 10) +
-                    parseInt(btn.getAttribute("data-tpage-btn"), 10);
-                var fresh = tablePagedHTML(res, text, next);
-                if (fresh === null) return;
-                var tmp = document.createElement("div");
-                tmp.innerHTML = fresh;
-                var node = tmp.firstChild;
-                wrap.parentNode.replaceChild(node, wrap);
-                wireTablePager(bodyEl, res, text);
+                var col = parseInt(btn.getAttribute("data-dash-sort"), 10);
+                if (st.sortCol === col) st.sortDir = -st.sortDir;
+                else { st.sortCol = col; st.sortDir = 1; }
+                paintViewTable(V, card, bodyEl, res, full);
             });
         });
+        slot.querySelectorAll("[data-tpage-btn]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                st.page += parseInt(btn.getAttribute("data-tpage-btn"), 10);
+                paintViewTable(V, card, bodyEl, res, full);
+            });
+        });
+        if (count) {
+            count.textContent = st.filter
+                ? view.rows.length + " of " + full + " rows match" : "";
+        }
     }
 
     function viewTableResultHTML(res, text) {
-        if (res.table && typeof res.table === "object") {
-            var html = tablePagedHTML(res, text, 0);
-            if (html !== null) return html;
-        }
+        // Structured snapshots render through renderViewTable (sort/filter/
+        // pager/CSV); this covers the legacy fallback shapes only.
         if (res.workflow && Array.isArray(res.workflow.results)) {
             var t = objectsToTable(res.workflow.results);
             if (t) return t + (text ? '<div class="dash-vtext">' + viewTextHTML(text) + "</div>" : "");
@@ -2973,6 +3790,15 @@
         return h || '<div class="dash-empty">No content.</div>';
     }
 
+    // Chart kinds the engine accepts (engine._CHART_KINDS): Chart.js v4
+    // dropped the "horizontalBar" type — bars run horizontally through
+    // indexAxis "y" — and "area" is a filled line.
+    function chartRenderSpec(effKind) {
+        if (effKind === "horizontalBar") return { type: "bar", indexAxis: "y" };
+        if (effKind === "area") return { type: "line" };
+        return { type: effKind };
+    }
+
     // Chart: vendored Chart.js, fluid canvas. Mirrors the notebooks
     // renderChartView pattern (async load, contains-guard, dataset colors,
     // responsive + maintainAspectRatio false) plus a container
@@ -2996,7 +3822,27 @@
                 "<p>labels or datasets missing from the snapshot.</p></div>";
             return;
         }
-        bodyEl.innerHTML = '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
+        // Client-side View switcher (bar/line/doughnut): re-renders from the
+        // stored snapshot, never re-runs the card.
+        var switchKinds = ["bar", "line", "doughnut"];
+        if (!V.chartView) V.chartView = {};
+        var viewKind = V.chartView[card.id] || kind;
+        if (switchKinds.indexOf(viewKind) < 0) viewKind = kind;
+        var switchHTML = '<div class="dash-chart-switch" data-dash-chart-switch ' +
+            'role="group" aria-label="Chart view">' +
+            switchKinds.map(function (k) {
+                return '<button type="button" class="btn btn-ghost btn-xs' +
+                    (k === viewKind ? " btn-active" : "") + '" data-chart-kind="' + k +
+                    '" aria-label="Show as ' + k + '">' + k + "</button>";
+            }).join("") + "</div>";
+        bodyEl.innerHTML = switchHTML +
+            '<div class="dash-chart-wrap"><canvas class="dash-chart-canvas"></canvas></div>' + trunc;
+        bodyEl.querySelectorAll("[data-chart-kind]").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                V.chartView[card.id] = btn.getAttribute("data-chart-kind");
+                renderViewChart(V, card, bodyEl, res, trunc);
+            });
+        });
         var wrap = bodyEl.querySelector(".dash-chart-wrap");
         var canvas = bodyEl.querySelector("canvas");
         // Height follows the card's h so sizes stay honest (h=3 renders
@@ -3010,13 +3856,14 @@
                 return;
             }
             try {
+                var pieLike = (viewKind === "pie" || viewKind === "doughnut");
                 var datasets = rawDs.map(function (ds, i) {
                     var label = String((ds && ds.label) || "");
                     var data = (ds && Array.isArray(ds.data) ? ds.data : []).map(function (v) {
                         var n = Number(v);
                         return isFinite(n) ? n : 0;
                     });
-                    if (kind === "pie") {
+                    if (pieLike) {
                         return {
                             label: label, data: data,
                             backgroundColor: data.map(function (_, j) { return viewColor(j, 0.85); })
@@ -3024,22 +3871,26 @@
                     }
                     return {
                         label: label, data: data,
-                        backgroundColor: kind === "line" ? viewColor(i, 0.25) : viewColor(i, 0.7),
+                        backgroundColor: viewKind === "line" ? viewColor(i, 0.25)
+                            : viewKind === "area" ? viewColor(i, 0.45)
+                            : viewColor(i, 0.7),
                         borderColor: viewColor(i),
                         borderWidth: 2,
-                        tension: kind === "line" ? 0.3 : 0,
-                        fill: kind === "line"
+                        tension: (viewKind === "line" || viewKind === "area") ? 0.3 : 0,
+                        fill: (viewKind === "line" || viewKind === "area")
                     };
                 });
                 if (V.charts[card.id]) {
                     try { V.charts[card.id].destroy(); } catch (e) { /* noop */ }
                 }
+                var rSpec = chartRenderSpec(viewKind);
                 var chart = new window.Chart(canvas, {
-                    type: kind,
+                    type: rSpec.type,
                     data: { labels: labels, datasets: datasets },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        indexAxis: rSpec.indexAxis || "x",
                         plugins: {
                             legend: { display: datasets.length > 1 },
                             title: { display: false }
@@ -3206,6 +4057,34 @@
             viewToast(V, "No cards to run.");
             return;
         }
+        startRunQueue(V, ids, null);
+    }
+
+    // Affected-only re-run for the variables filter bar: only cards whose
+    // prompt/script references a changed variable run; the rest keep
+    // their snapshots (review §3.4 focus 4).
+    function runAffected(V, changed) {
+        if (V.runAllActive) {
+            viewToast(V, "A run is already in progress — wait and try again.");
+            return;
+        }
+        var ids = (V.doc.cards || []).filter(function (c) {
+            return changed.some(function (n) {
+                return cardUsesVariable(c, n);
+            });
+        }).map(function (c) { return c.id; });
+        if (!ids.length) {
+            viewToast(V, "No cards use " + changed.map(function (n) {
+                return "{{" + n + "}}";
+            }).join(", ") + ".");
+            return;
+        }
+        startRunQueue(V, ids, ids.length +
+            (ids.length === 1 ? " affected card updated."
+                : " affected cards updated."));
+    }
+
+    function startRunQueue(V, ids, doneMsg) {
         var cap = viewCap(V.doc);
         var sel = V.els.capSel;
         if (sel) sel.value = String(cap);
@@ -3228,7 +4107,7 @@
             finished++;
             active--;
             if (V.runAllStop && active === 0) return abortRunAll(V, finished, total);
-            if (finished >= total && active === 0) return endRunAll(V, total);
+            if (finished >= total && active === 0) return endRunAll(V, total, doneMsg);
             paint();
             pump();
         };
@@ -3271,21 +4150,22 @@
                     });
                 })(queue.shift());
             }
-            if (!queue.length && active === 0 && finished >= total) endRunAll(V, total);
+            if (!queue.length && active === 0 && finished >= total) endRunAll(V, total, doneMsg);
         };
 
         paint();
         pump();
     }
 
-    function endRunAll(V, total) {
+    function endRunAll(V, total, doneMsg) {
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;
         V.els.stopAllBtn.classList.add("hidden");
         V.els.runAllLabel.textContent = "Run all";
         V.els.runAllState.textContent = "";
-        viewToast(V, total + (total === 1 ? " card updated." : " cards updated."));
+        viewToast(V, doneMsg ||
+            (total + (total === 1 ? " card updated." : " cards updated.")));
         if (window.spaInvalidate) window.spaInvalidate();
     }
 
@@ -3359,8 +4239,49 @@
         V.timers.push(timer);
     }
 
+    // C5: "Generate with AI" creation wizard (list page #dash-new-modal).
+    // Progressive enhancement only — the plain name+location create posts
+    // fine without JS. Wires the optional details step: a non-empty
+    // description flips the submit label to Generate, chosen files are
+    // listed, and the variables hint names the C4 {{ var }} filter-bar
+    // contract. Idempotent (dataset flag) and a no-op off the list page.
+    function initDashWizard() {
+        if (typeof document === "undefined" ||
+                typeof document.getElementById !== "function") return false;
+        var modal = document.getElementById("dash-new-modal");
+        if (!modal || modal.dataset.wizardWired) return false;
+        var desc = modal.querySelector("#dash-wizard-desc");
+        var files = modal.querySelector("#dash-wizard-files");
+        var hint = modal.querySelector("#dash-wizard-files-hint");
+        var btn = modal.querySelector("#dash-create-btn");
+        if (!desc || !btn) return false;
+        modal.dataset.wizardWired = "1";
+        var label = btn.querySelector("[data-wlabel]");
+        function paint() {
+            var gen = desc.value.trim() !== "";
+            if (label) label.textContent = gen ? "Generate dashboard" : "Create";
+            else btn.textContent = gen ? "Generate dashboard" : "Create";
+            if (hint && files) {
+                var n = (files.files && files.files.length) || 0;
+                if (!n) { hint.textContent = ""; return; }
+                var names = Array.prototype.map.call(
+                    files.files, function (f) { return f.name; }).slice(0, 3);
+                hint.textContent = n + " file" + (n === 1 ? "" : "s") +
+                    " will attach: " + names.join(", ") +
+                    (n > 3 ? "…" : "");
+            }
+        }
+        desc.addEventListener("input", paint);
+        if (files) files.addEventListener("change", paint);
+        paint();
+        return true;
+    }
+    if (document.readyState !== "loading") initDashWizard();
+    else document.addEventListener("DOMContentLoaded", initDashWizard);
+
     window.DashboardEditor = {
         mount: mount,
+        initDashWizard: initDashWizard,
         mergeRunOwned: mergeRunOwned,
         startBuilderStatusPoll: startBuilderStatusPoll,
         CARD_TYPES: CARD_TYPES,

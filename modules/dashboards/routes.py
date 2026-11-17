@@ -132,9 +132,53 @@ def new():
         abort(404)
     if folder is not None and folder.user_id != current_user.id:
         abort(404)
+    # C5 "Generate with AI" wizard step (optional, additive): a description
+    # auto-generates an initial multi-card layout, plain form values
+    # pre-fill the C4 variables, and uploaded files attach via the existing
+    # attach path. Semantics mirror the dashboards.create tool: the preview
+    # (cards + variables) validates BEFORE anything is created, so a bad
+    # layout never leaves an empty dashboard behind. Without wizard fields
+    # the plain name+location flow below is byte-identical.
+    description = (request.form.get("description") or "").strip()
+    raw_vars = (request.form.get("variables") or "").strip()
+    variables = {}
+    if raw_vars:
+        try:
+            variables = json.loads(raw_vars)
+        except ValueError:
+            abort(400, "Variables must be a JSON object like "
+                       '{"region": "north"}.')
+        if not isinstance(variables, dict):
+            abort(400, "Variables must be a JSON object like "
+                       '{"region": "north"}.')
+    uploads = [f for f in request.files.getlist("wizard_files")
+               if f is not None and getattr(f, "filename", "")]
+    preview = None
+    if description or variables or uploads:
+        from . import tools as tools_service
+        try:
+            cards = (tools_service.wizard_layout(description, variables)
+                     if description else [])
+            preview = doc_service.empty_dashboard(name)
+            preview["cards"].extend(cards)
+            if variables:
+                preview["variables"] = variables
+            preview = doc_service.validate(preview)
+        except ValueError as exc:
+            abort(400, str(exc))
     try:
         stored = doc_service.create_dashboard(current_user, drive, name,
                                               folder=folder)
+        if preview is not None and (preview["cards"] or preview["variables"]):
+            document = doc_service.load(stored)
+            document["cards"].extend(preview["cards"])
+            document["variables"] = preview["variables"]
+            doc_service.save_document_ai(stored, document)
+        for upload in uploads:
+            try:
+                doc_service.attach_upload(stored, upload)
+            except ValueError as exc:
+                abort(400, str(exc))
     except ValueError as exc:
         abort(400, str(exc))
     return redirect(url_for("dashboards.editor", file_id=stored.id))
@@ -208,6 +252,38 @@ def save(file_id):
                     "checksum": stored.checksum})
 
 
+@bp.post("/<int:file_id>/rename")
+def rename(file_id):
+    """Inline title edit (mirrors the notebooks N1 rename shape): the file
+    name and doc["title"] stay in sync both ways through this one route —
+    no separate rename API. The extension is re-appended server-side, so
+    the title stored in the doc never carries it."""
+    stored = _get_dashboard(file_id)
+    _guard_writable(stored)
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        abort(400, "Name is required.")
+    if not name.lower().endswith(f".{doc_service.EXTENSION}"):
+        name = f"{name}.{doc_service.EXTENSION}"
+    # Names live in StoredFile.name (String(255)) and flow to FTS — reject
+    # over-long renames instead of silently truncating one side of the
+    # name/title sync. doc["title"] caps at the same 255 (TITLE_MAX_CHARS),
+    # so the stripped title always fits.
+    if len(name) > 255:
+        abort(400, "Name is too long (max 255 characters).")
+    try:
+        document = doc_service.load(stored)
+    except ValueError as exc:
+        abort(400, str(exc))
+    document["title"] = name[: -(len(doc_service.EXTENSION) + 1)]
+    doc_service.save_document(stored, document)
+    stored.name = name
+    db.session.commit()
+    from app.services import search_service
+    search_service.fts_upsert(stored.id)  # filename is part of the FTS index
+    return redirect(url_for("dashboards.index"))
+
+
 @bp.post("/<int:file_id>/attachments")
 def attachments(file_id):
     """Attach a file: multipart upload (dashboard-owned) or {"file_id": N}
@@ -274,6 +350,26 @@ def _browse_drive(raw_drive_id):
 def _browse_file_entry(stored):
     return {"id": stored.id, "name": stored.name,
             "mime": stored.mime_type, "size": stored.size}
+
+
+@bp.get("/workflows")
+def list_workflows():
+    """Workflows the Builder picker may link: [{id, name}] of the user's
+    own workflows, newest first. Read-only. Automation disabled →
+    automation_enabled:false with a fail-closed message so the picker never
+    renders a dead form."""
+    from app.services import module_service
+    if not module_service.is_enabled("automation"):
+        return jsonify({"ok": False, "automation_enabled": False,
+                        "error": "The automation module is disabled — "
+                                 "enable it to link a workflow."})
+    models = engine_service._automation_models()
+    workflows = (models.AutomationWorkflow.query
+                 .filter_by(user_id=current_user.id)
+                 .order_by(models.AutomationWorkflow.updated_at.desc()).all())
+    return jsonify({"ok": True, "automation_enabled": True,
+                    "workflows": [{"id": workflow.id, "name": workflow.name}
+                                  for workflow in workflows]})
 
 
 @bp.get("/browse/drives")
@@ -726,24 +822,57 @@ def run_card_stream(file_id):
                 "workflow") or {}
             if card_snapshot.get("type") == "workflow" or \
                     workflow_ref.get("workflow_id"):
-                trace, artifact_ids = [], []
+                it = engine_service.iter_workflow_events(
+                    live, card_snapshot, live_user)
                 try:
-                    result, artifact_ids, trace = engine_service.run_card(
-                        live, card_snapshot, live_user.id)
-                    _settle_stream_card(stored_id, card_id, "done",
-                                        result, trace, artifact_ids)
+                    for frame in it:
+                        if frame.get("t") == "done":
+                            _settle_stream_card(
+                                stored_id, card_id, "done",
+                                frame.get("result"),
+                                frame.get("trace") or [],
+                                frame.get("artifact_ids") or [])
+                            yield "data: " + json.dumps(
+                                {"t": "done", "card_id": card_id,
+                                 "result": frame.get("result"),
+                                 "trace": frame.get("trace") or []},
+                                default=str) + "\n\n"
+                            return
+                        yield "data: " + json.dumps(frame,
+                                                    default=str) + "\n\n"
+                except GeneratorExit:
+                    # Disconnect mid-run: keep consuming so the card still
+                    # settles (mirrors the prompt drain below); the frames
+                    # are simply not consumed.
+                    try:
+                        for frame in it:
+                            if frame.get("t") == "done":
+                                _settle_stream_card(
+                                    stored_id, card_id, "done",
+                                    frame.get("result"),
+                                    frame.get("trace") or [],
+                                    frame.get("artifact_ids") or [])
+                                return
+                    except Exception:  # noqa: BLE001 - drain must settle
+                        db.session.rollback()
+                        _settle_stream_card(
+                            stored_id, card_id, "error",
+                            {"error": "The run failed."}, [])
                 except engine_service.MissingInputError as exc:
                     result = {"error": str(exc)}
                     _settle_stream_card(stored_id, card_id, "error",
                                         result, [])
+                    yield "data: " + json.dumps(
+                        {"t": "done", "card_id": card_id, "result": result,
+                         "trace": []}) + "\n\n"
                 except Exception as exc:  # noqa: BLE001
                     db.session.rollback()
                     result = {"error": (str(exc) or "The run failed.")[:500]}
                     _settle_stream_card(stored_id, card_id, "error",
                                         result, [])
-                yield "data: " + json.dumps(
-                    {"t": "done", "result": result, "trace": trace},
-                    default=str) + "\n\n"
+                    yield "data: " + json.dumps(
+                        {"t": "done", "card_id": card_id, "result": result,
+                         "trace": []}) + "\n\n"
                 return
             if card_snapshot.get("script_enabled") and \
                     card_snapshot.get("type") != "workflow":
@@ -886,7 +1015,8 @@ def dashboard_status(file_id):
     running = [cid for cid, state in cards.items()
                if state["status"] == "running"]
     return jsonify({"ok": True, "dashboard_id": stored.id,
-                    "running": running, "cards": cards})
+                    "running": running, "cards": cards,
+                    "checksum": stored.checksum})
 
 
 # ---------------------------------------------------------------------------

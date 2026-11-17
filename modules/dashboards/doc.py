@@ -28,6 +28,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -76,6 +77,18 @@ SCRIPT_MAX_CHARS = 20000
 CARD_STATUSES = ("idle", "running", "done", "error", "interrupted")
 ATTACHMENT_ORIGINS = ("upload", "link")
 
+# Dashboard variables: top-level ``{"name": default}`` object on the doc.
+# Cards reference them as ``{{ name }}`` in prompts and script source; the
+# engine substitutes the current value before each run (engine.substitute_
+# variables — one helper for both, so script cards stay consistent), and
+# the View filter bar re-runs only cards referencing a changed variable.
+# Scalar defaults only, so the C5 wizard can pre-fill them from plain
+# form values.
+VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+VARIABLE_NAME_MAX_CHARS = 64
+VARIABLE_VALUE_MAX_CHARS = 2000
+MAX_VARIABLES = 50
+
 # Per-dashboard run queue depth: how many cards may run at once. Stored on
 # the doc so it is configurable upward; the engine holds a per-dashboard
 # lock so concurrent POSTs serialize through the cap.
@@ -110,6 +123,7 @@ def new_card(type="kpi", title="", prompt=""):
 def empty_dashboard(title="Untitled dashboard"):
     return {"version": 1, "title": title or "Untitled dashboard",
             "cards": [], "attachments": [], "createdFileIds": [],
+            "variables": {},
             "ai_lock": False, "ai_hidden": False}
 
 
@@ -263,6 +277,42 @@ def _enforce_owned_files(stored, doc):
     doc["createdFileIds"] = owned
 
 
+def _validate_variables(value):
+    """Top-level ``variables`` object: ``{"name": default}`` with scalar
+    defaults (string, number, boolean or null). Names are identifiers so
+    ``{{ name }}`` references scan unambiguously in prompts and scripts."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("variables must be an object mapping names to "
+                         "default values.")
+    if len(value) > MAX_VARIABLES:
+        raise ValueError(f"Too many variables (max {MAX_VARIABLES}).")
+    out = {}
+    for name, default in value.items():
+        if (not isinstance(name, str) or not VARIABLE_NAME_RE.match(name)
+                or len(name) > VARIABLE_NAME_MAX_CHARS):
+            raise ValueError(
+                f"Invalid variable name {name!r} — use letters, digits "
+                f"and underscores, starting with a letter or underscore "
+                f"(max {VARIABLE_NAME_MAX_CHARS} chars).")
+        if isinstance(default, bool) or default is None:
+            out[name] = default
+        elif isinstance(default, (int, float)):
+            out[name] = default
+        elif isinstance(default, str):
+            if len(default) > VARIABLE_VALUE_MAX_CHARS:
+                raise ValueError(
+                    f"Variable '{name}' default exceeds the "
+                    f"{VARIABLE_VALUE_MAX_CHARS} character cap.")
+            out[name] = default
+        else:
+            raise ValueError(
+                f"Variable '{name}' default must be a string, number, "
+                f"boolean or null.")
+    return out
+
+
 def validate(doc):
     """Normalize a dashboard document dict; raises ValueError on bad shape."""
     if not isinstance(doc, dict):
@@ -289,6 +339,7 @@ def validate(doc):
             or any(not isinstance(f, int) for f in created)):
         raise ValueError("createdFileIds must be a list of file ids.")
     doc["createdFileIds"] = created
+    doc["variables"] = _validate_variables(doc.get("variables"))
     doc["title"] = str(doc.get("title") or "Untitled dashboard"
                        )[:TITLE_MAX_CHARS]
     doc["version"] = 1
@@ -870,6 +921,7 @@ def _structural_shape(doc):
     shape = {"title": doc.get("title"),
              "attachments": doc.get("attachments", []),
              "createdFileIds": doc.get("createdFileIds", []),
+             "variables": doc.get("variables", {}),
              "concurrency": doc.get("concurrency", DEFAULT_CONCURRENCY)}
     cards = []
     for card in doc.get("cards", []):
