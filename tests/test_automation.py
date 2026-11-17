@@ -3760,6 +3760,17 @@ def test_node_id_badges_and_typed_sockets():
 
 
 # ---------------------------------------------------------------------------
+# B4: slide-over inspector + upstream ref chips (static pins)
+# ---------------------------------------------------------------------------
+
+def test_inspector_is_config_only():
+    html = read("modules/automation/templates/automation/editor.html")
+    assert "wf-inspector" in html and "w-96" in html
+    src = read("modules/automation/static/automation.js")
+    assert "wf-ref-chip" in src or "upstream" in src.lower()
+
+
+# ---------------------------------------------------------------------------
 # B5: live run highlight + rich previews + shortcuts (static + engine pins)
 # ---------------------------------------------------------------------------
 
