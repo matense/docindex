@@ -309,6 +309,50 @@ def _tool_create(user, args, drive):
     return {"created": _summary(stored)}
 
 
+WIZARD_DESCRIPTION_MAX_CHARS = 2000
+
+
+def wizard_layout(description, variables=None):
+    """Starter multi-card layout for the 'Generate with AI' creation wizard.
+
+    Pure helper used by the ``POST /m/dashboards/new`` wizard step. Cards
+    are built with :func:`doc.new_card` — the same constructor the
+    ``dashboards.create`` tool funnels through ``_card_from_args`` — so grid
+    minima and sizes match the normal create path. The caller validates the
+    assembled preview with :func:`doc.validate` before creating anything
+    (mirroring :func:`_tool_create`); this helper never writes. ``_tool_create``
+    itself is untouched — the wizard reuses its semantics, it does not fork
+    them. ``variables`` pre-fills the C4 filter-bar defaults and is named in
+    the generated prompts so affected-only re-runs stay meaningful.
+    """
+    desc = (description or "").strip()
+    if not desc:
+        raise ValueError("Describe what you want to track first.")
+    if len(desc) > WIZARD_DESCRIPTION_MAX_CHARS:
+        raise ValueError("Description is too long (max "
+                         f"{WIZARD_DESCRIPTION_MAX_CHARS} characters).")
+    variables = dict(variables or {})
+    var_hint = ""
+    if variables:
+        names = ", ".join("{{ %s }}" % name for name in variables)
+        var_hint = (" Slice every card by the dashboard variables where it "
+                    f"makes sense ({names}).")
+    specs = [
+        ("kpi", "Key number",
+         "What is the single most important number for: "
+         f"{desc}?{var_hint}"),
+        ("table", "Latest items",
+         f"List the latest items for: {desc}, with the columns that make "
+         f"sense.{var_hint}"),
+        ("chart", "Breakdown",
+         f"Break down and chart the data for: {desc}.{var_hint}"),
+        ("markdown", "Summary",
+         f"Write a short executive summary of: {desc}.{var_hint}"),
+    ]
+    return [doc_service.new_card(kind, title=title, prompt=prompt)
+            for kind, title, prompt in specs]
+
+
 def _tool_update(user, args, drive):
     def mutate(_user, document):
         if "title" in args or "name" in args:

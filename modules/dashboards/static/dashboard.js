@@ -4042,8 +4042,49 @@
         V.timers.push(timer);
     }
 
+    // C5: "Generate with AI" creation wizard (list page #dash-new-modal).
+    // Progressive enhancement only — the plain name+location create posts
+    // fine without JS. Wires the optional details step: a non-empty
+    // description flips the submit label to Generate, chosen files are
+    // listed, and the variables hint names the C4 {{ var }} filter-bar
+    // contract. Idempotent (dataset flag) and a no-op off the list page.
+    function initDashWizard() {
+        if (typeof document === "undefined" ||
+                typeof document.getElementById !== "function") return false;
+        var modal = document.getElementById("dash-new-modal");
+        if (!modal || modal.dataset.wizardWired) return false;
+        var desc = modal.querySelector("#dash-wizard-desc");
+        var files = modal.querySelector("#dash-wizard-files");
+        var hint = modal.querySelector("#dash-wizard-files-hint");
+        var btn = modal.querySelector("#dash-create-btn");
+        if (!desc || !btn) return false;
+        modal.dataset.wizardWired = "1";
+        var label = btn.querySelector("[data-wlabel]");
+        function paint() {
+            var gen = desc.value.trim() !== "";
+            if (label) label.textContent = gen ? "Generate dashboard" : "Create";
+            else btn.textContent = gen ? "Generate dashboard" : "Create";
+            if (hint && files) {
+                var n = (files.files && files.files.length) || 0;
+                if (!n) { hint.textContent = ""; return; }
+                var names = Array.prototype.map.call(
+                    files.files, function (f) { return f.name; }).slice(0, 3);
+                hint.textContent = n + " file" + (n === 1 ? "" : "s") +
+                    " will attach: " + names.join(", ") +
+                    (n > 3 ? "…" : "");
+            }
+        }
+        desc.addEventListener("input", paint);
+        if (files) files.addEventListener("change", paint);
+        paint();
+        return true;
+    }
+    if (document.readyState !== "loading") initDashWizard();
+    else document.addEventListener("DOMContentLoaded", initDashWizard);
+
     window.DashboardEditor = {
         mount: mount,
+        initDashWizard: initDashWizard,
         mergeRunOwned: mergeRunOwned,
         startBuilderStatusPoll: startBuilderStatusPoll,
         CARD_TYPES: CARD_TYPES,

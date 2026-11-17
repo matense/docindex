@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=13" in body
-    assert "?v=28" in body
+    assert "?v=29" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -4079,3 +4079,120 @@ def test_script_tool_documents_variables():
     assert i >= 0
     region = src[i:i + 1200]
     assert "{{" in region and "variable" in region.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task C5: "Generate with AI" creation wizard
+# ---------------------------------------------------------------------------
+
+def _list_html():
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "list.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _wizard_fid(app, auth_client, drive_id, data):
+    before = _pdash_count(app)
+    resp = auth_client.post("/m/dashboards/new", data=data,
+                            content_type="multipart/form-data")
+    assert resp.status_code == 302, resp.data[:300]
+    assert _pdash_count(app) == before + 1
+    return int(resp.headers["Location"].rsplit("/", 1)[-1])
+
+
+def _pdash_count(app):
+    from app.models import StoredFile as _SF
+    with app.app_context():
+        return _SF.query.filter_by(extension="pdash").count()
+
+
+def _wizard_doc(app, fid):
+    from app.models import StoredFile as _SF
+    with app.app_context():
+        return dash_doc.load(db.session.get(_SF, fid))
+
+
+def test_generate_wizard_hooks():
+    html = _list_html()
+    assert "dash-wizard" in html or "generate" in html.lower()
+
+
+def test_wizard_create_generates_layout(app, auth_client, user, enabled):
+    """C5: a description in the wizard step auto-generates an initial
+    multi-card layout on creation (prompts carry the description)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(app, auth_client, drive_id,
+                      {"name": "Tracked", "location": f"drive:{drive_id}",
+                       "description": "Weekly server incidents"})
+    doc = _wizard_doc(app, fid)
+    assert {c["type"] for c in doc["cards"]} == {
+        "kpi", "table", "chart", "markdown"}
+    assert all("Weekly server incidents" in (c["prompt"] or "")
+               for c in doc["cards"])
+
+
+def test_wizard_create_prefills_variables(app, auth_client, user, enabled):
+    """C5: wizard output pre-fills C4 variables from plain form values, and
+    generated prompts reference them (affected-only re-run stays
+    meaningful)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(
+        app, auth_client, drive_id,
+        {"name": "Regional", "location": f"drive:{drive_id}",
+         "description": "Incidents by data center",
+         "variables": '{"region": "north", "limit": 5}'})
+    doc = _wizard_doc(app, fid)
+    assert doc["variables"] == {"region": "north", "limit": 5}
+    assert any("{{ region }}" in (c["prompt"] or "")
+               for c in doc["cards"])
+
+
+def test_wizard_create_rejects_bad_variables(app, auth_client, user,
+                                             enabled):
+    """C5: bad variables (malformed JSON or non-scalar shape) abort 400
+    through the C4 contract — never leaving an empty dashboard behind."""
+    drive_id = _drive(app, user)
+    for bad_vars in ('{"region":', '{"region": {"n": 1}}', '["x"]'):
+        before = _pdash_count(app)
+        resp = auth_client.post(
+            "/m/dashboards/new",
+            data={"name": "Bad", "location": f"drive:{drive_id}",
+                  "description": "Something", "variables": bad_vars},
+            content_type="multipart/form-data")
+        assert resp.status_code == 400
+        assert _pdash_count(app) == before
+
+
+def test_wizard_create_attaches_uploads(app, auth_client, user, enabled):
+    """C5: files attached in the wizard step land on the new dashboard via
+    the existing attach path (upload origin)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(
+        app, auth_client, drive_id,
+        {"name": "With files", "location": f"drive:{drive_id}",
+         "description": "Incidents in the CSV",
+         "wizard_files": (io.BytesIO(b"a,b\n1,2\n"), "incidents.csv")})
+    doc = _wizard_doc(app, fid)
+    assert len(doc["attachments"]) == 1
+    assert doc["attachments"][0]["origin"] == "upload"
+    assert doc["attachments"][0]["name"] == "incidents.csv"
+
+
+def test_wizard_plain_create_unchanged(app, auth_client, user, enabled):
+    """C5: without wizard fields the plain name+location flow creates an
+    empty dashboard exactly as before."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(app, auth_client, drive_id,
+                      {"name": "Plain", "location": f"drive:{drive_id}"})
+    doc = _wizard_doc(app, fid)
+    assert doc["cards"] == [] and doc["variables"] == {}
+
+
+def test_wizard_js_wiring():
+    """C5: the wizard step lives in dashboard.js (guarded init) and the
+    list modal loads that bundle."""
+    src = _dash_js_src()
+    assert "initDashWizard" in src
+    assert "dash-wizard" in src
+    html = _list_html()
+    assert "dashboard.js" in html

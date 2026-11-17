@@ -132,9 +132,53 @@ def new():
         abort(404)
     if folder is not None and folder.user_id != current_user.id:
         abort(404)
+    # C5 "Generate with AI" wizard step (optional, additive): a description
+    # auto-generates an initial multi-card layout, plain form values
+    # pre-fill the C4 variables, and uploaded files attach via the existing
+    # attach path. Semantics mirror the dashboards.create tool: the preview
+    # (cards + variables) validates BEFORE anything is created, so a bad
+    # layout never leaves an empty dashboard behind. Without wizard fields
+    # the plain name+location flow below is byte-identical.
+    description = (request.form.get("description") or "").strip()
+    raw_vars = (request.form.get("variables") or "").strip()
+    variables = {}
+    if raw_vars:
+        try:
+            variables = json.loads(raw_vars)
+        except ValueError:
+            abort(400, "Variables must be a JSON object like "
+                       '{"region": "north"}.')
+        if not isinstance(variables, dict):
+            abort(400, "Variables must be a JSON object like "
+                       '{"region": "north"}.')
+    uploads = [f for f in request.files.getlist("wizard_files")
+               if f is not None and getattr(f, "filename", "")]
+    preview = None
+    if description or variables or uploads:
+        from . import tools as tools_service
+        try:
+            cards = (tools_service.wizard_layout(description, variables)
+                     if description else [])
+            preview = doc_service.empty_dashboard(name)
+            preview["cards"].extend(cards)
+            if variables:
+                preview["variables"] = variables
+            preview = doc_service.validate(preview)
+        except ValueError as exc:
+            abort(400, str(exc))
     try:
         stored = doc_service.create_dashboard(current_user, drive, name,
                                               folder=folder)
+        if preview is not None and (preview["cards"] or preview["variables"]):
+            document = doc_service.load(stored)
+            document["cards"].extend(preview["cards"])
+            document["variables"] = preview["variables"]
+            doc_service.save_document_ai(stored, document)
+        for upload in uploads:
+            try:
+                doc_service.attach_upload(stored, upload)
+            except ValueError as exc:
+                abort(400, str(exc))
     except ValueError as exc:
         abort(400, str(exc))
     return redirect(url_for("dashboards.editor", file_id=stored.id))
