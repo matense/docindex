@@ -198,6 +198,15 @@ body.dash-grabbing, body.dash-grabbing * { user-select: none !important; cursor:
     color: #e6edf3;
 }
 .dash-codeedit-hl code { background: none; padding: 0; }
+/* Compact card variant: fixed 3-row height matching the old textarea. */
+.dash-codeedit-card { min-height: 76px; height: 76px; }
+.dash-codeedit-card .dash-codeedit-hl,
+.dash-codeedit-card .dash-codeedit-in {
+    min-height: 0; height: 100%;
+    font-size: 13px; padding: 8px 10px;
+}
+.dash-codeedit-card .dash-codeedit-hl { overflow: hidden; }
+.dash-codeedit-card .dash-codeedit-in { overflow: auto; resize: none; }
 .dash-codeedit-in {
     position: absolute; inset: 0; width: 100%; height: 100%;
     background: transparent; color: transparent; caret-color: #e5e7eb;

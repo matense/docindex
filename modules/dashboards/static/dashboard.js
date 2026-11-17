@@ -798,8 +798,10 @@
             '<div class="dash-prompt-label"><span>Script <span class="opacity-60">— runs instead of the prompt</span></span>' +
             '<button type="button" class="dash-edit-btn" data-f="expand-script" title="Edit in popup" aria-label="Edit script in popup">' +
             '<i class="fas fa-expand"></i>Edit</button></div>' +
-            '<textarea class="dash-script" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="3" ' +
-            'placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
+            '<div class="dash-codeedit dash-codeedit-card"><pre class="dash-codeedit-hl" aria-hidden="true">' +
+            '<code class="language-python"></code></pre>' +
+            '<textarea class="dash-script dash-codeedit-in" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="3" ' +
+            'spellcheck="false" placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
             (card.type === "workflow"
                 ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
@@ -855,9 +857,26 @@
             });
         }
         var scriptInput = d.querySelector('[data-f="script"]');
+        var scriptCode = scriptInput.parentNode.querySelector(".dash-codeedit-hl code");
+        var paintCardScript = function () {
+            if (scriptCode) paintScriptHighlight(scriptInput, scriptCode);
+        };
+        paintCardScript();
         scriptInput.addEventListener("input", function () {
             card.script = scriptInput.value.slice(0, MAX_SCRIPT);
+            paintCardScript();
             scheduleSave(S);
+        });
+        scriptInput.addEventListener("scroll", paintCardScript);
+        scriptInput.addEventListener("keydown", function (e) {
+            if (e.key === "Tab") {
+                e.preventDefault();
+                var s = scriptInput.selectionStart, t = scriptInput.selectionEnd;
+                scriptInput.setRangeText("  ", s, t, "end");
+                card.script = scriptInput.value.slice(0, MAX_SCRIPT);
+                paintCardScript();
+                scheduleSave(S);
+            }
         });
         d.querySelector('[data-f="expand-script"]').addEventListener("click", function () {
             openEditor(S, card, "script");
@@ -901,6 +920,22 @@
         return d;
     }
 
+    // Shared highlight painter: transparent-textarea overlay over
+    // hljs-colored Python, scroll-synced, same metrics. If hljs is
+    // missing the plain textarea stands (textContent first, try/catch).
+    function paintScriptHighlight(ta, codeEl) {
+        codeEl.textContent = ta.value + "\n";
+        try {
+            if (window.hljs && window.hljs.highlight) {
+                codeEl.innerHTML =
+                    window.hljs.highlight(ta.value, { language: "python" }).value + "\n";
+            }
+        } catch (e) { /* plain-text fallback stands */ }
+        var pre = codeEl.parentNode;
+        pre.scrollTop = ta.scrollTop;
+        pre.scrollLeft = ta.scrollLeft;
+    }
+
     // Popup editor for prompt/script fields: compact 3-row previews in the
     // card, full editing in a modal with Save/Close. Script editing layers
     // a transparent textarea over hljs-highlighted Python (scroll-synced,
@@ -925,18 +960,7 @@
                 'aria-label="Card script (pyrun)"></textarea></div>';
             ta = body.querySelector(".dash-codeedit-in");
             var code = body.querySelector(".dash-codeedit-hl code");
-            var paint = function () {
-                code.textContent = ta.value + "\n";
-                try {
-                    if (window.hljs && window.hljs.highlight) {
-                        code.innerHTML =
-                            window.hljs.highlight(ta.value, { language: "python" }).value + "\n";
-                    }
-                } catch (e) { /* plain-text fallback stands */ }
-                var pre = code.parentNode;
-                pre.scrollTop = ta.scrollTop;
-                pre.scrollLeft = ta.scrollLeft;
-            };
+            var paint = function () { paintScriptHighlight(ta, code); };
             ta.addEventListener("input", paint);
             ta.addEventListener("scroll", function () {
                 var pre = code.parentNode;

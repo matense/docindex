@@ -3293,7 +3293,8 @@ def test_script_card_fails_closed_without_pyrun(app, user, enabled,
 
 def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
     """Task A2: a prose script value coerces through the card's contract —
-    never an error state; (result, [], []) contract holds."""
+    never an error state; (result, [], trace) contract holds, trace
+    carrying the console entries."""
     from app.services import module_service
     dash_engine = _engine()
     monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
@@ -3314,8 +3315,42 @@ def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
         stored = db.session.get(StoredFile, fid)
         result, artifacts, trace = dash_engine.run_card(stored, card, user)
     assert result.get("text") == "some prose"  # never an error state
-    assert artifacts == [] and trace == []
+    assert artifacts == []
+    # Script runs carry a console trace (attachments + timing); the empty
+    # trace was the pre-console behavior, not the contract.
+    assert isinstance(trace, list) and len(trace) >= 1
     assert seen["files"] == {}  # no attachments → empty files map
+
+
+def test_script_run_trace_lists_inputs_and_timing(app, user, enabled,
+                                                 monkeypatch):
+    """Script runs record a console trace: resolved inputs (name → table)
+    plus elapsed milliseconds — the View run console shows this."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+
+    def fake_evaluate(code, files):
+        return {"ok": True, "value": {"value": "3", "label": "rows"}}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"v\n1\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"v\n2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(app, fid, cid, script="res = 1\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        _, _, trace = dash_engine.run_card(stored, card, user)
+    by_label = {e.get("label"): e.get("detail", "") for e in trace}
+    assert "a.csv" in by_label.get("script", "")
+    assert "b.csv" in by_label.get("script", "")
+    assert "t0" in by_label.get("script", "")
+    assert "t1" in by_label.get("script", "")
+    assert "ms" in by_label.get("timing", "")
 
 
 def test_kpi_view_sign_classes():
@@ -3343,6 +3378,20 @@ def test_builder_popup_editor_hooks():
     assert "hljs" in src and "python" in src
     assert 'data-zone="edit-save"' in src and 'data-zone="edit-close"' in src
     assert 'data-dlg="edit"' in src
+
+
+def test_builder_card_script_overlay():
+    """Card script fields render the same highlight overlay as the popup
+    (shared painter), compact variant for the 3-row preview."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-codeedit-card" in src
+    assert "paintScriptHighlight" in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".dash-codeedit-card" in css
     # Close lifecycle: dirty → confirm, no double-prompt, guard survives.
     assert "Discard changes?" in src
     assert "S._edit.saved = true" in src

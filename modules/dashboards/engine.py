@@ -628,7 +628,8 @@ def run_card(stored, card, user_id):
         if not module_service.is_enabled("pyrun"):
             raise ValueError("The pyrun module is disabled — enable pyrun "
                              "to run script cards.")
-        return _run_script_card(stored, doc, card, user, files), [], []
+        result, trace = _run_script_card(stored, doc, card, user, files)
+        return result, [], trace
     return _run_prompt_card(stored, doc, card, user, files)
 
 
@@ -697,11 +698,20 @@ def _run_script_card(stored, doc, card, user, files):
             raise MissingInputError(
                 f"Attachment '{target.name}' cannot be read ({exc}).")
         files_map[f"f{pos}"] = chunks
+    started = time.perf_counter()
     outcome = _pyrun_evaluate(script, files_map)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     if not isinstance(outcome, dict) or not outcome.get("ok"):
         error = outcome.get("error") if isinstance(outcome, dict) else None
         raise ValueError(error or "Script run failed.")
-    return _parse_script_result(card.get("type"), outcome.get("value"))
+    result = _parse_script_result(card.get("type"), outcome.get("value"))
+    inputs = ", ".join(f"{files[ref].name}→t{pos}"
+                       for pos, ref in enumerate(refs)) or "none"
+    trace = [{"index": None, "label": "script",
+              "detail": "inputs: " + inputs},
+             {"index": None, "label": "timing",
+              "detail": f"finished in {elapsed_ms} ms"}]
+    return result, trace
 
 
 def _run_workflow_card(stored, doc, card, user, workflow_ref, files):
