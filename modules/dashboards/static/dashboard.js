@@ -1215,6 +1215,7 @@
         }
         var scriptInput = d.querySelector('[data-f="script"]');
         var scriptCode = scriptInput.parentNode.querySelector(".dash-codeedit-hl code");
+        if (scriptCode) ensureOverlay(scriptInput, scriptCode);
         var paintCardScript = function () {
             if (scriptCode) paintScriptHighlight(scriptInput, scriptCode);
         };
@@ -1303,6 +1304,37 @@
         emphasis: "#c9d6ff", strong: "#c9d6ff", addition: "#aff5b4",
         deletion: "#ffdcd7"
     };
+    // Overlay self-check + self-heal: the transparent-textarea overlay is
+    // silent when its critical styles don't apply (stale/overridden CSS),
+    // showing the textarea's own glyphs exactly over the highlighted pre.
+    // Metrics are copied from the live pre (zero duplication), critical
+    // props forced inline, and the pre opts out of forced-colors.
+    // Returns true when the overlay was already correct.
+    function ensureOverlay(ta, codeEl) {
+        var pre = codeEl.parentNode;
+        var before = "";
+        try {
+            before = String(getComputedStyle(ta).color || "").replace(/\s+/g, "");
+        } catch (e) { before = ""; }
+        var ok = before === "rgba(0,0,0,0)" || before === "transparent";
+        try {
+            var pcs = getComputedStyle(pre);
+            ["fontFamily", "fontSize", "fontWeight", "lineHeight",
+             "letterSpacing", "whiteSpace", "tabSize", "paddingTop",
+             "paddingRight", "paddingBottom", "paddingLeft"].forEach(function (k) {
+                try { ta.style[k] = pcs[k]; } catch (e) { /* keep CSS value */ }
+            });
+            ta.style.background = "transparent";
+            ta.style.color = "transparent";
+            pre.style.setProperty("forced-color-adjust", "none");
+        } catch (e) { /* CSS path stands */ }
+        if (!ok && window.console && console.warn) {
+            console.warn("[dash] overlay textarea was opaque (was: " + before +
+                ") — forced transparent so the highlight shows through");
+        }
+        return ok;
+    }
+
     function paintScriptHighlight(ta, codeEl) {
         codeEl.textContent = ta.value + "\n";
         var state = "ok";
@@ -1358,6 +1390,7 @@
                 'aria-label="Card script (pyrun)"></textarea></div>';
             ta = body.querySelector(".dash-codeedit-in");
             var code = body.querySelector(".dash-codeedit-hl code");
+            ensureOverlay(ta, code);
             var paint = function () { paintScriptHighlight(ta, code); };
             ta.addEventListener("input", paint);
             ta.addEventListener("scroll", function () {
