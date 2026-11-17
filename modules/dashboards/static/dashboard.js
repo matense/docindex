@@ -1280,18 +1280,31 @@
 
     // Shared highlight painter: transparent-textarea overlay over
     // hljs-colored Python, scroll-synced, same metrics. If hljs is
-    // missing the plain textarea stands (textContent first, try/catch).
+    // missing the plain textarea stands — and it says so ("missing" when
+    // the library never loaded, "error: <msg>" when highlighting threw),
+    // surfaced in the popup subtitle and the console, never silent.
     function paintScriptHighlight(ta, codeEl) {
         codeEl.textContent = ta.value + "\n";
+        var state = "missing";
         try {
             if (window.hljs && window.hljs.highlight) {
                 codeEl.innerHTML =
                     window.hljs.highlight(ta.value, { language: "python" }).value + "\n";
+                state = "ok";
             }
-        } catch (e) { /* plain-text fallback stands */ }
+        } catch (e) {
+            state = "error: " + (e && e.message ? e.message : e);
+            if (window.console && console.warn) {
+                console.warn("[dash] script highlight failed:", e);
+            }
+        }
+        if (state !== "ok" && window.console && console.warn) {
+            console.warn("[dash] script highlight unavailable (" + state + ")");
+        }
         var pre = codeEl.parentNode;
         pre.scrollTop = ta.scrollTop;
         pre.scrollLeft = ta.scrollLeft;
+        return state;
     }
 
     // Popup editor for prompt/script fields: compact 3-row previews in the
@@ -1334,7 +1347,10 @@
                 }
             });
             ta.value = initial;
-            paint();
+            var hlState = paintScriptHighlight(ta, code);
+            if (hlState !== "ok") {
+                S.els.editSub.textContent += " (highlight off: " + hlState + " — editing still works)";
+            }
         } else {
             body.innerHTML =
                 '<textarea class="dash-edit-text" maxlength="' + cap + '" ' +

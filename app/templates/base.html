@@ -36,8 +36,8 @@
     <!-- FontAwesome for icons (vendored, same version as before) -->
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/font-awesome/6.0.0/css/all.min.css') }}">
     <!-- Highlight.js (vendored) -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/highlight.js/11.9.0/github-dark.min.css') }}">
-    <script src="{{ url_for('static', filename='vendor/highlight.js/11.9.0/highlight.min.js') }}" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/highlight.js/11.9.0/github-dark.min.css') }}?v=1">
+    <script src="{{ url_for('static', filename='vendor/highlight.js/11.9.0/highlight.min.js') }}?v=1" defer></script>
     <!-- Markdown rendering for AI answers (vendored) -->
     <script src="{{ url_for('static', filename='vendor/marked/12.0.0/marked.min.js') }}" defer></script>
     <!-- DOMPurify: sanitize model markdown before innerHTML (XSS guard, vendored) -->

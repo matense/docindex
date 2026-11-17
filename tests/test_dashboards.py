@@ -3389,6 +3389,7 @@ def test_builder_popup_editor_hooks():
     assert "hljs" in src and "python" in src
     assert 'data-zone="edit-save"' in src and 'data-zone="edit-close"' in src
     assert 'data-dlg="edit"' in src
+    assert "highlight unavailable" in src and "highlight off" in src
 
 
 def test_builder_card_script_overlay():
@@ -3410,7 +3411,7 @@ def test_builder_card_script_overlay():
     assert "scheduleSave(S)" in src
     # Highlight fallback: plain textarea stands if hljs fails.
     assert "window.hljs.highlight" in src
-    assert "plain-text fallback stands" in src
+    assert "never silent" in src
     # Popup inputs honor the same caps as the card fields.
     assert "maxlength=\"' + cap + '\"" in src
 
