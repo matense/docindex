@@ -55,6 +55,11 @@ class AutomationWorkflow(db.Model):
     enabled = db.Column(db.Boolean, nullable=False, default=False)
     interval_minutes = db.Column(db.Integer, nullable=True)
     last_run_at = db.Column(db.DateTime, nullable=True)
+    # Event trigger: nullable JSON rule {"drive_id"?, "folder"?, "pattern"?}
+    # — when set (and the workflow is enabled), matching file.uploaded /
+    # file.synced events start a run with trigger="event". Each key is
+    # optional; a missing key matches everything within the event's scope.
+    trigger_event = db.Column(db.Text, nullable=True)
     # Schedule profile: frozen answers for scheduled runs (JSON
     # {params: {name: value}, file_id: N|null}) — the run form values the
     # schedule replays every tick, since nobody is there to answer.
@@ -87,7 +92,7 @@ class AutomationRun(db.Model):
 
     STATUSES = ("queued", "running", "done", "error", "stopped", "interrupted")
     FINAL_STATUSES = ("done", "error", "stopped", "interrupted")
-    TRIGGERS = ("manual", "schedule", "ai")
+    TRIGGERS = ("manual", "schedule", "event", "ai")
 
     id = db.Column(db.Integer, primary_key=True)
     workflow_id = db.Column(db.Integer,

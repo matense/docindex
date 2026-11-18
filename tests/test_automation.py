@@ -4136,3 +4136,104 @@ def test_sync_drive_emits_file_synced(app, user, tmp_path):
     assert payload["user_id"] == user
     assert isinstance(payload["added"], list) and len(payload["added"]) == 1
     json.dumps(payload)  # plain JSON-serializable dict only
+
+
+# ---------------------------------------------------------------------------
+# Event triggers in the scheduler (P5)
+# ---------------------------------------------------------------------------
+
+def _clear_scheduler_queue():
+    """Drop events queued by earlier tests (the bus is process-global)."""
+    with scheduler._pending_lock:
+        scheduler._PENDING.clear()
+
+
+def _event_workflow(app, user_id, rule, graph=None, name="Event flow"):
+    return _workflow(app, user_id, graph or _text_graph("event run"),
+                     name=name, enabled=True,
+                     trigger_event=json.dumps(rule))
+
+
+def test_event_trigger_starts_matching_workflow(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {"pattern": "*.csv"})
+    fid = _make_file(app, user, "report.csv", "a,b\n1,2\n")
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).all())
+        assert len(runs) == 1
+        assert runs[0].trigger == "event"
+        assert runs[0].trigger_file_id == fid
+
+
+def test_event_trigger_ignores_non_matching(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {"pattern": "*.csv"})
+    _make_file(app, user, "notes.txt", "plain text")
+    assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 0
+
+
+def test_event_trigger_from_file_synced(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "synced.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()  # drop the upload event; drive the synced path
+    from app.services import events
+    events.emit("file.synced", {"drive_id": drive_id, "user_id": user,
+                                "added": [fid]})
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).all())
+        assert len(runs) == 1
+        assert runs[0].trigger == "event"
+        assert runs[0].trigger_file_id == fid
+
+
+def test_event_trigger_never_overlaps(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "overlap.csv", "a\n1\n")
+    with app.app_context():
+        db.session.add(models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="running"))
+        db.session.commit()
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    from app.services import events
+    events.emit("file.uploaded", {"file_id": fid, "drive_id": drive_id,
+                                  "user_id": user})
+    assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1
+
+
+def test_event_trigger_queue_bounded_and_carries_over(app, user, enabled):
+    from unittest.mock import patch
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "burst.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()
+    from app.services import events
+    for _ in range(105):
+        events.emit("file.uploaded", {"file_id": fid, "drive_id": drive_id,
+                                      "user_id": user})
+    with patch.object(app.logger, "warning") as warned:
+        assert scheduler.tick(app) == 1
+        assert warned.called, "overflow must log a warning"
+    with scheduler._pending_lock:
+        assert len(scheduler._PENDING) == 5
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 2
+    with scheduler._pending_lock:
+        assert len(scheduler._PENDING) == 0
