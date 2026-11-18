@@ -3,7 +3,8 @@
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="tables-grid"
      data-file-id="{{ file.id }}" data-total="{{ total }}"
-     data-page-size="{{ page_size }}">
+     data-page-size="{{ page_size }}"
+     {% if editable %}data-editable="1"{% endif %}>
     <div class="flex items-center gap-3">
         <a href="/" class="btn btn-ghost btn-sm btn-square" title="All files">
             <i class="fas fa-arrow-left"></i>
@@ -13,6 +14,19 @@
             <p class="text-xs opacity-40">{{ total }} rows &times; {{ columns|length }} columns</p>
         </div>
     </div>
+
+    <div class="flex flex-wrap items-center gap-2" id="tables-filterbar">
+        <input id="tables-sql" type="text" class="input input-bordered input-sm flex-1 min-w-52"
+               placeholder="SELECT * FROM t0 LIMIT 100" spellcheck="false"
+               aria-label="SQL filter (SELECT or WITH only, over t0)">
+        <button id="tables-run" class="btn btn-primary btn-sm" type="button">Run</button>
+        <button id="tables-reset" class="btn btn-ghost btn-sm" type="button">Reset</button>
+        {% if not editable %}
+        <button id="tables-saveas" class="btn btn-ghost btn-sm" type="button"
+                title="Convert to an editable .ptable dataset">Save as .ptable</button>
+        {% endif %}
+    </div>
+    <div id="tables-error" class="hidden text-sm text-error" role="alert"></div>
 
     <div class="overflow-auto rounded-2xl" id="tables-scroll">
         <table class="table table-zebra w-full" id="tables-table">

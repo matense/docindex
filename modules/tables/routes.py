@@ -6,18 +6,28 @@ badges and header stats; ``static/tables.js`` then slides a 50-row window
 through ``GET /<id>/rows?offset&limit`` so the whole file never lands in
 the DOM. The rows API shape ``{columns, rows, total}`` is the contract
 T3/T4 build on.
+
+T3 adds the SQL filter bar (``POST /<id>/query`` — SELECT/WITH over the
+table in the pyrun sandbox), versioned inline cell edits (``POST
+/<id>/cell`` — .ptable only, snapshot first) and the one-way
+spreadsheet-to-dataset conversion (``POST /<id>/save-as``).
 """
 
 import csv
+import hashlib
 import io
+import json
 import math
 import os
+import re
+import uuid
 from datetime import datetime
 
-from flask import Blueprint, abort, jsonify, render_template, request
+from flask import Blueprint, abort, current_app, jsonify, render_template, request
 from flask_login import current_user
 
-from app.models import StoredFile
+from app.extensions import db
+from app.models import FileIndex, StoredFile
 from app.services import file_service
 
 from . import doc as tables_doc
@@ -297,6 +307,65 @@ def _display_rows(rows):
 
 
 # ---------------------------------------------------------------------------
+# T3: SQL filter bar + versioned inline editing
+# ---------------------------------------------------------------------------
+
+# First-keyword gate for the SQL filter bar: SELECT and WITH only, mirroring
+# the automation transform.sql_query gate. pyrun.evaluate (db.query) stays
+# the final authority on writes and multi-statements.
+_SQL_READ_FIRST = ("SELECT", "WITH")
+_SQL_GATE_ERROR = ("Only SELECT or WITH ... SELECT queries are allowed — "
+                   "this view cannot change data.")
+
+
+def _first_keyword(sql):
+    """First SQL keyword, skipping whitespace/comments, upper-cased."""
+    text = sql.lstrip()
+    while True:
+        if text.startswith("--"):
+            _, _, text = text.partition("\n")
+            text = text.lstrip()
+        elif text.startswith("/*"):
+            end = text.find("*/", 2)
+            if end == -1:
+                return ""
+            text = text[end + 2:].lstrip()
+        else:
+            break
+    match = re.match(r"[A-Za-z]+", text)
+    return match.group(0).upper() if match else ""
+
+
+def _table_csv_text(header, rows):
+    """The viewed table as comma-delimited CSV text for pyrun seeding.
+
+    pyrun seeds scratch tables from ``{f: [csv chunk]}`` with a comma
+    dialect, so every format (csv/tsv/xlsx/ptable) is normalized through
+    the viewer readers first — display text in, display text out.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([_cell_text(name) for name in header])
+    for row in rows:
+        writer.writerow([_cell_text(cell) for cell in row])
+    return buf.getvalue()
+
+
+def _json_window(payload):
+    """(offset, limit) from a JSON body, clamped like the rows API."""
+    try:
+        offset = int((payload or {}).get("offset", 0))
+        limit = int((payload or {}).get("limit", PAGE_SIZE))
+    except (TypeError, ValueError):
+        abort(400, description="offset/limit must be integers.")
+    return max(0, offset), max(1, min(limit, ROWS_LIMIT_MAX))
+
+
+def _query_error(message, status=400):
+    return jsonify({"ok": False, "error": message}), status
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -327,6 +396,7 @@ def view(file_id):
         rows=_display_rows(rows[:PAGE_SIZE]),
         total=len(rows),
         page_size=PAGE_SIZE,
+        editable=(stored.extension or "").lower() == "ptable",
     )
 
 
@@ -350,3 +420,183 @@ def rows_api(file_id):
                for name, ctype in zip(header, types)]
     window = _display_rows(rows[offset:offset + limit])
     return jsonify({"columns": columns, "rows": window, "total": len(rows)})
+
+
+@bp.post("/<int:file_id>/query")
+def query_api(file_id):
+    """Run a read-only SQL filter over the viewed table.
+
+    The table is seeded into the pyrun sandbox as ``t0`` (the ``{f:
+    [csv chunk]}`` files map, mirroring the dashboards script-card
+    construction) and the statement runs as ``db.query``. The
+    first-keyword gate rejects anything but SELECT/WITH up front;
+    pyrun.evaluate stays the final authority on writes and
+    multi-statements. Errors are always ``{"ok": False, "error":
+    <safe>}`` — never tracebacks, never raw sqlite text. The result
+    mirrors the rows API shape so the filtered view replaces the grid.
+    """
+    stored = _get_table_file(file_id)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _query_error("Request body must be a JSON object.")
+    sql = payload.get("sql", "")
+    if not isinstance(sql, str) or not sql.strip():
+        return _query_error("Enter a SELECT query to run "
+                            "(e.g. SELECT * FROM t0 LIMIT 100).")
+    if _first_keyword(sql) not in _SQL_READ_FIRST:
+        return _query_error(_SQL_GATE_ERROR)
+    offset, limit = _json_window(payload)
+    try:
+        header, rows = _read_table(stored)
+    except (ValueError, OSError) as exc:
+        return _query_error(f"Could not read table file: {exc}")
+    try:
+        from docindex_module_pyrun.evaluate import evaluate
+    except ImportError:
+        return _query_error("pyrun evaluator is unavailable.", 500)
+    files_map = {"f": [_table_csv_text(header, rows)]}
+    code = "res = db.query(" + json.dumps(sql) + ")\nres"
+    try:
+        outcome = evaluate(code, files=files_map)
+    except Exception:  # noqa: BLE001 - the tool boundary never 500s raw
+        return _query_error("Evaluation failed unexpectedly.", 500)
+    if not isinstance(outcome, dict) or not outcome.get("ok"):
+        error = outcome.get("error") if isinstance(outcome, dict) else None
+        return _query_error(error or "Query failed.")
+    records = outcome.get("value")
+    if not isinstance(records, list):
+        return _query_error("Query failed: unexpected result shape.")
+    if not all(isinstance(rec, dict) for rec in records):
+        return _query_error("Query failed: unexpected result shape.")
+    if not records:
+        return jsonify({"ok": True, "columns": [], "rows": [],
+                        "total": 0})
+    names = [str(key) for key in records[0].keys()]
+    display = [[_cell_text(rec.get(name)) for name in names]
+               for rec in records]
+    types = [sniff_column_type([row[i] for row in display])
+             for i in range(len(names))]
+    columns = [{"name": name, "type": ctype}
+               for name, ctype in zip(names, types, strict=False)]
+    return jsonify({"ok": True, "columns": columns,
+                    "rows": display[offset:offset + limit],
+                    "total": len(records)})
+
+
+@bp.post("/<int:file_id>/cell")
+def cell_api(file_id):
+    """Edit one .ptable cell: snapshot a version FIRST, then write.
+
+    CSV/TSV/XLSX files are read-only in the viewer — they need "Save as
+    .ptable" first, so the original workbook is never mutated in place.
+    Files on read-only (mirror synced) drives are rejected with the drive
+    named. The write goes through ``file_service.update_file_content``
+    (version source ``"table-edit"``), so the snapshot-then-write order,
+    size/checksum refresh and shadow refresh all match the file editor.
+    """
+    stored = _get_table_file(file_id)
+    if (stored.extension or "").lower() != "ptable":
+        return _query_error(
+            "This file is read-only in the viewer — use 'Save as .ptable' "
+            "first, then edit the .ptable copy.", 400)
+    if file_service.is_readonly_file(stored):
+        drive = stored.drive
+        name = drive.name if drive is not None else "synced"
+        return _query_error(
+            f"File '{stored.name}' is on read-only drive '{name}' "
+            f"and cannot be edited.", 403)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _query_error("Request body must be a JSON object.")
+    if "value" not in payload:
+        return _query_error("Missing cell value.")
+    row = payload.get("row")
+    col = payload.get("col")
+    if isinstance(row, bool) or not isinstance(row, int):
+        return _query_error("Cell row must be an integer.")
+    if isinstance(col, bool) or not isinstance(col, (int, str)):
+        return _query_error("Cell col must be a column name or index.")
+    try:
+        document = tables_doc.load(_blob_text(stored))
+    except (ValueError, OSError) as exc:
+        return _query_error(f"Could not read table file: {exc}")
+    names = [col_spec["name"] for col_spec in document["columns"]]
+    if isinstance(col, int):
+        col_idx = col
+    elif col not in names:
+        return _query_error(f"Unknown column {col!r}.")
+    else:
+        col_idx = names.index(col)
+    if not 0 <= row < len(document["rows"]):
+        return _query_error(f"Row {row} is out of range.")
+    if not 0 <= col_idx < len(names):
+        return _query_error(f"Column {col!r} is out of range.")
+    document["rows"][row][col_idx] = payload["value"]
+    try:
+        text = tables_doc.serialize(tables_doc.validate(document))
+    except ValueError as exc:
+        return _query_error(str(exc) or "Invalid table value.")
+    try:
+        file_service.update_file_content(stored, text, source="table-edit")
+    except ValueError as exc:
+        return _query_error(str(exc) or "Could not save the cell.")
+    except Exception:  # noqa: BLE001 - IO/SQLAlchemy must not 500 raw
+        return _query_error("Could not save the cell.", 500)
+    return jsonify({"ok": True,
+                    "value": _cell_text(payload["value"])})
+
+
+@bp.post("/<int:file_id>/save-as")
+def save_as_api(file_id):
+    """Convert a csv/tsv/xlsx view into a queryable .ptable dataset.
+
+    One-way copy: a new .ptable file is created next to the source (same
+    folder/drive, uniquified name) and the original workbook is never
+    touched. Copies out of synced trees land at the files root instead,
+    so unmanaged blobs are never injected into a sync tree.
+    """
+    stored = _get_table_file(file_id)
+    if (stored.extension or "").lower() == "ptable":
+        return _query_error("This file is already a .ptable table.")
+    try:
+        header, rows = _read_table(stored)
+    except (ValueError, OSError) as exc:
+        return _query_error(f"Could not read table file: {exc}")
+    try:
+        document = tables_doc.new_table(
+            [{"name": name,
+              "type": sniff_column_type([row[i] for row in rows])}
+             for i, name in enumerate(header)],
+            [[_cell_text(cell) for cell in row] for row in rows])
+    except ValueError as exc:
+        return _query_error(str(exc) or "Could not convert this file.")
+    text = tables_doc.serialize(document)
+    if len(text.encode("utf-8")) > current_app.config["MAX_FILE_SIZE"]:
+        return _query_error("Table exceeds the file size limit.")
+    stem = os.path.splitext(stored.name)[0].strip() or "table"
+    keep_place = not stored.is_synced
+    folder_id = stored.folder_id if keep_place else None
+    drive_id = stored.drive_id if keep_place else None
+    name = f"{stem}.ptable"
+    suffix = 2
+    while file_service.find_by_name(current_user.id, drive_id, folder_id,
+                                    name) is not None:
+        name = f"{stem} ({suffix}).ptable"
+        suffix += 1
+    stored_name = f"{uuid.uuid4().hex}.ptable"
+    path = os.path.join(current_app.config["UPLOAD_FOLDER"], stored_name)
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+    except OSError:
+        return _query_error("Could not save the .ptable copy.", 500)
+    created = StoredFile(
+        name=name, stored_name=stored_name, extension="ptable",
+        mime_type="application/json", size=os.path.getsize(path),
+        checksum=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        folder_id=folder_id, drive_id=drive_id, user_id=current_user.id)
+    db.session.add(created)
+    db.session.flush()
+    db.session.add(FileIndex(file_id=created.id, status="pending"))
+    db.session.commit()
+    return jsonify({"ok": True, "file_id": created.id, "name": name})
