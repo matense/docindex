@@ -153,12 +153,13 @@ def _check_workflow(user, ref):
 def _card_from_args(args):
     """Build a card dict from tool args; raises ValueError on bad shape.
 
-    Accepts either flat fields (type/title/prompt/tools/w/h/x/y/
-    attachments/workflow) or the same fields nested under a ``card`` object;
-    flat fields win."""
+    Accepts either flat fields (type/title/prompt/tools/script_enabled/
+    script/w/h/x/y/attachments/workflow) or the same fields nested under a
+    ``card`` object; flat fields win."""
     data = args.get("card") if isinstance(args.get("card"), dict) else {}
     flat = dict(data)
-    for key in ("type", "title", "prompt", "tools", "w", "h", "x", "y",
+    for key in ("type", "title", "prompt", "tools", "script_enabled",
+                "script", "w", "h", "x", "y",
                 "attachments", "workflow"):
         if key in args and args[key] is not None:
             flat[key] = args[key]
@@ -169,6 +170,11 @@ def _card_from_args(args):
         card["prompt"] = flat["prompt"]
     if "tools" in flat:
         card["tools"] = flat["tools"]
+    if "script_enabled" in flat:
+        card["script_enabled"] = bool(flat["script_enabled"])
+    if "script" in flat:
+        script = flat["script"]
+        card["script"] = str(script) if script is not None else ""
     for key in ("w", "h", "x", "y"):
         if key in flat:
             card[key] = flat[key]
@@ -220,7 +226,14 @@ def _save_and_report(user, file_id, mutate):
         doc_service.save_document_ai(stored, document)
     except ValueError as exc:
         return {"error": str(exc)}
-    return {"ok": True, "file_id": stored.id, **outcome}
+    # Push leg for the Builder live poll: the agent service turns a "ui"
+    # dict into a ui_action stream event, ai_core.js re-dispatches it as
+    # docindex-ui-action, and the open Builder refreshes from /doc at once
+    # (the 5s checksum poll stays as fallback). Mirrors notebooks
+    # notebook_changed.
+    return {"ok": True, "file_id": stored.id,
+            "ui": {"type": "dashboard_changed",
+                   "file_id": stored.id}, **outcome}
 
 
 def _tool_list(user, args, drive):
@@ -303,6 +316,50 @@ def _tool_create(user, args, drive):
     return {"created": _summary(stored)}
 
 
+WIZARD_DESCRIPTION_MAX_CHARS = 2000
+
+
+def wizard_layout(description, variables=None):
+    """Starter multi-card layout for the 'Generate with AI' creation wizard.
+
+    Pure helper used by the ``POST /m/dashboards/new`` wizard step. Cards
+    are built with :func:`doc.new_card` — the same constructor the
+    ``dashboards.create`` tool funnels through ``_card_from_args`` — so grid
+    minima and sizes match the normal create path. The caller validates the
+    assembled preview with :func:`doc.validate` before creating anything
+    (mirroring :func:`_tool_create`); this helper never writes. ``_tool_create``
+    itself is untouched — the wizard reuses its semantics, it does not fork
+    them. ``variables`` pre-fills the C4 filter-bar defaults and is named in
+    the generated prompts so affected-only re-runs stay meaningful.
+    """
+    desc = (description or "").strip()
+    if not desc:
+        raise ValueError("Describe what you want to track first.")
+    if len(desc) > WIZARD_DESCRIPTION_MAX_CHARS:
+        raise ValueError("Description is too long (max "
+                         f"{WIZARD_DESCRIPTION_MAX_CHARS} characters).")
+    variables = dict(variables or {})
+    var_hint = ""
+    if variables:
+        names = ", ".join("{{ %s }}" % name for name in variables)
+        var_hint = (" Slice every card by the dashboard variables where it "
+                    f"makes sense ({names}).")
+    specs = [
+        ("kpi", "Key number",
+         "What is the single most important number for: "
+         f"{desc}?{var_hint}"),
+        ("table", "Latest items",
+         f"List the latest items for: {desc}, with the columns that make "
+         f"sense.{var_hint}"),
+        ("chart", "Breakdown",
+         f"Break down and chart the data for: {desc}.{var_hint}"),
+        ("markdown", "Summary",
+         f"Write a short executive summary of: {desc}.{var_hint}"),
+    ]
+    return [doc_service.new_card(kind, title=title, prompt=prompt)
+            for kind, title, prompt in specs]
+
+
 def _tool_update(user, args, drive):
     def mutate(_user, document):
         if "title" in args or "name" in args:
@@ -337,9 +394,12 @@ def _tool_update_card(user, args, drive):
             if new_type not in doc_service.CARD_TYPES:
                 raise ValueError(f"Unknown card type '{new_type}'.")
             card["type"] = new_type
-        for key in ("title", "prompt"):
+        for key in ("title", "prompt", "script_enabled"):
             if key in args or key in data:
                 card[key] = args.get(key, data.get(key))
+        if "script" in args or "script" in data:
+            script = args.get("script", data.get("script"))
+            card["script"] = str(script) if script is not None else ""
         if "tools" in args or "tools" in data:
             card["tools"] = args.get("tools", data.get("tools"))
         for key in ("w", "h", "x", "y"):
@@ -425,7 +485,8 @@ def _tool_attach_file(user, args, drive):
     except ValueError as exc:
         return {"error": str(exc)}
     return {"ok": True, "file_id": stored.id, "attached": attached,
-            "total_attachments": len(document.get("attachments", []))}
+            "total_attachments": len(document.get("attachments", [])),
+            "ui": {"type": "dashboard_changed", "file_id": stored.id}}
 
 
 def _tool_detach_file(user, args, drive):
@@ -452,7 +513,8 @@ def _tool_detach_file(user, args, drive):
     except ValueError as exc:
         return {"error": str(exc)}
     return {"ok": True, "file_id": stored.id, **result,
-            "total_attachments": len(document.get("attachments", []))}
+            "total_attachments": len(document.get("attachments", [])),
+            "ui": {"type": "dashboard_changed", "file_id": stored.id}}
 
 
 def _settle_run(stored, card_id, run_id, user_id):
@@ -719,6 +781,20 @@ _CARD_FIELDS = {
                              "default) or a single cheaper LLM call over "
                              "pre-injected context (false, truncated inputs "
                              "are flagged)."},
+    "script_enabled": {"type": "boolean",
+                       "description": "When true the card runs the script "
+                                      "via pyrun instead of the AI agent; "
+                                      "the prompt is ignored."},
+    "script": {"type": "string",
+               "description": "Python script source for a script card; it "
+                              "runs via pyrun when script_enabled is true "
+                              "and the prompt is ignored. Attachments seed "
+                              "scratch tables t0..tN in card order — probe "
+                              "them with db.tables(), never try/except over "
+                              "guessed t-names (sandbox errors abort). "
+                              "Dashboard variables {{ name }} substitute "
+                              "into the script source before each run, the "
+                              "same as into prompts."},
     "w": {"type": "integer",
           "description": "Width in grid columns (1-12, snapped)."},
     "h": {"type": "integer", "description": "Height in grid rows."},
@@ -774,7 +850,10 @@ register_tool(
                            "description": "Target folder inside its drive."},
              "cards": {"type": "array", "items": {"type": "object"},
                        "description": "Initial cards: {type, title, prompt, "
-                                      "tools, w, h, x, y, workflow}. "
+                                      "tools, script_enabled, script, w, h, "
+                                      "x, y, workflow}. When script_enabled "
+                                      "is true the card runs the script via "
+                                      "pyrun and the prompt is ignored. "
                                       "Attachment refs are not accepted "
                                       "here — attach first, then wire."}},
             required=["name"]),

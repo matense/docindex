@@ -28,7 +28,19 @@
 
     // --- Rich markdown extensions (mirror server Python-Markdown set) -----
 
+    // Isolated marked instance for notebook renders (§1.4): the shared
+    // global marked singleton belongs to the AI chat — registering our
+    // extensions or parsing on it would pollute chat rendering. Every
+    // notebook parse below goes through this instance instead.
+    let _nbMarked = null;
     let _markedExtensionsRegistered = false;
+
+    function nbMarked() {
+        if (_nbMarked) return _nbMarked;
+        if (!window.marked || !window.marked.Marked) return null;
+        _nbMarked = new window.marked.Marked();
+        return _nbMarked;
+    }
 
     function escapeHtml(text) {
         return text.replace(/[&<>"']/g, (m) => ({
@@ -127,9 +139,11 @@
 
     function renderFootnotesSection() {
         if (!NB_FOOTNOTE_ORDER.length) return "";
+        const inst = nbMarked();
+        if (!inst) return "";
         const items = NB_FOOTNOTE_ORDER.map((label) => {
             const text = NB_FOOTNOTE_DEFS.get(label.toLowerCase()) || "";
-            const body = window.marked.parseInline(text);
+            const body = inst.parseInline(text);
             return `<li id="fn:${escapeHtml(label)}">${body} `
                 + `<a href="#fnref:${escapeHtml(label)}" `
                 + `class="footnote-backref">↩</a></li>`;
@@ -138,7 +152,8 @@
     }
 
     function ensureMarkedExtensions() {
-        if (_markedExtensionsRegistered || !window.marked) return;
+        const inst = nbMarked();
+        if (!inst || _markedExtensionsRegistered) return;
 
         const admonitionExtension = {
             name: "admonition",
@@ -159,7 +174,7 @@
                 };
             },
             renderer(token) {
-                const body = window.marked.parse(token.text, { breaks: true });
+                const body = inst.parse(token.text, { breaks: true });
                 return `<div class="admonition ${token.adType}">\n`
                     + `<p class="admonition-title">${escapeHtml(token.title)}</p>\n`
                     + `${body}\n</div>`;
@@ -197,8 +212,8 @@
             },
             renderer(token) {
                 const dds = token.defs.map((d) =>
-                    `<dd>${window.marked.parseInline(d)}</dd>`).join("\n");
-                return `<dl>\n<dt>${window.marked.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
+                    `<dd>${inst.parseInline(d)}</dd>`).join("\n");
+                return `<dl>\n<dt>${inst.parseInline(token.term)}</dt>\n${dds}\n</dl>`;
             }
         };
 
@@ -250,7 +265,7 @@
             }
         };
 
-        window.marked.use({
+        inst.use({
             hooks: {
                 preprocess(src) {
                     _markdownNestDepth++;
@@ -371,7 +386,8 @@
     }
 
     function renderMarkdown(text) {
-        if (!window.marked) return null;
+        const inst = nbMarked();
+        if (!inst) return null;
         ensureMarkedExtensions();
         _markdownNestDepth = 0;
         resetFootnotes();
@@ -380,7 +396,13 @@
         const linked = protectedMath.marked.replace(
             /\[([^\]]+)\]\(file:\/\/(\d+)\)/g,
             '<a href="/file/$2/view">$1</a>');
-        const parsed = sanitizeHtml(window.marked.parse(linked, { breaks: true }));
+        let parsed;
+        try {
+            parsed = sanitizeHtml(inst.parse(linked, { breaks: true }));
+        } finally {
+            // A throwing parse must not poison the nesting guard (§1.4).
+            _markdownNestDepth = 0;
+        }
         return restoreMath(parsed, protectedMath.map);
     }
 
@@ -692,6 +714,40 @@
     function cellSig(cell) {
         return JSON.stringify(cell, (k, v) =>
             (k === "_editing" ? undefined : v));
+    }
+
+    // §2.2 keep-open: a focusout landing outside #nb-cells (AI chat
+    // window, toolbar, index, file picker...) must not close the cell
+    // editor — the user is still working on this cell. Only focus moving
+    // to another cell closes it (alongside the Edit toggle / read mode).
+    function focusMovedOutsideCells(target) {
+        if (!target || !target.closest) return false;
+        const cells = document.getElementById("nb-cells");
+        if (cells && cells.contains(target)) return false;
+        return true;
+    }
+
+    // Plain-text preview of any cell type for the Ask-AI payload —
+    // strings pass through, todo/table rows join, objects stringify.
+    function cellPlainText(cell) {
+        const c = cell ? cell.content : "";
+        if (typeof c === "string") return c.slice(0, 2000);
+        if (Array.isArray(c)) {
+            return c.map((row) => {
+                if (Array.isArray(row)) return row.join(" | ");
+                if (row && typeof row === "object") {
+                    return row.text !== undefined ? String(row.text)
+                        : JSON.stringify(row);
+                }
+                return String(row);
+            }).join("\n").slice(0, 2000);
+        }
+        if (c && typeof c === "object") {
+            try { return JSON.stringify(c).slice(0, 2000); }
+            catch (err) { return ""; }
+        }
+        return (c === undefined || c === null)
+            ? "" : String(c).slice(0, 2000);
     }
 
     // Pure decision: does the live document provably contain everything a
@@ -1131,19 +1187,42 @@
                 e.preventDefault();
                 save(true);
             }
+            // Undo/redo: yield to native history inside text inputs —
+            // hijacking Ctrl+Z there would break typing undo.
+            if ((e.ctrlKey || e.metaKey) && !e.altKey
+                    && (e.code === "KeyZ" || e.code === "KeyY")) {
+                const t = e.target;
+                const tag = t && t.tagName;
+                if (tag === "INPUT" || tag === "TEXTAREA"
+                        || (t && (t.isContentEditable
+                            || (t.closest && t.closest(
+                                "[contenteditable='true'], .ql-editor"))))) {
+                    return;
+                }
+                e.preventDefault();
+                if (e.code === "KeyZ" && !e.shiftKey) undo();
+                else redo();
+            }
         }
         function detach() {
             window.removeEventListener("beforeunload", onBeforeUnload);
             document.removeEventListener("keydown", onKeydown);
             window.removeEventListener("notebook_changed", onNotebookChanged);
+            window.removeEventListener("docindex-ui-action", onDocIndexUiAction);
+            window.removeEventListener("scroll", onTocScroll);
         }
         window.addEventListener("beforeunload", onBeforeUnload);
         document.addEventListener("keydown", onKeydown);
+        window.addEventListener("scroll", onTocScroll, { passive: true });
 
         const checkpointBtn = root.querySelector("#nb-checkpoint-btn");
         if (checkpointBtn) {
             checkpointBtn.addEventListener("click", () => save(true));
         }
+        const undoBtn = root.querySelector("#nb-undo-btn");
+        if (undoBtn) undoBtn.addEventListener("click", undo);
+        const redoBtn = root.querySelector("#nb-redo-btn");
+        if (redoBtn) redoBtn.addEventListener("click", redo);
         const indexBtn = root.querySelector("#nb-index-btn");
         if (indexBtn && tocEl) {
             indexBtn.addEventListener("click", () => {
@@ -1229,8 +1308,322 @@
         });
         renderFullHistButton();
         if (printBtn) printBtn.addEventListener("click", () => window.print());
+        // --- AI Split: dock the AI chat to the right of the notebook ---
+        const aiSplitBtn = root.querySelector("#nb-ai-split-btn");
+        if (aiSplitBtn) aiSplitBtn.addEventListener("click", () => {
+            if (window.aiChat
+                    && typeof window.aiChat.openAndDock === "function") {
+                window.aiChat.openAndDock("right");
+            } else {
+                // Chat side lands on the parallel track: never dead-click
+                // without feedback — warn and point at the manual path.
+                if (typeof console !== "undefined" && console.warn) {
+                    console.warn("aiChat.openAndDock unavailable"
+                        + " — open the AI chat manually");
+                }
+                aiSplitBtn.title = "AI chat dock unavailable"
+                    + " — open the chat manually";
+            }
+        });
         renderAccessButtons();
+        // --- Inline title edit: click the h1 to rename --------------------
+        // Commits through the same rename route as the list page, so the
+        // file name and doc["title"] stay in sync both ways. Enter or blur
+        // commits, Esc cancels.
+        const titleEl = root.querySelector("#nb-title");
+        async function commitTitle(value, original) {
+            // The server strips a trailing `.pdocnb` before storing the
+            // title — strip it here too so the client never desyncs from
+            // doc["title"] (stored/displayed title must match exactly).
+            const clean = String(value).replace(/\.pdocnb$/i, "");
+            const fd = new FormData();
+            fd.append("name", value);
+            let resp = null;
+            try {
+                resp = await fetch(opts.renameUrl,
+                    { method: "POST", body: fd });
+            } catch (err) { resp = null; }
+            if (!resp || !resp.ok) {
+                titleEl.textContent = original;
+                setStatus("error", "rename failed");
+                return;
+            }
+            doc.title = clean;
+            baseDoc.title = clean;
+            titleEl.textContent = clean;
+            if (window.currentFile) {
+                window.currentFile.name =
+                    value.toLowerCase().endsWith(".pdocnb")
+                        ? value : value + ".pdocnb";
+            }
+            // The rename saved server-side and bumped its checksum — adopt
+            // it as the new base so the next autosave is a clean fast-path
+            // instead of a spurious merge/409. Best effort: a failed
+            // refresh leaves the stale base and the merge path still heals.
+            try {
+                const refreshed = await fetch(opts.docUrl, {
+                    headers: { "Accept": "application/json" } });
+                const rdata = await refreshed.json();
+                if (refreshed.ok && rdata && rdata.ok && rdata.checksum) {
+                    lastChecksum = saveBase = rdata.checksum;
+                    if (rdata.doc) {
+                        baseDoc = rdata.doc;
+                        doc.title = rdata.doc.title || clean;
+                        titleEl.textContent = doc.title;
+                    }
+                }
+            } catch (err) { /* best effort — merge path heals */ }
+        }
+        if (titleEl && opts.renameUrl) {
+            titleEl.addEventListener("click", () => {
+                if (titleEl.querySelector("input")) return;  // already editing
+                const original = doc.title || "";
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = original;
+                input.className = "input input-bordered input-sm w-full";
+                input.setAttribute("aria-label", "Notebook title");
+                titleEl.textContent = "";
+                titleEl.appendChild(input);
+                input.focus();
+                input.select();
+                let done = false;
+                const finish = (commit) => {
+                    if (done) return;
+                    done = true;
+                    const value = (input.value || "").trim() || original;
+                    if (!commit || value === original) {
+                        titleEl.textContent = original;
+                        return;
+                    }
+                    titleEl.textContent = value;
+                    commitTitle(value, original);
+                };
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        finish(true);
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        finish(false);
+                    }
+                });
+                input.addEventListener("blur", () => finish(true));
+            });
+        }
         checkPendingConflict();
+
+        // --- Undo/redo: 30 lightweight doc.cells snapshots -------------
+        // pushUndo() runs BEFORE every structural mutation (cell
+        // delete/move/insert, table row/col add/remove, todo add/remove,
+        // AI remote apply) so Ctrl+Z restores the pre-change state.
+        let undoStack = [];
+        let redoStack = [];
+        function snapshotCells() {
+            return JSON.parse(JSON.stringify(doc.cells));
+        }
+        function updateUndoButtons() {
+            const u = root.querySelector("#nb-undo-btn");
+            const r = root.querySelector("#nb-redo-btn");
+            if (u) u.disabled = !undoStack.length;
+            if (r) r.disabled = !redoStack.length;
+        }
+        function pushUndo(label) {
+            undoStack.push(snapshotCells());
+            if (undoStack.length > 30) undoStack.shift();
+            redoStack = [];
+            updateUndoButtons();
+        }
+        function undo() {
+            if (!undoStack.length) return;
+            redoStack.push(snapshotCells());
+            if (redoStack.length > 30) redoStack.shift();
+            doc.cells = undoStack.pop();
+            render();
+            scheduleSave();
+            updateUndoButtons();
+        }
+        function redo() {
+            if (!redoStack.length) return;
+            undoStack.push(snapshotCells());
+            if (undoStack.length > 30) undoStack.shift();
+            doc.cells = redoStack.pop();
+            render();
+            scheduleSave();
+            updateUndoButtons();
+        }
+        updateUndoButtons();
+
+        // --- Executable code/SQL cells via pyrun ----------------------
+        // Outputs are session-only (keyed by cell id, never stored on the
+        // cell) so cellSig and the autosave payload stay clean.
+        const PYRUN_LANGS = ["python", "py", "sql"];
+        const pyrunOutputs = {};
+        function pyrunLang(cell) {
+            return String((cell.meta && cell.meta.language) || "python")
+                .toLowerCase();
+        }
+        function runCellUrl() {
+            return String(opts.saveUrl).replace(/\/save$/, "/run-cell");
+        }
+        function collectInputFileIds(content) {
+            const ids = [];
+            const re = /file:\/\/(\d+)/g;
+            let m;
+            while ((m = re.exec(String(content || ""))) !== null) {
+                const id = parseInt(m[1], 10);
+                if (!isNaN(id) && ids.indexOf(id) === -1) ids.push(id);
+            }
+            return ids;
+        }
+        function asPyrunRows(result) {
+            if (!Array.isArray(result) || !result.length) return null;
+            for (const r of result) {
+                if (!r || typeof r !== "object" || Array.isArray(r)) {
+                    return null;
+                }
+            }
+            return result;
+        }
+        function pyrunRowsTable(rows) {
+            const headers = [];
+            rows.forEach((r) => Object.keys(r).forEach((k) => {
+                if (headers.indexOf(k) === -1) headers.push(k);
+            }));
+            const table = el("table", "table table-xs");
+            const headRow = el("tr");
+            headers.forEach((h) => headRow.appendChild(el("th", "", h)));
+            const thead = el("thead");
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+            const tb = el("tbody");
+            rows.slice(0, 50).forEach((r) => {
+                const tr = el("tr");
+                headers.forEach((h) => {
+                    const v = r[h];
+                    tr.appendChild(el("td", "",
+                        v === null || v === undefined ? "" : String(v)));
+                });
+                tb.appendChild(tr);
+            });
+            table.appendChild(tb);
+            return table;
+        }
+        function savePyrunAsTable(cell, rows) {
+            const headers = [];
+            rows.forEach((r) => Object.keys(r).forEach((k) => {
+                if (headers.indexOf(k) === -1) headers.push(k);
+            }));
+            const table = newCell("table");
+            table.meta.headers = headers;
+            table.meta.rows = rows.slice(0, 200).map((r) =>
+                headers.map((h) => {
+                    const v = r[h];
+                    return v === null || v === undefined ? ""
+                        : String(v);
+                }));
+            const i = doc.cells.indexOf(cell);
+            pushUndo("save pyrun output as table");
+            doc.cells.splice(i >= 0 ? i + 1 : doc.cells.length, 0, table);
+            render();
+            scheduleSave();
+        }
+        function paintPyrunOutput(wrap, cell) {
+            const box = wrap.querySelector(".nb-pyrun-output");
+            if (!box) return;
+            box.innerHTML = "";
+            const out = pyrunOutputs[cell.id];
+            if (!out) return;
+            if (out.state === "running") {
+                box.appendChild(el("div", "text-xs opacity-60",
+                    "Running in pyrun…"));
+                return;
+            }
+            if (!out.ok) {
+                box.appendChild(el("div", "text-xs text-error",
+                    "Error: " + (out.error || "failed")));
+                return;
+            }
+            const rows = asPyrunRows(out.result);
+            if (rows) {
+                box.appendChild(pyrunRowsTable(rows));
+                if (rows.length > 50) {
+                    box.appendChild(el("div", "text-xs opacity-50",
+                        "Showing 50 of " + rows.length + " rows"));
+                }
+                const saveBtn = el("button",
+                    "btn btn-ghost btn-xs gap-1");
+                saveBtn.type = "button";
+                saveBtn.textContent = "+ Save as Table cell";
+                saveBtn.title = "Insert the result as a table cell below";
+                saveBtn.addEventListener("click",
+                    () => savePyrunAsTable(cell, rows));
+                box.appendChild(saveBtn);
+            } else {
+                // Plain-text results render verbatim (real line breaks, no
+                // JSON quoting); anything else keeps compact JSON form.
+                let text;
+                if (typeof out.result === "string") {
+                    text = (out.stdout || "") + out.result;
+                } else {
+                    text = out.stdout || (out.result === undefined
+                        || out.result === null
+                        ? "" : JSON.stringify(out.result));
+                }
+                const MAX_OUT = 5000;
+                let note = "";
+                if (text.length > MAX_OUT) {
+                    note = "… (output truncated, showing first "
+                        + MAX_OUT + " of " + text.length + " chars)";
+                    text = text.slice(0, MAX_OUT);
+                }
+                const pre = el("pre",
+                    "text-xs whitespace-pre-wrap max-h-64 overflow-y-auto");
+                pre.textContent = text;
+                box.appendChild(pre);
+                if (note) {
+                    box.appendChild(el("div", "text-xs opacity-50", note));
+                }
+            }
+            if (out.elapsedMs !== undefined && out.elapsedMs !== null) {
+                box.appendChild(el("div", "text-xs opacity-50",
+                    out.elapsedMs + " ms"));
+            }
+        }
+        async function runCodeCell(cell, wrap) {
+            pyrunOutputs[cell.id] = { state: "running" };
+            paintPyrunOutput(wrap, cell);
+            const btn = wrap.querySelector(".nb-pyrun-run");
+            if (btn) btn.disabled = true;
+            let data;
+            try {
+                const resp = await fetch(runCellUrl(), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        cell_id: cell.id,
+                        lang: pyrunLang(cell),
+                        code: cell.content,
+                        input_file_ids: collectInputFileIds(cell.content),
+                    }),
+                });
+                data = await resp.json();
+            } catch (err) {
+                data = { ok: false, error: "Request failed." };
+            }
+            pyrunOutputs[cell.id] = {
+                state: "done",
+                ok: !!data.ok,
+                stdout: data.stdout || "",
+                result: data.result,
+                error: data.error || "",
+                elapsedMs: data.elapsed_ms,
+            };
+            if (!wrap.isConnected) return;
+            paintPyrunOutput(wrap, cell);
+            const btn2 = wrap.querySelector(".nb-pyrun-run");
+            if (btn2) btn2.disabled = false;
+        }
 
         function activeCellIds() {
             const ids = new Set();
@@ -1258,6 +1651,11 @@
             if (!remoteDoc || !Array.isArray(remoteDoc.cells)) {
                 return { diverged: false, keptLocal: false };
             }
+            // Every adopted remote state is itself undoable — snapshot
+            // first, on BOTH paths: the poll path and the 409 rebase path
+            // (keepAllLocal) adopt server-only cells into doc.cells below,
+            // so undo restores the pre-change local state either way.
+            pushUndo("AI edit");
             const baseById = new Map(
                 (baseDoc.cells || []).map((c) => [c.id, c]));
             const remoteIds = new Set(remoteDoc.cells.map((c) => c.id));
@@ -1272,17 +1670,30 @@
             };
             const nextCells = [];
             const seen = new Set();
+            // Cells adopted from the remote (AI) side — flashed after the
+            // DOM patch, with a per-cell Reverter (§2.1). Cells the user is
+            // editing keep local content and are never flashed.
+            const aiChanged = [];
+            const snapCell = (c) => JSON.parse(JSON.stringify(c));
             remoteDoc.cells.forEach((rc) => {
                 const id = rc.id;
                 seen.add(id);
                 const b = baseById.get(id);
                 const l = localById.get(id);
-                if (!l) { nextCells.push(rc); return; }
+                if (!l) {
+                    nextCells.push(rc);
+                    aiChanged.push({ id: id, before: null });
+                    return;
+                }
                 if (cellSig(l) === cellSig(rc)) { nextCells.push(rc); return; }
                 // A focused/editing cell keeps its local content so the
                 // model always matches what the (preserved) editor shows.
                 if (active.has(id)) { nextCells.push(keepAside(l)); return; }
-                if (!keepAllLocal) { nextCells.push(rc); return; }
+                if (!keepAllLocal) {
+                    aiChanged.push({ id: id, before: snapCell(l) });
+                    nextCells.push(rc);
+                    return;
+                }
                 if (!b) { nextCells.push(keepAside(l)); return; }
                 if (cellSig(b) === cellSig(rc)) {
                     diverged = true;  // only local changed → keep it
@@ -1290,7 +1701,9 @@
                     return;
                 }
                 if (cellSig(b) === cellSig(l)) {
-                    nextCells.push(rc);  // only server changed → adopt
+                    // only server changed → adopt + flash.
+                    aiChanged.push({ id: id, before: snapCell(l) });
+                    nextCells.push(rc);
                     return;
                 }
                 nextCells.push(keepAside(l));  // both changed → local wins
@@ -1335,6 +1748,7 @@
             }));
             patchCellNodes();
             renderToc();
+            flashAiChangedCells(aiChanged);
             return { diverged: diverged, keptLocal: keptLocal };
         }
 
@@ -1380,6 +1794,82 @@
             cellsEl.appendChild(frag);
         }
 
+        // --- AI live flash + per-cell revert (§2.1) ---------------------
+        // Cells adopted from a remote (AI) edit flash briefly with a
+        // "Reverter edição da IA" button restoring this cell's pre-AI
+        // content only (a cell the AI added is removed instead). The
+        // animation style is injected here so the effect ships with this
+        // module — no template change needed. Snapshots live in a side map,
+        // never on the cell objects, so the save payload stays clean.
+        const AI_FLASH_MS = 10000;
+        let aiFlashStyleInjected = false;
+        function ensureAiFlashStyle() {
+            if (aiFlashStyleInjected) return;
+            aiFlashStyleInjected = true;
+            const st = document.createElement("style");
+            st.textContent = ".ai-live-flash{animation:nb-ai-flash 1.1s"
+                + " ease-in-out 3;outline:2px solid oklch(var(--p));"
+                + "outline-offset:2px;border-radius:.75rem}"
+                + "@keyframes nb-ai-flash{0%,100%{box-shadow:0 0 0 0"
+                + " oklch(var(--p)/0)}50%{box-shadow:0 0 0 4px"
+                + " oklch(var(--p)/.45)}}";
+            document.head.appendChild(st);
+        }
+        // cellId -> pre-AI cell snapshot (null = the AI added this cell).
+        const aiRevertSnapshots = new Map();
+        function flashAiChangedCells(changed) {
+            if (!changed || !changed.length) return;
+            ensureAiFlashStyle();
+            changed.forEach((item) => {
+                aiRevertSnapshots.set(item.id, item.before || null);
+                const node = document.getElementById("nb-cell-" + item.id);
+                if (!node || !node.isConnected) return;
+                node.classList.add("ai-live-flash");
+                const head = node.querySelector(".nb-cell-head");
+                if (head && !head.querySelector(".nb-ai-revert")) {
+                    const btn = el("button",
+                        "btn btn-ghost btn-xs gap-1 nb-ai-revert");
+                    btn.type = "button";
+                    btn.innerHTML = '<i class="fas fa-undo"></i>'
+                        + " Reverter edição da IA";
+                    btn.title = "Reverter edição da IA nesta célula";
+                    btn.addEventListener("click",
+                        () => revertAiCell(item.id));
+                    head.appendChild(btn);
+                }
+                setTimeout(() => { clearAiFlash(item.id); }, AI_FLASH_MS);
+            });
+        }
+        function clearAiFlash(id) {
+            aiRevertSnapshots.delete(id);
+            const node = document.getElementById("nb-cell-" + id);
+            if (!node) return;
+            node.classList.remove("ai-live-flash");
+            const b = node.querySelector(".nb-ai-revert");
+            if (b) b.remove();
+        }
+        function revertAiCell(id) {
+            if (!aiRevertSnapshots.has(id)) return;
+            const before = aiRevertSnapshots.get(id);
+            pushUndo("revert AI edit");
+            const i = doc.cells.findIndex((c) => c.id === id);
+            // The user may have started editing the flashed cell after it
+            // arrived: a full render then, so no editor shows stale content.
+            const wasEditing = i >= 0 && !!doc.cells[i]._editing;
+            if (before === null) {
+                if (i >= 0) doc.cells.splice(i, 1);
+            } else if (i >= 0) {
+                doc.cells[i] = before;
+            } else {
+                doc.cells.push(before);
+            }
+            clearAiFlash(id);
+            if (wasEditing) render();
+            else patchCellNodes();
+            renderToc();
+            scheduleSave();
+        }
+
         // Conflict resolution after a 409: adopt the server document like a
         // poll would, but keep EVERY local change (base-aware 3-way, not
         // just the focused cells) and always advance the save base — the
@@ -1418,8 +1908,10 @@
 
         // External-change watch: when the AI (or another tab) edits this
         // notebook, patch only the affected cells — unsaved local edits win.
-        async function pollRemote() {
-            if (!alive()) { clearInterval(pollTimer); return; }
+        // Shared fetch-and-adopt leg for the poll timer and the
+        // docindex-ui-action push below (§2.1).
+        async function refreshFromServer() {
+            if (!alive()) return;
             const data = await apiFetch(opts.docUrl, null, { silent: true });
             if (!data || !data.ok || !data.checksum) return;
             try {
@@ -1428,11 +1920,27 @@
                 applyRemoteDoc(data.doc, data.checksum);
             } catch (err) { /* malformed payload — try again next tick */ }
         }
+        async function pollRemote() {
+            if (!alive()) { clearInterval(pollTimer); return; }
+            await refreshFromServer();
+        }
         const pollTimer = setInterval(pollRemote, 5000);
+        // Push leg (§2.1): AI tool saves emit notebook_changed (agent
+        // service ui_action → ai_core.js docindex-ui-action), so refresh
+        // at once instead of waiting for the next poll tick.
+        function onDocIndexUiAction(e) {
+            const d = e && e.detail;
+            if (!d || d.type !== "notebook_changed") return;
+            const fid = d.file_id !== undefined ? d.file_id : d.fileId;
+            if (fid !== opts.fileId) return;
+            refreshFromServer();
+        }
+        window.addEventListener("docindex-ui-action", onDocIndexUiAction);
         const addBtn = root.querySelector("#nb-add-btn");
         const addType = root.querySelector("#nb-add-type");
         if (addBtn && addType) {
             addBtn.addEventListener("click", () => {
+                pushUndo("add cell");
                 doc.cells.push(newCell(addType.value));
                 render();
                 scheduleSave();
@@ -1496,37 +2004,112 @@
             return head;
         }
 
-        // Document index: titles and subtitles with scroll-to links.
+        // Document index: heading cells plus in-cell markdown (#/##/###)
+        // and richtext (<h1>-<h3>) headers, with MD/RT badges, smooth
+        // scroll-to-cell links and scroll-spy active highlight.
         function renderToc() {
             if (!tocListEl) return;
             tocListEl.innerHTML = "";
-            const entries = doc.cells.filter(
-                (c) => c.type === "heading" && c.content.trim());
+            const entries = [];
+            (doc.cells || []).forEach((cell) => {
+                if (cell.type === "heading"
+                        && (cell.content || "").trim()) {
+                    entries.push({ cellId: cell.id,
+                        level: (cell.meta && cell.meta.level === 2) ? 2 : 1,
+                        text: cell.content.trim(), badge: null });
+                } else if (cell.type === "markdown"
+                        && typeof cell.content === "string") {
+                    cell.content.split("\n").forEach((line) => {
+                        const m = line.match(/^#{1,3}\s+(.+)$/);
+                        if (m && m[1].trim()) {
+                            entries.push({ cellId: cell.id,
+                                level: line.match(/^#+/)[0].length,
+                                text: m[1].trim(), badge: "MD" });
+                        }
+                    });
+                } else if (cell.type === "richtext"
+                        && typeof cell.content === "string") {
+                    const re = /<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi;
+                    let m;
+                    while ((m = re.exec(cell.content)) !== null) {
+                        const text = m[2].replace(/<[^>]+>/g, "").trim();
+                        if (text) {
+                            entries.push({ cellId: cell.id,
+                                level: parseInt(m[1], 10),
+                                text: text, badge: "RT" });
+                        }
+                    }
+                }
+            });
             if (!entries.length) {
                 tocListEl.appendChild(el("span", "text-xs opacity-40",
                     "No headings yet — add a Heading cell to structure the notebook."));
                 return;
             }
-            entries.forEach((cell) => {
+            entries.forEach((entry) => {
                 const a = el("a",
-                    (cell.meta && cell.meta.level === 2)
-                        ? "nb-toc-subtitle" : "nb-toc-title",
-                    cell.content);
+                    entry.level === 1 ? "nb-toc-title" : "nb-toc-subtitle");
                 a.href = "#";
+                a.dataset.tocCell = entry.cellId;
+                a.appendChild(document.createTextNode(entry.text));
+                if (entry.badge) {
+                    a.appendChild(document.createTextNode(" "));
+                    a.appendChild(el("span", "nb-toc-badge", entry.badge));
+                }
                 a.addEventListener("click", (e) => {
                     e.preventDefault();
-                    const target = document.getElementById("nb-cell-" + cell.id);
-                    if (target) {
-                        target.scrollIntoView({ behavior: "smooth", block: "start" });
-                        target.classList.add("ring", "ring-primary/40");
-                        setTimeout(() => target.classList.remove("ring", "ring-primary/40"), 1200);
-                    }
+                    scrollToTocEntry(entry.cellId);
                 });
                 tocListEl.appendChild(a);
+            });
+            updateTocActive();
+        }
+
+        function scrollToTocEntry(cellId) {
+            const target = document.getElementById("nb-cell-" + cellId);
+            if (target) {
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+                target.classList.add("ring", "ring-primary/40");
+                setTimeout(() => target.classList.remove(
+                    "ring", "ring-primary/40"), 1200);
+            }
+            markTocActive(cellId);
+        }
+
+        function markTocActive(cellId) {
+            if (!tocListEl) return;
+            tocListEl.querySelectorAll("a").forEach((a) => {
+                a.classList.toggle("nb-toc-active",
+                    a.dataset.tocCell === cellId);
+            });
+        }
+
+        // Scroll-spy: highlight the entry of the last cell at/above the
+        // viewport top (rAF-throttled; no-op while the index is empty).
+        let tocSpyQueued = false;
+        function updateTocActive() {
+            if (!tocListEl) return;
+            if (!tocListEl.querySelectorAll("a").length) return;
+            let current = null;
+            (doc.cells || []).forEach((cell) => {
+                const node = document.getElementById("nb-cell-" + cell.id);
+                if (node && node.getBoundingClientRect().top <= 120) {
+                    current = cell.id;
+                }
+            });
+            if (current) markTocActive(current);
+        }
+        function onTocScroll() {
+            if (tocSpyQueued) return;
+            tocSpyQueued = true;
+            requestAnimationFrame(() => {
+                tocSpyQueued = false;
+                updateTocActive();
             });
         }
 
         function insertCell(type, index) {
+            pushUndo("insert cell");
             const cell = newCell(type);
             if (["markdown", "code", "richtext", "heading", "chart"]
                     .includes(type)) {
@@ -1572,6 +2155,45 @@
             bar.appendChild(btn);
             bar.appendChild(types);
             return bar;
+        }
+
+        // --- Per-cell Ask AI: attach the cell to the AI chat -----------
+        function askAiAboutCell(cell, btn) {
+            const payload = {
+                fileId: opts.fileId,
+                fileName: (window.currentFile && window.currentFile.name)
+                    || doc.title || "notebook",
+                cellId: cell.id,
+                cellType: cell.type,
+                preview: cellPlainText(cell),
+            };
+            if (window.aiChat
+                    && typeof window.aiChat.attachNotebookCell
+                        === "function") {
+                window.aiChat.attachNotebookCell(payload);
+                const chatInput = document.querySelector(
+                    ".ai-chat-window textarea");
+                if (chatInput && chatInput.focus) chatInput.focus();
+                return;
+            }
+            // Chat side absent: copy a paste-ready summary and say so —
+            // never dead-click without feedback.
+            const summary = "[" + payload.fileName + " / " + payload.cellId
+                + " (" + payload.cellType + ")]\n" + payload.preview;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(summary).catch(() => {});
+            }
+            if (typeof console !== "undefined" && console.info) {
+                console.info("AI chat unavailable — cell summary copied,"
+                    + " paste it in chat");
+            }
+            if (btn) {
+                const original = btn.innerHTML;
+                btn.innerHTML = "Copied — paste in chat";
+                btn.title = "AI chat unavailable — cell copied,"
+                    + " paste it in the chat";
+                setTimeout(() => { btn.innerHTML = original; }, 2000);
+            }
         }
 
         function renderCell(cell, index) {
@@ -1630,11 +2252,29 @@
                     renderCellBody(wrap, cell, index);
                 }));
             }
+            const askAi = el("button", "btn btn-ghost btn-xs gap-1");
+            askAi.type = "button";
+            askAi.innerHTML = "✨ Ask AI";
+            askAi.title = "Attach this cell to the AI chat";
+            askAi.addEventListener("click", () => askAiAboutCell(cell, askAi));
+            actions.appendChild(askAi);
+            if (cell.type === "code"
+                    && PYRUN_LANGS.indexOf(pyrunLang(cell)) !== -1) {
+                const runBtn = el("button",
+                    "btn btn-ghost btn-xs gap-1 nb-pyrun-run");
+                runBtn.type = "button";
+                runBtn.textContent = "▶ Run in pyrun";
+                runBtn.title = "Execute this cell in the pyrun sandbox";
+                runBtn.addEventListener("click",
+                    () => runCodeCell(cell, wrap));
+                actions.appendChild(runBtn);
+            }
             actions.appendChild(mkBtn("fa-arrow-up", "Move up", () => {
                 // Dynamic index: per-cell patching can reorder nodes without
                 // re-rendering, so never trust the render-time closure.
                 const i = doc.cells.indexOf(cell);
                 if (i > 0) {
+                    pushUndo("move cell");
                     doc.cells.splice(i, 1);
                     doc.cells.splice(i - 1, 0, cell);
                     render(); scheduleSave();
@@ -1643,6 +2283,7 @@
             actions.appendChild(mkBtn("fa-arrow-down", "Move down", () => {
                 const i = doc.cells.indexOf(cell);
                 if (i >= 0 && i < doc.cells.length - 1) {
+                    pushUndo("move cell");
                     doc.cells.splice(i, 1);
                     doc.cells.splice(i + 1, 0, cell);
                     render(); scheduleSave();
@@ -1654,7 +2295,10 @@
                     : Promise.resolve(window.confirm("Delete this cell?")));
                 if (!ok) return;
                 const i = doc.cells.indexOf(cell);
-                if (i >= 0) doc.cells.splice(i, 1);
+                if (i >= 0) {
+                    pushUndo("delete cell");
+                    doc.cells.splice(i, 1);
+                }
                 render(); scheduleSave();
             }, true));
             head.appendChild(actions);
@@ -1678,10 +2322,12 @@
                     ? "0 -3px 0 0 oklch(var(--p))"
                     : "0 3px 0 0 oklch(var(--p))";
             });
-            wrap.addEventListener("dragleave", () => {
+            wrap.addEventListener("dragleave", (e) => {
+                if (wrap.contains(e.relatedTarget)) return;
                 wrap.style.boxShadow = "";
             });
             wrap.addEventListener("drop", (e) => {
+                if (!e.dataTransfer.types.includes("text/nb-cell")) return;
                 e.preventDefault();
                 wrap.style.boxShadow = "";
                 const from = parseInt(e.dataTransfer.getData("text/nb-cell"), 10);
@@ -1689,6 +2335,7 @@
                 let to = doc.cells.indexOf(cell)
                     + (wrap.dataset.dropPos === "after" ? 1 : 0);
                 if (to === from || to === from + 1) return;  // dropped in place
+                pushUndo("move cell");
                 const moved = doc.cells.splice(from, 1)[0];
                 if (from < to) to -= 1;
                 doc.cells.splice(to, 0, moved);
@@ -1992,7 +2639,14 @@
 
             area.addEventListener("input", updatePreview);
 
-            wrap.addEventListener("focusout", () => {
+            wrap.addEventListener("focusout", (e) => {
+                // Keep-open on chat click (§2.2): focus leaving #nb-cells
+                // (chat, toolbar, index) keeps the editor + saves behind.
+                if (focusMovedOutsideCells(e.relatedTarget)) {
+                    cell._editing = true;
+                    scheduleSave();
+                    return;
+                }
                 setTimeout(() => {
                     if (!wrap.isConnected || wrap.contains(document.activeElement)) return;
                     cell._editing = false;
@@ -2475,6 +3129,177 @@
             area.dispatchEvent(new Event("input", { bubbles: true }));
         }
 
+        // Inline slash menu (`/`): typing `/` (+ filter letters) on an
+        // otherwise empty Markdown line opens a cursor-positioned
+        // `.nb-slash-popup`. Arrow keys move, Enter applies, Esc closes.
+        // Empty cells convert in place; cells that already hold text keep
+        // it and get the new cell inserted below. `/file` opens the drive
+        // picker and inserts `[name](file://ID)` at the caret.
+        const SLASH_OPTIONS = [
+            { cmd: "/table", label: "Table", type: "table" },
+            { cmd: "/todo", label: "To-do", type: "todo" },
+            { cmd: "/code", label: "Code", type: "code" },
+            { cmd: "/chart", label: "Chart", type: "chart" },
+            { cmd: "/h1", label: "Heading", type: "heading" },
+            { cmd: "/sep", label: "Separator", type: "separator" },
+            { cmd: "/file", label: "File", type: "file" },
+        ];
+
+        function slashLineQuery(value, pos) {
+            const lineStart = value.lastIndexOf("\n", pos - 1) + 1;
+            const line = value.slice(lineStart, pos);
+            const m = line.match(/^\s*\/([a-z]*)$/i);
+            if (!m) return null;
+            return { query: m[1].toLowerCase(), lineStart: lineStart };
+        }
+
+        function applySlashOption(cell, area, opt, trig) {
+            const value = area.value;
+            const pos = area.selectionStart == null
+                ? value.length : area.selectionStart;
+            const before = value.slice(0, trig.lineStart);
+            const after = value.slice(pos);
+            if (opt.type === "file") {
+                pushUndo("slash " + opt.cmd);
+                area.value = before + after;
+                area.setSelectionRange(before.length, before.length);
+                area.dispatchEvent(new Event("input", { bubbles: true }));
+                area.focus();
+                pickFile((f) => {
+                    const at = area.selectionStart == null
+                        ? area.value.length : area.selectionStart;
+                    const link = "[" + f.name + "](file://" + f.file_id
+                        + ")";
+                    area.value = area.value.slice(0, at) + link
+                        + area.value.slice(at);
+                    area.focus();
+                    area.setSelectionRange(at + link.length,
+                        at + link.length);
+                    area.dispatchEvent(new Event("input", { bubbles: true }));
+                });
+                return;
+            }
+            pushUndo("slash " + opt.cmd);
+            const rest = (before + after).trim();
+            const editable = ["markdown", "code", "richtext", "heading",
+                "chart"];
+            if (!rest) {
+                const fresh = newCell(opt.type);
+                cell.type = opt.type;
+                cell.meta = fresh.meta;
+                cell.content = "";
+                if (opt.type === "heading") cell.meta.level = 1;
+                cell._editing = editable.includes(opt.type);
+                render();
+            } else {
+                const fresh = newCell(opt.type);
+                if (opt.type === "heading") fresh.meta.level = 1;
+                fresh._editing = editable.includes(opt.type);
+                cell.content = before + after;
+                doc.cells.splice(doc.cells.indexOf(cell) + 1, 0, fresh);
+                render();
+            }
+            scheduleSave();
+        }
+
+        function wireSlashMenu(area, wrap, cell) {
+            wrap.style.position = "relative";
+            let popup = null;
+            let options = [];
+            let selIndex = 0;
+            let trig = null;
+
+            function close() {
+                if (popup) popup.remove();
+                popup = null;
+                options = [];
+                trig = null;
+            }
+
+            function place() {
+                if (!popup) return;
+                const lh = parseFloat(
+                    window.getComputedStyle(area).lineHeight) || 18;
+                const caret = area.selectionStart == null
+                    ? area.value.length : area.selectionStart;
+                const lines = area.value.slice(0, caret)
+                    .split("\n").length - 1;
+                popup.style.top = (area.offsetTop + (lines + 1) * lh + 4)
+                    + "px";
+                popup.style.left = "8px";
+            }
+
+            function paint() {
+                if (!popup) return;
+                popup.innerHTML = "";
+                options.forEach((opt, i) => {
+                    const b = el("button",
+                        "btn btn-ghost btn-xs w-full justify-start gap-2"
+                        + (i === selIndex ? " btn-active" : ""));
+                    b.type = "button";
+                    b.textContent = opt.cmd + "  " + opt.label;
+                    b.addEventListener("mousedown", (e) => e.preventDefault());
+                    b.addEventListener("click", () => {
+                        const t = trig;
+                        close();
+                        applySlashOption(cell, area, opt, t);
+                    });
+                    popup.appendChild(b);
+                });
+                place();
+            }
+
+            function refresh() {
+                const caret = area.selectionStart == null
+                    ? area.value.length : area.selectionStart;
+                const hit = slashLineQuery(area.value, caret);
+                if (!hit) { close(); return; }
+                trig = hit;
+                options = SLASH_OPTIONS.filter((o) =>
+                    o.cmd.slice(1).startsWith(hit.query));
+                if (!options.length) { close(); return; }
+                selIndex = 0;
+                if (!popup) {
+                    popup = el("div",
+                        "nb-slash-popup glass-panel rounded-xl p-1 "
+                        + "flex flex-col gap-0.5");
+                    popup.style.cssText += "position:absolute;z-index:30;"
+                        + "min-width:12rem;";
+                    wrap.appendChild(popup);
+                }
+                paint();
+            }
+
+            area.addEventListener("input", refresh);
+            area.addEventListener("keydown", (e) => {
+                if (!popup) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    selIndex = (selIndex + 1) % options.length;
+                    paint();
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    selIndex = (selIndex + options.length - 1)
+                        % options.length;
+                    paint();
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    const opt = options[selIndex];
+                    const t = trig;
+                    close();
+                    applySlashOption(cell, area, opt, t);
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            });
+            area.addEventListener("blur", () => {
+                // Popup clicks never blur (mousedown is prevented); a
+                // stray open menu must not linger after real blurs.
+                setTimeout(() => { if (popup) close(); }, 150);
+            });
+        }
+
         function renderMarkdownCell(body, cell) {
             if (!readMode && (cell._editing || !cell.content.trim())) {
                 const wrap = el("div", "flex flex-col");
@@ -2560,9 +3385,17 @@
                     renderMarkdownPreview(preview, cell);
                     fitTextarea(area);
                 });
+                wireSlashMenu(area, wrap, cell);
                 // Exit edit mode only when focus truly leaves the cell — the
                 // file picker lives outside the cell but must not close it.
-                wrap.addEventListener("focusout", () => {
+                // Keep-open on chat click (§2.2): focus leaving #nb-cells
+                // keeps the editor + saves in the background.
+                wrap.addEventListener("focusout", (e) => {
+                    if (focusMovedOutsideCells(e.relatedTarget)) {
+                        cell._editing = true;
+                        scheduleSave();
+                        return;
+                    }
                     setTimeout(() => {
                         const active = document.activeElement;
                         if (!wrap.isConnected || wrap.contains(active)) return;
@@ -2619,11 +3452,18 @@
                 // Exit edit mode only when focus leaves the cell controls
                 // entirely. Clicking the language select opens a native
                 // popup and the focusout comes with relatedTarget = null,
-                // so defer and check where focus actually landed.
+                // so defer and check where focus actually landed. Keep-open
+                // on chat click (§2.2): focus leaving #nb-cells keeps the
+                // editor + saves in the background.
                 const wrap = el("div", "flex flex-col");
                 wrap.appendChild(lang);
                 wrap.appendChild(area);
-                wrap.addEventListener("focusout", () => {
+                wrap.addEventListener("focusout", (e) => {
+                    if (focusMovedOutsideCells(e.relatedTarget)) {
+                        cell._editing = true;
+                        scheduleSave();
+                        return;
+                    }
                     setTimeout(() => {
                         if (!wrap.isConnected
                                 || wrap.contains(document.activeElement)) return;
@@ -2649,6 +3489,12 @@
                     try { window.hljs.highlightElement(code); } catch (e) { /* unknown lang */ }
                 }
             }
+            if (PYRUN_LANGS.indexOf(pyrunLang(cell)) !== -1) {
+                const out = el("div", "nb-pyrun-output mt-2");
+                body.appendChild(out);
+                const wrapEl = body.closest(".nb-cell");
+                paintPyrunOutput(wrapEl || body, cell);
+            }
         }
 
         function renderTodoCell(body, cell) {
@@ -2666,6 +3512,24 @@
                 body.appendChild(list);
                 return;
             }
+            // Progress badge: done/total (pct).
+            const badge = el("div", "text-xs opacity-60 mb-1");
+            const paintBadge = () => {
+                const done = items.filter((it) => it.done).length;
+                const pct = items.length
+                    ? Math.round((done / items.length) * 100) : 0;
+                badge.textContent =
+                    done + "/" + items.length + " (" + pct + "%)";
+            };
+            paintBadge();
+            body.appendChild(badge);
+            const focusTodoAt = (idx) => {
+                const fields = body.closest(".nb-cell")
+                    .querySelectorAll(".nb-todo-text");
+                const target = fields[Math.max(0,
+                    Math.min(idx, fields.length - 1))];
+                if (target) target.focus();
+            };
             const list = el("div", "flex flex-col gap-1");
             items.forEach((item, i) => {
                 const row = el("div", "flex items-center gap-2");
@@ -2676,10 +3540,11 @@
                     item.done = box.checked;
                     text.classList.toggle("line-through", item.done);
                     text.classList.toggle("opacity-50", item.done);
+                    paintBadge();
                     scheduleSave();
                 });
                 const text = el("input",
-                    "input input-ghost input-sm flex-1" +
+                    "input input-ghost input-sm flex-1 nb-todo-text" +
                     (item.done ? " line-through opacity-50" : ""));
                 text.value = item.text;
                 text.placeholder = "Task…";
@@ -2687,9 +3552,28 @@
                     item.text = text.value;
                     scheduleSave();
                 });
+                text.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        pushUndo("add todo item");
+                        items.splice(i + 1, 0, { text: "", done: false });
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                        focusTodoAt(i + 1);
+                    } else if (e.key === "Backspace" && text.value === "" &&
+                            items.length > 1) {
+                        e.preventDefault();
+                        pushUndo("remove todo item");
+                        items.splice(i, 1);
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                        focusTodoAt(i - 1);
+                    }
+                });
                 const del = el("button", "btn btn-ghost btn-xs btn-square text-error");
                 del.innerHTML = '<i class="fas fa-xmark"></i>';
                 del.addEventListener("click", () => {
+                    pushUndo("remove todo item");
                     items.splice(i, 1);
                     renderCellBody(body.closest(".nb-cell"), cell);
                     scheduleSave();
@@ -2700,6 +3584,7 @@
             const add = el("button", "btn btn-ghost btn-xs gap-1 self-start mt-1");
             add.innerHTML = '<i class="fas fa-plus"></i> Add task';
             add.addEventListener("click", () => {
+                pushUndo("add todo item");
                 items.push({ text: "", done: false });
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
@@ -2757,12 +3642,69 @@
                         row[ci] = input.value;
                         scheduleSave();
                     });
+                    input.addEventListener("paste", (e) => {
+                        const clip = e.clipboardData || window.clipboardData;
+                        const text = clip ? clip.getData("text") : "";
+                        if (!text || (text.indexOf("\t") === -1 &&
+                                text.indexOf("\n") === -1 &&
+                                text.indexOf("\r") === -1)) return;
+                        e.preventDefault();
+                        pushUndo("paste table cells");
+                        const lines = text.replace(/\r\n?/g, "\n").split("\n");
+                        if (lines.length &&
+                            lines[lines.length - 1] === "") lines.pop();
+                        const grid = lines.map((line) => line.split("\t"));
+                        let widest = 0;
+                        grid.forEach((r) => {
+                            widest = Math.max(widest, r.length);
+                        });
+                        while (meta.headers.length < ci + widest) {
+                            meta.headers.push(
+                                "Column " + (meta.headers.length + 1));
+                            meta.rows.forEach((r) => r.push(""));
+                        }
+                        grid.forEach((prow, dr) => {
+                            const rr = ri + dr;
+                            while (meta.rows.length <= rr) {
+                                meta.rows.push(meta.headers.map(() => ""));
+                            }
+                            prow.forEach((val, dc) => {
+                                meta.rows[rr][ci + dc] = val;
+                            });
+                        });
+                        meta.rows.forEach((r) => {
+                            while (r.length < meta.headers.length) r.push("");
+                        });
+                        renderCellBody(body.closest(".nb-cell"), cell);
+                        scheduleSave();
+                    });
                     td.appendChild(input);
                     tr.appendChild(td);
                 });
                 tbody.appendChild(tr);
             });
             table.appendChild(tbody);
+            // Keyboard nav: Tab/Shift+Tab between columns, Enter/ArrowDown/
+            // ArrowUp between rows (header row participates as row 0).
+            const navInputs = Array.from(table.querySelectorAll("input"));
+            navInputs.forEach((input, idx) => {
+                input.addEventListener("keydown", (e) => {
+                    const ncols = meta.headers.length;
+                    let target = null;
+                    if (e.key === "Tab") {
+                        target = navInputs[idx + (e.shiftKey ? -1 : 1)];
+                    } else if (e.key === "Enter" ||
+                            e.key === "ArrowDown") {
+                        target = navInputs[idx + ncols];
+                    } else if (e.key === "ArrowUp") {
+                        target = navInputs[idx - ncols];
+                    }
+                    if (target) {
+                        e.preventDefault();
+                        target.focus();
+                    }
+                });
+            });
             const wrap = el("div", "nb-tablewrap");
             wrap.appendChild(table);
             body.appendChild(wrap);
@@ -2774,28 +3716,49 @@
                 return b;
             };
             bar.appendChild(mkBar("+ Row", () => {
+                pushUndo("add table row");
                 meta.rows.push(meta.headers.map(() => ""));
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("+ Column", () => {
+                pushUndo("add table column");
                 meta.headers.push("Column " + (meta.headers.length + 1));
                 meta.rows.forEach((r) => r.push(""));
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("− Row", () => {
-                if (meta.rows.length) meta.rows.pop();
+                if (!meta.rows.length) return;
+                pushUndo("remove table row");
+                meta.rows.pop();
                 renderCellBody(body.closest(".nb-cell"), cell);
                 scheduleSave();
             }));
             bar.appendChild(mkBar("− Column", () => {
                 if (meta.headers.length > 1) {
+                    pushUndo("remove table column");
                     meta.headers.pop();
                     meta.rows.forEach((r) => r.pop());
                     renderCellBody(body.closest(".nb-cell"), cell);
                     scheduleSave();
                 }
+            }));
+            bar.appendChild(mkBar("Export CSV", () => {
+                const esc = (v) => {
+                    v = String(v == null ? "" : v);
+                    return /[",\n\r]/.test(v)
+                        ? '"' + v.replace(/"/g, '""') + '"' : v;
+                };
+                const lines = [meta.headers.map(esc).join(",")].concat(
+                    meta.rows.map((r) => meta.headers.map(
+                        (_, ci) => esc(r[ci])).join(",")));
+                const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = "table.csv";
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
             }));
             body.appendChild(bar);
         }

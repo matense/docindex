@@ -65,13 +65,14 @@ window.AutomationRunForm = (function () {
             document.body.appendChild(d);
             const driveSel = d.querySelector('[data-p="drive"]');
             const list = d.querySelector('[data-p="list"]');
-            const crumbs = d.querySelector('[data-p="crumbs"]');
+            const crumbsEl = d.querySelector('[data-p="crumbs"]');
             (drives || []).forEach((g) => {
                 const o = document.createElement('option');
                 o.value = g.id; o.textContent = g.name;
                 driveSel.appendChild(o);
             });
             let folderId = null;
+            let crumbs = [];
             const close = (v) => { d.remove(); resolve(v); };
             d.querySelector('[data-p="cancel"]').addEventListener('click', () => close(null));
             async function load() {
@@ -80,7 +81,8 @@ window.AutomationRunForm = (function () {
                 if (folderId) url += '&folder_id=' + folderId;
                 let data = await apiFetch(url, { headers: { Accept: 'application/json' } }, { silent: true });
                 if (!data || typeof data !== 'object') data = {};
-                crumbs.textContent = (data.crumbs || []).map((c) => c.name).join(' / ') || '— root —';
+                crumbs = (data.crumbs || []);
+                crumbsEl.textContent = crumbs.map((c) => c.name).join(' / ') || '— root —';
                 list.innerHTML = '';
                 (data.folders || []).forEach((f) => {
                     const b = document.createElement('button');
@@ -103,7 +105,11 @@ window.AutomationRunForm = (function () {
                 }
             }
             driveSel.addEventListener('change', () => { folderId = null; load(); });
-            d.querySelector('[data-p="up"]').addEventListener('click', () => { folderId = null; load(); });
+            d.querySelector('[data-p="up"]').addEventListener('click', () => {
+                if (crumbs.length >= 2) { folderId = crumbs[crumbs.length - 2].id; }
+                else { folderId = null; }
+                load();
+            });
             d.showModal();
             load();
         });

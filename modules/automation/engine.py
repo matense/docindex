@@ -604,7 +604,8 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
                     preview = as_text(payload)
                     results.append({"node": nid, "kind": payload["kind"],
                                     "preview": preview[:2000]})
-            if node["type"] in ("output.save_file", "output.save_table"):
+            if node["type"] in ("output.save_file", "output.save_table",
+                                  "output.copy_file", "notebook.output"):
                 for ref in (node_ctx.get("created_files") or []):
                     if ref not in created:
                         created.append(ref)
@@ -626,6 +627,46 @@ def execute_graph(graph, ctx, node_types=None, should_stop=None, log=None):
             raise WorkflowError(f"{label}: unexpected error: {exc}") from exc
 
     return outputs, results, created
+
+
+def preview_rich(outputs, max_rows=50, max_json_chars=20000):
+    """Structured previews for rich rendering: {node_id: {port: rich}}.
+
+    Table payloads carry columns/rows (capped) plus totals; JSON payloads
+    carry the parsed value (capped by serialized size). Every other kind
+    has no entry — the client falls back to the preview text. Runs stored
+    before this field existed simply have no entry."""
+    rich = {}
+    for nid, ports in (outputs or {}).items():
+        for port, payload in (ports or {}).items():
+            if payload is None:
+                continue
+            kind = payload.get("kind")
+            if kind == "table":
+                data = payload.get("data") or {}
+                cols = list(data.get("columns", []))
+                rows = [list(r) for r in (data.get("rows", []) or [])]
+                rich.setdefault(nid, {})[port] = {
+                    "kind": "table",
+                    "columns": cols,
+                    "rows": rows[:max_rows],
+                    "total_rows": len(rows),
+                    "total_columns": len(cols),
+                    "truncated": len(rows) > max_rows,
+                }
+            elif kind == "json":
+                data = payload.get("data")
+                try:
+                    text = json.dumps(data, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    continue  # not serializable: text preview is enough
+                if len(text) > max_json_chars:
+                    rich.setdefault(nid, {})[port] = {
+                        "kind": "json", "truncated": True}
+                else:
+                    rich.setdefault(nid, {})[port] = {
+                        "kind": "json", "data": data}
+    return rich
 
 
 def preview_outputs(outputs, limit=4000):

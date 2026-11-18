@@ -467,9 +467,16 @@ def conversation(conv_id):
     # that produced each assistant message (an answer backed by N agent
     # steps sums all N calls).
     usage = ai_usage_service.message_usage_map(conv.id)
+    # Estimated prompt memory: active (in-context) transcript chars // 4.
+    active_messages = [m for m in conv.messages
+                       if m.role in ("user", "assistant") and not m.archived]
+    token_estimate = sum(len(m.content or "") for m in active_messages) // 4
     return jsonify({
         "id": conv.id,
         "title": conv.title,
+        "token_estimate": token_estimate,
+        "max_prompt_tokens": ai_service.config_for(
+            current_user)["max_prompt_tokens"],
         # Latest context the user set up in this conversation (drives,
         # attachments, cell) — restored into the chips on open.
         "context": json.loads(conv.context) if conv.context else None,
@@ -483,7 +490,9 @@ def conversation(conv_id):
                               if task.context else None)}
                  if task and not task.notified else None),
         "messages": [
-            {"role": m.role, "content": m.content, "model": m.model,
+            # The message id feeds the Branch bubble action
+            # (POST .../branch with up_to_message_id).
+            {"id": m.id, "role": m.role, "content": m.content, "model": m.model,
              "archived": bool(m.archived), "usage": usage.get(m.id),
              "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in conv.messages
@@ -504,6 +513,53 @@ def delete_conversation(conv_id):
     db.session.delete(conv)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@bp.route("/conversations/<int:conv_id>/branch", methods=["POST"])
+@login_required
+def branch_conversation(conv_id):
+    """Fork a conversation up to a message: a new conversation titled
+    "<title> (branch)" carries the context snapshot and copies of every
+    message of the original with id <= up_to_message_id, in id order."""
+    conv = _get_conversation(conv_id)
+    if not conv:
+        return jsonify({"error": "Not found"}), 404
+    data = request.get_json(silent=True) or {}
+    # Strict id shape: int or integer-valued string only. Floats must
+    # never truncate to a neighbouring anchor (fail closed with 400);
+    # bools are ints in Python, so exclude them explicitly.
+    raw = data.get("up_to_message_id")
+    if isinstance(raw, bool):
+        return jsonify({"error": "Invalid message id."}), 400
+    if isinstance(raw, int):
+        up_to = raw
+    elif isinstance(raw, str):
+        try:
+            up_to = int(raw, 10)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid message id."}), 400
+    else:
+        return jsonify({"error": "Invalid message id."}), 400
+    if not up_to:
+        return jsonify({"error": "up_to_message_id is required."}), 400
+    anchor = ChatMessage.query.filter_by(
+        conversation_id=conv.id, id=up_to).first()
+    if anchor is None:
+        return jsonify({"error": "Not found"}), 404
+    branched = ChatConversation(user_id=current_user.id,
+                                # String(255) column: clamp the 9-char suffix.
+                                title=(conv.title or "")[:246] + " (branch)",
+                                context=conv.context)
+    db.session.add(branched)
+    db.session.flush()
+    for m in ChatMessage.query.filter(
+            ChatMessage.conversation_id == conv.id,
+            ChatMessage.id <= up_to).order_by(ChatMessage.id).all():
+        db.session.add(ChatMessage(conversation_id=branched.id, role=m.role,
+                                   content=m.content, model=m.model,
+                                   archived=m.archived))
+    db.session.commit()
+    return jsonify({"id": branched.id, "title": branched.title})
 
 
 # Marker prepended to the summary message left behind by the
@@ -953,3 +1009,54 @@ def task_stream(task_id):
 
     return Response(stream_with_context(generate()),
                     mimetype="application/x-ndjson")
+
+
+# Binary/indexed formats serve the pre-extracted index text; everything
+# else is read straight off disk (first 600 chars either way).
+_PEEK_INDEXED_EXTS = {"pdf", "docx", "xls", "xlsx"}
+
+_PEEK_SNIPPET_CHARS = 600
+
+
+@bp.route("/files/<int:file_id>/peek")
+@login_required
+def file_peek(file_id):
+    """Quick-peek preview for a citation chip: the file's first 600 chars
+    plus the metadata the popover shows (name, drive, size, view link).
+
+    Ownership first (foreign/missing ids 404), then the trash check
+    (trashed files 404, never leak), then the AI file guards (hidden
+    files 403) — the same order the agent's own read tool applies."""
+    from ..services import agent_service, file_service
+
+    stored = (StoredFile.query
+              .filter_by(id=file_id, user_id=current_user.id)
+              .filter(StoredFile.deleted_at.is_(None))
+              .first())
+    if not stored:
+        return jsonify({"error": "Not found"}), 404
+    guarded = agent_service._file_guard_error(current_user, stored)
+    if guarded:
+        return jsonify({"error": guarded}), 403
+    ext = (stored.extension or "").lower()
+    snippet = ""
+    if ext in _PEEK_INDEXED_EXTS:
+        index = stored.index
+        snippet = ((index.extracted_text or "")[:_PEEK_SNIPPET_CHARS]
+                   if index else "")
+    else:
+        try:
+            snippet = file_service.read_text_content(
+                stored, max_chars=_PEEK_SNIPPET_CHARS)
+        except (OSError, UnicodeDecodeError, ValueError):
+            snippet = ""
+    drive = stored.drive
+    return jsonify({
+        "id": stored.id,
+        "name": stored.name,
+        "extension": stored.extension,
+        "size": stored.size,
+        "drive_name": drive.name if drive else None,
+        "snippet": snippet,
+        "view_url": f"/file/{stored.id}/view",
+    })

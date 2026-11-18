@@ -522,8 +522,8 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=9" in body
-    assert "?v=23" in body
+    assert "?v=14" in body
+    assert "?v=34" in body
 
 
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
@@ -1329,8 +1329,10 @@ def test_dashboard_ui_ships_in_english():
 
 
 def test_prompt_textareas_autogrow():
-    """Task 9 (user scope): card prompt + workflow-params textareas grow
-    with their content instead of clipping at a fixed height."""
+    """Task 9 (user scope): card prompt textareas grow with their content
+    instead of clipping at a fixed height. Task C2 removed the manual
+    workflow-params textarea (params now go through the contract form),
+    so the growth wiring lives on the prompt textarea + the picker."""
     import re
     import shutil
     import subprocess
@@ -1339,9 +1341,10 @@ def test_prompt_textareas_autogrow():
         src = fh.read()
     match = re.search(r"function autoGrow\(el\) \{(.*?)\n    \}", src, re.S)
     assert match, "autoGrow helper missing"
-    # Wired to both prompt textareas: card prompt + workflow params.
+    # Wired to the card prompt textarea (input + post-append fit).
     assert src.count("autoGrow(") >= 3
-    assert "dash-prompt" in src and "dash-wf-params" in src
+    assert "dash-prompt" in src and "dash-wf-select" in src
+    assert "dash-wf-params" not in src  # C2: manual JSON textarea gone
     if shutil.which("node") is None:
         pytest.skip("node not available")
     probe = (match.group(0) +
@@ -1910,6 +1913,14 @@ def test_stream_workflow_registers_artifacts(app, auth_client, user,
     monkeypatch.setattr(dash_tools.engine_service, "run_card",
                         lambda stored, card, uid: (
                             {"text": "w"}, [created_id], []))
+    # C2 streams workflow progress through iter_workflow_events (not a
+    # single run_card call), so the stub feeds the new seam.
+    def fake_workflow_events(stored, card, run_user):
+        yield {"t": "done", "card_id": card.get("id"),
+               "result": {"text": "w"}, "trace": [],
+               "artifact_ids": [created_id]}
+    monkeypatch.setattr(dash_tools.engine_service, "iter_workflow_events",
+                        fake_workflow_events)
     resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
                             json={"card_id": cid}, buffered=False)
     assert resp.status_code == 200
@@ -3219,3 +3230,1227 @@ console.log(JSON.stringify(checks));
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [True] * 5
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A1: card schema (script_enabled + script)
+# ---------------------------------------------------------------------------
+
+def test_script_fields_default_off():
+    card = dash_doc.new_card("kpi")
+    assert card["script_enabled"] is False and card["script"] == ""
+
+
+def test_workflow_card_rejects_script_toggle():
+    card = dash_doc.new_card("workflow")
+    card["script_enabled"] = True
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)
+
+
+def test_script_size_cap():
+    card = dash_doc.new_card("table")
+    card["script_enabled"] = True
+    card["script"] = "x" * (dash_doc.SCRIPT_MAX_CHARS + 1)
+    with pytest.raises(ValueError):
+        dash_doc._validate_card(card)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard script cards — Task A2: engine (_run_script_card + run_card)
+# ---------------------------------------------------------------------------
+
+def _script_card(app, fid, cid, script="res = 1\nres"):
+    """A script-mode card dict (in-memory; run_card takes the card directly,
+    so no save round-trip is needed — resolve against the live doc)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        return card
+
+
+def test_script_card_fails_closed_without_pyrun(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: pyrun disabled → run_card raises ValueError naming pyrun
+    (the route settle path turns it into the card error state); the prompt
+    path must not run instead (no AI steps for script cards)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled",
+                        lambda name: name != "pyrun")
+
+    def boom_agent(user, prompt, drive=None, max_steps=None):
+        raise AssertionError("prompt path must not run for script cards")
+
+    def boom_complete(user, messages):
+        raise AssertionError("prompt path must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", boom_complete)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    card = _script_card(app, fid, cid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        with pytest.raises(ValueError, match="pyrun"):
+            dash_engine.run_card(stored, card, user)
+
+
+def test_script_result_coercion_fallback(app, user, enabled, monkeypatch):
+    """Task A2: a prose script value coerces through the card's contract —
+    never an error state; (result, [], trace) contract holds, trace
+    carrying the console entries."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["files"] = files
+        return {"ok": True, "value": "some prose"}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    card = _script_card(app, fid, cid,
+                          script="res = 'some prose'\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, artifacts, trace = dash_engine.run_card(stored, card, user)
+    assert result.get("text") == "some prose"  # never an error state
+    assert artifacts == []
+    # Script runs carry a console trace (attachments + timing); the empty
+    # trace was the pre-console behavior, not the contract.
+    assert isinstance(trace, list) and len(trace) >= 1
+    assert seen["files"] == {}  # no attachments → empty files map
+
+
+def test_script_run_trace_lists_inputs_and_timing(app, user, enabled,
+                                                 monkeypatch):
+    """Script runs record a console trace: resolved inputs (name → table)
+    plus elapsed milliseconds — the View run console shows this."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+
+    def fake_evaluate(code, files):
+        return {"ok": True, "value": {"value": "3", "label": "rows"}}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"v\n1\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"v\n2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(app, fid, cid, script="res = 1\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        _, _, trace = dash_engine.run_card(stored, card, user)
+    by_label = {e.get("label"): e.get("detail", "") for e in trace}
+    assert "a.csv" in by_label.get("script", "")
+    assert "b.csv" in by_label.get("script", "")
+    assert "t0" in by_label.get("script", "")
+    assert "t1" in by_label.get("script", "")
+    assert "ms" in by_label.get("timing", "")
+
+
+def test_kpi_view_sign_classes():
+    """KPI view polish: delta sign classes branch in viewKpiHTML and the
+    CSS carries the big-number treatment."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "kpiDeltaClass" in src
+    assert "dash-kpi-d-pos" in src and "dash-kpi-d-neg" in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert "clamp(36px, 4vw, 56px)" in css
+    assert "dash-kpi-d-pos" in css and "dash-kpi-d-neg" in css
+    assert ".dash-pager" in css
+
+
+def test_builder_popup_editor_hooks():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "openEditor" in src
+    assert "dash-codeedit" in src and "dash-codeedit-in" in src
+    assert "hljs" in src and "python" in src
+    assert 'data-zone="edit-save"' in src and 'data-zone="edit-close"' in src
+    assert 'data-dlg="edit"' in src
+    assert "highlight unavailable" in src and "highlight off" in src
+
+
+def test_builder_card_script_overlay():
+    """Card script fields render the same highlight overlay as the popup
+    (shared painter), compact variant for the 3-row preview."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-codeedit-card" in src
+    assert "paintScriptHighlight" in src
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".dash-codeedit-card" in css
+    # Close lifecycle: dirty → confirm, no double-prompt, guard survives.
+    assert "Discard changes?" in src
+    assert "S._edit.saved = true" in src
+    assert "ctrlKey" in src and "metaKey" in src
+    assert "scheduleSave(S)" in src
+    # Highlight fallback: plain textarea stands if hljs fails.
+    assert "window.hljs.highlight" in src
+    assert "never silent" in src
+    # Inline palette: spans carry their own color so no stylesheet,
+    # override or contrast theme can wash them out.
+    assert "HL_COLORS" in src
+    assert "forced-color-adjust" in css
+    assert "ensureOverlay" in src
+    # Popup inputs honor the same caps as the card fields.
+    assert "maxlength=\"' + cap + '\"" in src
+
+
+def test_builder_card_content_first():
+    """Content-first builder card: labeled Edit pills open the popup;
+    script/tools/workflow controls live in a Settings drawer (workflow
+    cards keep the linked picker visible); expand hooks are kept."""
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "dash-edit-btn" in src and ">Edit</button>" in src
+    assert "dash-settings" in src
+    assert 'data-f="expand-prompt"' in src
+    assert 'data-f="expand-script"' in src
+    assert "if (scriptToggle)" in src  # guard: workflow cards omit the checkbox
+    assert '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' in src
+    assert "on = full agent · off = 1 LLM call" in src
+    assert "truncation flagged" not in src  # long hint trimmed to one line
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        css = fh.read()
+    assert ".dash-edit-btn" in css
+    assert "data-tpage-btn" in src and "dash-pager-info" in src
+
+
+def test_script_value_dict_coerces_to_kpi():
+    """Script cards: a returned {"value", "label"?, "delta"?} dict takes
+    the KPI big-number path (viewKpiHTML), not the text fallback — this
+    is how script KPIs get the big-number rendering."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "kpi", {"value": "3.509,5 kWh",
+                "label": "3.509.549,78 Wh"}) == {
+        "kpi": {"value": "3.509,5 kWh", "label": "3.509.549,78 Wh"}}
+    assert dash_engine._parse_script_result(
+        "kpi", {"value": "410,0 kWh", "label": "mar/2026"}) == {
+        "kpi": {"value": "410,0 kWh", "label": "mar/2026"}}
+
+
+def test_script_table_dict_coerces_to_snapshot():
+    """Script cards: {"headers", "rows"} dicts coerce into the table
+    snapshot (same caps/guards as the pipe path); ragged rows pad/cut."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "table", {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026"],
+                           ["mar/2026", "377,8", "EXTRA"]]}) == {
+        "table": {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026", ""],
+                           ["mar/2026", "377,8"]]},
+        "total_rows": 3, "truncated_rows": False}
+
+
+def test_script_row_list_coerces_to_snapshot():
+    """Script cards: a bare list of row dicts (db.query passthrough)
+    coerces with headers from the key union in first-seen order."""
+    dash_engine = _engine()
+    assert dash_engine._parse_script_result(
+        "table", [{"Mês": "jan/2026", "kWh": "410,0"},
+                  {"Mês": "fev/2026"}]) == {
+        "table": {"headers": ["Mês", "kWh"],
+                  "rows": [["jan/2026", "410,0"],
+                           ["fev/2026", ""]]},
+        "total_rows": 2, "truncated_rows": False}
+
+
+def test_script_table_caps_rows_and_flags():
+    """Script tables cap at 500 rows with total + truncated flag."""
+    dash_engine = _engine()
+    rows = [[str(i)] for i in range(600)]
+    out = dash_engine._parse_script_result(
+        "table", {"headers": ["n"], "rows": rows})
+    assert out["total_rows"] == 600
+    assert out["truncated_rows"] is True
+    assert len(out["table"]["rows"]) == 500
+
+
+def test_script_files_map_is_positional(app, user, enabled, monkeypatch):
+    """Task A2 (amended, script-card bugfix): the pyrun files map is
+    positional in card attachment order — files_map["f{pos}"] only, each a
+    [read_text_content] chunk list. No "f" alias: pyrun seeds tables t0..tN
+    in files-dict order, so an extra "f" key would duplicate the first
+    file at t1 and shift every later table."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["call"] = (code, files)
+        return {"ok": True, "value": {"value": "3", "label": "rows"}}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"v\n1\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"v\n2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(app, fid, cid,
+                          script="res = len(rows('f0'))\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    code, files = seen["call"]
+    assert code == "res = len(rows('f0'))\nres"
+    assert set(files) == {"f0", "f1"}
+    assert files["f0"] != files["f1"]
+    assert all(isinstance(chunks, list) and len(chunks) == 1
+               for chunks in files.values())
+    assert "v" in files["f0"][0] and "v" in files["f1"][0]
+    assert result == {"kpi": {"value": "3", "label": "rows"}}
+
+
+def test_script_tables_follow_attachment_order(app, user, enabled,
+                                                 monkeypatch):
+    """Script-card bugfix: with real pyrun evaluation, tables t0..tN hold
+    the attachments' contents in card order — no duplication, no shift."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _attach_file(app, fid, name="a.csv", content=b"id\nA1\nA2\n")
+    second = _attach_file(app, fid, name="b.csv", content=b"id\nB1\nB2\n")
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[first["id"], second["id"]])
+    card = _script_card(
+        app, fid, cid,
+        script="a = db.query('select id from t0')[0]['id']\n"
+               "b = db.query('select id from t1')[0]['id']\n"
+               "{'t0id': a, 't1id': b}")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    # A bare dict is not the KPI {"value", "label"} contract, so the value
+    # falls back to {"text": ...} — but the table data inside proves t0/t1
+    # hold the right files in order (no duplication, no shift).
+    assert result == {'text': '{"t0id": "A1", "t1id": "B1"}'}, result
+
+
+def test_script_card_rejects_foreign_attachment(app, user, enabled,
+                                                monkeypatch):
+    """Task A2: an attachment entry pointing at another user's file →
+    MissingInputError (ownership is re-checked at run time, never silent)."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="",
+                    attachments=[att["id"]])
+    with app.app_context():
+        bob = User(username="bob", email="bob@example.com")
+        bob.set_password("password123")
+        db.session.add(bob)
+        db.session.commit()
+        asset = db.session.get(StoredFile, att["fileId"])
+        asset.user_id = bob.id  # entry now points at another user's file
+        db.session.commit()
+        stored = db.session.get(StoredFile, fid)
+        card = next(c for c in dash_doc.load(stored)["cards"]
+                    if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = "res = 1\nres"
+        with pytest.raises(dash_engine.MissingInputError):
+            dash_engine.run_card(stored, card, user)
+
+
+# ---------------------------------------------------------------------------
+# Task A3: AI tools accept script card fields
+# ---------------------------------------------------------------------------
+
+def test_add_card_accepts_script_fields(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        outcome = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "script_enabled": True, "script": "res = 1\nres"},
+            None)
+        assert outcome["card"]["script_enabled"] is True
+        assert outcome["card"]["script"] == "res = 1\nres"
+
+
+def test_update_card_sets_script(app, user, enabled):
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nested = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script_enabled": True,
+                                 "script": "res = 1\nres"}}, None)
+        assert nested["card"]["script_enabled"] is True
+        assert nested["card"]["script"] == "res = 1\nres"
+        flat = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": "res = 2\nres",
+                        "card": {"script": "res = 9\nres"}}, None)
+        assert flat["card"]["script"] == "res = 2\nres"
+
+
+# ---------------------------------------------------------------------------
+# Task A4: builder toggle + editor, immediate run, stream branch
+# ---------------------------------------------------------------------------
+
+def test_script_builder_hooks():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'data-f="script_enabled"' in src and 'data-f="script"' in src
+    assert "dash-script" in src
+    assert 'data-f="promptwrap"' in src and 'data-f="scriptwrap"' in src
+    i = src.find("dash-script-toggle")
+    assert i >= 0 and "workflow" in src[max(0, i - 200):i + 200]
+
+
+def _script_card_persisted(app, fid, cid, script="res = 1\nres"):
+    """Flip a saved card to script mode (the stream/classic routes read the
+    stored doc, so the toggle must be persisted, not just in-memory)."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        card = next(c for c in doc["cards"] if c["id"] == cid)
+        card["script_enabled"] = True
+        card["script"] = script
+        dash_doc.save_document(stored, doc)
+
+
+def _stub_no_agent(monkeypatch, evaluate=None):
+    """pyrun on, every AI seam rigged to blow: any agent use fails the test."""
+    from app.services import module_service
+    dash_engine = _engine()
+    outcome = {"ok": True, "value": "seven"} if evaluate is None else evaluate
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate",
+                        lambda code, files: outcome,
+                        raising=False)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("agent must not run for script cards")
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", boom)
+    monkeypatch.setattr(dash_engine, "complete_once", boom)
+    monkeypatch.setattr("app.services.agent_service.run_agent_events", boom)
+
+
+def test_script_run_needs_no_prompt(app, auth_client, user, enabled,
+                                    monkeypatch):
+    """Task A4 run-immediately contract: the existing Refresh POST runs a
+    script card with an empty prompt — no prompt required, no AI steps."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    assert _run_and_finish(app, auth_client, fid, cid) == {"text": "seven"}
+
+
+def test_script_stream_runs_script(app, auth_client, user, enabled,
+                                   monkeypatch):
+    """Task A4: a script-enabled card via /run/stream executes the script
+    through run_card — the done frame carries the coerced script result and
+    the card settles done with zero agent calls."""
+    _stub_no_agent(monkeypatch)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "seven" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "done"
+    assert card["result"] == {"text": "seven"}
+
+
+def test_script_stream_error_settles_error(app, auth_client, user, enabled,
+                                           monkeypatch):
+    """Fix wave: a failing script via /run/stream emits the normal done
+    frame carrying the error and settles the card error — zero agent calls."""
+    _stub_no_agent(monkeypatch,
+                   evaluate={"ok": False, "error": "boom"})
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, cid)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    assert "boom" in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert card["result"] == {"error": "boom"}
+
+
+def test_update_card_normalizes_script(app, user, enabled):
+    """Fix wave: the update path normalizes script like the add path
+    (str(...), None → "")."""
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        fid = tools._tool_create(
+            user_obj, {"name": "Dash"}, None)["created"]["id"]
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                        "title": "Card", "prompt": "Say hi"}, None)
+        cid = added["card"]["id"]
+        nulled = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "card": {"script": None}}, None)
+        assert nulled["card"]["script"] == ""
+        coerced = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                        "script": 123}, None)
+        assert coerced["card"]["script"] == "123"
+
+
+def test_parse_script_result_maps_none_to_empty():
+    """Fix wave: a None script value coerces to "" — never a literal
+    "None" snapshot."""
+    assert _engine()._parse_script_result("kpi", None) == {"text": ""}
+
+
+# ---------------------------------------------------------------------------
+# Task C1: row equalization + snap guides + size presets
+# ---------------------------------------------------------------------------
+
+def test_row_equalization_caps_markdown():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    assert "c.h === first.h" in src  # same-row rule, type check dropped
+    assert "c.type === first.type" not in src  # no same-type gate
+    assert "snap-guide" in src or "grid-guide" in src
+    assert "dash-size-menu" in src  # badge opens a quick-select dropdown
+    assert "3×1" in src and "12×4" in src  # quick-select presets
+
+
+# ---------------------------------------------------------------------------
+# Task C2: guided workflow picker + live run progress
+# ---------------------------------------------------------------------------
+
+def _dash_js_src():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _workflow_config_region(src):
+    """The linked-workflow field block (wfFields): from its grid wrapper
+    to the Settings drawer that follows it."""
+    start = src.index("dash-wf-grid")
+    end = src.index("dash-settings", start)
+    return src[start:end]
+
+
+def test_workflow_picker_uses_dropdown_and_contract():
+    src = _dash_js_src()
+    assert "AutomationRunForm" in src and "run-contract" in src
+    assert "dash-wf-select" in src  # <select> of the user's workflows
+    region = _workflow_config_region(src)
+    assert 'data-f="wfparams"' not in region  # manual JSON textarea gone
+    assert 'inputmode="numeric"' not in region  # raw numeric id gone
+
+
+def test_workflows_endpoint_lists_owned(app, auth_client, user, enabled):
+    wid = _workflow_id(app, user)
+    with app.app_context():
+        db.session.add(ModuleState(name="automation", enabled=True))
+        db.session.commit()
+    body = auth_client.get("/m/dashboards/workflows").get_json()
+    assert body["ok"] and body["automation_enabled"]
+    assert {"id", "name"} <= set(body["workflows"][0])
+    assert wid in {w["id"] for w in body["workflows"]}
+
+
+def test_workflows_endpoint_fails_closed_when_automation_off(
+        app, auth_client, user, enabled):
+    body = auth_client.get("/m/dashboards/workflows").get_json()
+    assert not body["ok"] and not body["automation_enabled"]
+    assert "automation" in body["error"].lower()
+
+
+def test_workflow_stream_deleted_midrun(app, auth_client, user, enabled,
+                                        monkeypatch):
+    """C2: a workflow deleted mid-run settles the card error and the SSE
+    stream still closes cleanly (done frame, no hang, no 500)."""
+    dash_engine = _engine()
+    wid = _workflow_id(app, user)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+
+    real_start = dash_engine.start_workflow_run
+
+    def start_then_delete(workflow, run_user, params, **kw):
+        run = real_start(workflow, run_user, params, **kw)
+        with app.app_context():
+            doomed = db.session.get(
+                dash_engine._automation_models().AutomationWorkflow, wid)
+            db.session.delete(doomed)
+            db.session.commit()
+        return run
+
+    monkeypatch.setattr(dash_engine, "start_workflow_run", start_then_delete)
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    body = b"".join(resp.response).decode()
+    assert '"t": "done"' in body
+    card = _card(app, fid, cid)
+    assert card["status"] == "error"
+    assert card["result"]["error"]
+
+
+def test_workflow_stream_emits_node_progress(app, auth_client, user,
+                                             enabled, fake_ai):
+    """C2: a workflow stream surfaces intermediate node progress frames
+    (live console) before the done frame — not a silent wait."""
+    wid = _workflow_id(app, user)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, type="workflow", prompt="Summarize",
+                    workflow={"workflow_id": wid, "params": {}})
+    resp = auth_client.post(f"/m/dashboards/{fid}/run/stream",
+                            json={"card_id": cid}, buffered=False)
+    assert resp.status_code == 200
+    body = b"".join(resp.response).decode()
+    assert '"t": "step"' in body
+    assert '"t": "done"' in body
+    assert _card(app, fid, cid)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Task C3: interactive table widgets + chart kinds + editable title
+# ---------------------------------------------------------------------------
+
+def test_chart_result_accepts_new_kinds():
+    dash_engine = _engine()
+    res = dash_engine._parse_chart_result(
+        '{"chart": {"kind": "doughnut", "labels": ["a"], '
+        '"datasets": [{"label": "x", "data": [1]}]}}')
+    assert res["chart"]["kind"] == "doughnut"
+
+
+def test_chart_script_result_accepts_new_kinds():
+    """C3 (controller pin): script cards coerce through the same chart
+    contract, so one engine change covers both paths."""
+    dash_engine = _engine()
+    for kind in ("doughnut", "horizontalBar", "area"):
+        value = {"chart": {"kind": kind, "labels": ["a"],
+                           "datasets": [{"label": "x", "data": [1]}]}}
+        res = dash_engine._parse_script_result("chart", value)
+        assert res["chart"]["kind"] == kind
+
+
+def test_chart_contract_lists_new_kinds():
+    dash_engine = _engine()
+    contract = dash_engine._OUTPUT_CONTRACTS["chart"]
+    for kind in ("doughnut", "horizontalBar", "area"):
+        assert kind in contract
+
+
+def test_view_widgets_present():
+    src = _dash_js_src()
+    assert "dash-sort" in src and "Download CSV" in src
+    assert "dash-chart-switch" in src or "chart-switch" in src
+
+
+def test_view_table_pager_composition():
+    """C3 (controller pin): sort covers the full snapshot rows (not the
+    visible page); the filter resets to page 1."""
+    src = _dash_js_src()
+    assert "tableViewRows" in src  # filtered+sorted FULL rows, paged after
+    assert "sortCol" in src and "sortDir" in src
+    assert "dash-filter" in src
+
+
+def test_csv_download_matches_view():
+    """C3 (review focus 3): Download CSV exports the filtered/sorted view
+    rows — the full snapshot, not the visible page."""
+    src = _dash_js_src()
+    assert "Download CSV" in src
+    assert "tableToCSV" in src
+    assert "data-dash-csv" in src
+
+
+def test_dashboard_rename_syncs_title_and_name(app, auth_client, user,
+                                               enabled):
+    """C3 (notebooks N1 mirror): POST /m/dashboards/<id>/rename syncs
+    stored.name and doc["title"] together through the same route shape."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    auth_client.post(f"/m/dashboards/{fid}/rename", data={"name": "novo"})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "novo.pdash"
+        assert dash_doc.load(stored)["title"] == "novo"
+    auth_client.post(f"/m/dashboards/{fid}/rename",
+                     data={"name": "  segundo  "})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "segundo.pdash"
+        assert dash_doc.load(stored)["title"] == "segundo"
+
+
+def test_dashboard_title_input_wired():
+    """C3: edit.html exposes an editable title input + renameUrl (no
+    static h1-only header), bound in the builder JS."""
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "edit.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    src = _dash_js_src()
+    assert "dash-title" in html and "renameUrl" in html
+    assert "dash-title" in src and "renameUrl" in src
+
+
+# ---------------------------------------------------------------------------
+# Task C4: dashboard variables + View filter bar
+# ---------------------------------------------------------------------------
+
+def test_variables_substitute_and_rerun_affected_only(
+        app, auth_client, user, enabled, fake_ai, monkeypatch):
+    """C4 (brief + review focus 4): {{ region }} substitutes into the prompt
+    AND the script source before each run; after a value change only cards
+    referencing the variable re-run — the rest keep status done + ranAt."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    seen = {}
+
+    def fake_evaluate(code, files):
+        seen["code"] = code
+        return {"ok": True, "value": "script says " + code}
+
+    monkeypatch.setattr(dash_engine, "_pyrun_evaluate", fake_evaluate,
+                        raising=False)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    var_cid = _add_card(app, fid, type="kpi", title="Regional",
+                        prompt="Count incidents in {{ region }}")
+    plain_cid = _add_card(app, fid, type="kpi", title="Static",
+                          prompt="Count everything")
+    script_cid = _add_card(app, fid, type="kpi", title="Scripted", prompt="")
+    _script_card_persisted(app, fid, script_cid,
+                           script="res = '{{ region }}'\nres")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["variables"] = {"region": "north"}
+        dash_doc.save_document(stored, doc)
+
+    assert _run_and_finish(app, auth_client, fid,
+                           var_cid) == {"text": "3 open incidents"}
+    assert "north" in fake_ai["agent_prompt"]
+    assert "{{ region }}" not in fake_ai["agent_prompt"]
+    assert _run_and_finish(app, auth_client, fid, script_cid)
+    assert "north" in seen["code"]
+    assert "{{" not in seen["code"]
+
+    resp = auth_client.post(f"/m/dashboards/{fid}/run", json={"all": True})
+    assert resp.status_code == 200
+    for cid in (var_cid, plain_cid, script_cid):
+        assert _card(app, fid, cid)["status"] == "done"
+    plain_ran_at = _card(app, fid, plain_cid)["ranAt"]
+
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["variables"] = {"region": "south"}
+        dash_doc.save_document(stored, doc)
+        affected = dash_engine.affected_cards(doc, ["region"])
+    assert set(affected) == {var_cid, script_cid}
+
+    # The View filter bar runs only the affected cards (never a blind all).
+    for cid in affected:
+        _run_and_finish(app, auth_client, fid, cid)
+    assert "south" in fake_ai["agent_prompt"]
+    assert "south" in seen["code"]
+    untouched = _card(app, fid, plain_cid)
+    assert untouched["status"] == "done"
+    assert untouched["ranAt"] == plain_ran_at
+
+
+def test_variables_reject_bad_shape():
+    doc = dash_doc.empty_dashboard("T")
+    with pytest.raises(ValueError):
+        dash_doc.validate({**doc, "variables": ["not", "an", "object"]})
+
+
+def test_variables_validate_scalars_and_names():
+    """C4: variables default to {}, accept scalar defaults, reject bad
+    names and non-scalar values (C5 pre-fill contract)."""
+    doc = dash_doc.empty_dashboard("T")
+    assert dash_doc.validate(dict(doc))["variables"] == {}
+    good = dash_doc.validate({**doc, "variables": {
+        "region": "north", "limit": 10, "ratio": 1.5,
+        "flag": True, "empty": None}})
+    assert good["variables"] == {"region": "north", "limit": 10,
+                                 "ratio": 1.5, "flag": True, "empty": None}
+    for bad in ({"a b": 1}, {"": 1}, {"9lives": 1}, {"region": {"n": 1}},
+                {"region": ["x"]}, {"region": "x" * 2001}):
+        with pytest.raises(ValueError):
+            dash_doc.validate({**doc, "variables": bad})
+
+
+def test_variables_substitute_helper():
+    """C4 (delta): one substitution helper serves prompts AND script
+    source, so script cards stay consistent; unknown names stay literal."""
+    dash_engine = _engine()
+    sub = dash_engine.substitute_variables
+    assert sub("Hi {{ region }}!", {"region": "north"}) == "Hi north!"
+    assert sub("{{a}}{{ a }}", {"a": 1}) == "11"
+    assert sub("Keep {{ unknown }}.", {}) == "Keep {{ unknown }}."
+    assert sub("v={{v}}", {"v": None}) == "v="
+    assert sub("res = '{{ region }}'", {"region": "s"}) == "res = 's'"
+    assert sub("", {"a": 1}) == ""
+    uses = dash_engine.card_uses_variable
+    assert uses({"prompt": "x {{ region }}", "script": ""}, "region")
+    assert uses({"prompt": "", "script": "v='{{region}}'"}, "region")
+    assert not uses({"prompt": "no refs", "script": ""}, "region")
+    assert not uses({"prompt": "{{ regional }}", "script": ""}, "region")
+
+
+def test_view_filter_bar_present():
+    """C4: View mode renders a variables filter bar that re-runs only
+    cards referencing a changed variable (affected-only, rest untouched)."""
+    src = _dash_js_src()
+    assert "dash-varbar" in src  # bar mount in the View skeleton
+    assert "cardUsesVariable" in src  # prompt/script reference scan
+    assert "runAffected" in src  # affected-only re-run entry point
+
+
+def test_script_tool_documents_variables():
+    """C4 (delta): the script tool description documents {{ var }}
+    substitution (db.tables() needs none — it takes no prompt text)."""
+    with open(os.path.join(_DASH_DIR, "tools.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.find('"script": {"type": "string"')
+    assert i >= 0
+    region = src[i:i + 1200]
+    assert "{{" in region and "variable" in region.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task C5: "Generate with AI" creation wizard
+# ---------------------------------------------------------------------------
+
+def _list_html():
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "list.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _wizard_fid(app, auth_client, drive_id, data):
+    before = _pdash_count(app)
+    resp = auth_client.post("/m/dashboards/new", data=data,
+                            content_type="multipart/form-data")
+    assert resp.status_code == 302, resp.data[:300]
+    assert _pdash_count(app) == before + 1
+    return int(resp.headers["Location"].rsplit("/", 1)[-1])
+
+
+def _pdash_count(app):
+    from app.models import StoredFile as _SF
+    with app.app_context():
+        return _SF.query.filter_by(extension="pdash").count()
+
+
+def _wizard_doc(app, fid):
+    from app.models import StoredFile as _SF
+    with app.app_context():
+        return dash_doc.load(db.session.get(_SF, fid))
+
+
+def test_generate_wizard_hooks():
+    html = _list_html()
+    assert "dash-wizard" in html or "generate" in html.lower()
+
+
+def test_wizard_create_generates_layout(app, auth_client, user, enabled):
+    """C5: a description in the wizard step auto-generates an initial
+    multi-card layout on creation (prompts carry the description)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(app, auth_client, drive_id,
+                      {"name": "Tracked", "location": f"drive:{drive_id}",
+                       "description": "Weekly server incidents"})
+    doc = _wizard_doc(app, fid)
+    assert {c["type"] for c in doc["cards"]} == {
+        "kpi", "table", "chart", "markdown"}
+    assert all("Weekly server incidents" in (c["prompt"] or "")
+               for c in doc["cards"])
+
+
+def test_wizard_create_prefills_variables(app, auth_client, user, enabled):
+    """C5: wizard output pre-fills C4 variables from plain form values, and
+    generated prompts reference them (affected-only re-run stays
+    meaningful)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(
+        app, auth_client, drive_id,
+        {"name": "Regional", "location": f"drive:{drive_id}",
+         "description": "Incidents by data center",
+         "variables": '{"region": "north", "limit": 5}'})
+    doc = _wizard_doc(app, fid)
+    assert doc["variables"] == {"region": "north", "limit": 5}
+    assert any("{{ region }}" in (c["prompt"] or "")
+               for c in doc["cards"])
+
+
+def test_wizard_create_rejects_bad_variables(app, auth_client, user,
+                                             enabled):
+    """C5: bad variables (malformed JSON or non-scalar shape) abort 400
+    through the C4 contract — never leaving an empty dashboard behind."""
+    drive_id = _drive(app, user)
+    for bad_vars in ('{"region":', '{"region": {"n": 1}}', '["x"]'):
+        before = _pdash_count(app)
+        resp = auth_client.post(
+            "/m/dashboards/new",
+            data={"name": "Bad", "location": f"drive:{drive_id}",
+                  "description": "Something", "variables": bad_vars},
+            content_type="multipart/form-data")
+        assert resp.status_code == 400
+        assert _pdash_count(app) == before
+
+
+def test_wizard_create_attaches_uploads(app, auth_client, user, enabled):
+    """C5: files attached in the wizard step land on the new dashboard via
+    the existing attach path (upload origin)."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(
+        app, auth_client, drive_id,
+        {"name": "With files", "location": f"drive:{drive_id}",
+         "description": "Incidents in the CSV",
+         "wizard_files": (io.BytesIO(b"a,b\n1,2\n"), "incidents.csv")})
+    doc = _wizard_doc(app, fid)
+    assert len(doc["attachments"]) == 1
+    assert doc["attachments"][0]["origin"] == "upload"
+    assert doc["attachments"][0]["name"] == "incidents.csv"
+
+
+def test_wizard_plain_create_unchanged(app, auth_client, user, enabled):
+    """C5: without wizard fields the plain name+location flow creates an
+    empty dashboard exactly as before."""
+    drive_id = _drive(app, user)
+    fid = _wizard_fid(app, auth_client, drive_id,
+                      {"name": "Plain", "location": f"drive:{drive_id}"})
+    doc = _wizard_doc(app, fid)
+    assert doc["cards"] == [] and doc["variables"] == {}
+
+
+def test_wizard_js_wiring():
+    """C5: the wizard step lives in dashboard.js (guarded init) and the
+    list modal loads that bundle."""
+    src = _dash_js_src()
+    assert "initDashWizard" in src
+    assert "dash-wizard" in src
+    html = _list_html()
+    assert "dashboard.js" in html
+
+
+# ---------------------------------------------------------------------------
+# Task C6: AI guards + live Builder poll
+# ---------------------------------------------------------------------------
+
+def _edit_html():
+    with open(os.path.join(_DASH_DIR, "templates", "dashboards",
+                           "edit.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _dash_css():
+    with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_ai_hidden_blocks_all_tools(app, user, enabled):
+    """C6: a hidden dashboard refuses every file_id AI tool path, and the
+    list tool drops it. (Creating a dashboard takes no file_id, so it
+    stays usable — hiding applies per dashboard, not to creation.)"""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Secret")
+    cid = _add_card(app, fid, title="KPI")
+    att = _attach_file(app, fid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_hidden"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "hidden" in tools._tool_read(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_update(
+            user_obj, {"file_id": fid, "title": "x"}, None)["error"]
+        assert "hidden" in tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi"}, None)["error"]
+        assert "hidden" in tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                       "title": "x"}, None)["error"]
+        assert "hidden" in tools._tool_delete_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)["error"]
+        assert "hidden" in tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "y.txt",
+                       "content": "y"}, None)["error"]
+        assert "hidden" in tools._tool_detach_file(
+            user_obj, {"file_id": fid,
+                       "attachment_id": att["id"]}, None)["error"]
+        assert "hidden" in tools._tool_run_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)["error"]
+        assert "hidden" in tools._tool_run_all(
+            user_obj, {"file_id": fid}, None)["error"]
+        assert "hidden" in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)["error"]
+        listing = tools._tool_list(user_obj, {}, None)
+        assert not any(n["id"] == fid for n in listing["dashboards"])
+
+
+def test_ai_lock_blocks_all_edits_but_allows_reads(app, user, enabled):
+    """C6: a locked dashboard refuses every AI mutation path with the
+    unlock message, while read/list/recommend stay usable."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, title="KPI")
+    att = _attach_file(app, fid)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        doc = dash_doc.load(stored)
+        doc["ai_lock"] = True
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        assert "error" not in tools._tool_read(
+            user_obj, {"file_id": fid}, None)
+        assert "error" not in tools._tool_recommend(
+            user_obj, {"file_id": fid}, None)
+        for out in (
+                tools._tool_update(
+                    user_obj, {"file_id": fid, "title": "x"}, None),
+                tools._tool_add_card(
+                    user_obj, {"file_id": fid, "type": "kpi"}, None),
+                tools._tool_update_card(
+                    user_obj, {"file_id": fid, "card_id": cid,
+                               "title": "x"}, None),
+                tools._tool_delete_card(
+                    user_obj, {"file_id": fid, "card_id": cid}, None),
+                tools._tool_attach_file(
+                    user_obj, {"file_id": fid, "name": "y.txt",
+                               "content": "y"}, None),
+                tools._tool_detach_file(
+                    user_obj, {"file_id": fid,
+                               "attachment_id": att["id"]}, None),
+                tools._tool_run_card(
+                    user_obj, {"file_id": fid, "card_id": cid}, None),
+                tools._tool_run_all(
+                    user_obj, {"file_id": fid}, None)):
+            assert "locked" in out["error"].lower()
+
+
+def test_ai_tool_mutations_emit_dashboard_changed(app, user, enabled):
+    """C6 push leg: structural AI edits carry a dashboard_changed ui event
+    (the agent service turns it into docindex-ui-action so the open
+    Builder refreshes at once instead of waiting for the poll tick)."""
+    tools = _dash_tools()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        added = tools._tool_add_card(
+            user_obj, {"file_id": fid, "type": "kpi",
+                       "title": "K"}, None)
+        assert added["ui"]["type"] == "dashboard_changed"
+        assert added["ui"]["file_id"] == fid
+        cid = added["card"]["id"]
+        renamed = tools._tool_update(
+            user_obj, {"file_id": fid, "title": "New"}, None)
+        assert renamed["ui"]["type"] == "dashboard_changed"
+        tweaked = tools._tool_update_card(
+            user_obj, {"file_id": fid, "card_id": cid,
+                       "title": "K2"}, None)
+        assert tweaked["ui"]["type"] == "dashboard_changed"
+        attached = tools._tool_attach_file(
+            user_obj, {"file_id": fid, "name": "n.txt",
+                       "content": "n"}, None)
+        assert attached["ui"]["type"] == "dashboard_changed"
+        detached = tools._tool_detach_file(
+            user_obj, {"file_id": fid,
+                       "attachment_id": attached["attached"]["id"]},
+            None)
+        assert detached["ui"]["type"] == "dashboard_changed"
+        removed = tools._tool_delete_card(
+            user_obj, {"file_id": fid, "card_id": cid}, None)
+        assert removed["ui"]["type"] == "dashboard_changed"
+        assert "ui" not in tools._tool_read(
+            user_obj, {"file_id": fid}, None)
+        assert "ui" not in tools._tool_list(user_obj, {}, None)
+
+
+def test_builder_toolbar_ai_toggles(app, auth_client, user, enabled):
+    """C6: the Builder toolbar carries dashboard-level AI lock/hide
+    toggles (per-card Settings drawers cannot host dashboard flags);
+    the read-only View toolbar offers none."""
+    builder = auth_client.get(
+        f"/m/dashboards/{_create(app, user, _drive(app, user))}").data.decode()
+    assert "dash-lock-btn" in builder and "dash-hide-btn" in builder
+    fid = _create(app, user, _drive(app, user))
+    view = auth_client.get(
+        f"/m/dashboards/{fid}?mode=view").data.decode()
+    assert "dash-lock-btn" not in view and "dash-hide-btn" not in view
+    src = _dash_js_src()
+    assert "dash-lock-btn" in src and "dash-hide-btn" in src
+    assert "ai_lock" in src and "ai_hidden" in src
+    assert ".dash-on" in _dash_css()
+
+
+def test_builder_poll_adopts_structural_edits(app, auth_client, user,
+                                              enabled):
+    """C6: the status channel carries the checksum, and the Builder poll
+    adopts remote structural (AI chat) edits live when it holds no
+    unsaved work — run-only changes still merge footers in place."""
+    import re
+    import shutil
+    import subprocess
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    body = auth_client.get(f"/m/dashboards/{fid}/status").get_json()
+    assert body["ok"] and body["checksum"]
+    src = _dash_js_src()
+    assert "structuralSig" in src  # structural fingerprint helper
+    assert "dashboard_changed" in src  # push leg: ui event listener
+    assert "docindex-ui-action" in src
+    match = re.search(
+        r"var RUN_OWNED_KEYS = (\[.*?\]);\s*"
+        r"(function structuralCard\(card\) \{.*?\n    \})\s*"
+        r"(function structuralSig\(doc\) \{.*?\n    \})",
+        src, re.S)
+    assert match, "structuralSig helpers missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (match.group(0)
+             + "\nvar base = {title: 'T', ai_lock: false, ai_hidden: false,"
+             + " variables: {}, attachments: [],"
+             + " cards: [{id: 'c1', type: 'kpi', title: 'K', prompt: 'P',"
+             + " result: null, status: 'idle', ranAt: null}]};"
+             + "\nvar runOnly = JSON.parse(JSON.stringify(base));"
+             + "runOnly.cards[0].result = {text: '3'};"
+             + "runOnly.cards[0].status = 'done';"
+             + "runOnly.cards[0].ranAt = '2026-01-01T00:00:00';"
+             + "\nvar structural = JSON.parse(JSON.stringify(base));"
+             + "structural.cards[0].prompt = 'Q';"
+             + "\nvar added = JSON.parse(JSON.stringify(base));"
+             + "added.cards.push({id: 'c2', type: 'kpi'});"
+             + "\nvar regOnly = JSON.parse(JSON.stringify(base));"
+             + "regOnly.createdFileIds = [9];"
+             + "regOnly.cards[0].runId = '1:abc';"
+             + "\nconsole.log(JSON.stringify(["
+             + "structuralSig(base) === structuralSig(runOnly),"
+             + "structuralSig(base) !== structuralSig(structural),"
+             + "structuralSig(base) !== structuralSig(added),"
+             + "structuralSig(base) === structuralSig(regOnly)]));")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [True, True, True, True]
+
+
+def test_builder_poll_defers_while_editing():
+    """Fix round 1: the wholesale adopt never fires while the popup card
+    editor or a Settings drawer is open — the shared refresh leg gates on
+    builderBusy, and drawer close flushes at once (toggle capture)."""
+    import re
+    import shutil
+    import subprocess
+    src = _dash_js_src()
+    assert "builderBusy" in src
+    gate = re.search(r"function refreshFromServer\(S\) \{(.*?)\n    \}",
+                     src, re.S)
+    assert gate, "refreshFromServer missing"
+    assert "builderBusy(S)" in gate.group(1)
+    flush = re.search(
+        r"addEventListener\(\"toggle\", function \(e\) \{(.*?)\n"
+        r"        \}, \{ signal: ac\.signal, capture: true \}\);",
+        src, re.S)
+    assert flush, "drawer-close flush listener missing"
+    assert "dash-settings" in flush.group(1)
+    assert "refreshFromServer(S)" in flush.group(1)
+    busy = re.search(r"function builderBusy\(S\) \{(.*?)\n    \}", src, re.S)
+    assert busy, "builderBusy helper missing"
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    probe = (busy.group(0)
+             + "\nvar closed = { _edit: null, els: {},"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar editing = { _edit: { card: 1 }, els: {},"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar dlgOpen = { _edit: null,"
+             + " els: { dlgEdit: { open: true } },"
+             + " root: { querySelector: function () { return null; } } };"
+             + "\nvar drawerOpen = { _edit: null, els: {}, root: {"
+             + " querySelector: function () { return { querySelector:"
+             + " function () { return {}; } }; } } };"
+             + "\nconsole.log(JSON.stringify(["
+             + "builderBusy(closed), builderBusy(editing),"
+             + "builderBusy(dlgOpen), builderBusy(drawerOpen)]));")
+    out = subprocess.run(["node", "-e", probe], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip()) == [False, True, True, True]

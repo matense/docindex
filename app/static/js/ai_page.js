@@ -54,7 +54,7 @@
         classPrefix: 'aip',
     };
     const sess = window.DocIndexChat.createSession(view, {
-        taskMode: false,
+        taskMode: true,
         consumeContext: false,
     });
     sess.bindComposer();
@@ -94,9 +94,93 @@
         newConversation: (...args) => sess.newConversation(...args),
         toggleList: (...args) => sess.toggleList(...args),
         openConversation: (id) => sess.loadConversation(id),
+        popOutToWindow,
         get conversationId() { return sess.conversationId; },
         _sess: sess,
     };
+
+    // Full-page sidebar: fixed conversation list with quick search +
+    // All/Tasks filters (mirrors the dock history, always visible on lg+).
+    let sideConvs = [];
+    let sideFilter = 'all';
+    let sideQuery = '';
+    const sideList = document.getElementById('aip-sidebar-list');
+    const sideSearch = document.getElementById('aip-sidebar-search');
+    function escapeHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = s == null ? '' : String(s);
+        return div.innerHTML;
+    }
+    function renderSidebar() {
+        if (!sideList) return;
+        const q = (sideQuery || '').toLowerCase();
+        const shown = sideConvs.filter(c => {
+            if (sideFilter === 'tasks' && !c.task) return false;
+            if (q && !(c.title || '').toLowerCase().includes(q)) return false;
+            return true;
+        });
+        sideList.innerHTML = '';
+        if (!shown.length) {
+            sideList.innerHTML = '<div class="text-center opacity-50 text-xs p-3">' +
+                (sideFilter === 'tasks' ? 'No background tasks yet' : 'No conversations yet') + '</div>';
+            return;
+        }
+        shown.forEach(c => {
+            const row = document.createElement('div');
+            row.className = 'ai-conv-row';
+            row.title = 'Open conversation';
+            row.innerHTML = '<span class="ai-conv-ico"><i class="fas fa-message"></i></span>' +
+                '<span class="flex-1 min-w-0"><span class="ai-conv-title truncate block">' +
+                escapeHtml(c.title || 'Untitled') + '</span>' +
+                '<span class="ai-conv-meta truncate block">' +
+                escapeHtml([c.updated_at || '', c.task ? 'Task · ' + c.task : null, c.model || '']
+                    .filter(Boolean).join(' · ')) + '</span></span>';
+            row.addEventListener('click', () => sess.loadConversation(c.id));
+            sideList.appendChild(row);
+        });
+    }
+    async function loadSidebar() {
+        if (!sideList || !window.apiFetch) return;
+        const convs = await window.apiFetch('/ai/conversations', null, { silent: true });
+        if (!convs) return;
+        sideConvs = convs;
+        renderSidebar();
+    }
+    if (sideSearch) sideSearch.addEventListener('input', () => {
+        sideQuery = sideSearch.value.trim();
+        renderSidebar();
+    });
+    document.querySelectorAll('.aip-side-filter').forEach(b => {
+        b.addEventListener('click', () => {
+            sideFilter = b.dataset.filter || 'all';
+            document.querySelectorAll('.aip-side-filter').forEach(x =>
+                x.classList.toggle('ai-conv-filter-on', x === b));
+            renderSidebar();
+        });
+    });
+    loadSidebar();
+
+    // Pop-out: open the current conversation in a floating window and go
+    // back to the drive.
+    function popOutToWindow() {
+        const convId = sess.conversationId;
+        if (convId && window.aiChat) {
+            try { window.aiChat.openConversation(convId); } catch (err) {
+                console.warn('[aiPage] pop-out failed:', err);
+            }
+        }
+        if (window.spaNavigate) window.spaNavigate('/');
+        else window.location.href = '/';
+    }
+    const popoutBtn = document.getElementById('aip-popout-btn');
+    if (popoutBtn) popoutBtn.addEventListener('click', popOutToWindow);
+
+    // Deep link: /search?mode=ai&conv=<id> opens that conversation.
+    try {
+        const convParam = new URLSearchParams(window.location.search).get('conv');
+        const id = Number(convParam);
+        if (Number.isInteger(id) && id > 0) sess.loadConversation(id);
+    } catch { /* bad ?conv= — ignore */ }
 
     input.focus();
 })();

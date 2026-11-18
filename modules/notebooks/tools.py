@@ -156,8 +156,15 @@ def _save_and_report(user, file_id, mutate):
         doc_service.save_document_ai(stored, document)
     except ValueError as exc:
         return {"error": str(exc)}
+    # Cross-boundary event leg (§2.1): the agent service turns a "ui" dict
+    # into a ui_action stream event, ai_core.js re-dispatches it as
+    # docindex-ui-action, and the open editor refreshes from /doc at once
+    # (the poll loop stays as fallback). Deleted cells report their id too.
+    cell_id = cell.get("id") if isinstance(cell, dict) else None
     return {"ok": True, "file_id": stored.id, "cell": cell,
-            "total_cells": len(document["cells"])}
+            "total_cells": len(document["cells"]),
+            "ui": {"type": "notebook_changed", "file_id": stored.id,
+                   "cell_id": cell_id}}
 
 
 def _tool_add_cell(user, args, drive):

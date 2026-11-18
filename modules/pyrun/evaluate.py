@@ -154,18 +154,21 @@ _SQL_DENIED_RE = re.compile(
 
 
 class _Db:
-    """Sandbox-visible SQLite handle: exactly two plain host functions.
+    """Sandbox-visible SQLite handle: plain host functions for query/exec.
 
     The connection is closed over in the host closures held here, never
     stored on the object; sandboxed code reaches it only through the
-    interpreter's ``query`` / ``exec`` dispatch.
+    interpreter's ``query`` / ``exec`` dispatch. ``tables`` lists the
+    seeded scratch tables (t0..tN) so scripts can probe attachments
+    without guessing names.
     """
 
-    __slots__ = ("query", "exec")
+    __slots__ = ("query", "exec", "tables")
 
-    def __init__(self, query, exec_):
+    def __init__(self, query, exec_, tables):
         self.query = query
         self.exec = exec_
+        self.tables = tables
 
     def __repr__(self):
         # Address-free: sandboxed str(db)/f"{db!r}"/"{}".format(db) must
@@ -688,7 +691,8 @@ class _Interpreter:
         # shadows it, while whitelisted builtins still take precedence.
         self.host_helpers["db"] = _Db(
             lambda *args, **kwargs: self._db_query(*args, **kwargs),
-            lambda *args, **kwargs: self._db_exec(*args, **kwargs))
+            lambda *args, **kwargs: self._db_exec(*args, **kwargs),
+            lambda *args, **kwargs: self._db_tables(*args, **kwargs))
         self.scopes = [{}]  # module-level env; functions push more
         self.ticks = 0
         self.alloc = 0
@@ -696,6 +700,7 @@ class _Interpreter:
         self.start = time.monotonic()
         self.last_value = None
         self._db_seeded = False
+        self._seeded_tables = []  # t-names created by _seed_db, in order
         # Engine-side backstop: Python-level tick/wall checks only run
         # between fetched rows, so an unbounded statement (recursive CTE
         # / cross join feeding one aggregate row) would never reach them.
@@ -1080,7 +1085,7 @@ class _Interpreter:
         if node.attr.startswith("_"):
             raise _Denied("denied construct: dunder/private attribute")
         if isinstance(obj, _Db):
-            if node.attr not in ("query", "exec"):
+            if node.attr not in ("query", "exec", "tables"):
                 raise _Denied(f"attribute '{node.attr}' is not allowed")
             return _BoundMethod(obj, node.attr)
         allowed = _METHODS.get(type(obj))
@@ -2067,6 +2072,7 @@ class _Interpreter:
                         cursor.executemany(
                             insert, batch[start:start + _SQL_SEED_BATCH])
                 self._db_conn.commit()
+                self._seeded_tables.append(table)
             except (_Halt, _UserError):
                 self._db_rollback()
                 raise
@@ -2187,6 +2193,15 @@ class _Interpreter:
             raise _Denied("operation failed") from None
         return out
 
+    def _db_tables(self, *args, **kwargs):
+        """Seeded scratch table names (t0..tN) in seed order, so scripts can
+        probe attachments without guessing names. Zero-arg only."""
+        if args or kwargs:
+            raise _Denied("db.tables() takes no arguments")
+        self._ensure_db_seeded()
+        self._charge(64 + 72)
+        return list(self._seeded_tables)
+
     def _db_exec(self, *args, **kwargs):
         sql, params = self._prepare_db_call("exec", args, kwargs)
         self._ensure_db_seeded()
@@ -2225,7 +2240,7 @@ class _Interpreter:
     def _call_method(self, bound, args, kwargs):
         obj, name = bound.obj, bound.name
         if isinstance(obj, _Db):
-            if name not in ("query", "exec"):
+            if name not in ("query", "exec", "tables"):
                 raise _Denied(f"attribute '{name}' is not allowed")
             try:
                 return getattr(obj, name)(*args, **kwargs)

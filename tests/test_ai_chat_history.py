@@ -1,4 +1,6 @@
 import json
+
+import pytest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -696,3 +698,471 @@ def test_chat_persists_compaction_notice(auth_client, app, user):
         conv = ChatConversation.query.one()
         notices = [m for m in conv.messages if m.role == "notice"]
         assert notices and "compacted" in notices[0].content.lower()
+
+
+# ---------------------------------------------------- composer restructure
+
+
+def _read_template(rel):
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent / rel).read_text(
+        encoding="utf-8")
+
+
+def test_composer_structure_unified():
+    html = _read_template("app/templates/components/ai_chat.html")
+    assert "ai-ctx-strip" in html and "ai-token-meter" in html
+    assert 'class="acw-form ai-composer relative"' in html
+    assert "ai-send-btn" in html
+
+
+def test_ai_page_container_keeps_composer_in_view():
+    """Full-page chat must own the viewport slot instead of inheriting
+    the scroll-page container (min-h-full + 256px pb-64), which pushes
+    the composer below the fold on empty chats."""
+    import re
+    html = _read_template("app/templates/search/ai.html")
+    m = re.search(r"page_container_class\s*%\}\s*(.*?)\s*\{%",
+                 html, re.S)
+    assert m, "ai.html must override page_container_class"
+    assert "pb-64" not in m.group(1)
+    assert "h-full" in m.group(1)
+
+
+# ------------------------------------------------- mention mid-string (C3)
+
+
+def pick_region(src):
+    """The mention pick handlers: splice discipline lives here (C3)."""
+    start = src.index("function pickDrive")
+    end = src.index("function refreshSendKeyHint")
+    return src[start:end]
+
+
+def test_mention_splice_preserves_trailing_text():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "selectionStart" in src and "mentionStartIdx" in src
+    assert "lastIndexOf" not in pick_region(src)  # must not truncate after cursor
+
+
+def test_mention_detection_anchored_at_cursor():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "selectionStart" in src
+    assert r"(?:^|\s)\$(\S*)$" in src
+    assert r"(?:^|\s)#(\S*)$" in src
+    assert r"(?:^|\s)\/(\S*)$" in src
+    assert "mentionStartIdx" in src and "mentionEndIdx" in src
+    assert "setSelectionRange" in src
+
+
+def test_mention_keyboard_navigation():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "mentionActiveIdx" in src
+    assert "(mentionActiveIdx + 1) % rows.length" in src
+    assert "(mentionActiveIdx - 1 + rows.length) % rows.length" in src
+    assert "rows[mentionActiveIdx].click()" in src
+    assert "bg-primary/15" in src
+    assert "ArrowDown" in src and "ArrowUp" in src
+    assert "'Tab'" in src
+
+
+def test_conversation_returns_token_estimate(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=3)
+    with app.app_context():
+        msgs = ChatMessage.query.filter_by(conversation_id=conv_id).all()
+        expected = sum(len(m.content or "") for m in msgs) // 4
+    r = auth_client.get(f"/ai/conversations/{conv_id}")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["token_estimate"] == expected
+    assert data["max_prompt_tokens"] > 0
+
+
+def test_conversation_token_estimate_counts_active_only(auth_client, app, user):
+    # Archived history (compacted by summarize) is out of context and must
+    # not count towards the estimate.
+    _add_conn(auth_client)
+    conv_id = _make_conversation(app, n_pairs=3)
+    with patch("app.services.ai_service.chat_completion",
+               return_value={"role": "assistant", "content": "summary one"}):
+        assert auth_client.post(
+            f"/ai/conversations/{conv_id}/summarize").status_code == 200
+    with app.app_context():
+        active = [m for m in ChatMessage.query.filter_by(
+            conversation_id=conv_id).all()
+            if m.role in ("user", "assistant") and not m.archived]
+        assert len(active) == 1  # only the summary stays in context
+        expected = sum(len(m.content or "") for m in active) // 4
+    data = auth_client.get(f"/ai/conversations/{conv_id}").get_json()
+    assert data["token_estimate"] == expected
+    # No connection-level override -> global default.
+    assert data["max_prompt_tokens"] == 60000
+
+
+def test_token_meter_affordance_gated_on_host_control():
+    # The meter must only advertise click-to-summarize (role/cursor/title)
+    # when the host actually has a summarize control; on hosts without one
+    # (full page) it renders as a plain indicator.
+    src = _read_template("app/static/js/ai_core.js")
+    body = src.split("function updateTokenMeter")[1].split("\n        function ")[0]
+    assert "querySelector('.acw-summarize, #aip-summarize')" in body
+    assert "if (host)" in body
+    assert "removeAttribute('role')" in body  # plain indicator when no host
+    assert "meter.style.cursor = ''" in body
+    # The click-affordance title appears exactly once, inside the
+    # host-present branch — never unconditionally.
+    assert body.count("Click to Summarize") == 1
+
+
+def test_composer_structure_full_page():
+    html = _read_template("app/templates/search/ai.html")
+    assert "ai-ctx-strip" in html and "ai-token-meter" in html
+    assert "ai-composer" in html and "relative" in html
+    assert "ai-send-btn" in html
+    # Full-page composer keeps its own hooks (no behavior change).
+    assert 'id="aip-form"' in html and 'id="aip-input"' in html
+    assert 'id="aip-send"' in html and 'id="aip-plus"' in html
+
+
+def test_layout_switcher_and_sidebar_present():
+    assert "acw-layout-grp" in _read_template(
+        "app/templates/components/ai_chat.html")
+    full = _read_template("app/templates/search/ai.html")
+    assert 'id="aip-sidebar"' in full and 'id="aip-popout-btn"' in full
+
+
+# ------------------------------------------------- C4 fix round 1/5
+# Reviewer Important 1: the dock wrappers must persist AFTER the (async)
+# load resolves, not synchronously with the stale convId.
+
+
+def test_dock_persist_after_load_awaits():
+    src = _read_template("app/static/js/ai_chat.js")
+    assert "await sess.loadConversation" in src
+    assert "await sess.newConversation" in src
+    load_i = src.index("await sess.loadConversation")
+    assert "persistDock()" in src[load_i:load_i + 200]
+    new_i = src.index("await sess.newConversation")
+    assert "persistDock()" in src[new_i:new_i + 200]
+
+
+# Reviewer Important 2: ?conv= must be numerically validated (no NaN fetch).
+
+
+def test_conv_param_validated():
+    src = _read_template("app/static/js/ai_page.js")
+    # Floats (?conv=2.7) must not slip through to a non-matching route.
+    assert "Number.isInteger" in src
+
+
+# Reviewer Important 3: attachNotebookCell must reject empty strings too.
+
+
+def test_attach_notebook_cell_rejects_empty_strings():
+    src = _read_template("app/static/js/ai_chat.js")
+    assert "fileId === ''" in src
+
+
+# ------------------------------------------------- C5 badges + grouping
+
+
+def test_reasoning_badges_and_grouping():
+    src = _read_template("app/static/js/ai_core.js")
+    assert "ai-reasoning-badges" in src
+    for tool in ["search_files", "read_file", "pyrun.compute"]:
+        assert tool in src  # category mapping covers it
+    assert "ai-reasoning-elapsed" in src  # total time inside <summary>
+    assert "flushHistoryReasoning" in src  # single-<details> grouping on history load
+    css = _read_template("app/static/css/style.css")
+    assert "ai-reasoning-badges" in css
+
+
+# ------------------------------------------------- C6 quick-peek (endpoint)
+
+
+@pytest.fixture()
+def owned_file(app, user):
+    """A plain text file owned by the user, longer than the peek window."""
+    from app.models import Drive
+    from app.services import file_service
+
+    class FakeStorage:
+        filename = "peek-notes.txt"
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                for i in range(60):
+                    fh.write(f"peek line {i:03d}: lorem ipsum dolor sit amet\n".encode())
+
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user, source_path=None)
+        db.session.add(drive)
+        db.session.commit()
+        stored = file_service.save_upload(
+            FakeStorage(), db.session.get(User, user))
+        stored.drive_id = drive.id
+        db.session.commit()
+        return stored.id
+
+
+@pytest.fixture()
+def hidden_file(app, user):
+    """An AI-hidden notebook: the peek endpoint must refuse it (403)."""
+    return _make_notebook(app, user, cells=[
+        {"id": "cell-1", "type": "markdown", "content": "secret",
+         "meta": {}}], hidden=True)
+
+
+@pytest.fixture()
+def trashed_file(app, user):
+    """A soft-deleted file: the peek endpoint must 404, never leak."""
+    from app.models import Drive, StoredFile
+    from app.services import file_service
+
+    class FakeStorage:
+        filename = "trashed.txt"
+        mimetype = "text/plain"
+
+        def save(self, path):
+            with open(path, "wb") as fh:
+                fh.write(b"trashed content")
+
+    with app.app_context():
+        drive = Drive(name="Personal", user_id=user, source_path=None)
+        db.session.add(drive)
+        db.session.commit()
+        stored = file_service.save_upload(
+            FakeStorage(), db.session.get(User, user))
+        stored.drive_id = drive.id
+        stored.deleted_at = datetime.now(UTC)
+        db.session.commit()
+        return stored.id
+
+
+def test_peek_returns_snippet(auth_client, owned_file):
+    r = auth_client.get(f"/ai/files/{owned_file}/peek")
+    assert r.status_code == 200 and len(r.get_json()["snippet"]) <= 600
+
+
+def test_peek_denies_hidden_and_trashed(auth_client, hidden_file, trashed_file):
+    assert auth_client.get(f"/ai/files/{hidden_file}/peek").status_code == 403
+    assert auth_client.get(f"/ai/files/{trashed_file}/peek").status_code == 404
+
+
+# ------------------------------------------------- C6 fix round 1/2
+
+
+def _branch_messages(app, conv_id):
+    with app.app_context():
+        return (ChatMessage.query.filter_by(conversation_id=conv_id)
+                .order_by(ChatMessage.id).all())
+
+
+def test_branch_copies_up_to_message(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=3)  # q0 a0 q1 a1 q2 a2
+    orig = _branch_messages(app, conv_id)
+    up_to = orig[1].id
+    with app.app_context():
+        orig_title = db.session.get(ChatConversation, conv_id).title
+        orig_context = db.session.get(ChatConversation, conv_id).context
+    r = auth_client.post(f"/ai/conversations/{conv_id}/branch",
+                         json={"up_to_message_id": up_to})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["title"] == orig_title + " (branch)"
+    assert data["id"] != conv_id
+    branched = _branch_messages(app, data["id"])
+    assert [m.content for m in branched] == [m.content for m in orig[:2]]
+    assert [m.role for m in branched] == [m.role for m in orig[:2]]
+    with app.app_context():
+        assert db.session.get(ChatConversation, data["id"]).context == orig_context
+
+
+def test_branch_rejects_bad_message_id(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": 9999}).status_code == 404
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={}).status_code == 400
+    assert auth_client.post(
+        "/ai/conversations/999999/branch",
+        json={"up_to_message_id": 1}).status_code == 404
+
+
+def test_branch_rejects_non_integer_message_id(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        msg_id = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                  .order_by(ChatMessage.id).first().id)
+    # Float, bool and non-integer payloads fail closed (400) — a float
+    # anchor must never truncate to a neighbouring message id.
+    for bad in (2.7, float(msg_id), True, False, "abc", "2.7",
+                None, [msg_id], {"id": msg_id}):
+        assert auth_client.post(
+            f"/ai/conversations/{conv_id}/branch",
+            json={"up_to_message_id": bad}).status_code == 400
+    # Int and integer-valued string still work.
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": msg_id}).status_code == 200
+    assert auth_client.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": str(msg_id)}).status_code == 200
+
+
+def test_branch_rejects_foreign_message_id(auth_client, app, user):
+    conv_a = _make_conversation(app, n_pairs=1)
+    conv_b = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        foreign = (ChatMessage.query.filter_by(conversation_id=conv_b)
+                   .order_by(ChatMessage.id).first().id)
+    assert auth_client.post(
+        f"/ai/conversations/{conv_a}/branch",
+        json={"up_to_message_id": foreign}).status_code == 404
+
+
+def test_branch_other_users_conversation_forbidden(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    other = app.test_client()
+    other.post("/register", data={
+        "username": "erin", "email": "erin@example.com",
+        "password": "pw123456", "confirm": "pw123456",
+    })
+    with app.app_context():
+        msg_id = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                  .order_by(ChatMessage.id).first().id)
+    assert other.post(
+        f"/ai/conversations/{conv_id}/branch",
+        json={"up_to_message_id": msg_id}).status_code == 404
+
+
+def test_bubble_actions_user_and_assistant():
+    src = _read_template("app/static/js/ai_core.js")
+    start = src.index("function addBubbleActions")
+    end = src.index("function addMessage", start)
+    body = src[start:end]
+    assert "Edit & Resend" in body
+    assert "Branch" in body
+    assert "Insert in Notebook" in body
+    assert "Pin to Dashboard" in body
+    assert "up_to_message_id" in body
+    assert "loadConversation(res.id)" in body
+
+
+def test_cross_module_actions_fail_closed_when_disabled():
+    src = _read_template("app/static/js/ai_core.js")
+    # Pin to Dashboard is gated on the dashboards module being active...
+    assert "dashboardsEnabled" in src
+    assert 'a[href^="/m/dashboards"]' in src
+    # ...and fails closed with a clear reason when off (never a dead button).
+    assert "dashboards module is disabled" in src
+    # Neither cross-module action invents a new server API: the chat opens
+    # the existing module surfaces with the payload ready (clipboard).
+    assert "copyWithToast" in src
+    assert "/m/notebooks/" in src and "/m/dashboards/" in src
+
+
+@pytest.mark.parametrize("err", [
+    OSError("unreadable"),
+    ValueError("corrupt bytes"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte"),
+])
+def test_peek_unreadable_file_returns_empty_snippet(
+        auth_client, owned_file, monkeypatch, err):
+    # Decode/corrupt/binary failures must degrade to an empty preview,
+    # never bubble to a 500.
+    from app.services import file_service
+
+    def _boom(stored, max_chars=600):
+        raise err
+
+    monkeypatch.setattr(file_service, "read_text_content", _boom)
+    r = auth_client.get(f"/ai/files/{owned_file}/peek")
+    assert r.status_code == 200 and r.get_json()["snippet"] == ""
+
+
+def test_cite_chip_click_ignores_modified_clicks():
+    # Only a plain primary click may open the popover: Ctrl/Cmd+click,
+    # Shift+click and non-primary buttons must keep their native
+    # behavior (new tab / new window) via the plain href.
+    src = _read_template("app/static/js/ai_core.js")
+    i = src.index("ev.target.closest('.ai-cite-chip[data-cite-file-id]')")
+    region = src[i:i + 600]
+    for token in ["ev.button !== 0", "ev.ctrlKey", "ev.metaKey",
+                  "ev.shiftKey", "ev.altKey"]:
+        assert token in region
+    assert region.index("ev.button") < region.index("ev.preventDefault")
+    assert (region.index("ev.preventDefault")
+            < region.index("openPeekPopover("))
+
+
+# ------------------------------------------------- C8 SPA sync / dedup / listeners
+
+
+def test_spa_drive_sync_wiring():
+    assert 'data-drive-id' in _read_template("app/templates/base.html")
+    assert "drive:changed" in _read_template("app/static/js/spa.js")
+    assert _read_template("app/templates/search/ai.html").count("ai_core.js") <= 1
+
+
+def test_duplicate_scripts_removed():
+    html = _read_template("app/templates/search/ai.html")
+    assert "ai_common.js" not in html
+    assert html.count("ai_core.js") <= 1
+    assert "ai_page.js" in html  # full-page host stays
+
+
+def test_listeners_cleaned_up():
+    core = _read_template("app/static/js/ai_core.js")
+    assert "drive:changed" in core  # listener + detach cleanup
+    assert "onDocClick" in core and "onDriveChanged" in core
+    assert "removeEventListener('click', onDocClick)" in core
+    assert "removeEventListener('drive:changed', onDriveChanged)" in core
+    chat = _read_template("app/static/js/ai_chat.js")
+    assert "onMoreDocClick" in chat
+    assert "removeEventListener('click', onMoreDocClick)" in chat
+
+
+# ------------------------------------------------- final-review hardening
+# branch title clamp (String(255)), ?conv= integer-only, attachFile id
+# type dedupe, token-meter clamp pin.
+
+
+def test_branch_title_clamped_to_255(auth_client, app, user):
+    conv_id = _make_conversation(app, n_pairs=1)
+    with app.app_context():
+        conv = db.session.get(ChatConversation, conv_id)
+        conv.title = "T" * 250
+        db.session.commit()
+        up_to = (ChatMessage.query.filter_by(conversation_id=conv_id)
+                 .order_by(ChatMessage.id).first().id)
+    r = auth_client.post(f"/ai/conversations/{conv_id}/branch",
+                         json={"up_to_message_id": up_to})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["title"].endswith(" (branch)")
+    assert len(data["title"]) <= 255
+
+
+def test_attach_file_dedupes_across_id_types():
+    src = _read_template("app/static/js/ai_core.js")
+    start = src.index("function attachFile(id, name)")
+    body = src[start:start + 500]
+    # Number vs string ids (server int vs DOM string) must dedupe.
+    assert "String(" in body
+    assert body.count("String(") >= 2
+
+
+def test_token_meter_clamps():
+    src = _read_template("app/static/js/ai_core.js")
+    body = src.split("function updateTokenMeter")[1].split(
+        "\n        function ")[0]
+    # Huge history caps at 100; NaN/negative coerce to a 0-100 width.
+    assert "Math.min(100" in body
+    assert "Math.max(0" in body
+    assert "Number(estimate)" in body
+    assert "max > 0" in body
+    assert "fill.style.width" in body

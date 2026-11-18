@@ -906,7 +906,8 @@ def preview(workflow_id):
     # Per-node output previews so the editor can show "View output".
     previews = engine.preview_outputs(outputs)
     return jsonify({"ok": True, "log": entries, "results": results,
-                    "files": created, "outputs": previews})
+                    "files": created, "outputs": previews,
+                    "rich": engine.preview_rich(outputs)})
 
 
 @bp.get("/<int:workflow_id>/runs")
@@ -1058,6 +1059,8 @@ def run_status(run_id):
         # Per-node output previews (runs done before this field existed
         # simply don't have it — the popup then says "not captured").
         "node_outputs": (output or {}).get("node_outputs") or {},
+        # Structured table/JSON previews for rich rendering.
+        "node_rich": (output or {}).get("node_rich") or {},
         "inputs": _run_inputs(run, prog["graph"]["nodes"]),
         "progress": {
             "total": prog["total"], "finished": prog["finished"],

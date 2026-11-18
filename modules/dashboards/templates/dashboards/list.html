@@ -64,7 +64,8 @@
         <h3 class="font-bold text-lg mb-1"><i class="fas fa-plus text-primary"></i> New dashboard</h3>
         <p class="text-xs opacity-50 mb-4">Saved as a file on the chosen drive — synced (read-only)
         drives are not available. Dashboards are indexed for search and AI automatically.</p>
-        <form method="POST" action="{{ url_for('dashboards.new') }}" class="flex flex-col gap-3">
+        <form method="POST" action="{{ url_for('dashboards.new') }}"
+              enctype="multipart/form-data" class="flex flex-col gap-3">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="text" name="name" placeholder="Dashboard name" required
                    class="input input-bordered input-sm w-full">
@@ -77,15 +78,66 @@
             <p class="text-xs text-warning">You need a writable drive first — create one on the
             drive page.</p>
             {% endif %}
+            <details class="dash-wizard">
+                <summary class="text-xs font-semibold cursor-pointer opacity-70 hover:opacity-100">
+                    <i class="fas fa-wand-magic-sparkles text-primary"></i>
+                    Generate with AI
+                    <span class="opacity-50 font-normal">— optional</span>
+                </summary>
+                <div class="flex flex-col gap-2 mt-2">
+                    <textarea name="description" id="dash-wizard-desc" rows="3" maxlength="2000"
+                        placeholder="Describe what you want to track… e.g. weekly server incidents by severity"
+                        aria-label="Describe what you want to track"
+                        class="textarea textarea-bordered textarea-sm w-full"></textarea>
+                    <label class="text-xs opacity-70 flex items-center gap-2 flex-wrap">
+                        <i class="fas fa-paperclip"></i> Attach files
+                        <input type="file" name="wizard_files" id="dash-wizard-files" multiple
+                            class="file-input file-input-bordered file-input-xs max-w-full">
+                    </label>
+                    <div id="dash-wizard-files-hint" class="text-xs opacity-50"></div>
+                    <input type="text" name="variables" id="dash-wizard-vars"
+                        placeholder='Variables (JSON): {"region": "north"}'
+                        aria-label="Dashboard variables as JSON"
+                        class="input input-bordered input-sm w-full">
+                    <p class="text-xs opacity-50">On creation the description generates a starter
+                    layout (KPI, table, chart, summary) and the files attach to the new
+                    dashboard — variables feed the View filter bar as {{ '{{ name }}' }}.</p>
+                </div>
+            </details>
             <div class="modal-action">
                 <button type="button" class="btn btn-ghost btn-sm"
                         onclick="document.getElementById('dash-new-modal').close()">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm" {{ 'disabled' if not locations }}>
-                    Create
+                <button type="submit" id="dash-create-btn" class="btn btn-primary btn-sm" {{ 'disabled' if not locations }}>
+                    <span data-wlabel>Create</span>
                 </button>
             </div>
         </form>
     </div>
     <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
+
+<script>
+(function () {
+    // C5 wizard: wire the optional "Generate with AI" step. Loads the
+    // dashboards bundle on demand (SPA swaps don't run external script
+    // tags — same pattern as edit.html) and no-ops when it is missing.
+    function init() {
+        if (window.DashboardEditor && window.DashboardEditor.initDashWizard) {
+            window.DashboardEditor.initDashWizard();
+            return;
+        }
+        var s = document.createElement("script");
+        s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=31')|tojson }};
+        s.onload = function () {
+            if (window.DashboardEditor && window.DashboardEditor.initDashWizard) {
+                window.DashboardEditor.initDashWizard();
+            }
+        };
+        document.head.appendChild(s);
+    }
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", init);
+    } else { init(); }
+})();
+</script>
 {% endblock %}

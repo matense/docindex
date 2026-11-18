@@ -212,9 +212,25 @@ def _module_state_map():
 
 
 def is_enabled(name):
-    """True when the module is enabled (ModuleState rows cached per request)."""
-    row = _module_state_map().get(name)
-    return bool(row and row.enabled)
+    """True when the module is enabled (ModuleState rows cached per request).
+
+    A request-cached row can outlive its session (teardown ordering,
+    background handoff): a stale cache entry then raises
+    DetachedInstanceError on attribute access. Fail closed to a fresh
+    single-row query instead of letting the lookup blow up.
+    """
+    from sqlalchemy.orm.exc import DetachedInstanceError
+    try:
+        row = _module_state_map().get(name)
+        return bool(row and row.enabled)
+    except DetachedInstanceError:
+        try:
+            from flask import g
+            g.pop("_docindex_module_states", None)
+        except Exception:  # noqa: BLE001 - cache drop must not fail
+            pass
+        row = ModuleState.query.filter_by(name=name).first()
+        return bool(row and row.enabled)
 
 
 def list_modules():

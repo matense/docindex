@@ -236,6 +236,38 @@
 .drawflow .drawflow-node .input:hover { transform: translateX(-50%) scale(1.25); }
 .drawflow .drawflow-node .output:hover { transform: translateX(50%) scale(1.25); }
 
+/* Typed sockets: border color encodes the payload kind (set from
+   decoratePorts via data-kind so mismatched wires stand out). */
+.drawflow .drawflow-node .input[data-kind="table"],
+.drawflow .drawflow-node .output[data-kind="table"] { border-color: oklch(var(--in) / 0.85); }
+.drawflow .drawflow-node .input[data-kind="json"],
+.drawflow .drawflow-node .output[data-kind="json"] { border-color: oklch(var(--wa) / 0.9); }
+.drawflow .drawflow-node .input[data-kind="files"],
+.drawflow .drawflow-node .output[data-kind="files"] { border-color: oklch(var(--s) / 0.9); }
+.drawflow .drawflow-node .input[data-kind="text"],
+.drawflow .drawflow-node .output[data-kind="text"] { border-color: oklch(var(--su) / 0.85); }
+.drawflow .drawflow-node .input[data-kind="drive"],
+.drawflow .drawflow-node .output[data-kind="drive"] { border-color: oklch(var(--a) / 0.9); }
+
+/* Compatible drop targets glow while dragging a wire. */
+.drawflow .drawflow-node .input.wf-drop-ok {
+    background: oklch(var(--su));
+    border-color: oklch(var(--su));
+    box-shadow: 0 0 0 4px oklch(var(--su) / 0.25);
+}
+
+/* Node ID badge on every card face (matches the {{ nX }} template refs). */
+.wf-node-card .wf-node-id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9.5px;
+    font-weight: 600;
+    opacity: 0.55;
+    background: rgba(128, 128, 128, 0.14);
+    border-radius: 6px;
+    padding: 1px 6px;
+    white-space: nowrap;
+}
+
 /* Branch labels: condition true/false as colored chips. */
 .drawflow .wf-type-logic-condition .output::after {
     position: absolute;

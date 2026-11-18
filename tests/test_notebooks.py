@@ -1528,3 +1528,549 @@ def test_image_upload_wiring_behavior():
                            "notebook_image_harness.js")
     proc = subprocess.run(["node", harness], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# N9 residual pins (transcribed from N0's xfail TODOs — markers dropped,
+# assertions kept verbatim and extended with the event legs they need).
+# ---------------------------------------------------------------------------
+
+def test_marked_isolation_from_chat():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "new window.marked.Marked" in src or "new Marked" in src
+    assert "window.marked.use(" not in src
+    # The global must not be used for parsing either — every render goes
+    # through the isolated instance, so the chat's global stays pristine.
+    assert "window.marked.parse" not in src
+
+
+def test_live_flash_on_ai_edit_pin():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "ai-live-flash" in src
+    assert "Reverter" in src
+    # Event leg (§2.1): AI tool saves only change server state; the editor
+    # learns of them through the docindex-ui-action notebook_changed event.
+    assert "docindex-ui-action" in src
+    assert "notebook_changed" in src
+
+
+def test_live_flash_ui_emission_from_ai_tool(app, user, enabled):
+    """AI cell mutations emit the ui payload the editor's docindex-ui-action
+    listener consumes (type notebook_changed + file/cell ids)."""
+    _ = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = nb_tools._tool_create(user_obj, {"name": "AI flash"}, None)
+        fid = result["created"]["id"]
+        added = nb_tools._tool_add_cell(
+            user_obj, {"file_id": fid, "cell_type": "markdown",
+                       "content": "AI was here"}, None)
+        assert added["ok"] is True
+        ui = added.get("ui") or {}
+        assert ui.get("type") == "notebook_changed"
+        assert ui.get("file_id") == fid
+        assert ui.get("cell_id") == added["cell"]["id"]
+        updated = nb_tools._tool_update_cell(
+            user_obj, {"file_id": fid, "cell_id": added["cell"]["id"],
+                       "content": "AI rewrote this"}, None)
+        assert (updated.get("ui") or {}).get("type") == "notebook_changed"
+        deleted = nb_tools._tool_delete_cell(
+            user_obj, {"file_id": fid, "cell_id": added["cell"]["id"]},
+            None)
+        assert (deleted.get("ui") or {}).get("type") == "notebook_changed"
+
+
+def test_keep_open_on_chat_click_pin():
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    parts = src.split('addEventListener("focusout"')
+    assert len(parts) > 1  # focusout handlers exist
+    assert all("relatedTarget" in chunk[:1500] for chunk in parts[1:])
+
+
+def test_title_rename_sync_both_ways(app, auth_client, user, enabled):
+    """N1: the file name and doc["title"] stay in sync both ways through
+    POST /m/notebooks/<id>/rename."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    # Direction 1: rename updates the file name AND doc["title"].
+    auth_client.post(f"/m/notebooks/{fid}/rename", data={"name": "novo"})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "novo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "novo"
+    # Direction 2: a title edit through the same path updates the file name
+    # (extension added, whitespace stripped) and doc["title"] together.
+    auth_client.post(f"/m/notebooks/{fid}/rename",
+                     data={"name": "  segundo  "})
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "segundo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "segundo"
+
+
+def test_undo_scope_is_structural():
+    """N2: 30-entry doc.cells snapshot stacks, pushUndo before every
+    structural mutation, toolbar buttons, guarded Ctrl+Z/Ctrl+Y."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    # Stacks + push discipline + toolbar buttons + bound.
+    assert "undoStack" in src and "redoStack" in src
+    assert "pushUndo" in src
+    assert "nb-undo-btn" in html and "nb-redo-btn" in html
+    assert "nb-undo-btn" in src and "nb-redo-btn" in src
+    assert "30" in src  # bounded stack per spec
+    # Push before every structural mutation (def + delete/move/drop/
+    # insert/table row-col/todo add-remove/AI-apply call sites).
+    assert src.count("pushUndo(") >= 10
+    # Undo/redo restore snapshots, re-render and autosave.
+    undo_body = _js_fn_body(src, "undo")
+    assert "redoStack" in undo_body and "render(" in undo_body
+    assert "scheduleSave" in undo_body
+    redo_body = _js_fn_body(src, "redo")
+    assert "undoStack" in redo_body and "render(" in redo_body
+    assert "scheduleSave" in redo_body
+    # Shortcuts guarded off native-history inputs.
+    assert "KeyZ" in src and "KeyY" in src
+    key_body = _js_fn_body(src, "onKeydown")
+    assert "INPUT" in key_body and "TEXTAREA" in key_body
+
+
+def test_undo_covers_conflict_rebase_path():
+    """N2 fix: the 409 keepAllLocal rebase adopts server-only cells into
+    doc.cells (a structural change like any poll apply), so
+    applyRemoteDoc must snapshot unconditionally — undo restores the
+    pre-rebase local state instead of stranding adopted cells."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "applyRemoteDoc")
+    assert "pushUndo(" in body
+    # Snapshot precedes every adoption branch (push BEFORE mutating),
+    # including the server-only-cell adoption below.
+    assert body.index("pushUndo(") < body.index("nextCells.push(rc)")
+    # Unconditional: no keepAllLocal carve-out — the rebase path adopts
+    # server cells too, so it snapshots like the poll path.
+    assert "if (!keepAllLocal) pushUndo" not in src
+    # The inaccurate comment (rebase "only rearranges already-tracked
+    # local state") must be gone.
+    assert "only rearranges already-tracked local state" not in src
+
+
+def test_toc_layout_and_badges():
+    """N3: sticky TOC side layout; renderToc indexes heading cells plus
+    in-cell markdown (#/##/###) and richtext (<h1-3>) headers with MD/RT
+    badges, smooth scroll and active-section highlight."""
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    assert "nb-body-layout" in html
+    assert "xl:sticky" in html and "xl:top-20" in html
+    assert "xl:w-56" in html and "overflow-y-auto" in html
+    assert "xl:flex-row" in html and "xl:max-w-" in html
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "^#{1,3}" in src or "#{1,3}" in src
+    assert '"MD"' in src or "'MD'" in src
+    assert '"RT"' in src or "'RT'" in src
+    assert "smooth" in src
+    assert "nb-toc-active" in src
+
+
+def test_slash_menu_contract():
+    """N4: empty-line `/` trigger opens a cursor-positioned .nb-slash-popup
+    with /table /todo /code /chart /h1 /sep /file, keyboard nav
+    (arrows/Enter/Esc); /file inserts [name](file://ID) via the picker."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "nb-slash-popup" in src
+    for opt in ["/table", "/todo", "/code", "/chart", "/h1", "/sep",
+                "/file"]:
+        assert opt in src
+    wire_body = _js_fn_body(src, "wireSlashMenu")
+    # Empty-line trigger: the caret line holds only the slash query.
+    trig_body = _js_fn_body(src, "slashLineQuery")
+    assert r"/^\s*\/" in trig_body
+    # Keyboard nav lives in the menu wiring, not elsewhere.
+    assert "ArrowDown" in wire_body and "ArrowUp" in wire_body
+    assert "Enter" in wire_body and "Escape" in wire_body
+    apply_body = _js_fn_body(src, "applySlashOption")
+    assert "pickFile" in apply_body and "file://" in apply_body
+
+
+def test_slash_file_option_is_undoable():
+    """N4 fix: the /file branch snapshots undo like every other slash
+    option — pushUndo before the trigger strip, so the async link insert
+    is covered by the same pre-change snapshot."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    apply_body = _js_fn_body(src, "applySlashOption")
+    file_branch = apply_body.split('opt.type === "file"')[1].split(
+        "return;")[0]
+    assert "pushUndo(" in file_branch
+    assert file_branch.index("pushUndo(") < file_branch.index(
+        "area.value = before")
+
+
+def test_table_paste_expands_without_loss():
+    """N5: table TSV paste auto-expands rows/columns without loss; Export
+    CSV button present; drop guard verified before preventDefault."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Export CSV" in src or "export-csv" in src
+    assert 'text/nb-cell' in src  # guarded drop
+    body = _js_fn_body(src, "renderTableCell")
+    # Key contracts: Tab/Shift+Tab between columns, Enter/arrows between rows.
+    assert "keydown" in body
+    assert "Tab" in body and "Enter" in body
+    assert "ArrowDown" in body and "ArrowUp" in body
+    # TSV paste: detected, expanded (rows + columns), undoable.
+    assert "paste" in body
+    assert "\\t" in body
+    assert "pushUndo(" in body
+
+
+def test_todo_enter_backspace_and_progress_badge():
+    """N5: todo Enter inserts a row below / Backspace on an empty row
+    removes it and focuses the previous one (both undoable); a done/total
+    (pct) progress badge is shown."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "renderTodoCell")
+    assert "keydown" in body
+    assert "Enter" in body and "Backspace" in body
+    assert "pushUndo(" in body
+    assert "%" in body
+
+
+def test_drag_drop_flicker_free_guards():
+    """N5: dragleave ignores moves inside the cell (no flicker); the cell
+    drop handler verifies the payload type BEFORE preventDefault."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    dl_start = src.index('addEventListener("dragleave"')
+    dl_chunk = src[dl_start:dl_start + 300]
+    assert "relatedTarget" in dl_chunk
+    assert "contains(" in dl_chunk
+    # Anchor on the cell drop handler (the image-uploader drop above is a
+    # different listener) and require guard-before-preventDefault order.
+    getdata = src.index('getData("text/nb-cell")')
+    seg_start = src.rindex('addEventListener("drop"', 0, getdata)
+    guard = src.index('types.includes("text/nb-cell")', seg_start)
+    prevented = src.index("preventDefault", seg_start)
+    assert guard < prevented < getdata
+
+
+def test_ai_split_and_ask_ai_present():
+    """N6: toolbar AI Split button + per-cell Ask AI.
+
+    Cross-track contract (chat side lands on the parallel track): the
+    notebook side calls window.aiChat.openAndDock('right') and
+    window.aiChat.attachNotebookCell({fileId, fileName, cellId,
+    cellType, preview}) only behind typeof guards, degrading
+    gracefully (console warning/title update, clipboard copy telling
+    the user to paste it in chat) when the chat API is absent.
+    """
+    html_path = os.path.join(_NB_DIR, "templates", "notebooks",
+                             "edit.html")
+    with open(html_path, encoding="utf-8") as fh:
+        html = fh.read()
+    assert "nb-ai-split-btn" in html
+    assert "AI Split" in html
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Ask AI" in src and "attachNotebookCell" in src
+    # Contract-exact dock call, guarded so a missing chat side never
+    # crashes or dead-clicks without feedback.
+    assert 'openAndDock("right")' in src
+    assert "typeof window.aiChat" in src
+    assert "console.warn" in src
+    # Exact attach payload shape from spec section 3.4.
+    for key in ("fileId", "fileName", "cellId", "cellType", "preview"):
+        assert key in src
+    assert "cellPlainText" in src
+    # Fallback when the chat side is absent: clipboard copy telling the
+    # user to paste it in chat.
+    assert "clipboard" in src
+    assert "paste it in chat" in src or "paste in chat" in src
+
+
+# ---------------------------------------------------------------------------
+# N7: executable code/SQL cells via pyrun
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def notebook(app, user, enabled):
+    """An empty notebook with the pyrun module enabled (run-cell needs it)."""
+    with app.app_context():
+        db.session.add(ModuleState(name="pyrun", enabled=True))
+        db.session.commit()
+    drive_id = _drive(app, user)
+    return _create(app, user, drive_id, "Runnable")
+
+
+@pytest.fixture()
+def csv_file(app, auth_client, user):
+    """A small CSV owned by the test user, addressable as rows('f')."""
+    _upload(auth_client, "data.csv", b"v\n1\n2\n3\n")
+    with app.app_context():
+        return StoredFile.query.filter_by(
+            user_id=user, name="data.csv").one().id
+
+
+def test_run_cell_executes_python(auth_client, notebook, csv_file):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python",
+                               "code": "total = sum(int(r['v']) for r in rows('f'))\ntotal",
+                               "input_file_ids": [csv_file]})
+    assert r.get_json()["ok"] is True
+
+
+def test_run_cell_fails_closed_without_pyrun(auth_client, notebook, monkeypatch):
+    from app.services import module_service
+    monkeypatch.setattr(module_service, "is_enabled",
+                        lambda name: name != "pyrun")
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python", "code": "1"})
+    assert r.status_code in (400, 403) and "pyrun" in r.get_data(as_text=True).lower()
+
+
+def test_run_cell_executes_sql(auth_client, notebook, csv_file):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "sql",
+                               "code": "SELECT v FROM t0",
+                               "input_file_ids": [csv_file]})
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["result"] == [{"v": "1"}, {"v": "2"}, {"v": "3"}]
+    assert set(("ok", "stdout", "result",
+                "elapsed_ms")) <= set(data.keys())
+
+
+def test_run_cell_rejects_unknown_input_file(auth_client, notebook):
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         json={"cell_id": "c1", "lang": "python",
+                               "code": "1", "input_file_ids": [999999]})
+    assert r.status_code == 404
+
+
+def test_pyrun_run_button_and_output_contract():
+    """N7: the Run button appears only on code cells with a runnable
+    language; results render in .nb-pyrun-output with Save-as-Table."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "Run in pyrun" in src
+    assert 'cell.type === "code"' in src
+    for lang in ('"python"', '"py"', '"sql"'):
+        assert lang in src
+    assert "nb-pyrun-output" in src
+    assert "+ Save as Table cell" in src
+
+
+# ---------------------------------------------------------------------------
+# N8: per-cell restore in history
+# ---------------------------------------------------------------------------
+
+_N8_APP = None  # stashed by the fixture so load_doc(fid) stays single-arg
+
+
+@pytest.fixture()
+def version_with_extra_cell(app, user, notebook):
+    """A version snapshot whose 'target' cell reads 'old target' while the
+    live doc reads 'new target'; neighbors 'keep-a'/'keep-b' match."""
+    global _N8_APP
+    _N8_APP = app
+    with app.app_context():
+        stored = db.session.get(StoredFile, notebook)
+        historic_cells = []
+        for cid, content in (("keep-a", "keep A"),
+                             ("target", "old target"),
+                             ("keep-b", "keep B")):
+            cell = nb_doc.new_cell("markdown", content)
+            cell["id"] = cid
+            historic_cells.append(cell)
+        nb_doc.save_document(
+            stored, {"version": 1, "title": "Cell restore",
+                     "cells": historic_cells},
+            force_checkpoint=True)
+        current = nb_doc.load(stored)
+        for cell in current["cells"]:
+            if cell["id"] == "target":
+                cell["content"] = "new target"
+        nb_doc.save_document(stored, current, force_checkpoint=True)
+        # Latest snapshot first: versions[0] is the pre-rewrite state with
+        # 'old target'.
+        return stored.versions[0].id
+
+
+def load_doc(fid):
+    with _N8_APP.app_context():
+        return nb_doc.load(db.session.get(StoredFile, fid))
+
+
+def neighbors_unchanged(before, after, except_id):
+    before_nb = [c for c in before["cells"] if c.get("id") != except_id]
+    after_nb = [c for c in after["cells"] if c.get("id") != except_id]
+    return before_nb == after_nb
+
+
+def test_restore_cell_preserves_neighbors(auth_client, notebook, version_with_extra_cell):
+    before = load_doc(notebook)
+    r = auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                         json={"cell_id": "target"})
+    assert load_doc(notebook)["cells"] != before["cells"]
+    assert neighbors_unchanged(before, load_doc(notebook), except_id="target")
+
+
+def test_restore_cell_enqueues_index_with_restored_content(
+        app, auth_client, notebook, version_with_extra_cell):
+    """Important 1: restore-cell saves via save_document, which enqueues the
+    reindex itself (no duplicate call in the route) — draining the queue
+    makes the restored content show up in the index."""
+    from app.models import IndexJob
+    with app.app_context():
+        IndexJob.query.filter_by(file_id=notebook).delete()
+        db.session.commit()
+    auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                     json={"cell_id": "target"})
+    with app.app_context():
+        job = (IndexJob.query.filter_by(file_id=notebook)
+               .filter(IndexJob.status.in_(("pending", "running"))).first())
+        assert job is not None  # the save path requested the reindex
+        indexing_service.index_file(notebook, app)  # drain inline, as _create does
+        assert "old target" in (
+            db.session.get(StoredFile, notebook).index.extracted_text or "")
+
+
+def test_restore_cell_reinserts_removed_at_original_index(
+        app, auth_client, notebook, version_with_extra_cell):
+    """Important 2: when the live doc deleted the cell after the version, the
+    restore re-inserts it at its historic index with neighbors byte-identical
+    and order-preserved."""
+    with app.app_context():
+        stored = db.session.get(StoredFile, notebook)
+        pruned = nb_doc.load(stored)
+        pruned["cells"] = [c for c in pruned["cells"]
+                           if c.get("id") != "target"]
+        nb_doc.save_document(stored, pruned, force_checkpoint=True)
+    before = load_doc(notebook)
+    assert [c["id"] for c in before["cells"]] == ["keep-a", "keep-b"]
+    r = auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                         json={"cell_id": "target"})
+    assert r.status_code == 302
+    after = load_doc(notebook)
+    assert [c["id"] for c in after["cells"]] == ["keep-a", "target", "keep-b"]
+    assert neighbors_unchanged(before, after, except_id="target")
+    assert next(c for c in after["cells"]
+                if c["id"] == "target")["content"] == "old target"
+
+
+# ---------------------------------------------------------------------------
+# Final-review hardening: title sync, run-cell validation, clipboard,
+# rename cap, CSV escape
+# ---------------------------------------------------------------------------
+
+def test_rename_extension_strip_and_save_without_409(
+        app, auth_client, user, enabled):
+    """Finding 1: typing `foo.pdocnb` stores title `foo` (no client/server
+    desync), and a save after the rename succeeds without a 409."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    r = auth_client.post(f"/m/notebooks/{fid}/rename",
+                         data={"name": "foo.pdocnb"})
+    assert r.status_code in (200, 302)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "foo.pdocnb"
+        assert nb_doc.load(stored)["title"] == "foo"
+        base_doc = nb_doc.load(stored)
+        checksum = stored.checksum
+    edited = copy.deepcopy(base_doc)
+    edited["cells"].append(nb_doc.new_cell("markdown", "after rename"))
+    r = _post_save(auth_client, fid, edited, checksum, base_doc)
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    # Client half (static pin): commitTitle strips `.pdocnb` before
+    # commit/display and refreshes saveBase/lastChecksum after a rename.
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "commitTitle")
+    assert ".pdocnb$/i" in body
+    assert "saveBase" in body and "lastChecksum" in body
+
+
+def test_run_cell_with_list_body_returns_400(auth_client, notebook):
+    """Finding 2: a non-dict JSON body must 400, not 500."""
+    r = auth_client.post(f"/m/notebooks/{notebook}/run-cell",
+                         data="[1, 2, 3]", content_type="application/json")
+    assert r.status_code == 400
+
+
+def test_restore_cell_with_list_body_returns_400(
+        auth_client, notebook, version_with_extra_cell):
+    """restore-cell shares run-cell's get_json shape: a JSON list body must
+    400, not 500 on .get."""
+    r = auth_client.post(
+        f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+        data="[1, 2, 3]", content_type="application/json")
+    assert r.status_code == 400
+
+
+def test_ask_ai_clipboard_fallback_handles_denial():
+    """Finding 3 (static pin, explicitly labeled): the Ask-AI fallback's
+    clipboard write stays silent when permission is denied — a `.catch`
+    handler exists on the writeText(summary) call."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    body = _js_fn_body(src, "askAiAboutCell")
+    assert "writeText(summary)" in body
+    assert ".catch" in body
+
+
+def test_rename_overlong_name_rejected(app, auth_client, user, enabled):
+    """Finding 4: an over-long rename aborts 400 (names are capped at 255
+    elsewhere: drive rename clamps [:255], StoredFile.name is String(255))."""
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Original")
+    r = auth_client.post(f"/m/notebooks/{fid}/rename",
+                         data={"name": "x" * 300})
+    assert r.status_code == 400
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        assert stored.name == "Original.pdocnb"
+    # Boundary: exactly 255 chars incl. the extension still works.
+    ok = auth_client.post(f"/m/notebooks/{fid}/rename",
+                          data={"name": "y" * 248})
+    assert ok.status_code in (200, 302)
+    with app.app_context():
+        assert db.session.get(StoredFile, fid).name == "y" * 248 + ".pdocnb"
+
+
+def test_export_csv_escapes_lone_cr():
+    """Finding 5 (static pin, explicitly labeled): the Export-CSV escaper
+    quotes lone-CR cells (regex covers \\r, not just `"`, `,` and `\\n`)."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert '/[",\\n\\r]/' in src

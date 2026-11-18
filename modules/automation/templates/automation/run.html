@@ -190,6 +190,8 @@
     const runningSince = {};
     // latest poll payload — node output popups read from it
     let lastData = null;
+    // structured table/JSON previews for rich rendering
+    let lastRich = {};
 
     // Same format as the backend `duration` filter:
     // 420 ms → "420 ms", 3.25s → "3.25s", 65.3s → "1m 05.3s", 3723s → "1h 02m 03s"
@@ -237,10 +239,57 @@
                 wrap.appendChild(el('div',
                     'text-[10px] uppercase tracking-wide opacity-50 mb-1',
                     `output · ${port}`));
-                const pre = el('pre', 'code-view rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap');
-                pre.style.background = '#0d1117'; pre.style.color = '#e6edf3';
-                pre.textContent = text;
-                wrap.appendChild(pre);
+                // Structured previews: tables render as scrollable HTML
+                // tables (with row/column counts), JSON as formatted JSON.
+                const rich = (lastRich[nid] || {})[port];
+                if (rich && rich.kind === 'table') {
+                    const cols = rich.columns || [];
+                    const rows = rich.rows || [];
+                    wrap.appendChild(el('div', 'text-[10px] opacity-50 mb-1',
+                        `${rich.total_rows} row(s) × ${rich.total_columns} column(s)` +
+                        (rich.truncated ? ` — showing first ${rows.length}` : '')));
+                    const scroller = el('div', 'overflow-auto rounded-lg max-h-80');
+                    scroller.style.background = '#0d1117';
+                    const table = document.createElement('table');
+                    table.className = 'code-view w-full text-xs';
+                    table.style.color = '#e6edf3';
+                    const thead = document.createElement('thead');
+                    const hr = document.createElement('tr');
+                    cols.forEach(c => {
+                        const th = document.createElement('th');
+                        th.style.cssText = 'text-align:left;padding:6px 8px;opacity:.6;' +
+                            'border-bottom:1px solid rgba(255,255,255,.15)';
+                        th.textContent = c;
+                        hr.appendChild(th);
+                    });
+                    thead.appendChild(hr);
+                    table.appendChild(thead);
+                    const tbody = document.createElement('tbody');
+                    rows.forEach(r => {
+                        const tr = document.createElement('tr');
+                        (r || []).forEach(cell => {
+                            const td = document.createElement('td');
+                            td.style.cssText = 'padding:6px 8px;' +
+                                'border-bottom:1px solid rgba(255,255,255,.06)';
+                            td.textContent = cell == null ? '' : String(cell);
+                            tr.appendChild(td);
+                        });
+                        tbody.appendChild(tr);
+                    });
+                    table.appendChild(tbody);
+                    scroller.appendChild(table);
+                    wrap.appendChild(scroller);
+                } else {
+                    const pre = el('pre', 'code-view rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap');
+                    pre.style.background = '#0d1117'; pre.style.color = '#e6edf3';
+                    if (rich && rich.kind === 'json' && rich.data !== undefined) {
+                        pre.textContent = typeof rich.data === 'string'
+                            ? rich.data : JSON.stringify(rich.data, null, 2);
+                    } else {
+                        pre.textContent = text;
+                    }
+                    wrap.appendChild(pre);
+                }
                 body.appendChild(wrap);
             });
         }
@@ -469,6 +518,7 @@
 
     function apply(data) {
         lastData = data;
+        lastRich = data.node_rich || {};
         // Skip the heavy re-render when nothing visible changed (status,
         // log tail, progress, outputs): rebuilding the pipeline rows,
         // console and spinner every 2s reads as flicker and yanks the

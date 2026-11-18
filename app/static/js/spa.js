@@ -119,6 +119,12 @@
             const stale = document.getElementById(fragId);
             if (fresh && stale) stale.replaceWith(document.importNode(fresh, true));
         }
+        const newDd = document.getElementById('drive-dropdown');
+        if (newDd) {
+            const did = parseInt(newDd.dataset.driveId || '', 10);
+            window.currentDrive = did ? { id: did, name: newDd.dataset.driveName || '' } : null;
+            window.dispatchEvent(new CustomEvent('drive:changed', { detail: window.currentDrive }));
+        }
 
         // Google-style search hero: hide the top dock while the hero is shown,
         // keep the dock input in sync with the searched query.
