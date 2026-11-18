@@ -1746,6 +1746,18 @@ tool + table).
   (node shapes, reference targets, schedule completeness) via an
   upstream-shape API before running, and graph export preserves node
   ids so references survive autosave.
+  Event triggers: a workflow with a `trigger_event` rule (JSON with optional
+  `drive_id`, `folder` and `pattern` keys, e.g. `{"pattern": "*.csv"}`) fires
+  from the internal event bus (`file.uploaded` carries one file, `file.synced`
+  carries an `added` id list) rather than a timer — the scheduler drains the
+  queue each tick, skips broken graphs, and starts at most one run per
+  workflow per tick (first matching file wins per workflow per tick; excess
+  matching events are discarded).
+  The `dashboard.refresh` output node (contributed by the dashboards module)
+  refreshes a dashboard by id — all cards by default, or a comma-separated
+  `cards` list — and returns which cards ran; a failing card is recorded on
+  the card without aborting the workflow, so a scheduled workflow ending in
+  this node keeps its dashboard fresh on its interval.
 - `dashboards` — living pages of prompt-driven cards (KPIs, tables, lists,
   charts, markdown, workflow) over drive files. A dashboard is a regular
   StoredFile (`.pdash` JSON document: cards, attachments, `createdFileIds`)

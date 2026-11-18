@@ -4237,3 +4237,102 @@ def test_event_trigger_queue_bounded_and_carries_over(app, user, enabled):
                 .filter_by(workflow_id=wf_id).count()) == 2
     with scheduler._pending_lock:
         assert len(scheduler._PENDING) == 0
+
+
+# ---------------------------------------------------------------------------
+# P6: Scheduled dashboard refresh end to end
+# ---------------------------------------------------------------------------
+
+def _dash_p6():
+    """Dashboards doc/engine with the refresh node registered (idempotent)."""
+    dash_dir = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "modules", "dashboards")
+    name = "docindex_module_dashboards"
+    if sys.modules.get(name) is None:
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(dash_dir, "__init__.py"),
+            submodule_search_locations=[dash_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    dash_doc = importlib.import_module(f"{name}.doc")
+    dash_engine = importlib.import_module(f"{name}.engine")
+    dash_nodes = importlib.import_module(f"{name}.nodes")
+    dash_nodes.register_dashboard_nodes()
+    nodes.register_defaults()
+    return dash_doc, dash_engine
+
+
+@pytest.fixture()
+def dashboards_enabled(app, enabled):
+    with app.app_context():
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+
+
+def _stub_dash_ai_p6(monkeypatch, dash_engine):
+    """Stub the dashboard engine's AI seams: no real backend calls."""
+
+    def fake_agent(user, prompt, drive=None, max_steps=None):
+        return ("3 open incidents",
+                [{"prompt_tokens": 10, "completion_tokens": 5,
+                  "estimated": True, "model": "fake"}], [])
+
+    def fake_complete(user, messages):
+        return ("formatted summary",
+                {"prompt_tokens": 8, "completion_tokens": 4,
+                 "estimated": True, "model": "fake"})
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", fake_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", fake_complete)
+
+
+def test_scheduled_workflow_refreshes_dashboard(app, user,
+                                                dashboards_enabled,
+                                                monkeypatch):
+    """Schedule trigger + dashboard.refresh: one tick fires the run inline
+    and every card ends done with a fresh ranAt; the next tick stays quiet."""
+    dash_doc, dash_engine = _dash_p6()
+    _stub_dash_ai_p6(monkeypatch, dash_engine)
+    _clear_scheduler_queue()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = Drive(name="Personal", user_id=user)
+        db.session.add(drive)
+        db.session.commit()
+        stored = dash_doc.create_dashboard(user_obj, drive, "Morning view")
+        fid = stored.id
+        doc = dash_doc.load(stored)
+        first = dash_doc.new_card("kpi", title="One", prompt="Count open")
+        second = dash_doc.new_card("kpi", title="Two",
+                                   prompt="Count closed")
+        doc["cards"].extend([first, second])
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        cids = [first["id"], second["id"]]
+        before = {c["id"]: (c["status"], c["ranAt"]) for c in doc["cards"]}
+        assert before[first["id"]] == ("idle", None)
+    # Schedule trigger (fires every 10 min) -> refresh node (all cards).
+    graph = {"nodes": [
+        {"id": "n", "type": "dashboard.refresh",
+         "config": {"dashboard_id": fid}},
+    ], "edges": []}
+    wf_id = _workflow(app, user, graph, enabled=True, interval_minutes=10)
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+    with app.app_context():
+        run = (models.AutomationRun.query
+               .filter_by(workflow_id=wf_id).one())
+        assert run.status == "done"
+        assert run.trigger == "schedule"
+        got = dash_doc.load(db.session.get(StoredFile, fid))
+        by_id = {c["id"]: c for c in got["cards"]}
+        for cid in cids:
+            assert by_id[cid]["status"] == "done"
+            assert by_id[cid]["ranAt"]  # advanced from the initial None
+            assert (by_id[cid]["status"], by_id[cid]["ranAt"]) != before[cid]
+    # The schedule is satisfied now: no hot-loop, no duplicate run.
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1
