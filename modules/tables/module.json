@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Queryable tables: .ptable datasets that live on your drives like files, with csv/tsv/xlsx viewing, version history and full AI tooling.",
   "capabilities": ["routes", "tools"],
-  "nav": {"label": "Tables", "icon": "fa-table", "url": "/"},
   "help": [
     "Tables are .ptable datasets that live on your drives like files: they are indexed, searchable and keep a full version history.",
     "CSV, TSV and XLSX files open in the tables viewer with sort, a SELECT/WITH SQL filter bar and one-way Save as .ptable; .ptable cells edit inline with snapshot-first versions.",
