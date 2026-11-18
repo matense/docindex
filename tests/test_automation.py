@@ -4066,3 +4066,73 @@ def test_python_sandbox_rejects_missing_code_input_kind(app, user):
             nodes_pyrun._exec_python_sandbox(
                 ctx, {"code": "f"},
                 {"in": engine.p_files([{"file_id": 1}])})
+
+
+# ---------------------------------------------------------------------------
+# Internal event bus (app.services.events) — P4
+# ---------------------------------------------------------------------------
+
+def test_emit_reaches_subscriber():
+    from app.services import events
+    seen = []
+    events.subscribe("file.uploaded", lambda p: seen.append(p))
+    events.emit("file.uploaded", {"file_id": 1})
+    assert seen == [{"file_id": 1}]
+
+
+def test_emit_with_no_subscribers_never_raises():
+    from app.services import events
+    events.emit("file.uploaded.probe-no-subscribers", {"file_id": 1})
+
+
+def test_emit_bad_subscriber_does_not_break_emitter():
+    from app.services import events
+
+    def _boom(payload):
+        raise RuntimeError("boom")
+
+    seen = []
+    events.subscribe("file.uploaded.probe-isolation", _boom)
+    events.subscribe("file.uploaded.probe-isolation",
+                     lambda p: seen.append(p))
+    events.emit("file.uploaded.probe-isolation", {"file_id": 2})
+    assert seen == [{"file_id": 2}]
+
+
+def test_save_upload_emits_file_uploaded(app, user):
+    import json
+    from app.services import events
+    seen = []
+    events.subscribe("file.uploaded", lambda p: seen.append(p))
+    fid = _make_file(app, user, "bus.txt", "bus content")
+    assert seen, "save_upload must emit file.uploaded"
+    payload = seen[-1]
+    assert payload["file_id"] == fid
+    assert payload["user_id"] == user
+    assert "drive_id" in payload
+    json.dumps(payload)  # plain JSON-serializable dict only
+
+
+def test_sync_drive_emits_file_synced(app, user, tmp_path):
+    import json
+    from app.services import events, sync_service
+    target = tmp_path / "syncroot"
+    target.mkdir()
+    (target / "hello.txt").write_text("hello sync")
+    with app.app_context():
+        drive = Drive(name="Synced", user_id=user,
+                      source_path=str(target))
+        db.session.add(drive)
+        db.session.commit()
+        drive_id = drive.id
+    seen = []
+    events.subscribe("file.synced", lambda p: seen.append(p))
+    with app.app_context():
+        stats = sync_service.sync_drive(db.session.get(Drive, drive_id))
+    assert stats["added"] == 1
+    assert seen, "sync_drive must emit file.synced"
+    payload = seen[-1]
+    assert payload["drive_id"] == drive_id
+    assert payload["user_id"] == user
+    assert isinstance(payload["added"], list) and len(payload["added"]) == 1
+    json.dumps(payload)  # plain JSON-serializable dict only

@@ -21,7 +21,7 @@ from flask import current_app, session
 
 from ..extensions import db
 from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile, utcnow
-from . import file_service, indexing_service
+from . import events, file_service, indexing_service
 
 # --------------------------------------------------------------------------
 # Background job tracking
@@ -826,7 +826,13 @@ def sync_drive(drive, job=None):
 
     drive.last_synced_at = utcnow()
     drive.last_sync_stats = json.dumps(stats)
+    added_ids = [stored.id for _, _, stored in adds]
     db.session.commit()
+    events.emit("file.synced", {
+        "drive_id": drive.id,
+        "user_id": drive.user_id,
+        "added": added_ids,
+    })
     return stats
 
 
