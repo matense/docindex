@@ -3975,3 +3975,31 @@ def test_sql_query_seeds_files_payload_as_t0(app, user):
                      "data": [{"file_id": fid, "name": "data.csv"}]}})
         assert out["kind"] == "table"
         assert out["data"]["rows"] == [["7"]]
+
+
+def test_sql_query_rejects_wrong_kind_payload(app, user):
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        with pytest.raises(engine.WorkflowError, match="table or files"):
+            nodes_pyrun._exec_sql_query(
+                ctx, {"sql": "SELECT * FROM t0"},
+                {"in1": {"kind": "text", "data": "x"}})
+
+
+def test_sql_query_table_payload_port_order(app, user):
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        inputs = {"in1": engine.p_table(["id"], [[1], [2]]),
+                  "in2": engine.p_table(["id"], [[2], [3]])}
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t0"}, inputs)
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["1"], ["2"]]
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t1 JOIN t0 USING (id)"}, inputs)
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["2"]]
