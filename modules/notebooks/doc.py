@@ -28,7 +28,6 @@ import re
 import uuid
 from datetime import UTC, timedelta
 from io import BytesIO
-
 from typing import NamedTuple
 
 from flask import g, has_app_context

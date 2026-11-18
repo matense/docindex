@@ -1,6 +1,8 @@
 """Git drives module: clone/pull a remote repo as a read-only mirror drive."""
 
 import os
+import socket as _socket
+import sys as _sys
 
 import pytest
 
@@ -314,9 +316,6 @@ def test_lfs_pointers_warn_but_do_not_block(auth_client, app, gitrepo,
 # ls_remote, so a rejected URL never triggers a network connection.
 # ---------------------------------------------------------------------------
 
-import socket as _socket
-import sys as _sys
-
 
 def _s1_provider():
     from app.services import drive_service
@@ -387,7 +386,7 @@ def test_https_private_host_rejected(app, user, monkeypatch):
     u = _s1_user(app, user)
     for ips in [["10.0.0.5"], ["127.0.0.1"], ["::ffff:127.0.0.1"]]:
         monkeypatch.setattr(_socket, "getaddrinfo",
-                            lambda *a, **k: _s1_addrs(*ips))
+                            lambda *a, _ips=ips, **k: _s1_addrs(*_ips))
         assert provider.validate(
             u, {"repo_url": "https://git.example.com/o/r.git"}), ips
     assert calls == []

@@ -312,7 +312,7 @@ def run_cell(file_id):
     ``res = db.query(<sql>)`` so the query rows come back as the result.
     """
     from app.services import agent_service, module_service
-    stored = _get_notebook(file_id)
+    _get_notebook(file_id)  # 404s on unknown/foreign notebooks
     if not module_service.is_enabled("pyrun"):
         return jsonify({"ok": False,
                         "error": "The pyrun module is disabled — "

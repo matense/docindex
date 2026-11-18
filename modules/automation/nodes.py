@@ -1009,9 +1009,9 @@ def _exec_http_get(ctx, config, inputs, outputs):
     exclusively public addresses — no loopback carve-out, unlike AI
     provider URLs. The refusal happens before any network touch.
     """
-    from app.services.ssrf import url_block_reason as _ssrf_reason
-
     import requests as _rq
+
+    from app.services.ssrf import url_block_reason as _ssrf_reason
     raw = render_template(config.get("url", ""), outputs).strip()
     if not raw:
         raise WorkflowError("Configure a URL.")

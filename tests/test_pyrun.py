@@ -1,8 +1,15 @@
 """Pyrun sandbox core tests (Task 1: sealed stdlib-ast evaluator)."""
 
 import importlib.util
+import io
 import os
 import sys
+
+from werkzeug.datastructures import FileStorage
+
+from app.extensions import db
+from app.models import AIUsageEvent, Drive, ModuleState, StoredFile, User
+from app.services import file_service
 
 
 def _load_evaluate():
@@ -163,15 +170,6 @@ def test_rows_consumes_shared_iteration_budget():
 # ---------------------------------------------------------------------------
 # Task 3: module + pyrun.compute / pyrun.save tool wiring
 # ---------------------------------------------------------------------------
-
-import io
-
-import pytest
-from werkzeug.datastructures import FileStorage
-
-from app.extensions import db
-from app.models import AIUsageEvent, Drive, ModuleState, StoredFile, User
-from app.services import file_service
 
 
 def _pyrun_tools():

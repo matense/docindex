@@ -5,8 +5,18 @@ import json
 import time
 import uuid
 
-from flask import (Blueprint, Response, abort, flash, jsonify, redirect,
-                   render_template, request, stream_with_context, url_for)
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    stream_with_context,
+    url_for,
+)
 from flask_login import current_user
 
 from app.extensions import db
@@ -689,7 +699,7 @@ def run_cards(file_id):
         for run_id in accepted:
             doc_service.run_started(stored.id, run_id)
 
-    for target, run_id in zip(targets, accepted):
+    for target, run_id in zip(targets, accepted, strict=False):
         started = time.monotonic()
         try:
             card = _fresh_card(stored, target)

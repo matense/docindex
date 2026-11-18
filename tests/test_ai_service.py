@@ -33,7 +33,7 @@ def test_no_silent_plaintext_fallback(app, monkeypatch):
         # Both Fernet factories unusable -> encrypt must raise, never echo plaintext.
         monkeypatch.setattr(ai_service, "_fernet", lambda: None)
         monkeypatch.setattr(ai_service, "_fernet_for_salt", lambda salt: None)
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             encrypt_api_key("sk-test")
 
 

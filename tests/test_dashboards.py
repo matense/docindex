@@ -1201,7 +1201,7 @@ def test_browse_js_calls_module_root_urls():
         src = fh.read()
     assert 'S.base + "/browse/' not in src
     for path in ("/browse/drives", "/browse/children", "/browse/search"):
-        assert ('moduleBase + "%s' % path) in src
+        assert ("moduleBase + \"" + path) in src
 
 
 def test_attach_merges_server_attachment_before_save():
@@ -1281,7 +1281,7 @@ def test_browse_rows_indent_by_shared_depth_and_truncate():
     assert out.returncode == 0, out.stderr
     pads = [int(v) for v in out.stdout.strip().split(",")]
     assert pads == [8, 26, 44, 62]
-    assert all(b > a for a, b in zip(pads, pads[1:]))
+    assert all(b > a for a, b in zip(pads, pads[1:], strict=False))
     with open(os.path.join(_DASH_DIR, "static", "dashboard.css"),
               encoding="utf-8") as fh:
         css = fh.read()
@@ -1315,8 +1315,7 @@ def test_dashboard_ui_ships_in_english():
             src = unicodedata.normalize("NFC", fh.read())
             for num, line in enumerate(src.splitlines(), 1):
                 if pt.search(line):
-                    bad.append("%s:%d: %s" % (
-                        os.path.basename(path), num, line.strip()[:100]))
+                    bad.append(f"{os.path.basename(path)}:{num}: {line.strip()[:100]}")
     assert not bad, ("Portuguese UI strings remain:\n" +
                      "\n".join(bad[:25]))
     with open(os.path.join(_DASH_DIR, "static", "dashboard.js"),
@@ -1325,7 +1324,7 @@ def test_dashboard_ui_ships_in_english():
     for s in ("Add card", "Card prompt", "Run all", "Delete dashboard",
               "No attachments", "Attach existing file", "Run this card",
               "No content", "Upload file", "Clear artifacts"):
-        assert s in js, "missing English chrome string: %r" % (s,)
+        assert s in js, f"missing English chrome string: {s!r}"
 
 
 def test_prompt_textareas_autogrow():
@@ -1432,7 +1431,7 @@ def test_run_card_chart_parses_and_validates(app, auth_client, user,
     """Task 10: chart JSON is validated like notebook chart cells — bad
     kind defaults to bar, labels/data capped, numeric coercion applied."""
     import json
-    spec = {"chart": {"kind": "donut", "labels": ["m%d" % i for i in
+    spec = {"chart": {"kind": "donut", "labels": [f"m{i}" for i in
                                                  range(60)],
                       "datasets": [{"label": "kWh",
                                     "data": ["10", "x", 30.5]}]}}
@@ -1471,7 +1470,7 @@ def test_run_card_chart_malformed_shapes_never_error(app, auth_client,
     huge = {"chart": {"kind": "bar", "labels": ["a", "b"],
                       "datasets": [{"label": "x",
                                     "data": [10 ** 400, 5]}]}}
-    calls = _stub_ai(monkeypatch, json.dumps(huge))
+    _stub_ai(monkeypatch, json.dumps(huge))
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)
     cid = _add_card(app, fid, type="chart", title="Usage",
@@ -1704,7 +1703,6 @@ def test_recover_skips_live_runs(app, user):
     """A card marked running WITH a live worker registered must survive
     recover_interrupted (reloading/navigating mid-run must not fake an
     interruption); a running card with no live worker is still recovered."""
-    dash_engine = _engine()
     drive_id = _drive(app, user)
     fid = _create(app, user, drive_id)
     with app.app_context():
@@ -1748,8 +1746,7 @@ def test_help_documents_prose_fallback():
     """The help page carries the honest note: if the model answers prose
     instead of JSON the card shows text by design — re-run the card."""
     import json
-    import io
-    with io.open(os.path.join(_DASH_DIR, "module.json"),
+    with open(os.path.join(_DASH_DIR, "module.json"),
                  encoding="utf-8") as fh:
         module = json.load(fh)
     blob = "\n".join(module.get("help", []))
@@ -2680,11 +2677,11 @@ def test_builder_merges_run_owned_without_clobbering_local_edits():
     # Fix-2: both save paths send the last-seen checksum so the server can
     # gate the card union on real concurrency evidence.
     for fn in ("save", "flushSync"):
-        body = re.search(r"function %s\(S(?:,.*?)?\) \{(.*?)\n    \}" % fn,
+        body = re.search(rf"function {fn}\(S(?:,.*?)?\) \{{(.*?)\n    \}}",
                          src, re.S)
-        assert body, "%s helper missing" % fn
+        assert body, f"{fn} helper missing"
         assert "base_checksum" in body.group(1), \
-            "%s must send base_checksum" % fn
+            f"{fn} must send base_checksum"
     if shutil.which("node") is None:
         pytest.skip("node not available")
     probe = (match.group(0) + """

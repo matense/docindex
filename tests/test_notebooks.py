@@ -1,8 +1,8 @@
 """Notebooks module: document service, routes, history, indexing and AI tools."""
 
 
-import importlib.util
 import copy
+import importlib.util
 import io
 import os
 import subprocess
@@ -1935,8 +1935,8 @@ def neighbors_unchanged(before, after, except_id):
 
 def test_restore_cell_preserves_neighbors(auth_client, notebook, version_with_extra_cell):
     before = load_doc(notebook)
-    r = auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
-                         json={"cell_id": "target"})
+    auth_client.post(f"/m/notebooks/{notebook}/history/{version_with_extra_cell}/restore-cell",
+                     json={"cell_id": "target"})
     assert load_doc(notebook)["cells"] != before["cells"]
     assert neighbors_unchanged(before, load_doc(notebook), except_id="target")
 

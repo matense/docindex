@@ -3655,8 +3655,8 @@ def test_failing_workflow_does_not_wedge_scheduler(app, user, enabled):
 
 def test_scheduler_retry_atomic_start_no_duplicates(app, user, enabled):
     """Check-then-start is atomic under lock: concurrent run wins, no dup."""
-    wf_id = _workflow(app, user, _text_graph("race"),
-                      enabled=True, interval_minutes=10)
+    _workflow(app, user, _text_graph("race"),
+              enabled=True, interval_minutes=10)
     # Race: due-check saw idle, but a concurrent run went active before start.
     with patch.object(runtime, "has_active_run",
                       side_effect=[False, True]) as m_has, \

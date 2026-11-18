@@ -546,7 +546,8 @@ def iter_workflow_events(stored, card, user, variables=None):
     the stream route settles both onto the card as error and closes.
     """
     doc = doc_service.load(stored)
-    files = resolve_inputs(stored, doc, card)
+    # Validation only: missing/trashed inputs raise here, before streaming.
+    resolve_inputs(stored, doc, card)
     if variables is None:
         variables = _doc_variables(doc)
     workflow_ref = (card.get("inputs") or {}).get("workflow") or {}
@@ -555,7 +556,7 @@ def iter_workflow_events(stored, card, user, variables=None):
     except (TypeError, ValueError):
         raise MissingInputError(
             "This card has no valid workflow reference — "
-            "re-open the Builder and pick a workflow.")
+            "re-open the Builder and pick a workflow.") from None
     models = _automation_models()
     workflow = (models.AutomationWorkflow.query
                 .filter_by(id=workflow_id, user_id=user.id).first())
@@ -704,7 +705,8 @@ def build_context(stored, doc, card, files):
                 stored_file, max_chars=TOOLS_OFF_MAX_CHARS + 1)
         except OSError as exc:
             raise MissingInputError(
-                f"Attachment '{stored_file.name}' cannot be read ({exc}).")
+                f"Attachment '{stored_file.name}' cannot be read ({exc})."
+            ) from None
         if ((stored_file.extension or "").lower() in _SPREADSHEET_EXTS
                 or not text.strip()):
             try:
@@ -895,7 +897,8 @@ def _run_script_card(stored, doc, card, user, files, variables=None):
             chunks = [file_service.read_text_content(target)]
         except OSError as exc:
             raise MissingInputError(
-                f"Attachment '{target.name}' cannot be read ({exc}).")
+                f"Attachment '{target.name}' cannot be read ({exc})."
+            ) from None
         files_map[f"f{pos}"] = chunks
     started = time.perf_counter()
     outcome = _pyrun_evaluate(script, files_map)

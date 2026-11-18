@@ -133,12 +133,12 @@ def _snap_size(card):
         w = int(float(card.get("w", min_w)))
     except (TypeError, ValueError):
         raise ValueError(f"Card width must be a number, got "
-                         f"{card.get('w')!r}.")
+                         f"{card.get('w')!r}.") from None
     try:
         h = int(float(card.get("h", min_h)))
     except (TypeError, ValueError):
         raise ValueError(f"Card height must be a number, got "
-                         f"{card.get('h')!r}.")
+                         f"{card.get('h')!r}.") from None
     card["w"] = max(min_w, min(GRID_COLUMNS, w))
     card["h"] = max(min_h, min(MAX_CARD_HEIGHT, h))
     for axis, limit in (("x", GRID_COLUMNS - 1), ("y", None)):
@@ -147,7 +147,7 @@ def _snap_size(card):
                 pos = int(float(card[axis]))
             except (TypeError, ValueError):
                 raise ValueError(f"Card {axis} must be a number, got "
-                                 f"{card[axis]!r}.")
+                                 f"{card[axis]!r}.") from None
             pos = max(0, pos)
             card[axis] = min(limit, pos) if limit is not None else pos
     return card

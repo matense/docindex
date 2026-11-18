@@ -1,8 +1,8 @@
 import json
-
-import pytest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+
+import pytest
 
 from app.extensions import db
 from app.models import AIConnection, ChatConversation, ChatMessage, User
@@ -917,7 +917,7 @@ def hidden_file(app, user):
 @pytest.fixture()
 def trashed_file(app, user):
     """A soft-deleted file: the peek endpoint must 404, never leak."""
-    from app.models import Drive, StoredFile
+    from app.models import Drive
     from app.services import file_service
 
     class FakeStorage:

@@ -341,7 +341,7 @@ def wizard_layout(description, variables=None):
     variables = dict(variables or {})
     var_hint = ""
     if variables:
-        names = ", ".join("{{ %s }}" % name for name in variables)
+        names = ", ".join("{{ " + name + " }}" for name in variables)
         var_hint = (" Slice every card by the dashboard variables where it "
                     f"makes sense ({names}).")
     specs = [
