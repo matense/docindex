@@ -59,3 +59,93 @@ def test_tables_module_enables(app):
         modules = {m["name"]: m for m in module_service.list_modules()}
     assert "tables" in modules
     assert modules["tables"]["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# T2: viewer page + virtualized grid + column stats + rows API
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+
+from app.models import StoredFile as _StoredFile
+from app.services import file_service as _file_service
+
+
+@pytest.fixture()
+def tables_enabled(app):
+    with app.app_context():
+        db.session.add(ModuleState(name="tables", enabled=True))
+        db.session.commit()
+
+
+def _write_table_file(app, user_id, name, ext, payload: bytes):
+    """Create an owned StoredFile row plus its blob on disk; return its id."""
+    with app.app_context():
+        sname = f"{_uuid.uuid4().hex}.{ext}"
+        stored = _StoredFile(name=name, stored_name=sname, extension=ext,
+                             mime_type="application/octet-stream",
+                             size=len(payload), user_id=user_id)
+        db.session.add(stored)
+        db.session.commit()
+        fid = stored.id
+        path = _file_service.file_path(stored)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(payload)
+    return fid
+
+
+def _numbered_csv(n):
+    lines = ["id,name,amount"]
+    for i in range(n):
+        lines.append(f"{i},name{i},{i * 1.5}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_viewer_row_cap(auth_client, app, user, tables_enabled):
+    fid = _write_table_file(app, user, "big.csv", "csv", _numbered_csv(200))
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    assert auth_client.get(f"/m/tables/{fid}").status_code == 200
+    # Header row + at most 50 data rows, never the whole file in the DOM.
+    assert 1 < html.count("<tr") <= 60
+
+
+def test_viewer_header_stats(auth_client, app, user, tables_enabled):
+    payload = "id,amount\n1,10\n2,20\n3,30\n".encode("utf-8")
+    fid = _write_table_file(app, user, "nums.csv", "csv", payload)
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    # Numeric column gets a number badge plus header stats + sparkline.
+    assert ">number<" in html
+    assert "col-stats" in html
+    assert "sparkline" in html
+    assert "<svg" in html
+
+
+def test_viewer_rows_page(auth_client, app, user, tables_enabled):
+    fid = _write_table_file(app, user, "big.csv", "csv", _numbered_csv(120))
+    data = auth_client.get(f"/m/tables/{fid}/rows?offset=50").get_json()
+    assert data["total"] == 120
+    assert [c["name"] for c in data["columns"]] == ["id", "name", "amount"]
+    assert len(data["rows"]) == 50
+    assert data["rows"][0][0] == "50"
+    assert data["rows"][-1][0] == "99"
+
+
+def test_viewer_messy_csv(auth_client, app, user, tables_enabled):
+    # Semicolon delimiter, ragged rows, and a non-UTF8 byte (lossy decode).
+    payload = "a;b;c\n1;2\n3;4;5;6\ncaf\xe9;x;y\n".encode("latin-1")
+    fid = _write_table_file(app, user, "messy.csv", "csv", payload)
+    assert auth_client.get(f"/m/tables/{fid}").status_code == 200
+    data = auth_client.get(f"/m/tables/{fid}/rows").get_json()
+    assert [c["name"] for c in data["columns"]] == ["a", "b", "c"]
+    assert data["total"] == 3
+    # Short rows are padded with "" (long rows trimmed to the header width).
+    assert data["rows"][0] == ["1", "2", ""]
+    assert data["rows"][1] == ["3", "4", "5"]
+    assert data["rows"][2][0].startswith("caf")
+    # .tsv forces tab-delimited parsing.
+    tsv = _write_table_file(app, user, "t.tsv", "tsv",
+                            "a\tb\n1\t2\n".encode("utf-8"))
+    tdata = auth_client.get(f"/m/tables/{tsv}/rows").get_json()
+    assert [c["name"] for c in tdata["columns"]] == ["a", "b"]
+    assert tdata["rows"] == [["1", "2"]]

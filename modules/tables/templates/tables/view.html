@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} - Tables{% endblock %}
+{% block content %}
+<div class="mx-auto w-full flex flex-col gap-3" id="tables-grid"
+     data-file-id="{{ file.id }}" data-total="{{ total }}"
+     data-page-size="{{ page_size }}">
+    <div class="flex items-center gap-3">
+        <a href="/" class="btn btn-ghost btn-sm btn-square" title="All files">
+            <i class="fas fa-arrow-left"></i>
+        </a>
+        <div class="flex-1 min-w-0">
+            <h1 class="font-bold truncate">{{ file.name }}</h1>
+            <p class="text-xs opacity-40">{{ total }} rows &times; {{ columns|length }} columns</p>
+        </div>
+    </div>
+
+    <div class="overflow-auto rounded-2xl" id="tables-scroll">
+        <table class="table table-zebra w-full" id="tables-table">
+            <thead>
+                <tr>
+                    {% for col in columns %}
+                    <th>
+                        <div class="font-semibold">{{ col.name }}</div>
+                        <span class="col-type col-type-{{ col.type }}">{{ col.type }}</span>
+                        {% if col.stats %}
+                        <div class="col-stats text-xs font-normal opacity-80">
+                            <span class="stat-sum">sum {{ col.stats.sum }}</span>
+                            <span class="stat-avg">avg {{ col.stats.avg }}</span>
+                            <span class="stat-min">min {{ col.stats.min }}</span>
+                            <span class="stat-max">max {{ col.stats.max }}</span>
+                            <span class="stat-null">null {{ col.stats.nulls }}</span>
+                            {{ col.stats.sparkline|safe }}
+                        </div>
+                        {% endif %}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody id="tables-grid-body">
+                {% for row in rows %}
+                <tr>
+                    {% for cell in row %}
+                    <td>{{ cell }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="flex items-center gap-2 text-sm opacity-80">
+        <button id="tables-prev" class="btn btn-ghost btn-sm" type="button">Prev</button>
+        <span id="tables-status">Rows 1&ndash;{{ rows|length }} of {{ total }}</span>
+        <button id="tables-next" class="btn btn-ghost btn-sm" type="button">Next</button>
+        <span id="tables-loading" class="hidden">Loading&hellip;</span>
+    </div>
+</div>
+<script src="{{ url_for('tables.static', filename='tables.js') }}"></script>
+{% endblock %}
