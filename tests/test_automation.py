@@ -3890,3 +3890,88 @@ def test_rich_previews_and_shortcuts_wiring():
     assert "wf-rich-table" in src and "JSON.stringify" in src
     html = read("modules/automation/templates/automation/run.html")
     assert "node_rich" in html and "createElement('table')" in html
+
+
+# ---------------------------------------------------------------------------
+# P1: transform.sql_query (SQL over upstream tables/files, pyrun sandbox)
+# ---------------------------------------------------------------------------
+
+def _sql_graph(left_fid, right_fid, sql):
+    return {"nodes": [
+        {"id": "a", "type": "input.file",
+         "config": {"file_id": str(left_fid)}},
+        {"id": "b", "type": "input.file",
+         "config": {"file_id": str(right_fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": sql}},
+    ], "edges": [
+        {"from": "a", "from_port": "out", "to": "q", "to_port": "in1"},
+        {"from": "b", "from_port": "out", "to": "q", "to_port": "in2"}]}
+
+
+def test_sql_query_multi_input_table_order(app, user):
+    left = _make_file(app, user, "left.csv", "id\n1\n")
+    right = _make_file(app, user, "right.csv", "id\n2\n")
+
+    def run(sql):
+        outputs, _, _ = _execute(_sql_graph(left, right, sql), app, user)
+        return outputs["q"]["out"]
+
+    with app.app_context():
+        # in1 seeds t0, in2 seeds t1 — in port order.
+        out = run("SELECT * FROM t0")
+        assert out["kind"] == "table"  # query ran against seeded t0/t1 in port order
+        assert out["data"]["rows"] == [["1"]]
+        out = run("SELECT * FROM t1")
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["2"]]
+        # The brief's join shape works against the same seeding.
+        out = run("SELECT * FROM t1 JOIN t0 USING (id)")
+        assert out["kind"] == "table"
+
+
+def test_sql_query_rejects_non_select(app, user):
+    fid = _make_file(app, user, "a.csv", "id\n1\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": "DELETE FROM t0"}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="Only SELECT"):
+            _execute(graph, app, user)
+
+
+def test_no_eval_exec_subprocess_in_pyrun_nodes():
+    src = read("modules/automation/nodes_pyrun.py")
+    assert "eval(" not in src and "exec(" not in src and "subprocess" not in src
+
+
+def test_sql_query_rejects_non_text_files(app, user):
+    fid = _make_file(app, user, "pic.png", "not really an image")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": "SELECT * FROM t0"}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="pic.png"):
+            _execute(graph, app, user)
+
+
+def test_sql_query_seeds_files_payload_as_t0(app, user):
+    fid = _make_file(app, user, "data.csv", "id\n7\n")
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t0"},
+            {"in1": {"kind": "files",
+                     "data": [{"file_id": fid, "name": "data.csv"}]}})
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["7"]]
