@@ -4003,3 +4003,66 @@ def test_sql_query_table_payload_port_order(app, user):
             ctx, {"sql": "SELECT * FROM t1 JOIN t0 USING (id)"}, inputs)
         assert out["kind"] == "table"
         assert out["data"]["rows"] == [["2"]]
+
+
+# ---------------------------------------------------------------------------
+# P2: transform.python_sandbox (sealed Python over payloads, pyrun sandbox)
+# ---------------------------------------------------------------------------
+
+def _py_ctx(app, user):
+    return {"user": db.session.get(User, user), "log": lambda *a: None}
+
+
+def _pyrun_node():
+    return importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+
+
+def test_python_sandbox_pure_compute(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        out = nodes_pyrun._exec_python_sandbox(
+            _py_ctx(app, user),
+            {"code": "res = sum(int(r['v']) for r in rows('f'))\nres"},
+            {"in": engine.p_table(["v"], [[1], [2], [3]])})
+        assert out == {"kind": "json", "data": 6}
+
+
+def test_python_sandbox_json_and_text_bind_as_f(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        ctx = _py_ctx(app, user)
+        out = nodes_pyrun._exec_python_sandbox(
+            ctx, {"code": "sum(f['items'])"},
+            {"in": engine.p_json({"items": [1, 2, 3]})})
+        assert out == {"kind": "json", "data": 6}
+        out = nodes_pyrun._exec_python_sandbox(
+            ctx, {"code": "f.upper()"},
+            {"in": engine.p_text("hello")})
+        assert out == {"kind": "json", "data": "HELLO"}
+
+
+def test_python_sandbox_errors_surface_message(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError) as exc:
+            nodes_pyrun._exec_python_sandbox(
+                _py_ctx(app, user), {"code": "1/0"},
+                {"in": engine.p_text("x")})
+        assert "division by zero" in str(exc.value)
+        assert "Traceback" not in str(exc.value)
+
+
+def test_python_sandbox_rejects_missing_code_input_kind(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        ctx = _py_ctx(app, user)
+        with pytest.raises(engine.WorkflowError, match="Python program"):
+            nodes_pyrun._exec_python_sandbox(
+                ctx, {"code": "  "}, {"in": engine.p_text("x")})
+        with pytest.raises(engine.WorkflowError, match="No input"):
+            nodes_pyrun._exec_python_sandbox(ctx, {"code": "f"}, {})
+        with pytest.raises(engine.WorkflowError, match="table, JSON or text"):
+            nodes_pyrun._exec_python_sandbox(
+                ctx, {"code": "f"},
+                {"in": engine.p_files([{"file_id": 1}])})

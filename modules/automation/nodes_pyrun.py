@@ -1,4 +1,5 @@
-"""Pyrun-backed automation nodes: SQL over upstream tables/files.
+"""Pyrun-backed automation nodes: SQL over upstream tables/files and sealed
+Python over a single payload.
 
 Registered from nodes.py::register_defaults via register_pyrun_nodes().
 Both pyrun nodes in this file share the _seed_files_as_tables() helper,
@@ -14,7 +15,8 @@ from app.models import StoredFile
 from app.services import file_service
 from modules.pyrun.evaluate import evaluate as _pyrun_evaluate
 
-from .engine import WorkflowError, as_table, p_table, table_to_csv
+from .engine import (WorkflowError, as_json, as_table, as_text, p_json,
+                     p_table, table_to_csv)
 from .registry import register_node_type
 
 # Extensions readable as CSV-shaped text for SQL seeding. Anything else
@@ -114,6 +116,34 @@ def _exec_sql_query(ctx, config, inputs):
     return p_table(columns, rows)
 
 
+def _exec_python_sandbox(ctx, config, inputs):
+    code = (config.get("code") or "").strip()
+    if not code:
+        raise WorkflowError("Enter a Python program to run over the input "
+                            "(e.g. sum(int(r['total']) for r in rows('f'))).")
+    payload = inputs.get("in")
+    if payload is None:
+        raise WorkflowError("No input — connect a table, JSON or text "
+                            "payload to run Python over (port in).")
+    kind = payload.get("kind")
+    variables, files = {}, {}
+    if kind == "table":
+        files = {"f": [table_to_csv(as_table(payload))]}
+    elif kind == "json":
+        variables = {"f": as_json(payload)}
+    elif kind == "text":
+        variables = {"f": as_text(payload)}
+    else:
+        raise WorkflowError(
+            f"Cannot use a {kind} payload here — connect a table, "
+            "JSON or text payload (port in).")
+    outcome = _pyrun_evaluate(code, variables=variables, files=files)
+    if not outcome.get("ok"):
+        raise WorkflowError(
+            f"The Python run failed: {outcome.get('error') or 'unknown error'}")
+    return p_json(outcome.get("value"))
+
+
 def register_pyrun_nodes():
     """Pyrun-backed nodes — called once from register_defaults."""
     register_node_type("transform.sql_query", {
@@ -137,3 +167,25 @@ def register_pyrun_nodes():
                      "connected input, in port order). Anything else is "
                      "rejected before it runs."},
         ]}, _exec_sql_query, module="pyrun")
+    register_node_type("transform.python_sandbox", {
+        "label": "Python sandbox", "icon": "fa-code",
+        "category": "Transform",
+        "description": "Runs a small Python program over one table, JSON or "
+                       "text input in the sealed pyrun sandbox and returns "
+                       "the computed value as JSON. A table input is exposed "
+                       "as rows('f') (list of str->str dicts, one per row); "
+                       "a JSON or text input is exposed as the variable f. "
+                       "The last top-level expression is the returned value.",
+        "example": "sum(int(r['total']) for r in rows('f')) adds up the "
+                   "total column of the connected table.",
+        "inputs": [{"name": "in", "kind": "any"}],
+        "outputs": [{"name": "out", "kind": "json"}],
+        "fields": [
+            {"name": "code", "label": "Python code", "kind": "code:python",
+             "required": True, "default": "",
+             "placeholder": "sum(int(r['total']) for r in rows('f'))",
+             "help": "A small Python program (same sandbox as pyrun.compute: "
+                     "no imports, no I/O). Table rows arrive via rows('f'); "
+                     "JSON and text arrive as the variable f. The last "
+                     "expression is returned as JSON."},
+        ]}, _exec_python_sandbox, module="pyrun")
