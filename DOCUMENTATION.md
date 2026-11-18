@@ -1776,6 +1776,18 @@ tool + table).
   (list/read/create/update/add_card/update_card/delete_card/attach/detach/
   run_card/run_all/recommend) let the assistant build and maintain pages;
   `ai_lock`/`ai_hidden` flags plus a file guard gate assistant access.
+- `tables` — queryable datasets. A table is a regular `StoredFile` with
+  extension `.ptable` whose blob is a JSON document (`version`, `columns`
+  with `number|date|category|text` types, `rows` as cell lists), so it gets
+  drives, trash, `FileVersion` history and FTS search free. CSV, TSV and
+  XLSX open read-only in the viewer (50-row pages, type badges, header
+  stats, sparklines) with a SELECT/WITH SQL filter bar over the pyrun
+  sandbox; Save as `.ptable` converts one-way and `.ptable` cells edit
+  inline with snapshot-first versions. Pin-as-card attaches the table to a
+  dashboard and build-automation prefills a workflow; AI tools
+  `tables.schema/query_sql/update_rows/add_column` let the assistant read
+  and reshape datasets, guarded by module-enabled + ownership + trashed
+  (writes also refuse synced drives).
 - `pyrun` — sealed Python + SQL scratchpad for the AI agent (agent-only:
   no routes, no nav; two namespaced tools). `pyrun.compute` runs a small,
   bounded program over explicitly attached files the user owns (up to 5

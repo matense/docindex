@@ -6,7 +6,7 @@
   "nav": {"label": "Tables", "icon": "fa-table", "url": "/"},
   "help": [
     "Tables are .ptable datasets that live on your drives like files: they are indexed, searchable and keep a full version history.",
-    "CSV, TSV and XLSX files open in the tables viewer, where they can be sorted, filtered and converted to queryable .ptable datasets.",
-    "Ask the AI to build or maintain tables: it can create datasets, import your drive files and reshape columns — one answer leaves a single restorable history entry."
+    "CSV, TSV and XLSX files open in the tables viewer with sort, a SELECT/WITH SQL filter bar and one-way Save as .ptable; .ptable cells edit inline with snapshot-first versions.",
+    "Ask the AI to query, edit and reshape tables with the tables.* tools (schema, query_sql, update_rows, add_column) — one answer leaves a single restorable history entry."
   ]
 }

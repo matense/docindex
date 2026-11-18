@@ -484,3 +484,141 @@ def test_build_automation_idempotent_two_posts_one_workflow(
     assert any(n.get("type") == "input.file"
                and (n.get("config") or {}).get("file_id") == fid
                for n in graph["nodes"])
+
+
+# ---------------------------------------------------------------------------
+# T5: AI tools (tables.*)
+# ---------------------------------------------------------------------------
+
+
+def _t5_tools():
+    """The AI tools module (T5) — ImportError until implemented."""
+    return importlib.import_module("docindex_module_tables.tools")
+
+
+def _t5_ptable_payload():
+    doc = tables_doc.new_table(
+        [{"name": "price", "type": "number"},
+         {"name": "label", "type": "text"}],
+        [["1", "x"], ["2", "y"]])
+    return tables_doc.serialize(doc).encode("utf-8")
+
+
+def test_ai_schema_lists_columns_and_types(app, user, tables_enabled):
+    from app.models import User as _User
+
+    tools = _t5_tools()
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _t5_ptable_payload())
+    csv_id = _write_table_file(app, user, "n.csv", "csv",
+                               b"id,amount\n1,10\n2,20\n")
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        out = tools._tool_schema(user_obj, {"file_id": fid}, None)
+    assert out["columns"] == [{"name": "price", "type": "number"},
+                              {"name": "label", "type": "text"}]
+    assert out["total_rows"] == 2
+    # Spreadsheet files report sniffed types like the rows API.
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        sniffed = tools._tool_schema(user_obj, {"file_id": csv_id},
+                                     None)
+    assert sniffed["columns"] == [{"name": "id", "type": "number"},
+                                  {"name": "amount", "type": "number"}]
+    assert sniffed["total_rows"] == 2
+
+
+def test_ai_query_sql_select_and_gate(app, user, tables_enabled):
+    from app.models import User as _User
+
+    tools = _t5_tools()
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        out = tools._tool_query_sql(
+            user_obj,
+            {"file_id": fid, "sql": "SELECT * FROM t0 WHERE a = '1'"},
+            None)
+    assert out["ok"] is True
+    assert out["total"] == 1
+    assert out["rows"] == [["1", "2"]]
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        bad = tools._tool_query_sql(
+            user_obj, {"file_id": fid, "sql": "DELETE FROM t0"}, None)
+    assert "error" in bad
+    assert "SELECT" in bad["error"].upper()
+
+
+def test_ai_update_rows_snapshots_version(app, user, tables_enabled):
+    from app.models import User as _User
+
+    tools = _t5_tools()
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    before = _version_count(app, fid)
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        out = tools._tool_update_rows(
+            user_obj,
+            {"file_id": fid,
+             "edits": [{"row": 0, "col": "a", "value": "9"}]},
+            None)
+        assert out["ok"] is True, out
+    assert _version_count(app, fid) == before + 1
+    assert _ptable_cell(app, fid, 0, "a") == "9"
+    with app.app_context():
+        latest = _FileVersion.query.filter_by(
+            file_id=fid).order_by(_FileVersion.version.desc()).first()
+        assert latest.source == "table-edit"
+
+
+def test_ai_add_column_appends_empty(app, user, tables_enabled):
+    from app.models import User as _User
+
+    tools = _t5_tools()
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    before = _version_count(app, fid)
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        out = tools._tool_add_column(
+            user_obj, {"file_id": fid, "name": "c", "type": "text"},
+            None)
+        assert out["ok"] is True, out
+        schema = tools._tool_schema(user_obj, {"file_id": fid}, None)
+    assert [c["name"] for c in schema["columns"]] == ["a", "b", "c"]
+    assert _version_count(app, fid) == before + 1
+    assert _ptable_cell(app, fid, 0, "c") == ""
+    assert _ptable_cell(app, fid, 1, "c") == ""
+
+
+def test_ai_tools_fail_closed(app, user, tables_enabled):
+    from app.models import User as _User
+
+    tools = _t5_tools()
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        # Unknown files fail closed on every tool.
+        assert "error" in tools._tool_schema(
+            user_obj, {"file_id": 999999}, None)
+        assert "error" in tools._tool_query_sql(
+            user_obj, {"file_id": 999999, "sql": "SELECT 1"}, None)
+        assert "error" in tools._tool_update_rows(
+            user_obj, {"file_id": 999999,
+                       "edits": [{"row": 0, "col": "a",
+                                  "value": "9"}]}, None)
+        assert "error" in tools._tool_add_column(
+            user_obj, {"file_id": 999999, "name": "c"}, None)
+    # A disabled module fails closed without touching storage.
+    with app.app_context():
+        db.session.query(ModuleState).filter_by(name="tables").delete()
+        db.session.commit()
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        out = tools._tool_schema(user_obj, {"file_id": fid}, None)
+        assert "error" in out
+        assert "disabled" in out["error"].lower()
