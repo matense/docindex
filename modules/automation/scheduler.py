@@ -138,15 +138,14 @@ def _tick_events(app):
                            "carried over to the next tick", leftover)
     if not batch:
         return 0
-    candidates = list(_expand_event_candidates(batch))
-    if not candidates:
-        return 0
     import json as _json
     rules = []
     for wf in (AutomationWorkflow.query
                .filter(AutomationWorkflow.enabled.is_(True),
                        AutomationWorkflow.trigger_event.isnot(None)).all()):
         if not wf.trigger_event:
+            app.logger.warning("Automation event rule skipped (bad JSON) "
+                               "for workflow %s", wf.id)
             continue
         try:
             rule = _json.loads(wf.trigger_event)
@@ -155,6 +154,8 @@ def _tick_events(app):
                                "for workflow %s", wf.id)
             continue
         if not isinstance(rule, dict):
+            app.logger.warning("Automation event rule skipped (bad JSON) "
+                               "for workflow %s", wf.id)
             continue
         rules.append((wf, rule))
     if not rules:
@@ -162,7 +163,13 @@ def _tick_events(app):
     from app.models import StoredFile, User
     launched = 0
     started = set()  # at most one event run per workflow per tick
-    for candidate in candidates:
+    # Lazy expansion: the generator yields per-file candidates on demand,
+    # so breaking once every rule has launched stops both the StoredFile
+    # fetch and the rule loop — a first-time large-drive sync with one
+    # enabled workflow settles after one candidate instead of N fetches.
+    for candidate in _expand_event_candidates(batch):
+        if len(started) >= len(rules):
+            break
         try:
             stored = db.session.get(StoredFile, candidate["file_id"])
         except Exception:  # noqa: BLE001 - one bad event, not the tick

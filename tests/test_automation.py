@@ -4336,3 +4336,55 @@ def test_scheduled_workflow_refreshes_dashboard(app, user,
     with app.app_context():
         assert (models.AutomationRun.query
                 .filter_by(workflow_id=wf_id).count()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Final review fixes: WITH...SELECT gate + event fan-out bound
+# ---------------------------------------------------------------------------
+
+def test_sql_query_accepts_with_select_cte(app, user):
+    fid = _make_file(app, user, "t.csv", "id,name\n1,alice\n2,bob\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": ("WITH big AS (SELECT * FROM t0) "
+                            "SELECT * FROM big")}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        outputs, _, _ = _execute(graph, app, user)
+        out = outputs["q"]["out"]
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["1", "alice"], ["2", "bob"]]
+
+
+def test_event_fanout_bounded_on_large_sync(app, user, enabled,
+                                            monkeypatch):
+    """file.synced with 500 added ids completes bounded work (early break):
+    once every rule has launched, further candidates are discarded anyway,
+    so the tick stops expanding after a couple of candidates."""
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "one.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()  # drop the upload event; drive the synced path
+    from app.services import events
+    orig_expand = scheduler._expand_event_candidates
+    consumed = {"n": 0}
+
+    def counting(batch):
+        for cand in orig_expand(batch):
+            consumed["n"] += 1
+            yield cand
+
+    monkeypatch.setattr(scheduler, "_expand_event_candidates", counting)
+    events.emit("file.synced", {"drive_id": drive_id, "user_id": user,
+                                "added": [fid] * 500})
+    assert scheduler.tick(app) == 1
+    assert consumed["n"] <= 5, (
+        f"expanded {consumed['n']} candidates in one tick")
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1

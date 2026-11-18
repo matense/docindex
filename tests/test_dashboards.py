@@ -4635,3 +4635,41 @@ def test_dashboard_refresh_single_failure_records_and_continues(
     assert "gone.csv" in data["failed"][bad]
     assert _card(app, fid, good)["status"] == "done"
     assert _card(app, fid, bad)["status"] == "error"
+
+
+def test_workflow_refresh_stale_settle_skipped_on_newer_run(
+        app, user, dash_auto_enabled, fake_ai, monkeypatch):
+    """A UI-equivalent run_started claim between the workflow's run_card
+    and settle must survive: the older workflow settle is skipped by run-id
+    (newer wins), mirroring the routes.run_cards guard."""
+    import importlib as _importlib
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, title="One", prompt="Count open")
+    orig_run_card = dash_engine.run_card
+
+    def hijack(stored, card, uid):
+        with app.app_context():
+            live = db.session.get(StoredFile, fid)
+            doc = dash_doc.load(live)
+            tgt = next(c for c in doc["cards"] if c.get("id") == cid)
+            tgt["status"] = "done"
+            tgt["result"] = {"text": "newer UI result"}
+            tgt["runId"] = f"{fid}:newer-ui-run"
+            dash_doc.save_document(live, doc)
+            dash_doc.run_started(fid, f"{fid}:newer-ui-run")
+        return orig_run_card(stored, card, uid)
+
+    monkeypatch.setattr(dash_engine, "run_card", hijack)
+    _ = _importlib.import_module("docindex_module_dashboards.nodes")
+    data = _run_refresh(app, user, _refresh_graph(fid, cid))
+    try:
+        card = _card(app, fid, cid)
+        assert card["runId"] == f"{fid}:newer-ui-run"
+        assert card["result"] == {"text": "newer UI result"}
+        assert card["status"] == "done"
+        assert data == {"ran": [cid], "failed": {}}
+    finally:
+        with app.app_context():
+            dash_doc.run_finished(fid, f"{fid}:newer-ui-run")

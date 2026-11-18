@@ -87,9 +87,9 @@ def _exec_sql_query(ctx, config, inputs):
     if not sql:
         raise WorkflowError("Enter a SELECT query to run "
                             "(e.g. SELECT * FROM t0 LIMIT 100).")
-    if _first_keyword(sql) != "SELECT":
-        raise WorkflowError("Only SELECT queries are allowed — "
-                            "this node cannot change data.")
+    if _first_keyword(sql) not in ("SELECT", "WITH"):
+        raise WorkflowError("Only SELECT or WITH ... SELECT queries are "
+                            "allowed — this node cannot change data.")
     payloads = [inputs[port] for port in _PORTS
                 if inputs.get(port) is not None]
     if not payloads:
