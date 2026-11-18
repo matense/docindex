@@ -2,8 +2,8 @@
   "releases": [
     {
       "version": "0.1.20",
-      "date": "2026-11-16",
-      "title": "Argon: chat + notebooks UI redesign",
+      "date": "2026-11-18",
+      "title": "Argon: chat, notebooks, dashboards and automation UI",
       "sections": [
         {
           "title": "New",
@@ -12,15 +12,27 @@
             "Chat composer rebuilt: context strip, larger input, send inside the box, mid-string #/$// mentions with keyboard navigation, and a live token meter backed by the token-estimate endpoint.",
             "Chat layout switcher: floating, split and full-page modes with a full-page sidebar, pop-out, minimized dock pills and session persistence, plus reasoning summary badges, grouped history, quick-peek file citations and message actions (copy, edit-resend, conversation branching, insert into notebook).",
             "Notebooks editing pass: inline title synced with the filename, 30-step undo/redo with shortcuts, sticky index of headings with active highlight, inline slash menu, and table/to-do ergonomics with flicker-free drag-and-drop.",
-            "Notebooks AI and code cells: per-cell Ask AI with split view, executable code/SQL cells via pyrun with save-result-as-table, and per-cell restore from history."
+            "Notebooks AI and code cells: per-cell Ask AI with split view, executable code/SQL cells via pyrun with save-result-as-table, and per-cell restore from history.",
+            "Dashboard script cards: flip the Script toggle and cards compute deterministically instead of prompting — pyrun scripts over the attached files (f0..tN tables, plus db.tables() to discover them), results coerced into KPI/table snapshots, zero AI steps spent, with a run console showing inputs and timing.",
+            "Dashboards support variables ({{ name }}) with a View filter bar that re-runs only the cards referencing them, a Generate-with-AI creation wizard, interactive tables (click-to-sort, quick filter, one-click CSV, paged at 50 rows), more chart kinds (doughnut, horizontalBar, area) with a client-side view switcher, an inline-editable title, and AI lock/hide guards with live Builder updates.",
+            "Automation editor upgrade: canvas HUD with zoom, fit-to-view, auto-layout and minimap; color-coded typed sockets with node ID badges; a right-hand slide-over inspector with clickable upstream reference chips; live run highlighting with rich table/JSON output previews; keyboard shortcuts (save, run, duplicate, fit, console)."
           ]
         },
         {
           "title": "Improved",
           "icon": "fa-wrench",
           "entries": [
-            "Pyrun text results render verbatim with real line breaks in a scrollable block (truncated at 5000 chars with a note) instead of escaped JSON; the notebook index only docks beside the cells on very wide screens and the page widens to compensate so cells keep their width.",
-            "Chat token meter spacing widened for readability; Tailwind bundle rebuilt with the new utilities plus a safelist for dynamic alert classes; drive sync, duplicate-script and listener-cleanup hardening in the chat shell."
+            "KPI cards render big tabular numerals (scaling with card size) with sign-colored deltas; pyrun text results render verbatim with real line breaks in a scrollable block (truncated at 5000 chars with a note); the notebook index only docks beside the cells on very wide screens and the page widens to compensate so cells keep their width.",
+            "Chat token meter spacing widened for readability; Tailwind bundle rebuilt with the new utilities plus a safelist for dynamic alert classes; drive sync, duplicate-script and listener-cleanup hardening in the chat shell.",
+            "Builder cards are content-first: compact same-size previews open a full popup editor (Python syntax highlighting with a plain-text fallback, dirty-edit confirm, Ctrl+Enter to save); script toggle, tools and workflow controls live in a collapsible Settings drawer."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "The full-page AI chat keeps its input box pinned in view — long conversation lists no longer push the composer below the fold.",
+            "Module lookups survive a stale request cache instead of surfacing a detached-session error on cards; dashboard table attachments map one-to-one onto scratch tables (no duplicated first table)."
           ]
         }
       ]

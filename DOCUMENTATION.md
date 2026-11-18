@@ -1746,6 +1746,24 @@ tool + table).
   (node shapes, reference targets, schedule completeness) via an
   upstream-shape API before running, and graph export preserves node
   ids so references survive autosave.
+- `dashboards` — living pages of prompt-driven cards (KPIs, tables, lists,
+  charts, markdown, workflow) over drive files. A dashboard is a regular
+  StoredFile (`.pdash` JSON document: cards, attachments, `createdFileIds`)
+  with version history, trash and FTS search free. Each card carries a
+  natural-language prompt plus references to files attached to the
+  dashboard; running a card executes the prompt and snapshots the result
+  (KPI/chart answers parse into structured snapshots, anything else keeps
+  the old `{"text"}` behavior). Script cards run pyrun over the attachments
+  instead (`script_enabled` + `script` source, no prompt, no AI steps) with
+  the result coerced into the card's snapshot. Dashboards support top-level
+  `variables` (`{{ name }}` substituted into prompts and scripts) with a
+  View filter bar that re-runs only affected cards, a Generate-with-AI
+  creation wizard, per-card step budgets, a live run console, interactive
+  tables (sort/filter/CSV over the full snapshot, 50-row pager) and more
+  chart kinds with a client-side view switcher. AI tools `dashboards.*`
+  (list/read/create/update/add_card/update_card/delete_card/attach/detach/
+  run_card/run_all/recommend) let the assistant build and maintain pages;
+  `ai_lock`/`ai_hidden` flags plus a file guard gate assistant access.
 - `pyrun` — sealed Python + SQL scratchpad for the AI agent (agent-only:
   no routes, no nav; two namespaced tools). `pyrun.compute` runs a small,
   bounded program over explicitly attached files the user owns (up to 5
@@ -1768,10 +1786,15 @@ tool + table).
   `ValueError`-only). Host helpers `parse_json`/`parse_csv`/`rows(name)`
   expose file chunks as plain values. Attached CSVs additionally seed a
   throwaway `:memory:` SQLite DB as tables `t0`, `t1`, … (sanitized TEXT
-  columns) visible only as a two-method `db` object: `db.query` for reads
+  columns) visible as a three-method `db` object: `db.query` for reads
   (SELECT/JOIN/GROUP BY, CTEs, UNION) and `db.exec` for writes/DDL
   (INSERT incl. INSERT INTO … SELECT, UPDATE, DELETE, CREATE TABLE [AS],
-  CREATE INDEX, DROP) — locked down by a keyword pre-filter plus
+  CREATE INDEX, DROP), plus `db.tables()` listing the seeded table
+names in order (probe it instead of guessing `tN`; sandbox errors
+abort the run instead of being catchable). The same evaluator backs
+notebook code cells and dashboard script cards (tables map `f{pos}`
+to attachments in order, with no `f` alias so `t0..tN` stay aligned).
+It is locked down by a keyword pre-filter plus
   `set_authorizer`, `enable_load_extension(False)` and
   host-side `temp_store=MEMORY`, single statement per call, per-row
   budget ticks. Every tool failure is a safe retry-shaped
@@ -1781,7 +1804,7 @@ tool + table).
 
 ## Testing
 
-pytest suite in `tests/`, 1050+ tests across 20+ modules:
+pytest suite in `tests/`, 1300+ tests across 20+ modules:
 
 - `conftest.py` fixtures: `app` (fresh app with `TestConfig`, `create_all` /
   `drop_all` around each test; the app context is deliberately not kept

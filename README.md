@@ -118,6 +118,14 @@ questions about your files by searching and reading them step by step.
   > should be used with care: workflows may misbehave, node configs may
   > change between releases, and runs can fail midway. Keep a copy of
   > anything important before letting a workflow modify it.
+- **Dashboards (module)** — living pages of prompt-driven cards (KPIs,
+  tables, lists, charts, text) over your drive files: each card runs its
+  prompt (or a pyrun script, with the Script toggle — zero AI steps) and
+  snapshots the result, with version history and a run console. Cards can
+  use `{{ variables }}` with a filter bar that re-runs only affected
+  cards, and the assistant can generate whole dashboards with the
+  Generate-with-AI wizard. AI lock/hide toggles included.
+  Enable it in *Settings → Modules*.
 - **Extensible module system** — new features can ship as self-contained
   modules under `modules/` (pages, AI tools, database tables, file viewers,
   AI file guards) with an admin enable/disable toggle. See
