@@ -281,3 +281,176 @@ def test_cell_edit_csv_requires_save_as_ptable(auth_client, app, user,
     assert "tables-sql" in csv_html and "Save as .ptable" in csv_html
     ptable_html = auth_client.get(f"/m/tables/{new_id}").data.decode()
     assert 'data-editable="1"' in ptable_html
+
+
+# ---------------------------------------------------------------------------
+# T4: Pin as dashboard card + build-automation handoff
+# ---------------------------------------------------------------------------
+
+
+def _t4_dash_doc():
+    """Dashboards doc service (same spec dance as test_dashboards)."""
+    import importlib
+
+    if "docindex_module_dashboards" not in sys.modules:
+        _t4_spec = importlib.util.spec_from_file_location(
+            "docindex_module_dashboards",
+            os.path.join(_TABLES_DIR, "..", "dashboards", "__init__.py"),
+            submodule_search_locations=[
+                os.path.join(_TABLES_DIR, "..", "dashboards")])
+        _t4_mod = importlib.util.module_from_spec(_t4_spec)
+        sys.modules["docindex_module_dashboards"] = _t4_mod
+        _t4_spec.loader.exec_module(_t4_mod)
+    return importlib.import_module("docindex_module_dashboards.doc")
+
+
+@pytest.fixture()
+def dashboards_enabled(app):
+    with app.app_context():
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+
+
+@pytest.fixture()
+def automation_enabled(app):
+    with app.app_context():
+        db.session.add(ModuleState(name="automation", enabled=True))
+        db.session.commit()
+
+
+def _t4_drive(app, user_id):
+    with app.app_context():
+        drive = _Drive(name="Dashboards Home", user_id=user_id)
+        db.session.add(drive)
+        db.session.commit()
+        return drive.id
+
+
+def _t4_dashboard(app, user_id, drive_id, title="Morning view"):
+    from app.models import User as _User
+
+    dash_doc = _t4_dash_doc()
+    with app.app_context():
+        user = db.session.get(_User, user_id)
+        drive = db.session.get(_Drive, drive_id)
+        return dash_doc.create_dashboard(user, drive, title).id
+
+
+def _files_count(app):
+    with app.app_context():
+        return _StoredFile.query.filter(
+            _StoredFile.deleted_at.is_(None)).count()
+
+
+def _dashboard_doc(app, dash_id):
+    dash_doc = _t4_dash_doc()
+    with app.app_context():
+        stored = db.session.get(_StoredFile, dash_id)
+        path = _file_service.file_path(stored)
+    with open(path, encoding="utf-8") as fh:
+        return dash_doc.parse(fh.read())
+
+
+def test_pin_creates_card_not_file(auth_client, app, user, tables_enabled,
+                                  dashboards_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    dash = _t4_dashboard(app, user, _t4_drive(app, user))
+    before = _files_count(app)
+    out = auth_client.post(f"/m/tables/{fid}/pin",
+                           json={"dashboard_id": dash,
+                                 "title": "Top issues"})
+    assert out.status_code == 200
+    body = out.get_json()
+    assert body["ok"] is True
+    # No new StoredFile — only a card referencing the table as attachment.
+    assert _files_count(app) == before
+    doc = _dashboard_doc(app, dash)
+    cards = [c for c in doc["cards"] if c.get("title") == "Top issues"]
+    assert len(cards) == 1
+    assert cards[0]["type"] == "table"
+    atts = {a["id"]: a for a in doc["attachments"]}
+    refs = (cards[0].get("inputs") or {}).get("attachments") or []
+    assert len(refs) == 1 and refs[0] in atts
+    assert atts[refs[0]]["fileId"] == fid
+
+
+def test_pin_dashboards_disabled_fail_closed(auth_client, app, user,
+                                             tables_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    before = _files_count(app)
+    out = auth_client.post(f"/m/tables/{fid}/pin",
+                           json={"dashboard_id": 1, "title": "Top issues"})
+    body = out.get_json()
+    assert body["ok"] is False
+    assert "dashboards" in body["error"].lower()
+    assert _files_count(app) == before
+
+
+def test_pin_targets_default_most_recent(auth_client, app, user,
+                                        tables_enabled,
+                                        dashboards_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    drive_id = _t4_drive(app, user)
+    _t4_dashboard(app, user, drive_id, title="Older view")
+    newer = _t4_dashboard(app, user, drive_id, title="Newer view")
+    out = auth_client.get(f"/m/tables/{fid}/pin-targets")
+    assert out.status_code == 200
+    body = out.get_json()
+    assert body["ok"] is True
+    assert {d["id"] for d in body["dashboards"]} >= {newer}
+    assert body["default_id"] == newer
+    assert body["suggested_title"] == "issues"
+
+
+def test_build_automation_prefilled_and_live(auth_client, app, user,
+                                            tables_enabled,
+                                            automation_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    out = auth_client.post(f"/m/tables/{fid}/build-automation")
+    assert out.status_code == 200
+    body = out.get_json()
+    assert body["ok"] is True
+    assert body["file_id"] == fid
+    # Prefilled: the workflow graph holds an input.file node on the table.
+    graph = auth_client.get(
+        f"/m/automation/{body['workflow_id']}/graph").get_json()["graph"]
+    assert any(n.get("type") == "input.file"
+               and (n.get("config") or {}).get("file_id") == fid
+               for n in graph["nodes"])
+    # Not dead: the deep link opens the editor.
+    assert auth_client.get(body["url"]).status_code == 200
+
+
+def test_build_automation_disabled_fail_closed(auth_client, app, user,
+                                               tables_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    out = auth_client.post(f"/m/tables/{fid}/build-automation")
+    body = out.get_json()
+    assert body["ok"] is False
+    assert "automation" in body["error"].lower()
+
+
+def test_viewer_pin_build_buttons_present(auth_client, app, user,
+                                          tables_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    assert "tables-pin" in html
+    assert "tables-buildauto" in html
+
+
+def test_query_bad_paging_json_error(auth_client, app, user,
+                                     tables_enabled):
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    r = auth_client.post(f"/m/tables/{fid}/query",
+                         json={"sql": "SELECT * FROM t0", "offset": "abc"})
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["ok"] is False
+    assert "offset/limit" in body["error"].lower()

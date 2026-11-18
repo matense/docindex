@@ -2,7 +2,10 @@
  * T3 adds the SQL filter bar (POST query, SELECT/WITH only — the filtered
  * view replaces the grid and the pager resets to page 1) and versioned
  * inline cell editing on .ptable files (POST cell; csv/tsv/xlsx stay
- * read-only until "Save as .ptable"). */
+ * read-only until "Save as .ptable").
+ * T4 adds the pin-as-dashboard-card handoff (GET pin-targets picker, POST
+ * pin — no new file, only a card) and the build-automation handoff (POST
+ * build-automation — a prefilled workflow, then navigate to its editor). */
 (function () {
   "use strict";
 
@@ -24,6 +27,13 @@
     var runBtn = document.getElementById("tables-run");
     var resetBtn = document.getElementById("tables-reset");
     var saveAsBtn = document.getElementById("tables-saveas");
+    var pinBtn = document.getElementById("tables-pin");
+    var buildBtn = document.getElementById("tables-buildauto");
+    var pinPanel = document.getElementById("tables-pin-panel");
+    var pinTarget = document.getElementById("tables-pin-target");
+    var pinTitle = document.getElementById("tables-pin-title");
+    var pinConfirm = document.getElementById("tables-pin-confirm");
+    var pinCancel = document.getElementById("tables-pin-cancel");
     var errorBox = document.getElementById("tables-error");
     if (!tbody || !fileId) return;
 
@@ -276,6 +286,109 @@
         .catch(function () {
           showLoading(false);
           showError("Save failed unexpectedly.");
+        });
+    });
+
+    function openPinPanel() {
+      if (!pinPanel || !pinTarget) return;
+      showError(null);
+      fetch(baseUrl() + "/pin-targets")
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            return { ok: resp.ok, data: data };
+          });
+        })
+        .then(function (out) {
+          if (!out.ok || !out.data.ok) {
+            showError((out.data && out.data.error) ||
+                      "Could not load dashboards.");
+            return;
+          }
+          var dashboards = out.data.dashboards || [];
+          if (!dashboards.length) {
+            showError("No dashboards yet — create one from the Dashboards module first.");
+            return;
+          }
+          pinTarget.textContent = "";
+          for (var i = 0; i < dashboards.length; i++) {
+            var opt = document.createElement("option");
+            opt.value = String(dashboards[i].id);
+            opt.textContent = dashboards[i].name;
+            pinTarget.appendChild(opt);
+          }
+          if (out.data.default_id) {
+            pinTarget.value = String(out.data.default_id);
+          }
+          if (pinTitle) pinTitle.value = out.data.suggested_title || "";
+          pinPanel.classList.remove("hidden");
+        })
+        .catch(function () {
+          showError("Could not load dashboards.");
+        });
+    }
+
+    if (pinBtn) pinBtn.addEventListener("click", openPinPanel);
+    if (pinCancel) pinCancel.addEventListener("click", function () {
+      if (pinPanel) pinPanel.classList.add("hidden");
+    });
+    if (pinConfirm) pinConfirm.addEventListener("click", function () {
+      showError(null);
+      showLoading(true);
+      fetch(baseUrl() + "/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dashboard_id: pinTarget ? pinTarget.value : null,
+          title: pinTitle ? pinTitle.value : ""
+        })
+      })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            return { ok: resp.ok, data: data };
+          });
+        })
+        .then(function (out) {
+          showLoading(false);
+          if (!out.ok || !out.data.ok) {
+            showError((out.data && out.data.error) || "Pin failed.");
+            return;
+          }
+          if (pinPanel) pinPanel.classList.add("hidden");
+          if (status && out.data.url) {
+            status.textContent = "";
+            var link = document.createElement("a");
+            link.href = out.data.url;
+            link.className = "link link-primary";
+            link.textContent = "Pinned to dashboard — open it";
+            status.appendChild(link);
+          }
+        })
+        .catch(function () {
+          showLoading(false);
+          showError("Pin failed unexpectedly.");
+        });
+    });
+    if (buildBtn) buildBtn.addEventListener("click", function () {
+      showError(null);
+      showLoading(true);
+      fetch(baseUrl() + "/build-automation", { method: "POST" })
+        .then(function (resp) {
+          return resp.json().then(function (data) {
+            return { ok: resp.ok, data: data };
+          });
+        })
+        .then(function (out) {
+          showLoading(false);
+          if (!out.ok || !out.data.ok || !out.data.url) {
+            showError((out.data && out.data.error) ||
+                      "Could not build the automation.");
+            return;
+          }
+          window.location.href = out.data.url;
+        })
+        .catch(function () {
+          showLoading(false);
+          showError("Could not build the automation.");
         });
     });
 

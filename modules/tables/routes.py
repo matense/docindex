@@ -11,10 +11,18 @@ T3 adds the SQL filter bar (``POST /<id>/query`` — SELECT/WITH over the
 table in the pyrun sandbox), versioned inline cell edits (``POST
 /<id>/cell`` — .ptable only, snapshot first) and the one-way
 spreadsheet-to-dataset conversion (``POST /<id>/save-as``).
+
+T4 adds the pin-as-dashboard-card handoff (``POST /<id>/pin`` + the
+``GET /<id>/pin-targets`` picker — a table card referencing the table
+file as an attachment, reusing the dashboards' own attach/card path, no
+new StoredFile) and the build-automation handoff (``POST
+/<id>/build-automation`` — a workflow prefilled with an input.file node
+on the table, returning the live editor URL).
 """
 
 import csv
 import hashlib
+import importlib
 import io
 import json
 import math
@@ -23,7 +31,7 @@ import re
 import uuid
 from datetime import datetime
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request
+from flask import Blueprint, abort, current_app, jsonify, render_template, request, url_for
 from flask_login import current_user
 
 from app.extensions import db
@@ -357,7 +365,7 @@ def _json_window(payload):
         offset = int((payload or {}).get("offset", 0))
         limit = int((payload or {}).get("limit", PAGE_SIZE))
     except (TypeError, ValueError):
-        abort(400, description="offset/limit must be integers.")
+        raise ValueError("offset/limit must be integers.") from None
     return max(0, offset), max(1, min(limit, ROWS_LIMIT_MAX))
 
 
@@ -445,7 +453,10 @@ def query_api(file_id):
                             "(e.g. SELECT * FROM t0 LIMIT 100).")
     if _first_keyword(sql) not in _SQL_READ_FIRST:
         return _query_error(_SQL_GATE_ERROR)
-    offset, limit = _json_window(payload)
+    try:
+        offset, limit = _json_window(payload)
+    except ValueError as exc:
+        return _query_error(str(exc))
     try:
         header, rows = _read_table(stored)
     except (ValueError, OSError) as exc:
@@ -600,3 +611,141 @@ def save_as_api(file_id):
     db.session.add(FileIndex(file_id=created.id, status="pending"))
     db.session.commit()
     return jsonify({"ok": True, "file_id": created.id, "name": name})
+
+
+# ---------------------------------------------------------------------------
+# T4: Pin as dashboard card + build-automation handoff
+# ---------------------------------------------------------------------------
+
+def _module_disabled_error(name, action):
+    """Fail-closed JSON error when a collaborator module is off.
+
+    Returns the ``{"ok": False, ...}`` response, or None when enabled —
+    callers return it directly so the failure is never silent.
+    """
+    from app.services import module_service
+    if not module_service.is_enabled(name):
+        return _query_error(
+            f"The {name} module is disabled — enable it to {action}.")
+    return None
+
+
+def _dashboards_doc():
+    """Dashboards document service (card constructor + attach/save path).
+
+    Imported lazily: every module package is in ``sys.modules`` after
+    ``module_service.load_all``, whether or not the module is enabled.
+    """
+    return importlib.import_module("docindex_module_dashboards.doc")
+
+
+def _table_stem(stored):
+    return os.path.splitext(stored.name)[0].strip() or "table"
+
+
+@bp.get("/<int:file_id>/pin-targets")
+def pin_targets(file_id):
+    """Dashboard picker data: the user's dashboards (most recently used
+    first) plus the default pick and the filename-prefilled card title."""
+    stored = _get_table_file(file_id)
+    disabled = _module_disabled_error("dashboards", "pin this table")
+    if disabled is not None:
+        return disabled
+    dash_doc = _dashboards_doc()
+    dashboards = dash_doc.list_dashboards(current_user.id)
+    items = [{"id": item.id, "name": item.name} for item in dashboards]
+    default_id = dashboards[0].id if dashboards else None
+    return jsonify({"ok": True, "dashboards": items,
+                    "default_id": default_id,
+                    "suggested_title": _table_stem(stored)})
+
+
+@bp.post("/<int:file_id>/pin")
+def pin_api(file_id):
+    """Pin the table as a card on one of the user's dashboards.
+
+    Reuses the dashboards' own attach + card path: ``attach_link`` (the
+    same ownership checks and dedupe as ``POST
+    /m/dashboards/<id>/attachments``) then a ``new_card("table", ...)``
+    referencing the attachment, persisted through ``save_document``. No
+    new StoredFile is created — only a card.
+    """
+    stored = _get_table_file(file_id)
+    disabled = _module_disabled_error("dashboards", "pin this table")
+    if disabled is not None:
+        return disabled
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _query_error("Request body must be a JSON object.")
+    try:
+        dashboard_id = int(payload.get("dashboard_id"))
+    except (TypeError, ValueError):
+        return _query_error("Pick a dashboard to pin this table to.")
+    dash_doc = _dashboards_doc()
+    dashboard = dash_doc.get_dashboard(dashboard_id, current_user.id)
+    if dashboard is None:
+        return _query_error("Dashboard not found.", 404)
+    title = str(payload.get("title") or "").strip() or _table_stem(stored)
+    try:
+        attachment = dash_doc.attach_link(dashboard, stored.id)
+    except ValueError as exc:
+        return _query_error(str(exc) or "Could not attach this table.")
+    card = dash_doc.new_card(
+        "table", title=title,
+        prompt=f"Show the key rows of {stored.name}.")
+    card["inputs"]["attachments"] = [attachment["id"]]
+    try:
+        document = dash_doc.load(dashboard)
+        document["cards"].append(card)
+        dash_doc.validate(document)
+        dash_doc.save_document(dashboard, document)
+    except ValueError as exc:
+        return _query_error(str(exc) or "Could not pin this table.")
+    return jsonify({"ok": True, "dashboard_id": dashboard.id,
+                    "card_id": card["id"],
+                    "attachment_id": attachment["id"],
+                    "title": card["title"],
+                    "url": url_for("dashboards.editor",
+                                   file_id=dashboard.id)})
+
+
+@bp.post("/<int:file_id>/build-automation")
+def build_automation_api(file_id):
+    """Create a workflow prefilled with an input.file node on this table.
+
+    The automation editor accepts no URL params for prefill (verified:
+    automation.js reads no query string for prefill), so the prefill
+    happens here at creation time and the response carries the live
+    editor URL — never a dead button.
+    """
+    stored = _get_table_file(file_id)
+    disabled = _module_disabled_error(
+        "automation", "build an automation from this table")
+    if disabled is not None:
+        return disabled
+    auto_models = importlib.import_module(
+        "docindex_module_automation.models")
+    auto_engine = importlib.import_module(
+        "docindex_module_automation.engine")
+    auto_registry = importlib.import_module(
+        "docindex_module_automation.registry")
+    graph = {"nodes": [{"id": "n1", "type": "input.file",
+                        "x": 60, "y": 120,
+                        "config": {"file_id": stored.id}}],
+             "edges": []}
+    try:
+        auto_engine.validate_graph(
+            auto_engine.parse_graph(json.dumps(graph)),
+            auto_registry.active_node_types())
+    except Exception as exc:  # noqa: BLE001 - our construction must validate
+        return _query_error(f"Could not prefill the workflow: {exc}", 500)
+    workflow = auto_models.AutomationWorkflow(
+        user_id=current_user.id, name=f"Table: {_table_stem(stored)}"[:160],
+        description=f"Built from table {stored.name}.",
+        graph=json.dumps(graph))
+    db.session.add(workflow)
+    db.session.commit()
+    return jsonify({"ok": True, "workflow_id": workflow.id,
+                    "file_id": stored.id,
+                    "url": url_for("automation.editor",
+                                   workflow_id=workflow.id)})

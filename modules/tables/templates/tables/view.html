@@ -25,6 +25,18 @@
         <button id="tables-saveas" class="btn btn-ghost btn-sm" type="button"
                 title="Convert to an editable .ptable dataset">Save as .ptable</button>
         {% endif %}
+        <button id="tables-pin" class="btn btn-ghost btn-sm" type="button"
+                title="Pin this table as a card on one of your dashboards">Pin to dashboard</button>
+        <button id="tables-buildauto" class="btn btn-ghost btn-sm" type="button"
+                title="Create an automation workflow starting from this table">Build automation</button>
+    </div>
+    <div id="tables-pin-panel" class="hidden flex flex-wrap items-center gap-2">
+        <select id="tables-pin-target" class="select select-bordered select-sm min-w-52"
+                aria-label="Dashboard to pin to"></select>
+        <input id="tables-pin-title" type="text" class="input input-bordered input-sm flex-1 min-w-52"
+               aria-label="Card title" spellcheck="false">
+        <button id="tables-pin-confirm" class="btn btn-primary btn-sm" type="button">Pin</button>
+        <button id="tables-pin-cancel" class="btn btn-ghost btn-sm" type="button">Cancel</button>
     </div>
     <div id="tables-error" class="hidden text-sm text-error" role="alert"></div>
 
