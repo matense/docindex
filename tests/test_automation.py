@@ -3890,3 +3890,503 @@ def test_rich_previews_and_shortcuts_wiring():
     assert "wf-rich-table" in src and "JSON.stringify" in src
     html = read("modules/automation/templates/automation/run.html")
     assert "node_rich" in html and "createElement('table')" in html
+
+
+# ---------------------------------------------------------------------------
+# P1: transform.sql_query (SQL over upstream tables/files, pyrun sandbox)
+# ---------------------------------------------------------------------------
+
+def _sql_graph(left_fid, right_fid, sql):
+    return {"nodes": [
+        {"id": "a", "type": "input.file",
+         "config": {"file_id": str(left_fid)}},
+        {"id": "b", "type": "input.file",
+         "config": {"file_id": str(right_fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": sql}},
+    ], "edges": [
+        {"from": "a", "from_port": "out", "to": "q", "to_port": "in1"},
+        {"from": "b", "from_port": "out", "to": "q", "to_port": "in2"}]}
+
+
+def test_sql_query_multi_input_table_order(app, user):
+    left = _make_file(app, user, "left.csv", "id\n1\n")
+    right = _make_file(app, user, "right.csv", "id\n2\n")
+
+    def run(sql):
+        outputs, _, _ = _execute(_sql_graph(left, right, sql), app, user)
+        return outputs["q"]["out"]
+
+    with app.app_context():
+        # in1 seeds t0, in2 seeds t1 — in port order.
+        out = run("SELECT * FROM t0")
+        assert out["kind"] == "table"  # query ran against seeded t0/t1 in port order
+        assert out["data"]["rows"] == [["1"]]
+        out = run("SELECT * FROM t1")
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["2"]]
+        # The brief's join shape works against the same seeding.
+        out = run("SELECT * FROM t1 JOIN t0 USING (id)")
+        assert out["kind"] == "table"
+
+
+def test_sql_query_rejects_non_select(app, user):
+    fid = _make_file(app, user, "a.csv", "id\n1\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": "DELETE FROM t0"}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="Only SELECT"):
+            _execute(graph, app, user)
+
+
+def test_no_eval_exec_subprocess_in_pyrun_nodes():
+    src = read("modules/automation/nodes_pyrun.py")
+    assert "eval(" not in src and "exec(" not in src and "subprocess" not in src
+
+
+def test_sql_query_rejects_non_text_files(app, user):
+    fid = _make_file(app, user, "pic.png", "not really an image")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": "SELECT * FROM t0"}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError, match="pic.png"):
+            _execute(graph, app, user)
+
+
+def test_sql_query_seeds_files_payload_as_t0(app, user):
+    fid = _make_file(app, user, "data.csv", "id\n7\n")
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t0"},
+            {"in1": {"kind": "files",
+                     "data": [{"file_id": fid, "name": "data.csv"}]}})
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["7"]]
+
+
+def test_sql_query_rejects_wrong_kind_payload(app, user):
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        with pytest.raises(engine.WorkflowError, match="table or files"):
+            nodes_pyrun._exec_sql_query(
+                ctx, {"sql": "SELECT * FROM t0"},
+                {"in1": {"kind": "text", "data": "x"}})
+
+
+def test_sql_query_table_payload_port_order(app, user):
+    nodes_pyrun = importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+    with app.app_context():
+        ctx = {"user": db.session.get(User, user), "log": lambda *a: None}
+        inputs = {"in1": engine.p_table(["id"], [[1], [2]]),
+                  "in2": engine.p_table(["id"], [[2], [3]])}
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t0"}, inputs)
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["1"], ["2"]]
+        out = nodes_pyrun._exec_sql_query(
+            ctx, {"sql": "SELECT * FROM t1 JOIN t0 USING (id)"}, inputs)
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["2"]]
+
+
+# ---------------------------------------------------------------------------
+# P2: transform.python_sandbox (sealed Python over payloads, pyrun sandbox)
+# ---------------------------------------------------------------------------
+
+def _py_ctx(app, user):
+    return {"user": db.session.get(User, user), "log": lambda *a: None}
+
+
+def _pyrun_node():
+    return importlib.import_module(
+        "docindex_module_automation.nodes_pyrun")
+
+
+def test_python_sandbox_pure_compute(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        out = nodes_pyrun._exec_python_sandbox(
+            _py_ctx(app, user),
+            {"code": "res = sum(int(r['v']) for r in rows('f'))\nres"},
+            {"in": engine.p_table(["v"], [[1], [2], [3]])})
+        assert out == {"kind": "json", "data": 6}
+
+
+def test_python_sandbox_json_and_text_bind_as_f(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        ctx = _py_ctx(app, user)
+        out = nodes_pyrun._exec_python_sandbox(
+            ctx, {"code": "sum(f['items'])"},
+            {"in": engine.p_json({"items": [1, 2, 3]})})
+        assert out == {"kind": "json", "data": 6}
+        out = nodes_pyrun._exec_python_sandbox(
+            ctx, {"code": "f.upper()"},
+            {"in": engine.p_text("hello")})
+        assert out == {"kind": "json", "data": "HELLO"}
+
+
+def test_python_sandbox_errors_surface_message(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        with pytest.raises(engine.WorkflowError) as exc:
+            nodes_pyrun._exec_python_sandbox(
+                _py_ctx(app, user), {"code": "1/0"},
+                {"in": engine.p_text("x")})
+        assert "division by zero" in str(exc.value)
+        assert "Traceback" not in str(exc.value)
+
+
+def test_python_sandbox_rejects_missing_code_input_kind(app, user):
+    nodes_pyrun = _pyrun_node()
+    with app.app_context():
+        ctx = _py_ctx(app, user)
+        with pytest.raises(engine.WorkflowError, match="Python program"):
+            nodes_pyrun._exec_python_sandbox(
+                ctx, {"code": "  "}, {"in": engine.p_text("x")})
+        with pytest.raises(engine.WorkflowError, match="No input"):
+            nodes_pyrun._exec_python_sandbox(ctx, {"code": "f"}, {})
+        with pytest.raises(engine.WorkflowError, match="table, JSON or text"):
+            nodes_pyrun._exec_python_sandbox(
+                ctx, {"code": "f"},
+                {"in": engine.p_files([{"file_id": 1}])})
+
+
+# ---------------------------------------------------------------------------
+# Internal event bus (app.services.events) — P4
+# ---------------------------------------------------------------------------
+
+def test_emit_reaches_subscriber():
+    from app.services import events
+    seen = []
+    events.subscribe("file.uploaded", lambda p: seen.append(p))
+    events.emit("file.uploaded", {"file_id": 1})
+    assert seen == [{"file_id": 1}]
+
+
+def test_emit_with_no_subscribers_never_raises():
+    from app.services import events
+    events.emit("file.uploaded.probe-no-subscribers", {"file_id": 1})
+
+
+def test_emit_bad_subscriber_does_not_break_emitter():
+    from app.services import events
+
+    def _boom(payload):
+        raise RuntimeError("boom")
+
+    seen = []
+    events.subscribe("file.uploaded.probe-isolation", _boom)
+    events.subscribe("file.uploaded.probe-isolation",
+                     lambda p: seen.append(p))
+    events.emit("file.uploaded.probe-isolation", {"file_id": 2})
+    assert seen == [{"file_id": 2}]
+
+
+def test_save_upload_emits_file_uploaded(app, user):
+    import json
+
+    from app.services import events
+    seen = []
+    events.subscribe("file.uploaded", lambda p: seen.append(p))
+    fid = _make_file(app, user, "bus.txt", "bus content")
+    assert seen, "save_upload must emit file.uploaded"
+    payload = seen[-1]
+    assert payload["file_id"] == fid
+    assert payload["user_id"] == user
+    assert "drive_id" in payload
+    json.dumps(payload)  # plain JSON-serializable dict only
+
+
+def test_sync_drive_emits_file_synced(app, user, tmp_path):
+    import json
+
+    from app.services import events, sync_service
+    target = tmp_path / "syncroot"
+    target.mkdir()
+    (target / "hello.txt").write_text("hello sync")
+    with app.app_context():
+        drive = Drive(name="Synced", user_id=user,
+                      source_path=str(target))
+        db.session.add(drive)
+        db.session.commit()
+        drive_id = drive.id
+    seen = []
+    events.subscribe("file.synced", lambda p: seen.append(p))
+    with app.app_context():
+        stats = sync_service.sync_drive(db.session.get(Drive, drive_id))
+    assert stats["added"] == 1
+    assert seen, "sync_drive must emit file.synced"
+    payload = seen[-1]
+    assert payload["drive_id"] == drive_id
+    assert payload["user_id"] == user
+    assert isinstance(payload["added"], list) and len(payload["added"]) == 1
+    json.dumps(payload)  # plain JSON-serializable dict only
+
+
+# ---------------------------------------------------------------------------
+# Event triggers in the scheduler (P5)
+# ---------------------------------------------------------------------------
+
+def _clear_scheduler_queue():
+    """Drop events queued by earlier tests (the bus is process-global)."""
+    with scheduler._pending_lock:
+        scheduler._PENDING.clear()
+
+
+def _event_workflow(app, user_id, rule, graph=None, name="Event flow"):
+    return _workflow(app, user_id, graph or _text_graph("event run"),
+                     name=name, enabled=True,
+                     trigger_event=json.dumps(rule))
+
+
+def test_event_trigger_starts_matching_workflow(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {"pattern": "*.csv"})
+    fid = _make_file(app, user, "report.csv", "a,b\n1,2\n")
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).all())
+        assert len(runs) == 1
+        assert runs[0].trigger == "event"
+        assert runs[0].trigger_file_id == fid
+
+
+def test_event_trigger_ignores_non_matching(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {"pattern": "*.csv"})
+    _make_file(app, user, "notes.txt", "plain text")
+    assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 0
+
+
+def test_event_trigger_from_file_synced(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "synced.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()  # drop the upload event; drive the synced path
+    from app.services import events
+    events.emit("file.synced", {"drive_id": drive_id, "user_id": user,
+                                "added": [fid]})
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        runs = (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).all())
+        assert len(runs) == 1
+        assert runs[0].trigger == "event"
+        assert runs[0].trigger_file_id == fid
+
+
+def test_event_trigger_never_overlaps(app, user, enabled):
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "overlap.csv", "a\n1\n")
+    with app.app_context():
+        db.session.add(models.AutomationRun(
+            workflow_id=wf_id, user_id=user, status="running"))
+        db.session.commit()
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    from app.services import events
+    events.emit("file.uploaded", {"file_id": fid, "drive_id": drive_id,
+                                  "user_id": user})
+    assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1
+
+
+def test_event_trigger_queue_bounded_and_carries_over(app, user, enabled):
+    from unittest.mock import patch
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "burst.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()
+    from app.services import events
+    for _ in range(105):
+        events.emit("file.uploaded", {"file_id": fid, "drive_id": drive_id,
+                                      "user_id": user})
+    with patch.object(app.logger, "warning") as warned:
+        assert scheduler.tick(app) == 1
+        assert warned.called, "overflow must log a warning"
+    with scheduler._pending_lock:
+        assert len(scheduler._PENDING) == 5
+    assert scheduler.tick(app) == 1
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 2
+    with scheduler._pending_lock:
+        assert len(scheduler._PENDING) == 0
+
+
+# ---------------------------------------------------------------------------
+# P6: Scheduled dashboard refresh end to end
+# ---------------------------------------------------------------------------
+
+def _dash_p6():
+    """Dashboards doc/engine with the refresh node registered (idempotent)."""
+    dash_dir = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "modules", "dashboards")
+    name = "docindex_module_dashboards"
+    if sys.modules.get(name) is None:
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(dash_dir, "__init__.py"),
+            submodule_search_locations=[dash_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    dash_doc = importlib.import_module(f"{name}.doc")
+    dash_engine = importlib.import_module(f"{name}.engine")
+    dash_nodes = importlib.import_module(f"{name}.nodes")
+    dash_nodes.register_dashboard_nodes()
+    nodes.register_defaults()
+    return dash_doc, dash_engine
+
+
+@pytest.fixture()
+def dashboards_enabled(app, enabled):
+    with app.app_context():
+        db.session.add(ModuleState(name="dashboards", enabled=True))
+        db.session.commit()
+
+
+def _stub_dash_ai_p6(monkeypatch, dash_engine):
+    """Stub the dashboard engine's AI seams: no real backend calls."""
+
+    def fake_agent(user, prompt, drive=None, max_steps=None):
+        return ("3 open incidents",
+                [{"prompt_tokens": 10, "completion_tokens": 5,
+                  "estimated": True, "model": "fake"}], [])
+
+    def fake_complete(user, messages):
+        return ("formatted summary",
+                {"prompt_tokens": 8, "completion_tokens": 4,
+                 "estimated": True, "model": "fake"})
+
+    monkeypatch.setattr(dash_engine, "run_agent_collected", fake_agent)
+    monkeypatch.setattr(dash_engine, "complete_once", fake_complete)
+
+
+def test_scheduled_workflow_refreshes_dashboard(app, user,
+                                                dashboards_enabled,
+                                                monkeypatch):
+    """Schedule trigger + dashboard.refresh: one tick fires the run inline
+    and every card ends done with a fresh ranAt; the next tick stays quiet."""
+    dash_doc, dash_engine = _dash_p6()
+    _stub_dash_ai_p6(monkeypatch, dash_engine)
+    _clear_scheduler_queue()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = Drive(name="Personal", user_id=user)
+        db.session.add(drive)
+        db.session.commit()
+        stored = dash_doc.create_dashboard(user_obj, drive, "Morning view")
+        fid = stored.id
+        doc = dash_doc.load(stored)
+        first = dash_doc.new_card("kpi", title="One", prompt="Count open")
+        second = dash_doc.new_card("kpi", title="Two",
+                                   prompt="Count closed")
+        doc["cards"].extend([first, second])
+        dash_doc.save_document(stored, doc, force_checkpoint=True)
+        cids = [first["id"], second["id"]]
+        before = {c["id"]: (c["status"], c["ranAt"]) for c in doc["cards"]}
+        assert before[first["id"]] == ("idle", None)
+    # Schedule trigger (fires every 10 min) -> refresh node (all cards).
+    graph = {"nodes": [
+        {"id": "n", "type": "dashboard.refresh",
+         "config": {"dashboard_id": fid}},
+    ], "edges": []}
+    wf_id = _workflow(app, user, graph, enabled=True, interval_minutes=10)
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 1
+    with app.app_context():
+        run = (models.AutomationRun.query
+               .filter_by(workflow_id=wf_id).one())
+        assert run.status == "done"
+        assert run.trigger == "schedule"
+        got = dash_doc.load(db.session.get(StoredFile, fid))
+        by_id = {c["id"]: c for c in got["cards"]}
+        for cid in cids:
+            assert by_id[cid]["status"] == "done"
+            assert by_id[cid]["ranAt"]  # advanced from the initial None
+            assert (by_id[cid]["status"], by_id[cid]["ranAt"]) != before[cid]
+    # The schedule is satisfied now: no hot-loop, no duplicate run.
+    with patch("random.random", return_value=1.0):
+        assert scheduler.tick(app) == 0
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Final review fixes: WITH...SELECT gate + event fan-out bound
+# ---------------------------------------------------------------------------
+
+def test_sql_query_accepts_with_select_cte(app, user):
+    fid = _make_file(app, user, "t.csv", "id,name\n1,alice\n2,bob\n")
+    graph = {"nodes": [
+        {"id": "f", "type": "input.file",
+         "config": {"file_id": str(fid)}},
+        {"id": "q", "type": "transform.sql_query",
+         "config": {"sql": ("WITH big AS (SELECT * FROM t0) "
+                            "SELECT * FROM big")}},
+    ], "edges": [
+        {"from": "f", "from_port": "out", "to": "q", "to_port": "in1"}]}
+    with app.app_context():
+        outputs, _, _ = _execute(graph, app, user)
+        out = outputs["q"]["out"]
+        assert out["kind"] == "table"
+        assert out["data"]["rows"] == [["1", "alice"], ["2", "bob"]]
+
+
+def test_event_fanout_bounded_on_large_sync(app, user, enabled,
+                                            monkeypatch):
+    """file.synced with 500 added ids completes bounded work (early break):
+    once every rule has launched, further candidates are discarded anyway,
+    so the tick stops expanding after a couple of candidates."""
+    _clear_scheduler_queue()
+    wf_id = _event_workflow(app, user, {})
+    fid = _make_file(app, user, "one.csv", "a\n1\n")
+    with app.app_context():
+        drive_id = db.session.get(StoredFile, fid).drive_id
+    _clear_scheduler_queue()  # drop the upload event; drive the synced path
+    from app.services import events
+    orig_expand = scheduler._expand_event_candidates
+    consumed = {"n": 0}
+
+    def counting(batch):
+        for cand in orig_expand(batch):
+            consumed["n"] += 1
+            yield cand
+
+    monkeypatch.setattr(scheduler, "_expand_event_candidates", counting)
+    events.emit("file.synced", {"drive_id": drive_id, "user_id": user,
+                                "added": [fid] * 500})
+    assert scheduler.tick(app) == 1
+    assert consumed["n"] <= 5, (
+        f"expanded {consumed['n']} candidates in one tick")
+    with app.app_context():
+        assert (models.AutomationRun.query
+                .filter_by(workflow_id=wf_id).count()) == 1

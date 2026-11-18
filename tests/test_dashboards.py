@@ -4498,3 +4498,178 @@ def test_builder_poll_defers_while_editing():
                          text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip()) == [False, True, True, True]
+
+
+# ---------------------------------------------------------------------------
+# Argon Phase 4 P3: dashboard.refresh automation output node
+# ---------------------------------------------------------------------------
+
+def _auto_p3():
+    """Automation engine + registry with the dashboard node registered."""
+    name = "docindex_module_automation"
+    if sys.modules.get(name) is None:
+        auto_dir = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "modules", "automation")
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(auto_dir, "__init__.py"),
+            submodule_search_locations=[auto_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    auto_engine = importlib.import_module(f"{name}.engine")
+    auto_registry = importlib.import_module(f"{name}.registry")
+    auto_nodes = importlib.import_module(f"{name}.nodes")
+    auto_nodes.register_defaults()
+    dash_nodes = importlib.import_module(
+        "docindex_module_dashboards.nodes")
+    dash_nodes.register_dashboard_nodes()
+    return auto_engine, auto_registry
+
+
+@pytest.fixture()
+def dash_auto_enabled(app, enabled):
+    with app.app_context():
+        db.session.add(ModuleState(name="automation", enabled=True))
+        db.session.commit()
+
+
+def _refresh_graph(dashboard_id, cards=None):
+    config = {"dashboard_id": dashboard_id}
+    if cards is not None:
+        config["cards"] = cards
+    return {"nodes": [
+        {"id": "n", "type": "dashboard.refresh", "config": config},
+    ], "edges": []}
+
+
+def _run_refresh(app, user, graph):
+    auto_engine, auto_registry = _auto_p3()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        outputs, _, _ = auto_engine.execute_graph(
+            graph, {"user": user_obj, "app": app},
+            node_types=auto_registry._NODE_TYPES)
+        return outputs["n"]["out"]["data"]
+
+
+def test_dashboard_refresh_runs_named_cards(app, user, dash_auto_enabled,
+                                            fake_ai):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    keep = _add_card(app, fid, title="Keep", prompt="Count open")
+    skip = _add_card(app, fid, title="Skip", prompt="Count closed")
+    data = _run_refresh(app, user, _refresh_graph(fid, keep))
+    assert data == {"ran": [keep], "failed": {}}
+    assert _card(app, fid, keep)["status"] == "done"
+    assert _card(app, fid, keep)["result"] == {"text": "3 open incidents"}
+    assert _card(app, fid, skip)["status"] == "idle"
+
+
+def test_dashboard_refresh_all_cards_by_default(app, user, dash_auto_enabled,
+                                               fake_ai):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    first = _add_card(app, fid, title="One")
+    second = _add_card(app, fid, title="Two")
+    data = _run_refresh(app, user, _refresh_graph(fid))
+    assert data == {"ran": [first, second], "failed": {}}
+    assert _card(app, fid, first)["status"] == "done"
+    assert _card(app, fid, second)["status"] == "done"
+
+
+def test_dashboard_refresh_accepts_card_list(app, user, dash_auto_enabled,
+                                            fake_ai):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, title="One")
+    data = _run_refresh(app, user, _refresh_graph(fid, [cid]))
+    assert data == {"ran": [cid], "failed": {}}
+
+
+def test_dashboard_refresh_unknown_dashboard(app, user, dash_auto_enabled):
+    auto_engine, auto_registry = _auto_p3()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with pytest.raises(auto_engine.WorkflowError, match="987654321"):
+            auto_engine.execute_graph(
+                _refresh_graph(987654321), {"user": user_obj, "app": app},
+                node_types=auto_registry._NODE_TYPES)
+
+
+def test_dashboard_refresh_unknown_card(app, user, dash_auto_enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    _add_card(app, fid, title="One")
+    auto_engine, auto_registry = _auto_p3()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with pytest.raises(auto_engine.WorkflowError, match="ghost-card"):
+            auto_engine.execute_graph(
+                _refresh_graph(fid, "ghost-card"),
+                {"user": user_obj, "app": app},
+                node_types=auto_registry._NODE_TYPES)
+
+
+def test_dashboard_refresh_disabled_module(app, user):
+    auto_engine, auto_registry = _auto_p3()
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        with pytest.raises(auto_engine.WorkflowError, match="dashboards"):
+            auto_engine.execute_graph(
+                _refresh_graph(12345), {"user": user_obj, "app": app},
+                node_types=auto_registry._NODE_TYPES)
+
+
+def test_dashboard_refresh_single_failure_records_and_continues(
+        app, user, dash_auto_enabled, fake_ai):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    att = _attach_file(app, fid, name="gone.csv")
+    bad = _add_card(app, fid, title="Bad", prompt="Count rows",
+                    attachments=[att["id"]])
+    good = _add_card(app, fid, title="Good", prompt="Count open")
+    with app.app_context():
+        file_service.delete_file(db.session.get(StoredFile, att["fileId"]))
+    data = _run_refresh(app, user, _refresh_graph(fid, f"{bad},{good}"))
+    assert data["ran"] == [good]
+    assert "gone.csv" in data["failed"][bad]
+    assert _card(app, fid, good)["status"] == "done"
+    assert _card(app, fid, bad)["status"] == "error"
+
+
+def test_workflow_refresh_stale_settle_skipped_on_newer_run(
+        app, user, dash_auto_enabled, fake_ai, monkeypatch):
+    """A UI-equivalent run_started claim between the workflow's run_card
+    and settle must survive: the older workflow settle is skipped by run-id
+    (newer wins), mirroring the routes.run_cards guard."""
+    import importlib as _importlib
+    dash_engine = _engine()
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    cid = _add_card(app, fid, title="One", prompt="Count open")
+    orig_run_card = dash_engine.run_card
+
+    def hijack(stored, card, uid):
+        with app.app_context():
+            live = db.session.get(StoredFile, fid)
+            doc = dash_doc.load(live)
+            tgt = next(c for c in doc["cards"] if c.get("id") == cid)
+            tgt["status"] = "done"
+            tgt["result"] = {"text": "newer UI result"}
+            tgt["runId"] = f"{fid}:newer-ui-run"
+            dash_doc.save_document(live, doc)
+            dash_doc.run_started(fid, f"{fid}:newer-ui-run")
+        return orig_run_card(stored, card, uid)
+
+    monkeypatch.setattr(dash_engine, "run_card", hijack)
+    _ = _importlib.import_module("docindex_module_dashboards.nodes")
+    data = _run_refresh(app, user, _refresh_graph(fid, cid))
+    try:
+        card = _card(app, fid, cid)
+        assert card["runId"] == f"{fid}:newer-ui-run"
+        assert card["result"] == {"text": "newer UI result"}
+        assert card["status"] == "done"
+        assert data == {"ran": [cid], "failed": {}}
+    finally:
+        with app.app_context():
+            dash_doc.run_finished(fid, f"{fid}:newer-ui-run")

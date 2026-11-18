@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }} - Tables{% endblock %}
+{% block content %}
+<div class="mx-auto w-full flex flex-col gap-3" id="tables-grid"
+     data-file-id="{{ file.id }}" data-total="{{ total }}"
+     data-page-size="{{ page_size }}"
+     {% if editable %}data-editable="1"{% endif %}>
+    <div class="flex items-center gap-3">
+        <a href="/" class="btn btn-ghost btn-sm btn-square" title="All files">
+            <i class="fas fa-arrow-left"></i>
+        </a>
+        <div class="flex-1 min-w-0">
+            <h1 class="font-bold truncate">{{ file.name }}</h1>
+            <p class="text-xs opacity-40">{{ total }} rows &times; {{ columns|length }} columns</p>
+        </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2" id="tables-filterbar">
+        <input id="tables-sql" type="text" class="input input-bordered input-sm flex-1 min-w-52"
+               placeholder="SELECT * FROM t0 LIMIT 100" spellcheck="false"
+               aria-label="SQL filter (SELECT or WITH only, over t0)">
+        <button id="tables-run" class="btn btn-primary btn-sm" type="button">Run</button>
+        <button id="tables-reset" class="btn btn-ghost btn-sm" type="button">Reset</button>
+        {% if not editable %}
+        <button id="tables-saveas" class="btn btn-ghost btn-sm" type="button"
+                title="Convert to an editable .ptable dataset">Save as .ptable</button>
+        {% endif %}
+        <button id="tables-pin" class="btn btn-ghost btn-sm" type="button"
+                title="Pin this table as a card on one of your dashboards">Pin to dashboard</button>
+        <button id="tables-buildauto" class="btn btn-ghost btn-sm" type="button"
+                title="Create an automation workflow starting from this table">Build automation</button>
+    </div>
+    <div id="tables-pin-panel" class="hidden flex flex-wrap items-center gap-2">
+        <select id="tables-pin-target" class="select select-bordered select-sm min-w-52"
+                aria-label="Dashboard to pin to"></select>
+        <input id="tables-pin-title" type="text" class="input input-bordered input-sm flex-1 min-w-52"
+               aria-label="Card title" spellcheck="false">
+        <button id="tables-pin-confirm" class="btn btn-primary btn-sm" type="button">Pin</button>
+        <button id="tables-pin-cancel" class="btn btn-ghost btn-sm" type="button">Cancel</button>
+    </div>
+    <div id="tables-error" class="hidden text-sm text-error" role="alert"></div>
+
+    <div class="overflow-auto rounded-2xl" id="tables-scroll">
+        <table class="table table-zebra w-full" id="tables-table">
+            <thead>
+                <tr>
+                    {% for col in columns %}
+                    <th>
+                        <div class="font-semibold">{{ col.name }}</div>
+                        <span class="col-type col-type-{{ col.type }}">{{ col.type }}</span>
+                        {% if col.stats %}
+                        <div class="col-stats text-xs font-normal opacity-80">
+                            <span class="stat-sum">sum {{ col.stats.sum }}</span>
+                            <span class="stat-avg">avg {{ col.stats.avg }}</span>
+                            <span class="stat-min">min {{ col.stats.min }}</span>
+                            <span class="stat-max">max {{ col.stats.max }}</span>
+                            <span class="stat-null">null {{ col.stats.nulls }}</span>
+                            {{ col.stats.sparkline|safe }}
+                        </div>
+                        {% endif %}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody id="tables-grid-body">
+                {% for row in rows %}
+                <tr>
+                    {% for cell in row %}
+                    <td>{{ cell }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="flex items-center gap-2 text-sm opacity-80">
+        <button id="tables-prev" class="btn btn-ghost btn-sm" type="button">Prev</button>
+        <span id="tables-status">Rows 1&ndash;{{ rows|length }} of {{ total }}</span>
+        <button id="tables-next" class="btn btn-ghost btn-sm" type="button">Next</button>
+        <span id="tables-loading" class="hidden">Loading&hellip;</span>
+    </div>
+</div>
+<script src="{{ url_for('tables.static', filename='tables.js') }}"></script>
+{% endblock %}

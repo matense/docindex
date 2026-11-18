@@ -1746,6 +1746,18 @@ tool + table).
   (node shapes, reference targets, schedule completeness) via an
   upstream-shape API before running, and graph export preserves node
   ids so references survive autosave.
+  Event triggers: a workflow with a `trigger_event` rule (JSON with optional
+  `drive_id`, `folder` and `pattern` keys, e.g. `{"pattern": "*.csv"}`) fires
+  from the internal event bus (`file.uploaded` carries one file, `file.synced`
+  carries an `added` id list) rather than a timer — the scheduler drains the
+  queue each tick, skips broken graphs, and starts at most one run per
+  workflow per tick (first matching file wins per workflow per tick; excess
+  matching events are discarded).
+  The `dashboard.refresh` output node (contributed by the dashboards module)
+  refreshes a dashboard by id — all cards by default, or a comma-separated
+  `cards` list — and returns which cards ran; a failing card is recorded on
+  the card without aborting the workflow, so a scheduled workflow ending in
+  this node keeps its dashboard fresh on its interval.
 - `dashboards` — living pages of prompt-driven cards (KPIs, tables, lists,
   charts, markdown, workflow) over drive files. A dashboard is a regular
   StoredFile (`.pdash` JSON document: cards, attachments, `createdFileIds`)
@@ -1764,6 +1776,18 @@ tool + table).
   (list/read/create/update/add_card/update_card/delete_card/attach/detach/
   run_card/run_all/recommend) let the assistant build and maintain pages;
   `ai_lock`/`ai_hidden` flags plus a file guard gate assistant access.
+- `tables` — queryable datasets. A table is a regular `StoredFile` with
+  extension `.ptable` whose blob is a JSON document (`version`, `columns`
+  with `number|date|category|text` types, `rows` as cell lists), so it gets
+  drives, trash, `FileVersion` history and FTS search free. CSV, TSV and
+  XLSX open read-only in the viewer (50-row pages, type badges, header
+  stats, sparklines) with a SELECT/WITH SQL filter bar over the pyrun
+  sandbox; Save as `.ptable` converts one-way and `.ptable` cells edit
+  inline with snapshot-first versions. Pin-as-card attaches the table to a
+  dashboard and build-automation prefills a workflow; AI tools
+  `tables.schema/query_sql/update_rows/add_column` let the assistant read
+  and reshape datasets, guarded by module-enabled + ownership + trashed
+  (writes also refuse synced drives).
 - `pyrun` — sealed Python + SQL scratchpad for the AI agent (agent-only:
   no routes, no nav; two namespaced tools). `pyrun.compute` runs a small,
   bounded program over explicitly attached files the user owns (up to 5

@@ -6,9 +6,10 @@ DEFAULT_DRIVE_NAME = "My Dashboards"
 def register(ctx):
     from app.services import agent_service, indexing_service, module_service
 
-    from . import doc, routes, tools  # noqa: F401 - imports do the wiring
+    from . import doc, nodes, routes, tools  # noqa: F401 - imports do the wiring
 
     indexing_service.register_extractor(doc.EXTENSION, doc.extract)
+    nodes.register_dashboard_nodes()
     module_service.register_file_viewer(
         doc.EXTENSION,
         lambda stored: f"/m/dashboards/{stored.id}",

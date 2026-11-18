@@ -2129,6 +2129,11 @@ def register_defaults():
     from .nodes_images import register_image_nodes
     register_image_nodes()
 
+    # Pyrun-backed nodes (SQL over tables/files) — hidden while pyrun is
+    # disabled, fail closed at run time via module="pyrun".
+    from .nodes_pyrun import register_pyrun_nodes
+    register_pyrun_nodes()
+
     # Attach the per-node usage examples declared at the top of the file.
     for _type, _example in _NODE_EXAMPLES.items():
         if _type in _NODE_TYPES:

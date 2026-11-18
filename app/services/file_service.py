@@ -12,6 +12,7 @@ from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import Drive, FileIndex, FileVersion, Folder, StoredFile
+from . import events
 
 THUMBNAIL_SIZE = (256, 256)
 
@@ -145,6 +146,11 @@ def save_upload(file_storage, user, folder=None, drive=None):
     if stored.is_image:
         _make_thumbnail(path, stored_name)
 
+    events.emit("file.uploaded", {
+        "file_id": stored.id,
+        "drive_id": target_drive.id if target_drive is not None else None,
+        "user_id": user.id,
+    })
     return stored
 
 
@@ -185,6 +191,11 @@ def _save_upload_to_shared(file_storage, user, drive, folder):
     if stored.is_image:
         _make_thumbnail(path, stored.stored_name)
     refresh_shadow(stored)
+    events.emit("file.uploaded", {
+        "file_id": stored.id,
+        "drive_id": drive.id,
+        "user_id": user.id,
+    })
     return stored
 
 
