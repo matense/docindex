@@ -2074,3 +2074,18 @@ def test_export_csv_escapes_lone_cr():
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
     assert '/[",\\n\\r]/' in src
+
+
+def test_chart_cells_have_edit_button():
+    """Chart cells have an edit/preview duality (renderChartCell shows the
+    editor when cell._editing); the header must offer the Edit toggle like
+    the other editable types — otherwise a configured chart is stuck in
+    view mode with no way back to the editor."""
+    path = os.path.join(_NB_DIR, "static", "notebook.js")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    idx = src.index('mkBtn("fa-pen"')
+    head = src[max(0, idx - 500):idx]
+    start = head.rindex("const editable = [")
+    names = head[start:head.index("]", start)]
+    assert '"chart"' in names or "'chart'" in names, names

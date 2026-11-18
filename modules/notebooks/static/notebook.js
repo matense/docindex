@@ -2245,7 +2245,8 @@
                 b.addEventListener("click", fn);
                 return b;
             };
-            const editable = ["markdown", "code", "richtext", "heading"];
+            const editable = ["markdown", "code", "richtext", "heading",
+            "chart"];
             if (editable.includes(cell.type)) {
                 actions.appendChild(mkBtn("fa-pen", "Edit / preview", () => {
                     cell._editing = !cell._editing;
