@@ -454,3 +454,33 @@ def test_query_bad_paging_json_error(auth_client, app, user,
     body = r.get_json()
     assert body["ok"] is False
     assert "offset/limit" in body["error"].lower()
+
+
+def _t4_workflow_count(app, user_id):
+    auto_models = importlib.import_module(
+        "docindex_module_automation.models")
+    with app.app_context():
+        return auto_models.AutomationWorkflow.query.filter_by(
+            user_id=user_id).count()
+
+
+def test_build_automation_idempotent_two_posts_one_workflow(
+        auth_client, app, user, tables_enabled, automation_enabled):
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    first = auth_client.post(f"/m/tables/{fid}/build-automation")
+    assert first.status_code == 200
+    assert first.get_json()["ok"] is True
+    assert first.get_json()["reused"] is False
+    second = auth_client.post(f"/m/tables/{fid}/build-automation")
+    assert second.status_code == 200
+    body = second.get_json()
+    assert body["ok"] is True
+    assert body["reused"] is True
+    assert body["workflow_id"] == first.get_json()["workflow_id"]
+    assert _t4_workflow_count(app, user) == 1
+    graph = auth_client.get(
+        f"/m/automation/{body['workflow_id']}/graph").get_json()["graph"]
+    assert any(n.get("type") == "input.file"
+               and (n.get("config") or {}).get("file_id") == fid
+               for n in graph["nodes"])

@@ -369,6 +369,7 @@
         });
     });
     if (buildBtn) buildBtn.addEventListener("click", function () {
+      if (busy) return;
       showError(null);
       showLoading(true);
       fetch(baseUrl() + "/build-automation", { method: "POST" })

@@ -711,12 +711,20 @@ def pin_api(file_id):
 
 @bp.post("/<int:file_id>/build-automation")
 def build_automation_api(file_id):
-    """Create a workflow prefilled with an input.file node on this table.
+    """Create (or reuse) a workflow prefilled with an input.file node.
 
     The automation editor accepts no URL params for prefill (verified:
     automation.js reads no query string for prefill), so the prefill
     happens here at creation time and the response carries the live
     editor URL — never a dead button.
+
+    Idempotent per (user, table): the handoff draft carries a
+    ``[tables-handoff table:<id>]`` marker in its description. A repeat
+    POST (double-click, retry) reuses the same row instead of littering
+    the workflow list. Reuse repairs the prefill node when it is missing
+    (re-point an existing input.file node, else append one) but otherwise
+    preserves the user's edits; a graph that no longer validates resets
+    to the pristine prefill rather than 500ing on the user's draft.
     """
     stored = _get_table_file(file_id)
     disabled = _module_disabled_error(
@@ -729,23 +737,77 @@ def build_automation_api(file_id):
         "docindex_module_automation.engine")
     auto_registry = importlib.import_module(
         "docindex_module_automation.registry")
-    graph = {"nodes": [{"id": "n1", "type": "input.file",
-                        "x": 60, "y": 120,
-                        "config": {"file_id": stored.id}}],
-             "edges": []}
-    try:
+
+    def _prefill_node(node_id):
+        return {"id": node_id, "type": "input.file",
+                "x": 60, "y": 120,
+                "config": {"file_id": stored.id}}
+
+    def _validated_graph(graph):
         auto_engine.validate_graph(
             auto_engine.parse_graph(json.dumps(graph)),
             auto_registry.active_node_types())
+        return json.dumps(graph)
+
+    marker = f"[tables-handoff table:{stored.id}]"
+    existing = (auto_models.AutomationWorkflow.query
+                .filter_by(user_id=current_user.id)
+                .filter(auto_models.AutomationWorkflow.description
+                        .like(f"%{marker}%"))
+                .order_by(auto_models.AutomationWorkflow.id)
+                .first())
+    if existing is not None:
+        try:
+            current = auto_engine.parse_graph(existing.graph)
+        except Exception:  # noqa: BLE001 - corrupt draft resets to prefill
+            current = {"nodes": [], "edges": []}
+        nodes = current.get("nodes")
+        if not isinstance(nodes, list):
+            nodes = current["nodes"] = []
+        prefilled = any(
+            n.get("type") == "input.file"
+            and isinstance(n.get("config"), dict)
+            and (n.get("config") or {}).get("file_id") == stored.id
+            for n in nodes if isinstance(n, dict))
+        if not prefilled:
+            file_nodes = [n for n in nodes
+                          if isinstance(n, dict)
+                          and n.get("type") == "input.file"]
+            if file_nodes:
+                config = file_nodes[0].get("config")
+                if not isinstance(config, dict):
+                    config = file_nodes[0]["config"] = {}
+                config["file_id"] = stored.id
+            else:
+                taken = {n.get("id") for n in nodes
+                         if isinstance(n, dict)}
+                node_id, suffix = "n1", 1
+                while node_id in taken:
+                    suffix += 1
+                    node_id = f"n{suffix}"
+                nodes.append(_prefill_node(node_id))
+            try:
+                existing.graph = _validated_graph(current)
+            except Exception:  # noqa: BLE001 - unrepairable: pristine prefill
+                existing.graph = _validated_graph(
+                    {"nodes": [_prefill_node("n1")], "edges": []})
+        db.session.commit()
+        return jsonify({"ok": True, "workflow_id": existing.id,
+                        "file_id": stored.id, "reused": True,
+                        "url": url_for("automation.editor",
+                                       workflow_id=existing.id)})
+    try:
+        graph_text = _validated_graph(
+            {"nodes": [_prefill_node("n1")], "edges": []})
     except Exception as exc:  # noqa: BLE001 - our construction must validate
         return _query_error(f"Could not prefill the workflow: {exc}", 500)
     workflow = auto_models.AutomationWorkflow(
         user_id=current_user.id, name=f"Table: {_table_stem(stored)}"[:160],
-        description=f"Built from table {stored.name}.",
-        graph=json.dumps(graph))
+        description=f"Built from table {stored.name} {marker}.",
+        graph=graph_text)
     db.session.add(workflow)
     db.session.commit()
     return jsonify({"ok": True, "workflow_id": workflow.id,
-                    "file_id": stored.id,
+                    "file_id": stored.id, "reused": False,
                     "url": url_for("automation.editor",
                                    workflow_id=workflow.id)})
