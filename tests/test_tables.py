@@ -622,3 +622,91 @@ def test_ai_tools_fail_closed(app, user, tables_enabled):
         out = tools._tool_schema(user_obj, {"file_id": fid}, None)
         assert "error" in out
         assert "disabled" in out["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Final review minors: skeleton text, single-source exts, save-as emit,
+# pin busy guard, pin detach-on-failure
+# ---------------------------------------------------------------------------
+
+
+def test_tables_index_describes_viewer(auth_client, tables_enabled):
+    resp = auth_client.get("/m/tables/")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "viewer" in body.lower()
+    assert "T2" not in body
+
+
+def test_tables_extensions_single_sourced():
+    routes = importlib.import_module("docindex_module_tables.routes")
+    assert routes.TABLE_EXTENSIONS is _tables.TABLE_EXTENSIONS
+
+
+def test_save_as_emits_file_uploaded(auth_client, app, user,
+                                     tables_enabled):
+    import json
+
+    from app.services import events
+
+    fid = _write_table_file(app, user, "data.csv", "csv",
+                            b"a,b\n1,2\n")
+    seen = []
+    sub = lambda p: seen.append(p)  # noqa: E731 - test probe
+    events.subscribe("file.uploaded", sub)
+    try:
+        r = auth_client.post(f"/m/tables/{fid}/save-as")
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        new_id = r.get_json()["file_id"]
+    finally:
+        listeners = events._SUBSCRIBERS.get("file.uploaded", [])
+        if sub in listeners:
+            listeners.remove(sub)
+    assert seen, "save-as must emit file.uploaded"
+    payload = seen[-1]
+    assert payload["file_id"] == new_id
+    assert payload["user_id"] == user
+    assert "drive_id" in payload
+    json.dumps(payload)  # plain JSON-serializable dict only
+
+
+def test_pin_confirm_has_busy_guard():
+    with open(os.path.join(_TABLES_DIR, "static", "tables.js"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    anchor = "pinConfirm) pinConfirm.addEventListener"
+    assert anchor in src
+    handler = src.split(anchor, 1)[1][:500]
+    assert "if (busy) return;" in handler
+
+
+def test_pin_failure_detaches_orphan_attachment(
+        auth_client, app, user, tables_enabled, dashboards_enabled,
+        monkeypatch):
+    dash_doc = _t4_dash_doc()
+    fid = _write_table_file(app, user, "issues.csv", "csv",
+                            b"a,b\n1,2\n")
+    dash = _t4_dashboard(app, user, _t4_drive(app, user))
+    before_cards = len(_dashboard_doc(app, dash)["cards"])
+    before_atts = len(_dashboard_doc(app, dash)["attachments"])
+    original_save = dash_doc.save_document
+    calls = {"n": 0}
+
+    def _fail_on_pin_save(stored, doc, *args, **kwargs):
+        # First save is attach_link's own persist; the second is the pin's
+        # card append — only the pin itself must fail.
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("injected pin failure")
+        return original_save(stored, doc, *args, **kwargs)
+
+    monkeypatch.setattr(dash_doc, "save_document", _fail_on_pin_save)
+    out = auth_client.post(f"/m/tables/{fid}/pin",
+                           json={"dashboard_id": dash,
+                                 "title": "Top issues"})
+    assert out.get_json()["ok"] is False
+    doc = _dashboard_doc(app, dash)
+    assert len(doc["cards"]) == before_cards
+    assert len(doc["attachments"]) == before_atts
+    assert all(a.get("fileId") != fid for a in doc["attachments"])

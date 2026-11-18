@@ -36,14 +36,13 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models import FileIndex, StoredFile
-from app.services import file_service
+from app.services import events, file_service
 
+from . import TABLE_EXTENSIONS
 from . import doc as tables_doc
 
 bp = Blueprint("tables", __name__,
                template_folder="templates", static_folder="static")
-
-TABLE_EXTENSIONS = ("csv", "tsv", "xlsx", "ptable")
 
 # Server paint + client window: the first page and every fetch after it.
 PAGE_SIZE = 50
@@ -379,8 +378,8 @@ def _query_error(message, status=400):
 
 @bp.get("/")
 def index():
-    # Skeleton only: listing tables is not part of T2.
-    return "Tables module (viewer lands in T2).", 200
+    return ("Tables module: open a csv, tsv, xlsx or .ptable file to "
+            "browse it in the viewer."), 200
 
 
 @bp.get("/<int:file_id>")
@@ -610,6 +609,12 @@ def save_as_api(file_id):
     db.session.flush()
     db.session.add(FileIndex(file_id=created.id, status="pending"))
     db.session.commit()
+    file_service.invalidate_dupe_cache(current_user.id, drive_id)
+    events.emit("file.uploaded", {
+        "file_id": created.id,
+        "drive_id": drive_id,
+        "user_id": current_user.id,
+    })
     return jsonify({"ok": True, "file_id": created.id, "name": name})
 
 
@@ -686,6 +691,8 @@ def pin_api(file_id):
     if dashboard is None:
         return _query_error("Dashboard not found.", 404)
     title = str(payload.get("title") or "").strip() or _table_stem(stored)
+    prior_ids = {a.get("id")
+                 for a in dash_doc.load(dashboard).get("attachments", [])}
     try:
         attachment = dash_doc.attach_link(dashboard, stored.id)
     except ValueError as exc:
@@ -700,6 +707,17 @@ def pin_api(file_id):
         dash_doc.validate(document)
         dash_doc.save_document(dashboard, document)
     except ValueError as exc:
+        if attachment["id"] not in prior_ids:
+            # The link was freshly attached by this pin and the card never
+            # persisted — detach it so the dashboard keeps no orphan
+            # attachment. Pre-existing (deduped) links are left alone.
+            # detach_attachment refuses while a card references the id, so
+            # a failure here can only leave the in-memory card behind.
+            try:
+                dash_doc.detach_attachment(dashboard, attachment["id"])
+            except Exception:  # noqa: BLE001 - report the pin error, not this
+                current_app.logger.exception(
+                    "Could not detach orphan attachment after failed pin")
         return _query_error(str(exc) or "Could not pin this table.")
     return jsonify({"ok": True, "dashboard_id": dashboard.id,
                     "card_id": card["id"],

@@ -332,6 +332,7 @@
       if (pinPanel) pinPanel.classList.add("hidden");
     });
     if (pinConfirm) pinConfirm.addEventListener("click", function () {
+      if (busy) return;
       showError(null);
       showLoading(true);
       fetch(baseUrl() + "/pin", {
