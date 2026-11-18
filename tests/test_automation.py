@@ -4101,6 +4101,7 @@ def test_emit_bad_subscriber_does_not_break_emitter():
 
 def test_save_upload_emits_file_uploaded(app, user):
     import json
+
     from app.services import events
     seen = []
     events.subscribe("file.uploaded", lambda p: seen.append(p))
@@ -4115,6 +4116,7 @@ def test_save_upload_emits_file_uploaded(app, user):
 
 def test_sync_drive_emits_file_synced(app, user, tmp_path):
     import json
+
     from app.services import events, sync_service
     target = tmp_path / "syncroot"
     target.mkdir()

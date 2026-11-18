@@ -15,8 +15,7 @@ from app.models import StoredFile
 from app.services import file_service
 from modules.pyrun.evaluate import evaluate as _pyrun_evaluate
 
-from .engine import (WorkflowError, as_json, as_table, as_text, p_json,
-                     p_table, table_to_csv)
+from .engine import WorkflowError, as_json, as_table, as_text, p_json, p_table, table_to_csv
 from .registry import register_node_type
 
 # Extensions readable as CSV-shaped text for SQL seeding. Anything else
