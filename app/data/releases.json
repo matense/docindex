@@ -1,6 +1,36 @@
 {
   "releases": [
     {
+      "version": "0.1.21",
+      "date": "2026-11-18",
+      "title": "Follow-ups: script tables, full reads, 100MB uploads",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Uploads up to 100 MB per file (request batches up to 128 MB)."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "Script tables now coerce JSON-text results (including the {\"table\": ...} wrapper) into real tables instead of dumping raw JSON.",
+            "Script cards read entire attachments instead of truncating at 200K chars, so aggregates over large files stop silently undercounting.",
+            "Code highlighting is self-contained (inline palette plus forced-color-adjust), so script colors survive missing or overridden theme CSS."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Notebook chart cells regained their Edit toggle (configured charts were stuck in view mode); the notebook toolbar now stacks the title row above the actions row."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.20",
       "date": "2026-11-18",
       "title": "Argon: chat, notebooks, dashboards and automation UI",
