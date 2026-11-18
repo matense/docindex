@@ -2089,3 +2089,14 @@ def test_chart_cells_have_edit_button():
     start = head.rindex("const editable = [")
     names = head[start:head.index("]", start)]
     assert '"chart"' in names or "'chart'" in names, names
+
+
+def test_notebook_toolbar_two_rows():
+    """The toolbar stacks title row above actions row (instead of one
+    crowded wrapping row) so the title never squeezes against buttons."""
+    path = os.path.join(_NB_DIR, "templates", "notebooks", "edit.html")
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+    assert "nb-toolbar-actions" in html
+    assert html.index("nb-toolbar-doc") < html.index("nb-toolbar-actions")
+    assert html.index('id="nb-save-status"') < html.index("nb-toolbar-actions")

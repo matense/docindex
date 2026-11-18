@@ -5,19 +5,22 @@
 {% block content %}
 <div class="mx-auto w-full flex flex-col gap-3" id="nb-root">
 
-    <!-- Toolbar -->
-    <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">
-        <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
-           title="All notebooks"><i class="fas fa-arrow-left"></i></a>
-        <div class="flex-1 min-w-0 nb-toolbar-doc">
-            <h1 id="nb-title" class="font-bold truncate cursor-pointer" title="Click to rename">{{ doc.title }}</h1>
-            <p class="text-xs opacity-40">
-                {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
-            </p>
+    <!-- Toolbar: title row above, actions row below -->
+    <div class="glass-panel rounded-2xl px-5 py-3 flex flex-col gap-2 sticky top-0 z-10">
+        <div class="flex items-center gap-3">
+            <a href="{{ url_for('notebooks.index') }}" class="btn btn-ghost btn-sm btn-square"
+               title="All notebooks"><i class="fas fa-arrow-left"></i></a>
+            <div class="flex-1 min-w-0 nb-toolbar-doc">
+                <h1 id="nb-title" class="font-bold truncate cursor-pointer" title="Click to rename">{{ doc.title }}</h1>
+                <p class="text-xs opacity-40">
+                    {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
+                </p>
+            </div>
+            <span id="nb-save-status" class="text-xs opacity-50 whitespace-nowrap">
+                <i class="fas fa-check mr-1"></i>Saved
+            </span>
         </div>
-        <span id="nb-save-status" class="text-xs opacity-50 whitespace-nowrap">
-            <i class="fas fa-check mr-1"></i>Saved
-        </span>
+        <div class="flex items-center gap-1 flex-wrap nb-toolbar-actions">
         <button id="nb-index-btn" class="btn btn-ghost btn-sm gap-1"
                 title="Document index (headings)">
             <i class="fas fa-list"></i> Index
@@ -64,6 +67,7 @@
                 title="Print this notebook">
             <i class="fas fa-print"></i> Print
         </button>
+        </div>
     </div>
 
     <!-- Sticky outline (left) + cells (right) on wide screens -->
