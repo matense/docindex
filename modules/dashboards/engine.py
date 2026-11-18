@@ -285,10 +285,22 @@ def _parse_script_result(card_type, value):
     """
     if value is None:
         value = ""
-    if card_type == "table" and isinstance(value, (dict, list)):
-        table = _parse_script_table(value)
-        if table is not None:
-            return table
+    if card_type == "table":
+        if isinstance(value, str):
+            # Scripts often return JSON text (not dicts): decode first so
+            # a JSON table shape coerces instead of rendering raw JSON.
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, (dict, list)):
+                table = _parse_script_table(decoded)
+                if table is not None:
+                    return table
+        elif isinstance(value, (dict, list)):
+            table = _parse_script_table(value)
+            if table is not None:
+                return table
     if not isinstance(value, str):
         value = (json.dumps(value) if isinstance(value, (dict, list))
                  else str(value))
@@ -308,6 +320,11 @@ def _parse_script_table(value):
     """
     headers, raw = None, None
     if isinstance(value, dict):
+        # Accept the {"table": {...}} wrapper too (mirrors the KPI {"kpi"}
+        # contract): scripts often return the snapshot shape itself.
+        inner = value.get("table")
+        if isinstance(inner, dict):
+            value = inner
         if not isinstance(value.get("headers"), list) or not isinstance(
                 value.get("rows"), list):
             return None
@@ -894,7 +911,9 @@ def _run_script_card(stored, doc, card, user, files, variables=None):
     for pos, ref in enumerate(refs):
         target = files[ref]
         try:
-            chunks = [file_service.read_text_content(target)]
+            # Full content, no truncation: scripts must see whole
+            # attachments (aggregates over a prefix silently lie).
+            chunks = [file_service.read_text_content(target, max_chars=None)]
         except OSError as exc:
             raise MissingInputError(
                 f"Attachment '{target.name}' cannot be read ({exc})."

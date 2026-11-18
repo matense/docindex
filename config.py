@@ -52,8 +52,8 @@ class Config:
     # discoverable module (disabled by default; admin enables them).
     MODULES_FOLDER = os.environ.get(
         "MODULES_FOLDER", os.path.join(basedir, "modules"))
-    MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB per request batch
-    MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB per file
+    MAX_CONTENT_LENGTH = 128 * 1024 * 1024  # 128 MB per request batch (headroom over MAX_FILE_SIZE for multipart overhead)
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB per file
     ALLOWED_EXTENSIONS = {
         # documents
         "pdf", "docx", "xlsx", "xlsm", "xls", "txt", "md", "csv", "json",

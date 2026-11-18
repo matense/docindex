@@ -3440,6 +3440,53 @@ def test_builder_card_content_first():
     assert "data-tpage-btn" in src and "dash-pager-info" in src
 
 
+def test_script_table_json_string_coerces():
+    """Script cards often return JSON text (not dicts): a JSON string that
+    decodes to a table shape must coerce into the table snapshot instead
+    of rendering as raw JSON text — including the {"table": ...} wrapper
+    some scripts return."""
+    dash_engine = _engine()
+    s = json.dumps({"headers": ["Tabela", "Registos"],
+                    "rows": [["cmdb_ci_network_adapter", 729]]})
+    out = dash_engine._parse_script_result("table", s)
+    assert out["table"]["headers"] == ["Tabela", "Registos"]
+    assert out["table"]["rows"] == [["cmdb_ci_network_adapter", "729"]]
+    assert out["total_rows"] == 1 and out["truncated_rows"] is False
+    out = dash_engine._parse_script_result(
+        "table", json.dumps({"table": {"headers": ["A"],
+                                       "rows": [["1"]]}}))
+    assert out["table"] == {"headers": ["A"], "rows": [["1"]]}
+    # Non-JSON prose and non-table JSON keep the text fallback.
+    assert dash_engine._parse_script_result(
+        "table", "just prose") == {"text": "just prose"}
+    out = dash_engine._parse_script_result("table", '{"a": 1}')
+    assert out == {"text": '{"a": 1}'}
+
+
+def test_script_card_reads_whole_file(app, user, monkeypatch):
+    """Script cards must see whole attachments: a 250KB CSV (over the old
+    200K-char read cap) counts every row, not just the prefix."""
+    from app.services import module_service
+    dash_engine = _engine()
+    monkeypatch.setattr(module_service, "is_enabled", lambda name: True)
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    n = 20000
+    content = "id,val\n" + "".join(f"{i},x{i:06d}\n" for i in range(n))
+    assert len(content) > 200_000
+    att = _attach_file(app, fid, name="big.csv",
+                       content=content.encode("utf-8"))
+    cid = _add_card(app, fid, type="kpi", title="Count", prompt="",
+                    attachments=[att["id"]])
+    card = _script_card(app, fid, cid,
+                        script="res = db.query('select count(*) as n from t0')[0]['n']\n"
+                               "{'value': str(res)}")
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        result, _, _ = dash_engine.run_card(stored, card, user)
+    assert result == {"kpi": {"value": str(n)}}, result
+
+
 def test_script_value_dict_coerces_to_kpi():
     """Script cards: a returned {"value", "label"?, "delta"?} dict takes
     the KPI big-number path (viewKpiHTML), not the text fallback — this

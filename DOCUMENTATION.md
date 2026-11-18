@@ -125,8 +125,8 @@ app refuses to start without it.
 | `ERROR_LOG_KEEP`      | `2000`                                         | Newest rows kept in the error log (`/settings/logs`) |
 | `PORT`                | `5000`                                         | Dev server port (`run.py`) |
 
-Non-env config constants: `MAX_CONTENT_LENGTH` 100 MB per request batch,
-`MAX_FILE_SIZE` 16 MB per file, `ALLOWED_EXTENSIONS` (documents, code,
+Non-env config constants: `MAX_CONTENT_LENGTH` 128 MB per request batch,
+`MAX_FILE_SIZE` 100 MB per file, `ALLOWED_EXTENSIONS` (documents, code,
 images incl. svg), `IMAGE_EXTENSIONS` (raster images, no svg),
 `EDITABLE_EXTENSIONS` (text/code files editable in place), `INDEX_ASYNC`,
 `SYNC_ASYNC`, `HASHTAG_ASYNC`, `AI_TASKS_ASYNC`, `AUTOMATION_ASYNC` and
