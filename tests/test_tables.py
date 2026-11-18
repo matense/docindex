@@ -4,11 +4,17 @@ import importlib
 import importlib.util
 import os
 import sys
+import tempfile as _tempfile
+import uuid as _uuid
 
 import pytest
 
 from app.extensions import db
+from app.models import Drive as _Drive
+from app.models import FileVersion as _FileVersion
 from app.models import ModuleState
+from app.models import StoredFile as _StoredFile
+from app.services import file_service as _file_service
 from app.services import module_service
 
 # Load the module package directly (it lives outside the app package).
@@ -65,11 +71,6 @@ def test_tables_module_enables(app):
 # T2: viewer page + virtualized grid + column stats + rows API
 # ---------------------------------------------------------------------------
 
-import uuid as _uuid
-
-from app.models import StoredFile as _StoredFile
-from app.services import file_service as _file_service
-
 
 @pytest.fixture()
 def tables_enabled(app):
@@ -111,7 +112,7 @@ def test_viewer_row_cap(auth_client, app, user, tables_enabled):
 
 
 def test_viewer_header_stats(auth_client, app, user, tables_enabled):
-    payload = "id,amount\n1,10\n2,20\n3,30\n".encode("utf-8")
+    payload = b"id,amount\n1,10\n2,20\n3,30\n"
     fid = _write_table_file(app, user, "nums.csv", "csv", payload)
     html = auth_client.get(f"/m/tables/{fid}").data.decode()
     # Numeric column gets a number badge plus header stats + sparkline.
@@ -145,7 +146,7 @@ def test_viewer_messy_csv(auth_client, app, user, tables_enabled):
     assert data["rows"][2][0].startswith("caf")
     # .tsv forces tab-delimited parsing.
     tsv = _write_table_file(app, user, "t.tsv", "tsv",
-                            "a\tb\n1\t2\n".encode("utf-8"))
+                            b"a\tb\n1\t2\n")
     tdata = auth_client.get(f"/m/tables/{tsv}/rows").get_json()
     assert [c["name"] for c in tdata["columns"]] == ["a", "b"]
     assert tdata["rows"] == [["1", "2"]]
@@ -154,11 +155,6 @@ def test_viewer_messy_csv(auth_client, app, user, tables_enabled):
 # ---------------------------------------------------------------------------
 # T3: SQL filter bar + versioned inline editing
 # ---------------------------------------------------------------------------
-
-import tempfile as _tempfile
-
-from app.models import Drive as _Drive
-from app.models import FileVersion as _FileVersion
 
 
 def _ptable_payload():

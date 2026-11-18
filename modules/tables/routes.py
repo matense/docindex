@@ -83,7 +83,7 @@ def _blob_text(stored):
     path = file_service.file_path(stored)
     if not os.path.isfile(path):
         abort(404, description="Table file data is missing.")
-    with open(path, "r", encoding="utf-8", errors="replace",
+    with open(path, encoding="utf-8", errors="replace",
               newline="") as fh:
         return fh.read()
 
@@ -102,7 +102,7 @@ def _read_delimited(stored, tabbed=False):
     if tabbed:
         delimiter = "\t"
     else:
-        with open(file_service.file_path(stored), "r",
+        with open(file_service.file_path(stored),
                    encoding="utf-8", errors="replace", newline="") as fh:
             sample = fh.read(SNIFF_BYTES)
         delimiter = _sniff_delimiter(sample)
@@ -243,7 +243,7 @@ def sniff_column_type(values):
 
 
 def _fmt_num(number):
-    return "%g" % number
+    return f"{number:g}"
 
 
 def _sparkline_svg(numbers, width=100, height=20):
@@ -417,7 +417,7 @@ def rows_api(file_id):
     types = [sniff_column_type([row[i] for row in rows])
              for i in range(len(header))]
     columns = [{"name": name, "type": ctype}
-               for name, ctype in zip(header, types)]
+               for name, ctype in zip(header, types, strict=True)]
     window = _display_rows(rows[offset:offset + limit])
     return jsonify({"columns": columns, "rows": window, "total": len(rows)})
 
