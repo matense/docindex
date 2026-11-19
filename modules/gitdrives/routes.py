@@ -35,7 +35,7 @@ def index():
     for drive in drives:
         try:
             total, sample = git_source.find_lfs_pointers(
-                git_source.cache_path(drive.id))
+                git_source.cache_path(drive.id), drive_id=drive.id)
         except Exception:  # noqa: BLE001 - advisory only, never break the page
             total, sample = 0, []
         if total:
@@ -116,7 +116,7 @@ def create():
 
 def _flash_lfs_warning(drive):
     total, sample = git_source.find_lfs_pointers(
-        git_source.cache_path(drive.id))
+        git_source.cache_path(drive.id), drive_id=drive.id)
     if total:
         shown = ", ".join(sample[:3]) + ("…" if total > 3 else "")
         flash(f"Warning: this repository uses Git LFS, which is not "

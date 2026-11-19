@@ -49,6 +49,27 @@ def enabled(app):
         db.session.commit()
 
 
+@pytest.fixture(autouse=True)
+def _clear_lfs_cache():
+    """Round 2: the module-level LFS badge cache persists across tests
+    while drive ids restart at 1 — and the suite sees the scan module as
+    two objects (modules.gitdrives.source here, docindex_module_gitdrives
+    .source in the app). Clear both so no test serves another test's
+    cached scan."""
+    from app.services import drive_service
+    from modules.gitdrives import source as gs
+
+    gs._LFS_CACHE.clear()
+    provider = drive_service.get_drive_source("git")
+    if provider is not None:
+        _sys.modules[type(provider).__module__]._LFS_CACHE.clear()
+    yield
+    gs._LFS_CACHE.clear()
+    provider = drive_service.get_drive_source("git")
+    if provider is not None:
+        _sys.modules[type(provider).__module__]._LFS_CACHE.clear()
+
+
 def _create(client, path, **extra):
     data = {"repo_url": path}
     data.update(extra)
@@ -722,3 +743,73 @@ def test_pull_repo_restores_socket_timeout_on_failure(tmp_path, monkeypatch):
     assert "stalled" in err
     assert seen["timeout"] == gs._NETWORK_TIMEOUT == 60
     assert socket.getdefaulttimeout() == before
+
+
+# --- Round 2: LFS scan TTL cache + wall-clock budget ---
+#
+# The advisory LFS badge is recomputed on page loads: a fresh cache entry
+# is now served without walking, and every scan is bounded by a
+# wall-clock budget (partial results on expiry). The module-level cache
+# persists across tests, so each test below clears gs._LFS_CACHE first
+# (and again on exit) and uses its own drive_id.
+
+
+def test_find_lfs_pointers_cache_serves_without_walking(tmp_path):
+    """A fresh cache entry is served without touching the filesystem:
+    renaming the tree away after the first call, the second call still
+    returns the cached values."""
+    gs = _gitdrive_source()
+    gs._LFS_CACHE.clear()
+    try:
+        root = tmp_path / "tree"
+        root.mkdir()
+        (root / "real.txt").write_bytes(POINTER)
+        assert gs.find_lfs_pointers(str(root), drive_id=20) == (
+            1, ["real.txt"])
+        root.rename(tmp_path / "moved")  # a rescan would find nothing
+        assert gs.find_lfs_pointers(str(root), drive_id=20) == (
+            1, ["real.txt"])
+    finally:
+        gs._LFS_CACHE.clear()
+
+
+def test_find_lfs_pointers_cache_expires_after_ttl(tmp_path, monkeypatch):
+    """Past the TTL the scan recomputes: with the tree renamed away and
+    the clock advanced beyond the TTL, the cached values are dropped and
+    a fresh (empty) result is returned."""
+    import time as time_mod
+
+    gs = _gitdrive_source()
+    gs._LFS_CACHE.clear()
+    try:
+        root = tmp_path / "tree"
+        root.mkdir()
+        (root / "real.txt").write_bytes(POINTER)
+        assert gs.find_lfs_pointers(str(root), drive_id=21) == (
+            1, ["real.txt"])
+        root.rename(tmp_path / "moved")
+        assert gs.find_lfs_pointers(str(root), drive_id=21) == (
+            1, ["real.txt"])
+        t0 = time_mod.monotonic()
+        monkeypatch.setattr(gs.time, "monotonic",
+                            lambda: t0 + gs._LFS_CACHE_TTL + 10)
+        assert gs.find_lfs_pointers(str(root), drive_id=21) == (0, [])
+    finally:
+        gs._LFS_CACHE.clear()
+
+
+def test_find_lfs_pointers_budget_expiry_returns_partial(tmp_path,
+                                                         monkeypatch):
+    """A zero wall-clock budget returns a partial result immediately
+    instead of walking: deterministic, no timing dependence (the expiry
+    check fires before the first file)."""
+    gs = _gitdrive_source()
+    gs._LFS_CACHE.clear()
+    try:
+        root = tmp_path / "tree"
+        root.mkdir()
+        (root / "real.txt").write_bytes(POINTER)
+        monkeypatch.setattr(gs, "_LFS_WALK_BUDGET", 0)
+        assert gs.find_lfs_pointers(str(root)) == (0, [])
+    finally:
+        gs._LFS_CACHE.clear()

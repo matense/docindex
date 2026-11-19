@@ -28,6 +28,21 @@ _LFS_MAX_FILES = 3000
 _LFS_MAX_BYTES = 2048
 _LFS_MAX_HITS = 50
 
+# Advisory-badge freshness: per-drive scan results are cached this long
+# (seconds). A page load serves a fresh entry without walking the tree at
+# all; a miss/expiry recomputes. No invalidation hooks: the badge may lag
+# up to one TTL behind a sync, which is fine for an advisory notice.
+_LFS_CACHE_TTL = 300
+
+# Wall-clock budget (seconds) for a single scan of the tree. Checked once
+# per directory and every 200 files; on expiry the partial (total, hits)
+# is returned immediately so a huge/slow checkout can delay, but never
+# hang, a page load. Module-level so tests can monkeypatch it.
+_LFS_WALK_BUDGET = 10.0
+
+# drive_id -> (total, hits, monotonic timestamp of the scan).
+_LFS_CACHE = {}
+
 # Single ceiling (seconds) for every dulwich network call below (validate
 # via ls_remote, clone, fetch/pull). Dulwich exposes no timeout knob on
 # these paths, but underneath it is all stdlib sockets — raw
@@ -143,11 +158,18 @@ def _auth_kwargs(drive):
     return {"username": username, "password": password}
 
 
-def find_lfs_pointers(worktree):
+def find_lfs_pointers(worktree, drive_id=None):
     """Files that are LFS pointers, not real content.
 
     LFS is NOT fetched (see module help): these files index as pointer
-    text. Returns (total_count, [sample relpaths]). Capped for speed.
+    text. Returns (total_count, [sample relpaths]). Capped for speed,
+    and each scan is bounded by _LFS_WALK_BUDGET wall-clock seconds
+    (partial results on expiry).
+
+    When drive_id is given, fresh cache entries (younger than
+    _LFS_CACHE_TTL) are served without walking the tree. Tradeoff: the
+    badge is advisory and may lag up to one TTL behind a sync — no
+    invalidation hooks, by design. Without drive_id every call walks.
 
     Hardened: only regular files are ever opened — FIFOs, sockets,
     devices and symlinks are skipped via lstat (no follow), so an
@@ -157,13 +179,32 @@ def find_lfs_pointers(worktree):
     forever. Windows follows junctions in os.walk and try/except
     cannot save either case.
     """
+    if drive_id is not None:
+        cached = _LFS_CACHE.get(drive_id)
+        if cached is not None:
+            total, hits, timestamp = cached
+            if time.monotonic() - timestamp < _LFS_CACHE_TTL:
+                return total, hits
+    total, hits = _scan_lfs_pointers(worktree)
+    if drive_id is not None and os.path.isdir(worktree):
+        # Cache only scans of a present tree: a missing checkout (clone
+        # still running) must be rescanned next time, never served stale.
+        _LFS_CACHE[drive_id] = (total, hits, time.monotonic())
+    return total, hits
+
+
+def _scan_lfs_pointers(worktree):
+    """Walk the tree and count LFS pointers (see find_lfs_pointers)."""
     hits, checked, total = [], 0, 0
+    deadline = time.monotonic() + _LFS_WALK_BUDGET
     try:
         root = os.lstat(worktree)
         seen = {(root.st_dev, root.st_ino)}
     except OSError:
         return total, hits
     for dirpath, dirnames, filenames in os.walk(worktree):
+        if time.monotonic() >= deadline:
+            return total, hits  # budget exhausted: partial result
         if ".git" in dirnames:
             dirnames.remove(".git")
         # Cycle-safe: prune directories already visited (identity of the
@@ -195,6 +236,8 @@ def find_lfs_pointers(worktree):
         for filename in sorted(filenames):
             if checked >= _LFS_MAX_FILES:
                 return total, hits
+            if checked % 200 == 0 and time.monotonic() >= deadline:
+                return total, hits  # budget exhausted: partial result
             checked += 1
             path = os.path.join(dirpath, filename)
             try:
