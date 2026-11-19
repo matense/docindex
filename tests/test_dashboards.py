@@ -4823,6 +4823,7 @@ def test_dashboards_organize_roundtrip_and_revert(app, auth_client, user,
     assert "nothing moves until you confirm" in html.lower()
     assert "DocIndex Dashboards" in html
     assert "Revert last organize" not in html
+    assert "?v=36" in html  # list page loads the same builder bundle
 
     resp = auth_client.post("/m/dashboards/organize/apply",
                             follow_redirects=True)
