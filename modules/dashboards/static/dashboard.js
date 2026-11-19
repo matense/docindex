@@ -1180,6 +1180,7 @@
             '<code class="language-python"></code></pre>' +
             '<textarea class="dash-script dash-codeedit-in" data-f="script" maxlength="' + MAX_SCRIPT + '" rows="3" ' +
             'spellcheck="false" placeholder="res = ..." aria-label="Card script (pyrun)">' + esc(card.script || "") + "</textarea></div>" +
+            "</div>" +
             '<div class="dash-refs" data-f="refs">' + refChipsHTML(S, card) + "</div>" +
             (card.type === "workflow"
                 ? '<div class="dash-wf"><span class="dash-prompt-label">Linked workflow</span>' + wfFields + "</div>"
