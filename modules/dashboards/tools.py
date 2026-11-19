@@ -104,6 +104,10 @@ def _resolve_target(user, args, drive):
     if target_drive.is_readonly:
         return None, None, ("Synced drives are read-only — dashboards cannot "
                             "be created there.")
+    if folder is None:
+        # No folder picked: the drive's dashboards folder keeps every
+        # drive's dashboards separated by context.
+        folder = doc_service.dashboards_folder(user, target_drive)
     return target_drive, folder, None
 
 

@@ -4673,3 +4673,185 @@ def test_workflow_refresh_stale_settle_skipped_on_newer_run(
     finally:
         with app.app_context():
             dash_doc.run_finished(fid, f"{fid}:newer-ui-run")
+
+
+# ---------------------------------------------------------------------------
+# Type Folders F3: "DocIndex Dashboards" folder per drive + organize
+# ---------------------------------------------------------------------------
+
+
+def _f3_pdash_in_drive(app, user_id, drive_id, name="stray", folder_id=None,
+                       make_on=None):
+    fid = _create(app, user_id, make_on or drive_id, title=name)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        stored.drive_id = drive_id
+        stored.folder_id = folder_id
+        db.session.commit()
+    return fid
+
+
+def test_dashboards_folder_and_routing(app, auth_client, user, enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        assert dash_doc.DASHBOARDS_FOLDER == "DocIndex Dashboards"
+        folder = dash_doc.dashboards_folder(user_obj, drive)
+        assert folder.name == "DocIndex Dashboards"
+        assert folder.parent_id is None
+        assert folder.drive_id == drive_id
+        # Idempotent — second call returns the same folder.
+        assert dash_doc.dashboards_folder(user_obj, drive).id == folder.id
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f3-ro")
+        db.session.add(synced)
+        db.session.commit()
+        assert dash_doc.dashboards_folder(user_obj, synced) is None
+        assert dash_doc.dashboards_folder(user_obj, None) is None
+
+    # Drive-root location routes into the type folder.
+    auth_client.post("/m/dashboards/new",
+                     data={"name": "Fresh",
+                           "location": f"drive:{drive_id}"},
+                     follow_redirects=True)
+    with app.app_context():
+        stored = (StoredFile.query
+                  .filter_by(user_id=user, extension="pdash")
+                  .order_by(StoredFile.id.desc()).first())
+        assert stored.folder is not None
+        assert stored.folder.name == "DocIndex Dashboards"
+        assert stored.folder.drive_id == drive_id
+
+    # No location (default drive) routes there too.
+    auth_client.post("/m/dashboards/new", data={"name": "Plain"},
+                     follow_redirects=True)
+    with app.app_context():
+        plain = (StoredFile.query
+                 .filter_by(user_id=user, extension="pdash")
+                 .order_by(StoredFile.id.desc()).first())
+        assert plain.name.startswith("Plain")
+        assert plain.folder is not None
+        assert plain.folder.name == "DocIndex Dashboards"
+
+    # Explicit folder: choice respected, never redirected.
+    with app.app_context():
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+    auth_client.post("/m/dashboards/new",
+                     data={"name": "Placed",
+                           "location": f"folder:{foreign_id}"},
+                     follow_redirects=True)
+    with app.app_context():
+        placed = (StoredFile.query
+                  .filter_by(user_id=user, extension="pdash")
+                  .order_by(StoredFile.id.desc()).first())
+        assert placed.name.startswith("Placed")
+        assert placed.folder_id == foreign_id
+
+
+def _f3_setup(app, user):
+    """One drive with a stray root .pdash + one in a foreign folder, one
+    already inside Dashboards/sub (left alone), and a synced-drive .pdash
+    (skipped). Returns ids dict."""
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        from app.models import User as _User
+
+        user_obj = db.session.get(_User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        dash_root = dash_doc.dashboards_folder(
+            user_obj, db.session.get(Drive, drive_id))
+        sub = _Folder(name="Sub", user_id=user, drive_id=drive_id,
+                      parent_id=dash_root.id)
+        db.session.add(sub)
+        db.session.commit()
+        sub_id = sub.id
+    with app.app_context():
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f3-rosy")
+        db.session.add(synced)
+        db.session.commit()
+        synced_id = synced.id
+    stray = _f3_pdash_in_drive(app, user, drive_id, "stray")
+    abroad = _f3_pdash_in_drive(app, user, drive_id, "abroad",
+                                folder_id=foreign_id)
+    nested = _f3_pdash_in_drive(app, user, drive_id, "nested",
+                                folder_id=sub_id)
+    rosy = _f3_pdash_in_drive(app, user, synced_id, "rosy",
+                                make_on=drive_id)
+    return {"drive_id": drive_id, "foreign_id": foreign_id,
+            "stray": stray, "abroad": abroad, "nested": nested,
+            "rosy": rosy}
+
+
+def test_dashboards_organize_roundtrip_and_revert(app, auth_client, user,
+                                                  enabled):
+    from app.models import DashboardOrganizePlan
+
+    ids = _f3_setup(app, user)
+    data = auth_client.get("/m/dashboards/organize/plan").get_json()
+    assert data["skipped_synced"] == 1
+    assert {m["name"] for m in data["moves"]} == {"stray.pdash",
+                                                  "abroad.pdash"}
+    for move in data["moves"]:
+        assert move["to_drive_id"] == ids["drive_id"]
+        assert move["to_folder_name"] == "DocIndex Dashboards"
+        assert move["from_drive_id"] == ids["drive_id"]
+
+    # Version history survives the move (normal move path, not a copy).
+    with app.app_context():
+        stored = db.session.get(StoredFile, ids["stray"])
+        file_service.snapshot_version(stored, "test")
+        before = len(db.session.get(StoredFile, ids["stray"]).versions)
+        assert before == 1
+
+    # List page pins the preview-first affordance, no revert yet.
+    html = auth_client.get("/m/dashboards/").data.decode()
+    assert "dash-organize-btn" in html
+    assert "nothing moves until you confirm" in html.lower()
+    assert "DocIndex Dashboards" in html
+    assert "Revert last organize" not in html
+
+    resp = auth_client.post("/m/dashboards/organize/apply",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        for fid in (ids["stray"], ids["abroad"]):
+            stored = db.session.get(StoredFile, fid)
+            assert stored.folder.name == "DocIndex Dashboards"
+            assert stored.drive_id == ids["drive_id"]
+        assert db.session.get(StoredFile, ids["nested"]).folder.name == "Sub"
+        assert db.session.get(StoredFile, ids["rosy"]).folder_id is None
+        assert len(db.session.get(StoredFile,
+                                  ids["stray"]).versions) == before
+        plan = DashboardOrganizePlan.query.one()
+        assert plan.applied is True and plan.reverted is False
+    assert auth_client.get("/m/dashboards/organize/plan").get_json()[
+        "moves"] == []
+    # After an organize run the list offers the revert affordance.
+    assert "Revert last organize" in \
+        auth_client.get("/m/dashboards/").data.decode()
+
+    # Revert moves everything back.
+    auth_client.post("/m/dashboards/organize/revert",
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(StoredFile, ids["stray"]).folder_id is None
+        assert db.session.get(StoredFile,
+                              ids["abroad"]).folder_id == ids["foreign_id"]
+        assert DashboardOrganizePlan.query.one().reverted is True
+    resp = auth_client.post("/m/dashboards/organize/revert",
+                            follow_redirects=True)
+    assert b"No organize run" in resp.data
