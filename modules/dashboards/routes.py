@@ -166,6 +166,16 @@ def new():
             folder = _lookup(Folder, raw_folder)
             missing = missing or folder is None
             if folder is not None:
+                if raw_drive and drive is not None:
+                    # Both ids supplied: they must agree — silently
+                    # preferring the folder would create the dashboard
+                    # somewhere the caller did not intend (mirrors the
+                    # whiteboards AI path, which rejects the pair).
+                    folder_drive = folder.drive
+                    if (folder_drive is None
+                            or folder_drive.id != drive.id):
+                        abort(400, "folder_id and drive_id disagree — "
+                                   "pass one target.")
                 drive = folder.drive
     if explicit and (missing or drive is None):
         # An explicit target that does not exist (or a folder outside any

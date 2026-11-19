@@ -4855,3 +4855,67 @@ def test_dashboards_organize_roundtrip_and_revert(app, auth_client, user,
     resp = auth_client.post("/m/dashboards/organize/revert",
                             follow_redirects=True)
     assert b"No organize run" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Type-folders final review: fail-closed guards on the create paths
+# ---------------------------------------------------------------------------
+
+def test_ai_create_rejects_driveless_folder(app, user, enabled):
+    """Fail-closed: a folder with no drive must not reach create_dashboard
+    (None.is_readonly AttributeError -> 500 through the AI tool, which only
+    catches ValueError). The tool returns "Folder not found.", mirroring
+    the whiteboards create path's drive-less folder guard."""
+    from app.models import Folder as _Folder
+    tools = _dash_tools()
+    _ = _drive(app, user)
+    with app.app_context():
+        orphan = _Folder(name="Orphan", user_id=user, drive_id=None,
+                         parent_id=None)
+        db.session.add(orphan)
+        db.session.commit()
+        orphan_id = orphan.id
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        result = tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": orphan_id}, None)
+        assert result == {"error": "Folder not found."}
+
+
+def test_new_rejects_disagreeing_drive_and_folder(app, auth_client, user,
+                                                  enabled):
+    """Fail-closed parity with the whiteboards AI path: drive_id + folder_id
+    that disagree abort 400 instead of the folder silently winning; agreeing
+    ids still create in the folder."""
+    from app.models import Folder as _Folder
+    drive_id = _drive(app, user)
+    with app.app_context():
+        other = Drive(name="Other", user_id=user)
+        db.session.add(other)
+        db.session.commit()
+        other_id = other.id
+        folder = _Folder(name="Mine", user_id=user, drive_id=drive_id,
+                         parent_id=None)
+        db.session.add(folder)
+        db.session.commit()
+        folder_id = folder.id
+        before = StoredFile.query.filter_by(
+            user_id=user, extension="pdash").count()
+    resp = auth_client.post("/m/dashboards/new",
+                            data={"name": "Lost",
+                                  "drive_id": str(other_id),
+                                  "folder_id": str(folder_id)})
+    assert resp.status_code == 400
+    # Agreeing ids create in the folder (folder wins when consistent).
+    resp = auth_client.post("/m/dashboards/new",
+                            data={"name": "Kept",
+                                  "drive_id": str(drive_id),
+                                  "folder_id": str(folder_id)})
+    assert resp.status_code == 302
+    with app.app_context():
+        assert StoredFile.query.filter_by(
+            user_id=user, extension="pdash").count() == before + 1
+        kept = StoredFile.query.filter_by(
+            user_id=user, name="Kept.pdash").one()
+        assert kept.folder_id == folder_id
+        assert kept.drive_id == drive_id

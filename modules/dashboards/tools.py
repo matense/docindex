@@ -75,7 +75,10 @@ def _resolve_target(user, args, drive):
         folder = db.session.get(Folder, folder_id)
         if folder is None or folder.user_id != user.id:
             return None, None, "Folder not found."
-        return folder.drive, folder, None
+        target_drive = folder.drive
+        if target_drive is None or target_drive.user_id != user.id:
+            return None, None, "Folder not found."
+        return target_drive, folder, None
     target_drive = None
     if args.get("drive_id"):
         try:
