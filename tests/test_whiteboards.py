@@ -733,3 +733,126 @@ def test_whiteboards_organize_roundtrip_and_revert(app, auth_client, user,
     resp = auth_client.post("/m/whiteboards/organize/revert",
                             follow_redirects=True)
     assert b"No organize run" in resp.data
+
+
+# --- Type Folders F4 fix round: fail-closed hardening on folder_id ---
+
+
+def test_whiteboards_create_tool_folder_errors(app, user, enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f4-err-ro")
+        db.session.add(synced)
+        db.session.commit()
+        synced_id = synced.id
+        synced_folder = _Folder(name="RODir", user_id=user,
+                                drive_id=synced_id, parent_id=None)
+        db.session.add(synced_folder)
+        db.session.commit()
+        synced_folder_id = synced_folder.id
+        # Second user with their own drive + folder.
+        other = User(username="bob", email="bob@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        other_drive = Drive(name="Bob", user_id=other.id)
+        db.session.add(other_drive)
+        db.session.commit()
+        other_folder = _Folder(name="BobDir", user_id=other.id,
+                               drive_id=other_drive.id, parent_id=None)
+        db.session.add(other_folder)
+        db.session.commit()
+        other_folder_id = other_folder.id
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        # Invalid folder id.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": "abc"},
+            None)["error"] == "Invalid folder id."
+        # Unknown folder id.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": 999999},
+            None)["error"] == "Folder not found."
+        # Other user's folder.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": other_folder_id},
+            None)["error"] == "Folder not found."
+        # Folder on a synced (read-only) drive fails closed, naming it.
+        err = wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": synced_folder_id},
+            None)["error"]
+        assert "RO" in err and "read-only" in err
+        # Conflicting folder_id + drive_id are rejected, not silently
+        # resolved in favor of one side.
+        err = wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": foreign_id,
+                       "drive_id": synced_id}, None)["error"]
+        assert "disagree" in err
+        # Matching folder_id + drive_id still works.
+        res = wb_tools._tool_create(
+            user_obj, {"name": "Agree", "folder_id": foreign_id,
+                       "drive_id": drive_id}, None)
+        assert res["created"]["folder"] == "Foreign"
+
+
+def test_whiteboards_create_board_rejects_foreign_folder(app, user,
+                                                         enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        other_drive = Drive(name="Other", user_id=user)
+        db.session.add(other_drive)
+        db.session.commit()
+        abroad = _Folder(name="Abroad", user_id=user,
+                         drive_id=other_drive.id, parent_id=None)
+        db.session.add(abroad)
+        db.session.commit()
+        with pytest.raises(ValueError, match="target drive"):
+            wb.create_board(user_obj, drive, "Cross",
+                            folder=abroad)
+        other = User(username="carol", email="carol@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        not_mine = _Folder(name="NotMine", user_id=other.id,
+                           drive_id=drive_id, parent_id=None)
+        db.session.add(not_mine)
+        db.session.commit()
+        with pytest.raises(ValueError, match="target drive"):
+            wb.create_board(user_obj, drive, "Theirs",
+                            folder=not_mine)
+        # Nothing was created by the rejected calls.
+        assert StoredFile.query.filter_by(
+            user_id=user, extension="wboard").count() == 0
+
+
+def test_whiteboards_shared_drive_roots_at_drive_root(app, user, enabled,
+                                                      tmp_path):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        shared = Drive(name="Shared", user_id=user,
+                       source_path=str(tmp_path), sync_mode="shared")
+        db.session.add(shared)
+        db.session.commit()
+        assert shared.is_synced and not shared.is_readonly
+        # No type folder may be created on synced drives — even writable
+        # shared ones — so the helper stays None...
+        assert wb.whiteboards_folder(user_obj, shared) is None
+        # ...and creation keeps its previous drive-root placement.
+        stored = wb.create_board(user_obj, shared, "Shared board")
+        assert stored.folder_id is None
+        assert stored.drive_id == shared.id
+        assert wb.get_board(stored.id, user) is not None

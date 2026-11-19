@@ -397,8 +397,8 @@ def create_board(user, drive, name, elements=None, folder=None):
 
     A drive-root intent (folder=None) lands in the drive's "DocIndex
     Whiteboards" folder (created on demand); an explicit folder is
-    respected as-is. Synced drives fail closed — nothing may be created
-    in them."""
+    respected as-is after ownership validation. Synced drives fail closed
+    — nothing may be created in them."""
     if isinstance(drive, (list, tuple)):
         drive = next((d for d in drive
                       if not getattr(d, "is_readonly", False)), None)
@@ -406,6 +406,14 @@ def create_board(user, drive, name, elements=None, folder=None):
             raise ValueError("All drives in context are synced (read-only) — "
                              "pick a writable drive.")
     _guard_writable_drive(drive)
+    if folder is not None:
+        # An explicit folder is respected as-is — but it must belong to
+        # the caller on the target drive. Without this a cross-drive or
+        # cross-user folder would silently misplace the board
+        # (save_upload trusts folder.drive_id while drive_id is
+        # overwritten below), so fail closed instead.
+        if folder.user_id != user.id or folder.drive_id != drive.id:
+            raise ValueError("Folder does not belong to the target drive.")
     if folder is None:
         # Drive-root intent: every drive keeps its whiteboards in
         # "DocIndex Whiteboards". No folder helper result on synced

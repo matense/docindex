@@ -103,6 +103,18 @@ def _tool_create(user, args, drive):
         if folder is None or folder.user_id != user.id:
             return {"error": "Folder not found."}
         target_drive = folder.drive
+        if target_drive is None or target_drive.user_id != user.id:
+            return {"error": "Folder not found."}
+        if args.get("drive_id"):
+            # Both ids supplied: they must agree — silently preferring one
+            # would create the board somewhere the caller did not intend.
+            try:
+                drive_id = int(args["drive_id"])
+            except (TypeError, ValueError):
+                return {"error": "Invalid drive id."}
+            if drive_id != target_drive.id:
+                return {"error": "folder_id and drive_id disagree — "
+                                 "pass one target."}
     elif args.get("drive_id"):
         try:
             drive_id = int(args["drive_id"])
