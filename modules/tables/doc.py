@@ -14,9 +14,33 @@ padded. Padding short rows (or trimming long ones) is a viewer concern
 
 import json
 
+from app.extensions import db
+
 EXTENSION = "ptable"
 
 COLUMN_TYPES = ("number", "date", "category", "text")
+
+# Dedicated folder per drive holding that drive's tables ("separated by
+# context"). Created on demand.
+TABLES_FOLDER = "DocIndex Tables"
+
+
+def tables_folder(user, drive):
+    """Get-or-create the drive's tables folder. Returns None for synced
+    (read-only) drives — nothing may be created in them."""
+    from app.models import Folder
+    if drive is None or getattr(drive, "is_synced", False):
+        return None
+    folder = (Folder.query
+              .filter_by(user_id=user.id, drive_id=drive.id,
+                         parent_id=None, name=TABLES_FOLDER)
+              .first())
+    if folder is None:
+        folder = Folder(user_id=user.id, drive_id=drive.id,
+                        parent_id=None, name=TABLES_FOLDER)
+        db.session.add(folder)
+        db.session.commit()
+    return folder
 
 
 def _coerce_column(col):

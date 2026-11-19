@@ -6,6 +6,7 @@
   "help": [
     "Tables are .ptable datasets that live on your drives like files: they are indexed, searchable and keep a full version history.",
     "CSV, TSV and XLSX files open in the tables viewer with sort, a SELECT/WITH SQL filter bar and one-way Save as .ptable; .ptable cells edit inline with snapshot-first versions.",
-    "Ask the AI to query, edit and reshape tables with the tables.* tools (schema, query_sql, update_rows, add_column) — one answer leaves a single restorable history entry."
+    "Ask the AI to query, edit and reshape tables with the tables.* tools (schema, query_sql, update_rows, add_column) — one answer leaves a single restorable history entry.",
+    "Save as .ptable copies a spreadsheet into a 'DocIndex Tables' folder on its drive — copies out of synced trees land in the Personal drive's folder instead — without touching the original."
   ]
 }

@@ -35,8 +35,8 @@ from flask import Blueprint, abort, current_app, jsonify, render_template, reque
 from flask_login import current_user
 
 from app.extensions import db
-from app.models import FileIndex, StoredFile
-from app.services import events, file_service
+from app.models import Drive, FileIndex, StoredFile
+from app.services import drive_service, events, file_service
 
 from . import TABLE_EXTENSIONS
 from . import doc as tables_doc
@@ -372,6 +372,15 @@ def _query_error(message, status=400):
     return jsonify({"ok": False, "error": message}), status
 
 
+def _personal_drive():
+    """The user's live Personal drive, if one exists."""
+    return (Drive.query
+            .filter_by(user_id=current_user.id,
+                       name=drive_service.DEFAULT_DRIVE_NAME)
+            .filter(Drive.deleted_at.is_(None))
+            .first())
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -560,10 +569,11 @@ def cell_api(file_id):
 def save_as_api(file_id):
     """Convert a csv/tsv/xlsx view into a queryable .ptable dataset.
 
-    One-way copy: a new .ptable file is created next to the source (same
-    folder/drive, uniquified name) and the original workbook is never
-    touched. Copies out of synced trees land at the files root instead,
-    so unmanaged blobs are never injected into a sync tree.
+    One-way copy: a new .ptable file is created in the source drive's
+    "DocIndex Tables" folder (uniquified name) and the original workbook
+    is never touched. Copies out of synced trees land in the Personal
+    drive's Tables folder instead — files-root when no Personal drive
+    exists — so unmanaged blobs are never injected into a sync tree.
     """
     stored = _get_table_file(file_id)
     if (stored.extension or "").lower() == "ptable":
@@ -584,9 +594,22 @@ def save_as_api(file_id):
     if len(text.encode("utf-8")) > current_app.config["MAX_FILE_SIZE"]:
         return _query_error("Table exceeds the file size limit.")
     stem = os.path.splitext(stored.name)[0].strip() or "table"
-    keep_place = not stored.is_synced
-    folder_id = stored.folder_id if keep_place else None
-    drive_id = stored.drive_id if keep_place else None
+    target = tables_doc.tables_folder(current_user, stored.drive)
+    if target is None:
+        # A synced (read-only) source — or a drive-less file — can never
+        # host the copy: route into the user's Personal drive instead.
+        personal = _personal_drive()
+        if personal is not None:
+            target = tables_doc.tables_folder(current_user, personal)
+    if target is None:
+        # No drive could host the copy (no Personal drive exists):
+        # files-root (drive_id=None) is a legitimate location in this
+        # codebase (nullable FK, "No drive" group, orphan migration), so
+        # it stays the last-resort destination instead of failing the
+        # conversion.
+        folder_id, drive_id = None, None
+    else:
+        folder_id, drive_id = target.id, target.drive_id
     name = f"{stem}.ptable"
     suffix = 2
     while file_service.find_by_name(current_user.id, drive_id, folder_id,

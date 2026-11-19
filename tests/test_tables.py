@@ -710,3 +710,147 @@ def test_pin_failure_detaches_orphan_attachment(
     assert len(doc["cards"]) == before_cards
     assert len(doc["attachments"]) == before_atts
     assert all(a.get("fileId") != fid for a in doc["attachments"])
+
+
+# ---------------------------------------------------------------------------
+# Type Folders F1: "DocIndex Tables" folder per drive + save-as routing
+# ---------------------------------------------------------------------------
+
+
+def _f1_drive(app, user_id, name="Work", synced=False):
+    with app.app_context():
+        drive = _Drive(name=name, user_id=user_id,
+                       source_path="/tmp/f1-real" if synced else None)
+        db.session.add(drive)
+        db.session.commit()
+        return drive.id
+
+
+def _f1_csv_in_drive(app, user_id, drive_id, name="data.csv",
+                     payload=b"a,b\n1,2\n"):
+    fid = _write_table_file(app, user_id, name, "csv", payload)
+    with app.app_context():
+        stored = db.session.get(_StoredFile, fid)
+        stored.drive_id = drive_id
+        db.session.commit()
+    return fid
+
+
+def test_tables_folder_per_drive(app, user):
+    from app.models import User as _User
+
+    drive_id = _f1_drive(app, user, name="Work")
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        drive = db.session.get(_Drive, drive_id)
+        assert tables_doc.TABLES_FOLDER == "DocIndex Tables"
+        folder = tables_doc.tables_folder(user_obj, drive)
+        assert folder.name == "DocIndex Tables"
+        assert folder.parent_id is None
+        assert folder.drive_id == drive_id
+        # Idempotent — second call returns the same folder.
+        assert tables_doc.tables_folder(user_obj, drive).id == folder.id
+        synced = _Drive(name="RO", user_id=user, source_path="/tmp/f1-ro")
+        db.session.add(synced)
+        db.session.commit()
+        assert tables_doc.tables_folder(user_obj, synced) is None
+        assert tables_doc.tables_folder(user_obj, None) is None
+
+
+def test_save_as_lands_in_tables_folder(auth_client, app, user,
+                                        tables_enabled):
+    drive_id = _f1_drive(app, user, name="Work")
+    fid = _f1_csv_in_drive(app, user, drive_id, "data.csv")
+    r = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["name"] == "data.ptable"
+    with app.app_context():
+        created = db.session.get(_StoredFile, body["file_id"])
+        assert created.drive_id == drive_id
+        assert created.folder is not None
+        assert created.folder.name == "DocIndex Tables"
+        assert created.folder.parent_id is None
+        assert created.folder.drive_id == drive_id
+        source = db.session.get(_StoredFile, fid)
+        assert source.folder_id is None
+        assert source.drive_id == drive_id
+    # A second save-as uniquifies inside the Tables folder, not next to
+    # the source.
+    again = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert again.status_code == 200
+    assert again.get_json()["name"] == "data (2).ptable"
+    with app.app_context():
+        clash = db.session.get(_StoredFile, again.get_json()["file_id"])
+        assert clash.folder.name == "DocIndex Tables"
+
+
+def test_save_as_synced_source_goes_personal(auth_client, app, user,
+                                             tables_enabled):
+    from app.services import events
+
+    with app.app_context():
+        db.session.add(_Drive(name="Personal", user_id=user))
+        db.session.add(_Drive(name="Archive Mirror", user_id=user,
+                              source_path="/tmp/f1-mirror"))
+        db.session.commit()
+        personal = _Drive.query.filter_by(
+            user_id=user, name="Personal").one()
+        personal_id = personal.id
+        mirror = _Drive.query.filter_by(
+            user_id=user, name="Archive Mirror").one()
+        mirror_id = mirror.id
+    with _tempfile.NamedTemporaryFile(suffix=".csv",
+                                       delete=False) as tmp:
+        tmp.write(b"a,b\n1,2\n")
+        real_path = tmp.name
+    try:
+        fid = _write_table_file(app, user, "archived.csv", "csv",
+                                b"placeholder")
+        with app.app_context():
+            stored = db.session.get(_StoredFile, fid)
+            stored.source_path = real_path
+            stored.drive_id = mirror_id
+            db.session.commit()
+        seen = []
+        sub = lambda p: seen.append(p)  # noqa: E731 - test probe
+        events.subscribe("file.uploaded", sub)
+        try:
+            r = auth_client.post(f"/m/tables/{fid}/save-as")
+        finally:
+            listeners = events._SUBSCRIBERS.get("file.uploaded", [])
+            if sub in listeners:
+                listeners.remove(sub)
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ok"] is True
+        with app.app_context():
+            created = db.session.get(_StoredFile, body["file_id"])
+            assert created.drive_id == personal_id
+            assert created.drive_id != mirror_id
+            assert created.folder is not None
+            assert created.folder.name == "DocIndex Tables"
+            assert created.folder.drive_id == personal_id
+        assert seen, "save-as must emit file.uploaded"
+        assert seen[-1]["drive_id"] == personal_id
+    finally:
+        os.remove(real_path)
+
+
+def test_save_as_without_personal_drive_stays_at_files_root(
+        auth_client, app, user, tables_enabled):
+    # No drive rows at all: files-root (drive_id=None) is a legitimate
+    # location in this codebase (nullable FK, "No drive" group, orphan
+    # migration), so it stays the last-resort destination instead of
+    # failing the conversion.
+    fid = _write_table_file(app, user, "loose.csv", "csv", b"a,b\n1,2\n")
+    r = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    with app.app_context():
+        assert _Drive.query.filter_by(user_id=user).count() == 0
+        created = db.session.get(_StoredFile, body["file_id"])
+        assert created.drive_id is None
+        assert created.folder_id is None
