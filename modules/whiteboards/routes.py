@@ -35,7 +35,49 @@ def index():
     drives = _writable_drives()
     drives.sort(key=lambda d: 0 if d.name == "My Whiteboards" else 1)
     return render_template("whiteboards/index.html", boards=boards,
-                           drives=drives)
+                           drives=drives,
+                           revertable=board_service.last_organize_plan(
+                               current_user) is not None)
+
+
+@bp.get("/organize/plan")
+@login_required
+def organize_plan():
+    """Preview: whiteboards that would move, and where. No changes made —
+    the user must confirm (POST /organize/apply) for anything to move."""
+    moves, skipped = board_service.organize_preview(current_user)
+    return jsonify({"moves": moves, "skipped_synced": skipped})
+
+
+@bp.post("/organize/apply")
+@login_required
+def organize_apply():
+    """Execute the organize plan (explicit confirmation only — this is the
+    only path that moves whiteboards)."""
+    record, applied, skipped = board_service.apply_organize(current_user)
+    if applied:
+        flash(f"Organized {applied} whiteboard(s) into 'DocIndex Whiteboards' "
+              f"folders." + (f" {skipped} skipped." if skipped else ""),
+              "success")
+    else:
+        flash("Nothing to organize — every whiteboard is already in place.",
+              "info")
+    return redirect(url_for("whiteboards.index"))
+
+
+@bp.post("/organize/revert")
+@login_required
+def organize_revert():
+    """Undo the last organize: replay the inverse moves of its logged plan."""
+    moved, skipped, found = board_service.revert_organize(current_user)
+    if not found:
+        flash("No organize run to revert.", "info")
+    elif moved:
+        flash(f"Reverted: {moved} whiteboard(s) moved back."
+              + (f" {skipped} skipped." if skipped else ""), "success")
+    else:
+        flash("Revert found nothing to move back.", "info")
+    return redirect(url_for("whiteboards.index"))
 
 
 @bp.post("/create")
@@ -50,8 +92,13 @@ def create():
     if drive is None or drive.user_id != current_user.id:
         flash("Pick one of your drives for the new board.", "error")
         return redirect(url_for("whiteboards.index"))
+    # Drive-root intent: every drive keeps its whiteboards in "DocIndex
+    # Whiteboards" (the form picks a drive only — there is no
+    # explicit-folder picker here by design).
+    folder = board_service.whiteboards_folder(current_user, drive)
     try:
-        stored = board_service.create_board(current_user, drive, name)
+        stored = board_service.create_board(current_user, drive, name,
+                                             folder=folder)
     except ValueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("whiteboards.index"))

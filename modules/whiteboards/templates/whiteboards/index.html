@@ -38,7 +38,21 @@
     </div>
 
     <div class="glass-panel rounded-2xl p-6">
-        <h2 class="font-bold text-lg mb-4">Your boards</h2>
+        <div class="flex items-center gap-2 flex-wrap mb-4">
+            <h2 class="font-bold text-lg flex-1">Your boards</h2>
+            <button type="button" class="btn btn-ghost btn-sm gap-1" id="wb-organize-btn" title="Preview a plan that moves every whiteboard into its drive's 'DocIndex Whiteboards' folder — nothing moves until you confirm">
+                <i class="fas fa-sitemap text-secondary"></i> Organize
+            </button>
+            {% if revertable %}
+            <form method="POST" action="{{ url_for('whiteboards.organize_revert') }}"
+                  data-confirm="Move the organized whiteboards back to where they were?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost btn-sm gap-1" title="Undo the last organize run">
+                    <i class="fas fa-rotate-left text-warning"></i> Revert last organize
+                </button>
+            </form>
+            {% endif %}
+        </div>
         {% if boards %}
         <div class="flex flex-col gap-2">
             {% for b in boards %}
@@ -72,4 +86,80 @@
     </div>
 
 </div>
+
+<!-- Organize plan modal -->
+<dialog id="wb-organize-modal" class="modal">
+    <div class="modal-box glass-panel max-w-2xl">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-sitemap text-secondary"></i> Organize whiteboards</h3>
+        <p class="text-xs opacity-50 mb-4">
+            Every whiteboard moves into its drive's <strong>DocIndex Whiteboards</strong> folder.
+            Nothing moves until you press Confirm — review the plan below.
+        </p>
+        <div id="wb-organize-plan" class="flex flex-col gap-1.5 max-h-96 overflow-auto text-sm">
+            <p class="text-xs opacity-50 py-4 text-center">
+                <i class="fas fa-circle-notch fa-spin"></i> Computing plan…
+            </p>
+        </div>
+        <form method="POST" action="{{ url_for('whiteboards.organize_apply') }}" class="modal-action">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('wb-organize-modal').close()">Cancel</button>
+            <button type="submit" class="btn btn-primary btn-sm gap-1" id="wb-organize-confirm" disabled>
+                <i class="fas fa-check"></i> Confirm &amp; move
+            </button>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+(function () {
+    var esc = function (s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g,
+            function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; });
+    };
+    var organizeBtn = document.getElementById('wb-organize-btn');
+    if (organizeBtn) {
+        organizeBtn.addEventListener('click', function () {
+            var box = document.getElementById('wb-organize-plan');
+            var confirmBtn = document.getElementById('wb-organize-confirm');
+            confirmBtn.disabled = true;
+            box.innerHTML = '<p class="text-xs opacity-50 py-4 text-center">'
+                + '<i class="fas fa-circle-notch fa-spin"></i> Computing plan…</p>';
+            document.getElementById('wb-organize-modal').showModal();
+            fetch('{{ url_for('whiteboards.organize_plan') }}')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var moves = data.moves || [];
+                    if (!moves.length) {
+                        box.innerHTML = '<p class="text-xs opacity-60 py-4 text-center">'
+                            + 'Nothing to organize — every whiteboard is already in its '
+                            + "'DocIndex Whiteboards' folder."
+                            + (data.skipped_synced ? ' (' + data.skipped_synced + ' on read-only drives stay put.)' : '')
+                            + '</p>';
+                        return;
+                    }
+                    box.innerHTML = moves.map(function (m) {
+                        var from = m.from_folder_name
+                            ? esc(m.from_drive_name) + ' / ' + esc(m.from_folder_name)
+                            : esc(m.from_drive_name) + ' /';
+                        return '<div class="flex items-center gap-2 rounded-lg border border-base-content/10 px-3 py-2">'
+                            + '<i class="fas fa-pen-ruler text-primary flex-shrink-0"></i>'
+                            + '<span class="font-medium truncate">' + esc(m.name) + '</span>'
+                            + '<span class="text-[11px] opacity-50 truncate ml-auto">' + from
+                            + ' <i class="fas fa-arrow-right mx-1"></i> '
+                            + esc(m.to_drive_name) + ' / ' + esc(m.to_folder_name) + '</span>'
+                            + '</div>';
+                    }).join('')
+                    + (data.skipped_synced ? '<p class="text-[11px] opacity-50 text-center">'
+                        + data.skipped_synced + ' whiteboard(s) on read-only drives stay put.</p>' : '');
+                    confirmBtn.disabled = false;
+                })
+                .catch(function () {
+                    box.innerHTML = '<p class="text-xs text-error py-4 text-center">Could not compute the plan.</p>';
+                });
+        });
+    }
+})();
+</script>
 {% endblock %}
