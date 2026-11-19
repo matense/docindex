@@ -5,6 +5,7 @@ repository into a local cache and let the regular folder scan index it.
 Drives are read-only; the remote is never written to.
 """
 
+import contextlib
 import ipaddress
 import os
 import re
@@ -26,6 +27,29 @@ LFS_POINTER_RE = re.compile(
 _LFS_MAX_FILES = 3000
 _LFS_MAX_BYTES = 2048
 _LFS_MAX_HITS = 50
+
+# Single ceiling (seconds) for every dulwich network call below (validate
+# via ls_remote, clone, fetch/pull). Dulwich exposes no timeout knob on
+# these paths, but underneath it is all stdlib sockets — raw
+# socket.socket + connect for git://, urllib3's create_connection for
+# http(s) — both of which honor the process-wide default timeout when no
+# explicit timeout is passed (verified: fresh sockets inherit
+# getdefaulttimeout(); urllib3's default-timeout sentinel leaves the
+# socket timeout unset). So set it narrowly around each network call and
+# always restore the previous value.
+_NETWORK_TIMEOUT = 60
+
+
+@contextlib.contextmanager
+def _network_timeout(seconds=_NETWORK_TIMEOUT):
+    """Bound one dulwich network call by the socket default timeout."""
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
+
 
 # Progress lines look like "receiving objects:  45% (123/274), 1.2 MiB".
 _PROGRESS_PCT = re.compile(r"(\d+)%")
@@ -124,11 +148,48 @@ def find_lfs_pointers(worktree):
 
     LFS is NOT fetched (see module help): these files index as pointer
     text. Returns (total_count, [sample relpaths]). Capped for speed.
+
+    Hardened: only regular files are ever opened — FIFOs, sockets,
+    devices and symlinks are skipped via lstat (no follow), so an
+    open() can never block on one — and each directory is descended
+    into at most once (device + inode identity of the target), so
+    directory-junction / symlink-dir cycles cannot loop os.walk
+    forever. Windows follows junctions in os.walk and try/except
+    cannot save either case.
     """
     hits, checked, total = [], 0, 0
+    try:
+        root = os.lstat(worktree)
+        seen = {(root.st_dev, root.st_ino)}
+    except OSError:
+        return total, hits
     for dirpath, dirnames, filenames in os.walk(worktree):
         if ".git" in dirnames:
             dirnames.remove(".git")
+        # Cycle-safe: prune directories already visited (identity of the
+        # *target*, so junctions/symlink-dirs collapse onto their first
+        # visit). lstat first — symlinks are never followed and dead
+        # entries are dropped; identity via stat, which resolves
+        # junctions to the real directory.
+        for name in list(dirnames):
+            full = os.path.join(dirpath, name)
+            try:
+                if os.path.islink(full):
+                    dirnames.remove(name)
+                    continue
+                st = os.stat(full)
+            except OSError:
+                dirnames.remove(name)
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                dirnames.remove(name)
+                continue
+            if st.st_ino != 0:
+                ident = (st.st_dev, st.st_ino)
+                if ident in seen:
+                    dirnames.remove(name)
+                    continue
+                seen.add(ident)
         # Keep the walk stable and cheap on huge checkouts.
         dirnames.sort()
         for filename in sorted(filenames):
@@ -137,9 +198,18 @@ def find_lfs_pointers(worktree):
             checked += 1
             path = os.path.join(dirpath, filename)
             try:
-                if os.path.getsize(path) > _LFS_MAX_BYTES:
+                # Regular files only (lstat: no follow) — never open
+                # FIFOs/sockets/devices/symlinks-to-anything.
+                lst = os.lstat(path)
+                if not stat.S_ISREG(lst.st_mode):
+                    continue
+                if lst.st_size > _LFS_MAX_BYTES:
                     continue
                 with open(path, "rb") as fh:
+                    # Re-check after open: the entry may have been
+                    # swapped for something non-regular in between.
+                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        continue
                     head = fh.read(_LFS_MAX_BYTES)
             except OSError:
                 continue
@@ -166,7 +236,8 @@ def ls_remote(url, username=None, password=None):
         kwargs = {"username": username, "password": password}
     client, path = get_transport_and_path(url, **kwargs)
     try:
-        return client.get_refs(path)
+        with _network_timeout():
+            return client.get_refs(path)
     finally:
         try:
             client.close()
@@ -297,9 +368,10 @@ def clone_repo(url, target, branch=None, username=None, password=None,
         kwargs = {"username": username, "password": password}
     capture = _ProgressCapture(_capture("Cloning", on_progress)) if on_progress else None
     try:
-        porcelain.clone(url, target, depth=1,
-                        branch=branch or None, checkout=False,
-                        errstream=capture, **kwargs)
+        with _network_timeout():
+            porcelain.clone(url, target, depth=1,
+                            branch=branch or None, checkout=False,
+                            errstream=capture, **kwargs)
         _neuter_lfs_filters(target)
 
         def _checkout_progress(done, total):
@@ -326,23 +398,24 @@ def pull_repo(path, url=None, branch=None, username=None, password=None,
         kwargs = {"username": username, "password": password}
     try:
         capture = _ProgressCapture(_capture("Pulling", on_progress)) if on_progress else None
-        if url:
-            result = porcelain.fetch(path, url, depth=1,
-                                     errstream=capture, **kwargs)
-            br = branch.encode() if isinstance(branch, str) else branch
-            if not br:
-                current = _current_branch(path)
-                br = (current.split(b"/")[-1] if current
-                      else b"master")
-                want = b"refs/heads/" + br
+        with _network_timeout():
+            if url:
+                result = porcelain.fetch(path, url, depth=1,
+                                         errstream=capture, **kwargs)
+                br = branch.encode() if isinstance(branch, str) else branch
+                if not br:
+                    current = _current_branch(path)
+                    br = (current.split(b"/")[-1] if current
+                          else b"master")
+                    want = b"refs/heads/" + br
+                else:
+                    want = br if br.startswith(b"refs/") else b"refs/heads/" + br
+                if want not in result.refs:
+                    return f"Branch '{want.decode()}' not found on the remote."[:200]
+                with Repo(path) as repo:
+                    repo.refs[want] = result.refs[want]
             else:
-                want = br if br.startswith(b"refs/") else b"refs/heads/" + br
-            if want not in result.refs:
-                return f"Branch '{want.decode()}' not found on the remote."[:200]
-            with Repo(path) as repo:
-                repo.refs[want] = result.refs[want]
-        else:
-            porcelain.pull(path, errstream=capture, **kwargs)
+                porcelain.pull(path, errstream=capture, **kwargs)
 
         def _checkout_progress(done, total):
             if on_progress is None:

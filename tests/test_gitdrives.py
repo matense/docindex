@@ -545,3 +545,180 @@ def test_checkout_head_raw_never_writes_outside_root(tmp_path):
     assert not (tmp_path / "evil-rel.txt").exists()
     assert not abs_target.exists()
     assert not (root / "link.txt").exists()
+
+
+# --- Bugfix: bound LFS scan (regular files, cycle-safe) + network timeouts --
+#
+# find_lfs_pointers walks whole checkouts: a FIFO entry blocks open()
+# forever and a directory-junction/symlink cycle re-walks the same tree
+# (Windows follows junctions into os.walk; try/except cannot save either
+# case), while the dulwich network calls had no timeout at all, stalling
+# the validating POST and the background sync worker. Tests pin the guards.
+
+
+def _gitdrive_source():
+    from modules.gitdrives import source as gs
+    return gs
+
+
+def _make_dir_loop(target, link):
+    """Point directory <link> at directory <target>.
+
+    Junction on Windows (mklink /J needs no privilege and genuinely
+    reproduces the descent: junctions are followed by os.walk), else a
+    directory symlink; skip the test when neither can be created.
+    """
+    if os.name == "nt":
+        import subprocess
+        res = subprocess.run(["cmd", "/c", "mklink", "/J",
+                              str(link), str(target)],
+                             capture_output=True, text=True)
+        if res.returncode == 0 and os.path.isdir(link):
+            return
+    try:
+        os.symlink(str(target), str(link), target_is_directory=True)
+    except OSError:
+        pytest.skip("platform cannot create directory links")
+
+
+def test_find_lfs_pointers_terminates_on_dir_loop(tmp_path):
+    """A directory-junction/symlink cycle must not trap the scan: the
+    repeat visit is pruned, so each pointer is counted once and the call
+    returns. (Pre-fix the same tree is descended ~65 levels deep until
+    the OS refuses deeper junction resolution, counting the inner file
+    at every level.)"""
+    gs = _gitdrive_source()
+    root = tmp_path / "tree"
+    (root / "a").mkdir(parents=True)
+    (root / "real.txt").write_bytes(POINTER)
+    (root / "a" / "inner.txt").write_bytes(POINTER)
+    _make_dir_loop(root / "a", root / "a" / "loop")  # self-loop on a
+    total, hits = gs.find_lfs_pointers(str(root))
+    assert total == 2
+    assert sorted(hits) == [os.path.join("a", "inner.txt"), "real.txt"]
+
+
+def test_find_lfs_pointers_skips_symlinked_files(tmp_path):
+    """Symlinked files are never followed: the link itself is skipped even
+    when its target is a pointer (pre-fix followed it and counted two)."""
+    gs = _gitdrive_source()
+    real = tmp_path / "real.txt"
+    real.write_bytes(POINTER)
+    try:
+        os.symlink(str(real), str(tmp_path / "link.txt"))
+    except OSError:
+        pytest.skip("platform cannot create symlinks")
+    total, hits = gs.find_lfs_pointers(str(tmp_path))
+    assert (total, hits) == (1, ["real.txt"])
+
+
+def test_find_lfs_pointers_skips_nonregular_without_open(tmp_path,
+                                                         monkeypatch):
+    """Non-regular entries must be skipped without ever calling open():
+    open() on a FIFO blocks forever and try/except cannot save it.
+    Windows has no os.mkfifo, so the FIFO is simulated by reporting FIFO
+    mode bits from lstat for one path (the same signal the scan branches
+    on); the test then proves that path is never opened."""
+    import builtins
+    import stat as statmod
+
+    gs = _gitdrive_source()
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(POINTER)
+    (tmp_path / "real.txt").write_bytes(POINTER)
+    target = os.path.abspath(str(victim))
+    real_lstat = os.lstat
+
+    def _fifo_lstat(path):
+        st = real_lstat(path)
+        if os.path.abspath(path) == target:
+            st = os.stat_result(
+                (statmod.S_IFIFO | 0o600,) + tuple(st)[1:])
+        return st
+
+    monkeypatch.setattr(os, "lstat", _fifo_lstat)
+    opened = []
+    real_open = builtins.open
+
+    def _spy_open(path, *args, **kwargs):
+        opened.append(os.path.abspath(str(path)))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _spy_open)
+    total, hits = gs.find_lfs_pointers(str(tmp_path))
+    assert target not in opened
+    assert (total, hits) == (1, ["real.txt"])
+
+
+def test_ls_remote_applies_and_restores_socket_timeout(monkeypatch):
+    """ls_remote bounds the refs call by the module timeout and restores
+    the previous process-wide default timeout even when it fails."""
+    import socket
+
+    import dulwich.client as dulwich_client
+
+    gs = _gitdrive_source()
+    seen = {}
+    before = socket.getdefaulttimeout()
+
+    class _Stalled:
+        def get_refs(self, path):
+            seen["timeout"] = socket.getdefaulttimeout()
+            raise OSError("stalled")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dulwich_client, "get_transport_and_path",
+                        lambda *args, **kwargs: (_Stalled(), "/x"))
+    with pytest.raises(OSError, match="stalled"):
+        gs.ls_remote("https://example.invalid/x.git")
+    assert seen["timeout"] == gs._NETWORK_TIMEOUT == 60
+    assert socket.getdefaulttimeout() == before
+
+
+def test_clone_repo_restores_socket_timeout_on_failure(tmp_path, monkeypatch):
+    """clone_repo bounds the dulwich network call and restores the
+    previous default timeout when the clone fails."""
+    import socket
+
+    import dulwich.porcelain as porcelain
+
+    gs = _gitdrive_source()
+    seen = {}
+    before = socket.getdefaulttimeout()
+
+    def _stalled(*args, **kwargs):
+        seen["timeout"] = socket.getdefaulttimeout()
+        raise OSError("stalled")
+
+    monkeypatch.setattr(porcelain, "clone", _stalled)
+    err = gs.clone_repo("https://example.invalid/x.git",
+                        str(tmp_path / "clone-target"))
+    assert "stalled" in err
+    assert seen["timeout"] == gs._NETWORK_TIMEOUT == 60
+    assert socket.getdefaulttimeout() == before
+
+
+def test_pull_repo_restores_socket_timeout_on_failure(tmp_path, monkeypatch):
+    """pull_repo bounds the fetch network call and restores the previous
+    default timeout when the fetch fails."""
+    import socket
+
+    import dulwich.porcelain as porcelain
+
+    gs = _gitdrive_source()
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    seen = {}
+    before = socket.getdefaulttimeout()
+
+    def _stalled(*args, **kwargs):
+        seen["timeout"] = socket.getdefaulttimeout()
+        raise OSError("stalled")
+
+    monkeypatch.setattr(porcelain, "fetch", _stalled)
+    err = gs.pull_repo(str(repo), url="https://example.invalid/x.git")
+    assert "stalled" in err
+    assert seen["timeout"] == gs._NETWORK_TIMEOUT == 60
+    assert socket.getdefaulttimeout() == before
