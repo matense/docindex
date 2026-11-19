@@ -31,19 +31,12 @@ def index():
               .filter(Drive.source_kind == "git")
               .filter(Drive.deleted_at.is_(None))
               .order_by(Drive.name).all())
-    lfs = {}
-    for drive in drives:
-        try:
-            total, sample = git_source.find_lfs_pointers(
-                git_source.cache_path(drive.id), drive_id=drive.id)
-        except Exception:  # noqa: BLE001 - advisory only, never break the page
-            total, sample = 0, []
-        if total:
-            lfs[drive.id] = {"total": total, "sample": sample}
+    # The advisory LFS badge is stored on the drive row by the sync worker
+    # (pre_sync); the page reads those columns and never walks a checkout.
     # A clone error stashed by create() pops as a modal with the reason
     # (flashes alone are easy to miss).
     clone_error = session.pop("git_clone_error", None)
-    return render_template("gitdrives/index.html", drives=drives, lfs=lfs,
+    return render_template("gitdrives/index.html", drives=drives,
                            clone_error=clone_error)
 
 
@@ -104,26 +97,12 @@ def create():
         return redirect(url_for("gitdrives.index"))
     if job.state == "done":
         s = job.stats
-        _flash_lfs_warning(drive)
         flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
               f'imported, {s["skipped"]} skipped.', "success")
         return redirect(url_for("drive.index"))
-    _flash_lfs_warning(drive)
     flash(f'Git drive "{drive.name}" is cloning — follow the progress '
           f"in the sync widget; files appear as they land.", "success")
     return redirect(url_for("drive.index"))
-
-
-def _flash_lfs_warning(drive):
-    total, sample = git_source.find_lfs_pointers(
-        git_source.cache_path(drive.id), drive_id=drive.id)
-    if total:
-        shown = ", ".join(sample[:3]) + ("…" if total > 3 else "")
-        flash(f"Warning: this repository uses Git LFS, which is not "
-              f"fetched — {total} file(s) ({shown}) will appear as small "
-              f"pointer text (or be skipped when the extension is not "
-              f"indexed). Search sees only pointer metadata, not the real "
-              f"content.", "warning")
 
 
 @bp.post("/api/check")

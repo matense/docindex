@@ -49,27 +49,6 @@ def enabled(app):
         db.session.commit()
 
 
-@pytest.fixture(autouse=True)
-def _clear_lfs_cache():
-    """Round 2: the module-level LFS badge cache persists across tests
-    while drive ids restart at 1 — and the suite sees the scan module as
-    two objects (modules.gitdrives.source here, docindex_module_gitdrives
-    .source in the app). Clear both so no test serves another test's
-    cached scan."""
-    from app.services import drive_service
-    from modules.gitdrives import source as gs
-
-    gs._LFS_CACHE.clear()
-    provider = drive_service.get_drive_source("git")
-    if provider is not None:
-        _sys.modules[type(provider).__module__]._LFS_CACHE.clear()
-    yield
-    gs._LFS_CACHE.clear()
-    provider = drive_service.get_drive_source("git")
-    if provider is not None:
-        _sys.modules[type(provider).__module__]._LFS_CACHE.clear()
-
-
 def _create(client, path, **extra):
     data = {"repo_url": path}
     data.update(extra)
@@ -324,6 +303,79 @@ def test_lfs_pointers_warn_but_do_not_block(auth_client, app, gitrepo,
         stored = StoredFile.query.filter_by(name="notes.txt").one()
         with open(stored.source_path, encoding="utf-8") as fh:
             assert "git-lfs.github.com" in fh.read()
+
+
+# ---------------------------------------------------------------------------
+# Async LFS badge: computed in the sync worker, page reads stored rows.
+#
+# The list page must never walk a checkout (previously a ~10s block on big
+# repos): pre_sync records (total, sample, now) on the drive row and the
+# page renders those stored columns. Drives with no scan yet show nothing.
+# ---------------------------------------------------------------------------
+
+
+def _gitdrive_provider_module():
+    """The provider's own source module object (docindex_module_* alias)."""
+    from app.services import drive_service
+    provider = drive_service.get_drive_source("git")
+    assert provider is not None
+    return _sys.modules[type(provider).__module__]
+
+
+def test_sync_worker_stores_lfs_scan_on_drive(auth_client, app, gitrepo,
+                                              enabled):
+    """The sync path records the advisory badge: after create (which runs
+    the sync worker inline in tests) the drive row carries lfs_total,
+    lfs_sample and lfs_scanned_at. This also covers backfill: a row
+    without values gets them from its next sync."""
+    from dulwich import porcelain
+
+    with open(os.path.join(gitrepo, "model.bin"), "wb") as fh:
+        fh.write(POINTER)
+    porcelain.add(gitrepo, paths=["model.bin"])
+    porcelain.commit(gitrepo, message=b"lfs",
+                     author=b"T <t@t>", committer=b"T <t@t>")
+    resp = _create(auth_client, gitrepo)
+    assert resp.status_code == 200
+    with app.app_context():
+        drive = Drive.query.filter_by(source_kind="git").one()
+        assert drive.lfs_total == 1
+        assert drive.lfs_sample == ["model.bin"]
+        assert drive.lfs_scanned_at is not None
+
+
+def test_index_never_walks_checkout(auth_client, app, gitrepo, enabled,
+                                    monkeypatch):
+    """The list page renders stored columns only: with find_lfs_pointers
+    rigged to blow up in both module namespaces, GET still 200s and the
+    scan is never called."""
+    from unittest import mock
+
+    import modules.gitdrives.source as gs_plain
+
+    _create(auth_client, gitrepo)  # worker runs unpatched, stores the scan
+    probe = mock.Mock(side_effect=AssertionError("page must not walk"))
+    monkeypatch.setattr(gs_plain, "find_lfs_pointers", probe)
+    monkeypatch.setattr(_gitdrive_provider_module(),
+                        "find_lfs_pointers", probe)
+    resp = auth_client.get("/m/gitdrives/")
+    assert resp.status_code == 200
+    assert probe.call_count == 0
+
+
+def test_stored_lfs_warning_renders_without_checkout(auth_client, app, user,
+                                                     enabled):
+    """Stored columns drive the warning with no checkout on disk at all."""
+    with app.app_context():
+        drive = Drive(name="Weights", user_id=user, source_kind="git",
+                      repo_url="https://github.com/o/r.git",
+                      source_path="/nonexistent/no-checkout-here",
+                      lfs_total=2, lfs_sample=["a.bin", "sub/b.bin"])
+        db.session.add(drive)
+        db.session.commit()
+    html = auth_client.get("/m/gitdrives/").data.decode()
+    assert "LFS not fetched" in html
+    assert "2 file(s)" in html
 
 
 # ---------------------------------------------------------------------------
@@ -745,57 +797,10 @@ def test_pull_repo_restores_socket_timeout_on_failure(tmp_path, monkeypatch):
     assert socket.getdefaulttimeout() == before
 
 
-# --- Round 2: LFS scan TTL cache + wall-clock budget ---
-#
-# The advisory LFS badge is recomputed on page loads: a fresh cache entry
-# is now served without walking, and every scan is bounded by a
-# wall-clock budget (partial results on expiry). The module-level cache
-# persists across tests, so each test below clears gs._LFS_CACHE first
-# (and again on exit) and uses its own drive_id.
-
-
-def test_find_lfs_pointers_cache_serves_without_walking(tmp_path):
-    """A fresh cache entry is served without touching the filesystem:
-    renaming the tree away after the first call, the second call still
-    returns the cached values."""
-    gs = _gitdrive_source()
-    gs._LFS_CACHE.clear()
-    try:
-        root = tmp_path / "tree"
-        root.mkdir()
-        (root / "real.txt").write_bytes(POINTER)
-        assert gs.find_lfs_pointers(str(root), drive_id=20) == (
-            1, ["real.txt"])
-        root.rename(tmp_path / "moved")  # a rescan would find nothing
-        assert gs.find_lfs_pointers(str(root), drive_id=20) == (
-            1, ["real.txt"])
-    finally:
-        gs._LFS_CACHE.clear()
-
-
-def test_find_lfs_pointers_cache_expires_after_ttl(tmp_path, monkeypatch):
-    """Past the TTL the scan recomputes: with the tree renamed away and
-    the clock advanced beyond the TTL, the cached values are dropped and
-    a fresh (empty) result is returned."""
-    import time as time_mod
-
-    gs = _gitdrive_source()
-    gs._LFS_CACHE.clear()
-    try:
-        root = tmp_path / "tree"
-        root.mkdir()
-        (root / "real.txt").write_bytes(POINTER)
-        assert gs.find_lfs_pointers(str(root), drive_id=21) == (
-            1, ["real.txt"])
-        root.rename(tmp_path / "moved")
-        assert gs.find_lfs_pointers(str(root), drive_id=21) == (
-            1, ["real.txt"])
-        t0 = time_mod.monotonic()
-        monkeypatch.setattr(gs.time, "monotonic",
-                            lambda: t0 + gs._LFS_CACHE_TTL + 10)
-        assert gs.find_lfs_pointers(str(root), drive_id=21) == (0, [])
-    finally:
-        gs._LFS_CACHE.clear()
+# --- Async LFS badge: the scan runs in the sync worker, bounded by a ---
+# --- wall-clock budget (partial results on expiry). The old per-drive TTL
+# --- cache is gone: the badge lives on the Drive row (lfs_total/sample /
+# --- scanned_at) and the page renders those stored columns.
 
 
 def test_find_lfs_pointers_budget_expiry_returns_partial(tmp_path,
@@ -804,12 +809,8 @@ def test_find_lfs_pointers_budget_expiry_returns_partial(tmp_path,
     instead of walking: deterministic, no timing dependence (the expiry
     check fires before the first file)."""
     gs = _gitdrive_source()
-    gs._LFS_CACHE.clear()
-    try:
-        root = tmp_path / "tree"
-        root.mkdir()
-        (root / "real.txt").write_bytes(POINTER)
-        monkeypatch.setattr(gs, "_LFS_WALK_BUDGET", 0)
-        assert gs.find_lfs_pointers(str(root)) == (0, [])
-    finally:
-        gs._LFS_CACHE.clear()
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "real.txt").write_bytes(POINTER)
+    monkeypatch.setattr(gs, "_LFS_WALK_BUDGET", 0)
+    assert gs.find_lfs_pointers(str(root)) == (0, [])

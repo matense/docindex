@@ -23,25 +23,16 @@ LFS_POINTER_RE = re.compile(
     rb"^version https://git-lfs\.github\.com/spec/v1\r?\n"
     rb"oid sha256:[0-9a-f]{64}\r?\nsize \d+\r?\n?$")
 
-# Walk caps so huge checkouts can't stall page loads.
+# Walk caps so huge checkouts can't stall the sync worker.
 _LFS_MAX_FILES = 3000
 _LFS_MAX_BYTES = 2048
 _LFS_MAX_HITS = 50
 
-# Advisory-badge freshness: per-drive scan results are cached this long
-# (seconds). A page load serves a fresh entry without walking the tree at
-# all; a miss/expiry recomputes. No invalidation hooks: the badge may lag
-# up to one TTL behind a sync, which is fine for an advisory notice.
-_LFS_CACHE_TTL = 300
-
 # Wall-clock budget (seconds) for a single scan of the tree. Checked once
 # per directory and every 200 files; on expiry the partial (total, hits)
-# is returned immediately so a huge/slow checkout can delay, but never
-# hang, a page load. Module-level so tests can monkeypatch it.
+# is returned immediately so a huge/slow checkout delays, but never hangs,
+# the sync worker. Module-level so tests can monkeypatch it.
 _LFS_WALK_BUDGET = 10.0
-
-# drive_id -> (total, hits, monotonic timestamp of the scan).
-_LFS_CACHE = {}
 
 # Single ceiling (seconds) for every dulwich network call below (validate
 # via ls_remote, clone, fetch/pull). Dulwich exposes no timeout knob on
@@ -166,10 +157,10 @@ def find_lfs_pointers(worktree, drive_id=None):
     and each scan is bounded by _LFS_WALK_BUDGET wall-clock seconds
     (partial results on expiry).
 
-    When drive_id is given, fresh cache entries (younger than
-    _LFS_CACHE_TTL) are served without walking the tree. Tradeoff: the
-    badge is advisory and may lag up to one TTL behind a sync — no
-    invalidation hooks, by design. Without drive_id every call walks.
+    Runs in the sync worker after a successful materialization; the
+    result is stored on the drive row and the list page renders those
+    stored columns without ever walking the tree. drive_id is accepted
+    for caller compatibility and ignored.
 
     Hardened: only regular files are ever opened — FIFOs, sockets,
     devices and symlinks are skipped via lstat (no follow), so an
@@ -179,18 +170,7 @@ def find_lfs_pointers(worktree, drive_id=None):
     forever. Windows follows junctions in os.walk and try/except
     cannot save either case.
     """
-    if drive_id is not None:
-        cached = _LFS_CACHE.get(drive_id)
-        if cached is not None:
-            total, hits, timestamp = cached
-            if time.monotonic() - timestamp < _LFS_CACHE_TTL:
-                return total, hits
-    total, hits = _scan_lfs_pointers(worktree)
-    if drive_id is not None and os.path.isdir(worktree):
-        # Cache only scans of a present tree: a missing checkout (clone
-        # still running) must be rescanned next time, never served stale.
-        _LFS_CACHE[drive_id] = (total, hits, time.monotonic())
-    return total, hits
+    return _scan_lfs_pointers(worktree)
 
 
 def _scan_lfs_pointers(worktree):
@@ -682,9 +662,42 @@ class GitDriveSource:
             error = self.materialize(drive, on_progress=on_progress)
             if error:
                 return error
-        return pull_repo(target, url=drive.repo_url,
-                         branch=drive.repo_branch, on_progress=on_progress,
-                         **_auth_kwargs(drive))
+        error = pull_repo(target, url=drive.repo_url,
+                          branch=drive.repo_branch, on_progress=on_progress,
+                          **_auth_kwargs(drive))
+        if error:
+            return error
+        # Successful materialization: record the advisory LFS badge on the
+        # drive row so the list page reads stored columns and never walks
+        # the checkout. Failure/skip paths above store nothing, leaving
+        # any previous values in place.
+        _store_lfs_scan(drive, target)
+        return None
 
     def cleanup(self, drive):
         remove_tree(cache_path(drive.id))
+
+
+def _store_lfs_scan(drive, worktree):
+    """Persist the advisory LFS badge after a successful materialization.
+
+    Runs in the sync worker (never on a page load): scans the fresh
+    checkout — still bounded by the walk caps and wall-clock budget —
+    and stores (total, sample, now) on the drive row. Advisory only: a
+    scan or store failure keeps the previous values and never fails
+    the sync.
+    """
+    from app.extensions import db
+    from app.models import utcnow
+
+    try:
+        total, sample = find_lfs_pointers(worktree, drive_id=drive.id)
+    except Exception:
+        return
+    try:
+        drive.lfs_total = total
+        drive.lfs_sample = list(sample)
+        drive.lfs_scanned_at = utcnow()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()

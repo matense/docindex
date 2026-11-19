@@ -82,6 +82,12 @@ class Drive(db.Model):
     # JSON list of drive-relative paths the sync must ignore (e.g. purged
     # files on shared drives, whose real blobs are never deleted).
     sync_ignored = db.Column(db.Text, nullable=True)
+    # Advisory Git-LFS badge (gitdrives module): computed in the sync
+    # worker (pre_sync) after each successful materialization, read by the
+    # list page — the page never walks the checkout. NULL = no scan yet.
+    lfs_total = db.Column(db.Integer, nullable=True)
+    lfs_sample = db.Column(db.JSON, nullable=True)  # list of relpaths
+    lfs_scanned_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow)
 
     folders = db.relationship("Folder", backref="drive", lazy="dynamic",
