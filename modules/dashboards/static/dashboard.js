@@ -40,6 +40,11 @@
     // still enforces it, this just keeps the editor from over-typing.
     var MAX_SCRIPT = 20000;
     var SAVE_DELAY = 800;
+    // Footer-clip fix: prompt autoGrow changes row heights without
+    // re-running equalize, so content outgrows the fixed explicit height
+    // and overflow:hidden clips the footer. Re-equalize debounced so
+    // typing doesn't reflow per keystroke.
+    var EQUALIZE_DELAY = 180;
 
     var TYPE_META = {
         kpi: {
@@ -393,6 +398,23 @@
         setStatus(S, "dirty");
         clearTimeout(S.saveTimer);
         S.saveTimer = setTimeout(function () { save(S, false); }, SAVE_DELAY);
+    }
+
+    // Re-run the row equalizer after autoGrow-driven growth (footer-clip
+    // fix). Debounced so typing doesn't reflow per keystroke. Layout-only:
+    // the guards mirror the scheduleSave path (document/grid gone -> skip)
+    // and the timer body never throws, so a layout failure can never
+    // break saves.
+    function scheduleEqualize(S) {
+        if (!S || !S.els || !S.els.grid || !S.doc || !S.doc.cards) return;
+        clearTimeout(S._eqTimer);
+        S._eqTimer = setTimeout(function () {
+            try {
+                if (!S.els || !S.els.grid || !S.doc || !S.doc.cards) return;
+                if (!document.body.contains(S.els.grid)) return;
+                equalizeRowHeights(S.els.grid, S.doc.cards);
+            } catch (e) { /* layout-only: never break saves */ }
+        }, EQUALIZE_DELAY);
     }
 
     function save(S, forceCheckpoint) {
@@ -1197,6 +1219,7 @@
         promptInput.addEventListener("input", function () {
             card.prompt = promptInput.value.slice(0, MAX_PROMPT);
             autoGrow(promptInput);
+            scheduleEqualize(S);
             scheduleSave(S);
         });
         d.querySelector('[data-f="expand-prompt"]').addEventListener("click", function () {

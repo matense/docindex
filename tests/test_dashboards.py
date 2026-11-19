@@ -4919,3 +4919,48 @@ def test_new_rejects_disagreeing_drive_and_folder(app, auth_client, user,
             user_id=user, name="Kept.pdash").one()
         assert kept.folder_id == folder_id
         assert kept.drive_id == drive_id
+
+
+def test_prompt_growth_re_equalizes_card_rows():
+    """Footer-clip fix (controller-verified in code): ``.dash-card`` is
+    ``overflow: hidden`` with explicit pixel heights set by
+    equalizeRowHeights, while prompt autoGrow grows the textarea without
+    re-running equalize — the content outgrows the fixed box and the
+    footer (clock + delete) is clipped but present in the DOM. The prompt
+    input handler must therefore schedule a debounced re-equalize; the
+    timer body guards on grid/doc and never throws, so layout can never
+    break saves. Static contract pin: equalize semantics (same-h rows,
+    row max), min-heights, resize/drag, save flow and footer markup are
+    all untouched by this fix."""
+    import re
+    import shutil
+    import subprocess
+    src = _dash_js_src()
+    binding = re.search(
+        r'promptInput\.addEventListener\("input", function \(\) \{(.*?)\}\);',
+        src, re.S)
+    assert binding, "prompt input binding missing"
+    body = binding.group(1)
+    assert "autoGrow(promptInput)" in body
+    assert "scheduleEqualize(S)" in body
+    helper = re.search(r"function scheduleEqualize\(S\) \{(.*?)\n    \}",
+                       src, re.S)
+    assert helper, "scheduleEqualize helper missing"
+    helper_body = helper.group(1)
+    assert "setTimeout" in helper_body  # debounced, not per-keystroke
+    delay = re.search(r"var EQUALIZE_DELAY = (\d+);", src)
+    assert delay, "EQUALIZE_DELAY constant missing"
+    assert 150 <= int(delay.group(1)) <= 200
+    assert "EQUALIZE_DELAY" in helper_body
+    assert "equalizeRowHeights(S.els.grid, S.doc.cards)" in helper_body
+    # Guards mirror the scheduleSave path: grid/doc gone -> skip.
+    assert "S.els.grid" in helper_body and "S.doc" in helper_body
+    # Layout code must never break saves.
+    assert "try" in helper_body and "catch" in helper_body
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    out = subprocess.run(["node", "--check",
+                          os.path.join(_DASH_DIR, "static",
+                                       "dashboard.js")],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
