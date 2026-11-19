@@ -1,6 +1,42 @@
 {
   "releases": [
     {
+      "version": "0.1.22",
+      "date": "2026-11-19",
+      "title": "Argon phase 4: sealed automation compute, tables module, type folders",
+      "sections": [
+        {
+          "title": "New",
+          "icon": "fa-sparkles",
+          "entries": [
+            "Automation pyrun nodes: transform.sql_query runs SELECT/WITH queries over upstream tables and files, and transform.python_sandbox runs sealed Python over table/JSON/text payloads — both inside the pyrun sandbox, never eval or subprocess.",
+            "dashboard.refresh output node: refresh a whole dashboard (or selected cards) from a workflow; per-card results are recorded and one failing card never kills the run.",
+            "Event-driven automation: internal event bus (file.uploaded, file.synced) with per-workflow trigger rules (drive, folder, filename pattern), plus scheduled refresh end to end — new files can now update dashboards on their own.",
+            "Tables module: .ptable datasets that live on your drives like files, with a virtualized viewer for CSV/TSV/XLSX (column stats, sparklines, SELECT/WITH filter bar), snapshot-first inline cell editing, one-way Save as .ptable, pin as dashboard card and build-automation handoff, plus tables.* AI tools (schema, query_sql, update_rows, add_column). No dock entry — tables open from the files themselves.",
+            "Per-drive DocIndex type folders (Tables, Notebooks, Dashboards, Whiteboards): new files of each type land in their folder automatically, and each module offers Organize — a previewed plan that moves strays into place (explicit Confirm only) with Revert last organize."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "dashboard.refresh settles with a run-ownership guard, so a concurrent refresh can no longer clobber newer card results.",
+            "SQL gates accept WITH ... SELECT (CTEs) alongside SELECT; the sealed sandbox remains the final authority on writes.",
+            "Event fan-out is bounded per scheduler tick and bursts collapse to one run per workflow per tick (first matching file wins)."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Build-automation handoff from a table reuses one draft per table instead of littering a workflow per click (double-click safe).",
+            "Pin as dashboard card is double-click safe and detaches the attachment again if the card save fails, leaving no orphans.",
+            "Save as .ptable now emits file.uploaded, so event-driven automations see converted datasets."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.21",
       "date": "2026-11-18",
       "title": "Follow-ups: script tables, full reads, 100MB uploads",
