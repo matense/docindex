@@ -45,6 +45,28 @@ from app.services import file_service, indexing_service
 EXTENSION = "pdash"
 MIME_TYPE = "application/json"
 
+# Dedicated folder per drive holding that drive's dashboards ("separated by
+# context"). Created on demand.
+DASHBOARDS_FOLDER = "DocIndex Dashboards"
+
+
+def dashboards_folder(user, drive):
+    """Get-or-create the drive's dashboards folder. Returns None for synced
+    (read-only) drives — nothing may be created in them."""
+    from app.models import Folder
+    if drive is None or getattr(drive, "is_synced", False):
+        return None
+    folder = (Folder.query
+              .filter_by(user_id=user.id, drive_id=drive.id,
+                         parent_id=None, name=DASHBOARDS_FOLDER)
+              .first())
+    if folder is None:
+        folder = Folder(user_id=user.id, drive_id=drive.id,
+                        parent_id=None, name=DASHBOARDS_FOLDER)
+        db.session.add(folder)
+        db.session.commit()
+    return folder
+
 CARD_TYPES = ("kpi", "table", "list", "chart", "markdown", "workflow")
 
 # 12-column grid; card widths are snapped into 1..12.
@@ -496,6 +518,125 @@ def ensure_uuid(stored, commit=True):
         if commit:
             db.session.commit()
     return stored.uuid
+
+
+# ---------------------------------------------------------------------------
+# Organize: every drive's dashboards into its "DocIndex Dashboards" folder
+# ---------------------------------------------------------------------------
+
+def organize_preview(user):
+    """Dashboards not yet under their drive's dashboards folder.
+
+    Returns (moves, skipped): moves are
+    {file_id, name, from_drive_id, from_folder_id, to_drive_id, to_folder_id}
+    dicts; skipped counts dashboards on synced (read-only) drives, which can
+    never move. Dashboards already inside "DocIndex Dashboards" — including
+    its subfolders — are left alone. Nothing is changed — call
+    apply_organize() to execute."""
+    moves, skipped = [], 0
+    for stored in list_dashboards(user.id):
+        drive = stored.drive
+        if drive is None or getattr(drive, "is_synced", False):
+            skipped += 1
+            continue
+        target = dashboards_folder(user, drive)
+        if stored.folder_id is not None and _is_within(
+                stored.folder, target.id):
+            continue
+        moves.append({
+                "file_id": stored.id, "name": stored.name,
+                "from_drive_id": drive.id,
+                "from_drive_name": drive.name,
+                "from_folder_id": stored.folder_id,
+                "from_folder_name": (stored.folder.name
+                                     if stored.folder else None),
+                "to_drive_id": drive.id,
+                "to_drive_name": drive.name,
+                "to_folder_id": target.id,
+                "to_folder_name": target.name,
+            })
+    return moves, skipped
+
+
+def _is_within(folder, target_id):
+    """True when folder is target or nested under it (cycle-safe)."""
+    node, seen = folder, set()
+    while node is not None and node.id not in seen:
+        if node.id == target_id:
+            return True
+        seen.add(node.id)
+        node = node.parent
+    return False
+
+
+def apply_organize(user):
+    """Execute the current organize preview through the normal move path
+    (version history is preserved) and persist the applied moves as a
+    DashboardOrganizePlan for 'Revert last organize'. Returns
+    (record_or_None, applied_count, skipped_count)."""
+    from app.models import DashboardOrganizePlan
+    moves, skipped = organize_preview(user)
+    applied = []
+    for move in moves:
+        stored = get_dashboard(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        moved, error = file_service.move_file_to_drive(
+            user, stored.id, move["to_drive_id"], move["to_folder_id"])
+        if error:
+            skipped += 1
+            continue
+        applied.append({
+            "file_id": moved.id, "name": moved.name,
+            "from_drive_id": move["from_drive_id"],
+            "from_folder_id": move["from_folder_id"],
+            "to_drive_id": moved.drive_id,
+            "to_folder_id": moved.folder_id,
+        })
+    record = None
+    if applied:
+        record = DashboardOrganizePlan(user_id=user.id, plan=applied,
+                                       applied=True)
+        db.session.add(record)
+        db.session.commit()
+    return record, len(applied), skipped
+
+
+def revert_organize(user):
+    """Replay the inverse moves of the latest applied, non-reverted plan.
+    Returns (moved_back_count, skipped_count, found)."""
+    from app.models import DashboardOrganizePlan
+    record = (DashboardOrganizePlan.query
+              .filter_by(user_id=user.id, applied=True, reverted=False)
+              .order_by(DashboardOrganizePlan.id.desc())
+              .first())
+    if record is None:
+        return 0, 0, False
+    moved, skipped = 0, 0
+    for move in reversed(record.plan or []):
+        stored = get_dashboard(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        _, error = file_service.move_file_to_drive(
+            user, stored.id, move["from_drive_id"], move["from_folder_id"])
+        if error:
+            skipped += 1
+        else:
+            moved += 1
+    record.reverted = True
+    db.session.commit()
+    return moved, skipped, True
+
+
+def last_organize_plan(user):
+    """Latest applied, non-reverted plan (what 'Revert' would undo)."""
+    from app.models import DashboardOrganizePlan
+    return (DashboardOrganizePlan.query
+            .filter_by(user_id=user.id, applied=True, reverted=False)
+            .order_by(DashboardOrganizePlan.id.desc())
+            .first())
 
 
 # ---------------------------------------------------------------------------

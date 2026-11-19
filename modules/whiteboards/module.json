@@ -7,6 +7,7 @@
   "help": [
     "Whiteboards are Excalidraw scenes that live on your drives like files: they are indexed and searchable, keep a full version history with diff and restore, and can be drawn on by hand or by the AI.",
     "When the module is first enabled a 'My Whiteboards' drive is created, but you can create boards in any drive that is not read-only.",
-    "While a board is open and the AI edits it, the changes appear live. Every AI edit is a single restorable history entry per answer."
+    "While a board is open and the AI edits it, the changes appear live. Every AI edit is a single restorable history entry per answer.",
+    "New boards land in a 'DocIndex Whiteboards' folder on their drive — drive roots route there automatically while explicit folders are respected — and the list page offers Organize (previewed plan, explicit Confirm — never silent) plus Revert last organize."
   ]
 }

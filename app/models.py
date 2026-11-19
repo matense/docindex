@@ -579,3 +579,72 @@ class NotebookOrganizePlan(db.Model):
     def __repr__(self):
         return (f"<NotebookOrganizePlan {self.id} "
                 f"applied={self.applied} reverted={self.reverted}>")
+
+
+class TableOrganizePlan(db.Model):
+    """A tables organize run: the plan (moves) that was previewed and
+    confirmed, so 'Revert last organize' can replay the inverse moves even
+    after a restart. Moves go through the normal file-move path, so each
+    table keeps its full version history."""
+
+    __tablename__ = "table_organize_plans"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    # [{file_id, name, from_drive_id, from_folder_id,
+    #   to_drive_id, to_folder_id}]
+    plan = db.Column(db.JSON, nullable=False, default=list)
+    applied = db.Column(db.Boolean, nullable=False, default=False)
+    reverted = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def __repr__(self):
+        return (f"<TableOrganizePlan {self.id} "
+                f"applied={self.applied} reverted={self.reverted}>")
+
+
+class DashboardOrganizePlan(db.Model):
+    """A dashboards organize run: the plan (moves) that was previewed and
+    confirmed, so 'Revert last organize' can replay the inverse moves even
+    after a restart. Moves go through the normal file-move path, so each
+    dashboard keeps its full version history."""
+
+    __tablename__ = "dashboard_organize_plans"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    # [{file_id, name, from_drive_id, from_folder_id,
+    #   to_drive_id, to_folder_id}]
+    plan = db.Column(db.JSON, nullable=False, default=list)
+    applied = db.Column(db.Boolean, nullable=False, default=False)
+    reverted = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def __repr__(self):
+        return (f"<DashboardOrganizePlan {self.id} "
+                f"applied={self.applied} reverted={self.reverted}>")
+
+
+class WhiteboardOrganizePlan(db.Model):
+    """A whiteboards organize run: the plan (moves) that was previewed and
+    confirmed, so 'Revert last organize' can replay the inverse moves even
+    after a restart. Moves go through the normal file-move path, so each
+    whiteboard keeps its full version history."""
+
+    __tablename__ = "whiteboard_organize_plans"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"),
+                        nullable=False, index=True)
+    # [{file_id, name, from_drive_id, from_folder_id,
+    #   to_drive_id, to_folder_id}]
+    plan = db.Column(db.JSON, nullable=False, default=list)
+    applied = db.Column(db.Boolean, nullable=False, default=False)
+    reverted = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def __repr__(self):
+        return (f"<WhiteboardOrganizePlan {self.id} "
+                f"applied={self.applied} reverted={self.reverted}>")

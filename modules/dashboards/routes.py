@@ -74,7 +74,9 @@ def index():
                 for stored in dashboards]
     return render_template("dashboards/list.html",
                            dashboards=enriched,
-                           locations=_locations())
+                           locations=_locations(),
+                           revertable=doc_service.last_organize_plan(
+                               current_user) is not None)
 
 
 def _readable(stored):
@@ -93,6 +95,43 @@ def _lookup(model, raw):
     except (TypeError, ValueError):
         abort(400, "Invalid location.")
     return db.session.get(model, key)
+
+
+@bp.get("/organize/plan")
+def organize_plan():
+    """Preview: dashboards that would move, and where. No changes made —
+    the user must confirm (POST /organize/apply) for anything to move."""
+    moves, skipped = doc_service.organize_preview(current_user)
+    return jsonify({"moves": moves, "skipped_synced": skipped})
+
+
+@bp.post("/organize/apply")
+def organize_apply():
+    """Execute the organize plan (explicit confirmation only — this is the
+    only path that moves dashboards)."""
+    record, applied, skipped = doc_service.apply_organize(current_user)
+    if applied:
+        flash(f"Organized {applied} dashboard(s) into 'DocIndex Dashboards' "
+              f"folders." + (f" {skipped} skipped." if skipped else ""),
+              "success")
+    else:
+        flash("Nothing to organize — every dashboard is already in place.",
+              "info")
+    return redirect(url_for("dashboards.index"))
+
+
+@bp.post("/organize/revert")
+def organize_revert():
+    """Undo the last organize: replay the inverse moves of its logged plan."""
+    moved, skipped, found = doc_service.revert_organize(current_user)
+    if not found:
+        flash("No organize run to revert.", "info")
+    elif moved:
+        flash(f"Reverted: {moved} dashboard(s) moved back."
+              + (f" {skipped} skipped." if skipped else ""), "success")
+    else:
+        flash("Revert found nothing to move back.", "info")
+    return redirect(url_for("dashboards.index"))
 
 
 @bp.post("/new")
@@ -127,6 +166,16 @@ def new():
             folder = _lookup(Folder, raw_folder)
             missing = missing or folder is None
             if folder is not None:
+                if raw_drive and drive is not None:
+                    # Both ids supplied: they must agree — silently
+                    # preferring the folder would create the dashboard
+                    # somewhere the caller did not intend (mirrors the
+                    # whiteboards AI path, which rejects the pair).
+                    folder_drive = folder.drive
+                    if (folder_drive is None
+                            or folder_drive.id != drive.id):
+                        abort(400, "folder_id and drive_id disagree — "
+                                   "pass one target.")
                 drive = folder.drive
     if explicit and (missing or drive is None):
         # An explicit target that does not exist (or a folder outside any
@@ -142,6 +191,12 @@ def new():
         abort(404)
     if folder is not None and folder.user_id != current_user.id:
         abort(404)
+    if folder is None:
+        # Drive-root (or default-drive) target means the drive's dashboards
+        # folder — every drive keeps its dashboards in "DocIndex
+        # Dashboards". An explicit folder is respected as-is above and never
+        # redirected here.
+        folder = doc_service.dashboards_folder(current_user, drive)
     # C5 "Generate with AI" wizard step (optional, additive): a description
     # auto-generates an initial multi-card layout, plain form values
     # pre-fill the C4 variables, and uploaded files attach via the existing

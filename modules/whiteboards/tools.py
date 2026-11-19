@@ -8,7 +8,7 @@ just write through — one answer, one restorable history block.
 from flask import g, has_app_context
 
 from app.extensions import db
-from app.models import Drive
+from app.models import Drive, Folder
 from app.services import search_service
 from app.services.agent_service import register_tool
 
@@ -90,27 +90,67 @@ def _save_ai(stored, scene, note):
                              skip_snapshot=not first_in_run)
 
 
-def _resolve_drive(user, args, drive):
-    if args.get("drive_id"):
-        target = db.session.get(Drive, int(args["drive_id"]))
-        if target is None or target.user_id != user.id:
-            return None, "Drive not found."
-        if target.is_readonly:
-            return None, "That drive is synced (read-only) — pick a writable drive."
-        return target, None
-    if drive is not None:
+def _tool_create(user, args, drive):
+    name = (args.get("name") or "").strip() or "Untitled board"
+    target_drive = None
+    folder = None
+    if args.get("folder_id"):
+        try:
+            folder_id = int(args["folder_id"])
+        except (TypeError, ValueError):
+            return {"error": "Invalid folder id."}
+        folder = db.session.get(Folder, folder_id)
+        if folder is None or folder.user_id != user.id:
+            return {"error": "Folder not found."}
+        target_drive = folder.drive
+        if target_drive is None or target_drive.user_id != user.id:
+            return {"error": "Folder not found."}
+        if args.get("drive_id"):
+            # Both ids supplied: they must agree — silently preferring one
+            # would create the board somewhere the caller did not intend.
+            try:
+                drive_id = int(args["drive_id"])
+            except (TypeError, ValueError):
+                return {"error": "Invalid drive id."}
+            if drive_id != target_drive.id:
+                return {"error": "folder_id and drive_id disagree — "
+                                 "pass one target."}
+    elif args.get("drive_id"):
+        try:
+            drive_id = int(args["drive_id"])
+        except (TypeError, ValueError):
+            return {"error": "Invalid drive id."}
+        target_drive = db.session.get(Drive, drive_id)
+        if target_drive is None or target_drive.user_id != user.id:
+            return {"error": "Drive not found."}
+    elif drive is not None:
+        # The chat context can be a list of drives (multi-drive $ mentions):
+        # whiteboards need exactly one writable target, so take the first
+        # non-synced drive in scope.
         candidates = list(drive) if isinstance(drive, (list, tuple)) else [drive]
-        target = next((d for d in candidates if not d.is_readonly), None)
-        if target is None and candidates:
-            return None, ("All drives in context are synced (read-only) — "
-                           "pick a writable drive with drive_id.")
-        if target is not None:
-            return target, None
-    target = (Drive.query.filter_by(user_id=user.id, source_path=None)
-              .order_by(Drive.id).first())
-    if target is None:
-        return None, "No writable drive found."
-    return target, None
+        target_drive = next((d for d in candidates if not d.is_readonly), None)
+        if target_drive is None and candidates:
+            return {"error": "All drives in context are synced (read-only) — "
+                             "pick a writable drive with drive_id."}
+    else:
+        target_drive = (Drive.query
+                        .filter_by(user_id=user.id, source_path=None)
+                        .order_by(Drive.id).first())
+    if target_drive is None:
+        return {"error": "No writable drive found — create one first."}
+    if folder is None:
+        # No folder picked: the drive's whiteboards folder keeps every
+        # drive's whiteboards separated by context.
+        folder = board_service.whiteboards_folder(user, target_drive)
+    elements = args.get("elements") or []
+    if not isinstance(elements, list):
+        return {"error": "'elements' must be a list of element objects."}
+    try:
+        stored = board_service.create_board(user, target_drive, name,
+                                            elements=elements, folder=folder)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"created": _summary(stored)}
 
 
 def _tool_list(user, args, drive):
@@ -122,22 +162,6 @@ def _tool_list(user, args, drive):
               if not board_service.ai_error(b)]
     return {"total": len(boards),
             "boards": [_summary(b) for b in boards[:100]]}
-
-
-def _tool_create(user, args, drive):
-    name = (args.get("name") or "").strip() or "Untitled board"
-    target, error = _resolve_drive(user, args, drive)
-    if error:
-        return {"error": error}
-    elements = args.get("elements") or []
-    if not isinstance(elements, list):
-        return {"error": "'elements' must be a list of element objects."}
-    try:
-        stored = board_service.create_board(user, target, name,
-                                            elements=elements)
-    except ValueError as exc:
-        return {"error": str(exc)}
-    return {"created": _summary(stored)}
 
 
 def _tool_get_scene(user, args, drive):
@@ -395,6 +419,8 @@ _TOOLS = [
     ("create", "Create a whiteboard, optionally with initial elements.",
      {"name": {"type": "string"},
       "drive_id": {"type": "integer"},
+      "folder_id": {"type": "integer",
+                    "description": "Target folder inside its drive."},
       "elements": {"type": "array", "items": ELEMENT_SCHEMA}}, ()),
     ("get_scene", "Load a board's full scene (elements + layout).",
      {"file_id": {"type": "integer"}}, ("file_id",)),

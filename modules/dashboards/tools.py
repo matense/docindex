@@ -75,7 +75,10 @@ def _resolve_target(user, args, drive):
         folder = db.session.get(Folder, folder_id)
         if folder is None or folder.user_id != user.id:
             return None, None, "Folder not found."
-        return folder.drive, folder, None
+        target_drive = folder.drive
+        if target_drive is None or target_drive.user_id != user.id:
+            return None, None, "Folder not found."
+        return target_drive, folder, None
     target_drive = None
     if args.get("drive_id"):
         try:
@@ -104,6 +107,10 @@ def _resolve_target(user, args, drive):
     if target_drive.is_readonly:
         return None, None, ("Synced drives are read-only — dashboards cannot "
                             "be created there.")
+    if folder is None:
+        # No folder picked: the drive's dashboards folder keeps every
+        # drive's dashboards separated by context.
+        folder = doc_service.dashboards_folder(user, target_drive)
     return target_drive, folder, None
 
 

@@ -710,3 +710,276 @@ def test_pin_failure_detaches_orphan_attachment(
     assert len(doc["cards"]) == before_cards
     assert len(doc["attachments"]) == before_atts
     assert all(a.get("fileId") != fid for a in doc["attachments"])
+
+
+# ---------------------------------------------------------------------------
+# Type Folders F1: "DocIndex Tables" folder per drive + save-as routing
+# ---------------------------------------------------------------------------
+
+
+def _f1_drive(app, user_id, name="Work", synced=False):
+    with app.app_context():
+        drive = _Drive(name=name, user_id=user_id,
+                       source_path="/tmp/f1-real" if synced else None)
+        db.session.add(drive)
+        db.session.commit()
+        return drive.id
+
+
+def _f1_csv_in_drive(app, user_id, drive_id, name="data.csv",
+                     payload=b"a,b\n1,2\n"):
+    fid = _write_table_file(app, user_id, name, "csv", payload)
+    with app.app_context():
+        stored = db.session.get(_StoredFile, fid)
+        stored.drive_id = drive_id
+        db.session.commit()
+    return fid
+
+
+def test_tables_folder_per_drive(app, user):
+    from app.models import User as _User
+
+    drive_id = _f1_drive(app, user, name="Work")
+    with app.app_context():
+        user_obj = db.session.get(_User, user)
+        drive = db.session.get(_Drive, drive_id)
+        assert tables_doc.TABLES_FOLDER == "DocIndex Tables"
+        folder = tables_doc.tables_folder(user_obj, drive)
+        assert folder.name == "DocIndex Tables"
+        assert folder.parent_id is None
+        assert folder.drive_id == drive_id
+        # Idempotent — second call returns the same folder.
+        assert tables_doc.tables_folder(user_obj, drive).id == folder.id
+        synced = _Drive(name="RO", user_id=user, source_path="/tmp/f1-ro")
+        db.session.add(synced)
+        db.session.commit()
+        assert tables_doc.tables_folder(user_obj, synced) is None
+        assert tables_doc.tables_folder(user_obj, None) is None
+
+
+def test_save_as_lands_in_tables_folder(auth_client, app, user,
+                                        tables_enabled):
+    drive_id = _f1_drive(app, user, name="Work")
+    fid = _f1_csv_in_drive(app, user, drive_id, "data.csv")
+    r = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["name"] == "data.ptable"
+    with app.app_context():
+        created = db.session.get(_StoredFile, body["file_id"])
+        assert created.drive_id == drive_id
+        assert created.folder is not None
+        assert created.folder.name == "DocIndex Tables"
+        assert created.folder.parent_id is None
+        assert created.folder.drive_id == drive_id
+        source = db.session.get(_StoredFile, fid)
+        assert source.folder_id is None
+        assert source.drive_id == drive_id
+    # A second save-as uniquifies inside the Tables folder, not next to
+    # the source.
+    again = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert again.status_code == 200
+    assert again.get_json()["name"] == "data (2).ptable"
+    with app.app_context():
+        clash = db.session.get(_StoredFile, again.get_json()["file_id"])
+        assert clash.folder.name == "DocIndex Tables"
+
+
+def test_save_as_synced_source_goes_personal(auth_client, app, user,
+                                             tables_enabled):
+    from app.services import events
+
+    with app.app_context():
+        db.session.add(_Drive(name="Personal", user_id=user))
+        db.session.add(_Drive(name="Archive Mirror", user_id=user,
+                              source_path="/tmp/f1-mirror"))
+        db.session.commit()
+        personal = _Drive.query.filter_by(
+            user_id=user, name="Personal").one()
+        personal_id = personal.id
+        mirror = _Drive.query.filter_by(
+            user_id=user, name="Archive Mirror").one()
+        mirror_id = mirror.id
+    with _tempfile.NamedTemporaryFile(suffix=".csv",
+                                       delete=False) as tmp:
+        tmp.write(b"a,b\n1,2\n")
+        real_path = tmp.name
+    try:
+        fid = _write_table_file(app, user, "archived.csv", "csv",
+                                b"placeholder")
+        with app.app_context():
+            stored = db.session.get(_StoredFile, fid)
+            stored.source_path = real_path
+            stored.drive_id = mirror_id
+            db.session.commit()
+        seen = []
+        sub = lambda p: seen.append(p)  # noqa: E731 - test probe
+        events.subscribe("file.uploaded", sub)
+        try:
+            r = auth_client.post(f"/m/tables/{fid}/save-as")
+        finally:
+            listeners = events._SUBSCRIBERS.get("file.uploaded", [])
+            if sub in listeners:
+                listeners.remove(sub)
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ok"] is True
+        with app.app_context():
+            created = db.session.get(_StoredFile, body["file_id"])
+            assert created.drive_id == personal_id
+            assert created.drive_id != mirror_id
+            assert created.folder is not None
+            assert created.folder.name == "DocIndex Tables"
+            assert created.folder.drive_id == personal_id
+        assert seen, "save-as must emit file.uploaded"
+        assert seen[-1]["drive_id"] == personal_id
+    finally:
+        os.remove(real_path)
+
+
+def test_save_as_without_personal_drive_stays_at_files_root(
+        auth_client, app, user, tables_enabled):
+    # No drive rows at all: files-root (drive_id=None) is a legitimate
+    # location in this codebase (nullable FK, "No drive" group, orphan
+    # migration), so it stays the last-resort destination instead of
+    # failing the conversion.
+    fid = _write_table_file(app, user, "loose.csv", "csv", b"a,b\n1,2\n")
+    r = auth_client.post(f"/m/tables/{fid}/save-as")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    with app.app_context():
+        assert _Drive.query.filter_by(user_id=user).count() == 0
+        created = db.session.get(_StoredFile, body["file_id"])
+        assert created.drive_id is None
+        assert created.folder_id is None
+
+
+# ---------------------------------------------------------------------------
+# Type Folders F2: organize stray .ptables into per-drive "DocIndex Tables"
+# ---------------------------------------------------------------------------
+
+
+def _f2_ptable_in_drive(app, user_id, drive_id, name="stray.ptable",
+                        folder_id=None):
+    fid = _write_table_file(app, user_id, name, "ptable",
+                            _ptable_payload())
+    with app.app_context():
+        stored = db.session.get(_StoredFile, fid)
+        stored.drive_id = drive_id
+        stored.folder_id = folder_id
+        db.session.commit()
+    return fid
+
+
+def _f2_setup(app, user):
+    """One drive with a stray root .ptable + one in a foreign folder, one
+    already inside Tables/sub (left alone), and a synced-drive .ptable
+    (skipped). Returns ids dict."""
+    from app.models import Folder as _Folder
+
+    drive_id = _f1_drive(app, user, name="Work")
+    with app.app_context():
+        from app.models import User as _User
+
+        user_obj = db.session.get(_User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        tables_root = tables_doc.tables_folder(user_obj, db.session.get(
+            _Drive, drive_id))
+        sub = _Folder(name="Sub", user_id=user, drive_id=drive_id,
+                      parent_id=tables_root.id)
+        db.session.add(sub)
+        db.session.commit()
+        sub_id = sub.id
+    synced_id = _f1_drive(app, user, name="RO", synced=True)
+    stray = _f2_ptable_in_drive(app, user, drive_id, "stray.ptable")
+    abroad = _f2_ptable_in_drive(app, user, drive_id, "abroad.ptable",
+                                 folder_id=foreign_id)
+    nested = _f2_ptable_in_drive(app, user, drive_id, "nested.ptable",
+                                 folder_id=sub_id)
+    rosy = _f2_ptable_in_drive(app, user, synced_id, "rosy.ptable")
+    return {"drive_id": drive_id, "foreign_id": foreign_id,
+            "stray": stray, "abroad": abroad, "nested": nested,
+            "rosy": rosy}
+
+
+def test_tables_organize_roundtrip(auth_client, app, user, tables_enabled):
+    from app.models import TableOrganizePlan
+
+    ids = _f2_setup(app, user)
+    data = auth_client.get("/m/tables/organize/plan").get_json()
+    assert data["skipped_synced"] == 1
+    assert {m["name"] for m in data["moves"]} == {"stray.ptable",
+                                                 "abroad.ptable"}
+    for move in data["moves"]:
+        assert move["to_drive_id"] == ids["drive_id"]
+        assert move["to_folder_name"] == "DocIndex Tables"
+        assert move["from_drive_id"] == ids["drive_id"]
+
+    # Version history survives the move (normal move path, not a copy).
+    with app.app_context():
+        stored = db.session.get(_StoredFile, ids["stray"])
+        _file_service.snapshot_version(stored, "test")
+        before = _FileVersion.query.filter_by(
+            file_id=ids["stray"]).count()
+        assert before == 1
+
+    resp = auth_client.post("/m/tables/organize/apply",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        for fid in (ids["stray"], ids["abroad"]):
+            stored = db.session.get(_StoredFile, fid)
+            assert stored.folder.name == "DocIndex Tables"
+            assert stored.drive_id == ids["drive_id"]
+        # Inside Tables/sub stays put; synced stays put.
+        assert db.session.get(_StoredFile,
+                              ids["nested"]).folder_id is not None
+        assert db.session.get(_StoredFile,
+                              ids["nested"]).folder.name == "Sub"
+        assert db.session.get(_StoredFile, ids["rosy"]).folder_id is None
+        assert _FileVersion.query.filter_by(
+            file_id=ids["stray"]).count() == before
+        plan = TableOrganizePlan.query.one()
+        assert plan.applied is True and plan.reverted is False
+    # Plan is now empty.
+    assert auth_client.get("/m/tables/organize/plan").get_json()[
+        "moves"] == []
+
+
+def test_tables_organize_revert(auth_client, app, user, tables_enabled):
+    from app.models import TableOrganizePlan
+
+    ids = _f2_setup(app, user)
+    auth_client.post("/m/tables/organize/apply", follow_redirects=True)
+    auth_client.post("/m/tables/organize/revert", follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(_StoredFile, ids["stray"]).folder_id is None
+        assert db.session.get(_StoredFile,
+                              ids["abroad"]).folder_id == ids["foreign_id"]
+        assert TableOrganizePlan.query.one().reverted is True
+    # Nothing left to revert.
+    resp = auth_client.post("/m/tables/organize/revert",
+                            follow_redirects=True)
+    assert b"No organize run" in resp.data
+
+
+def test_tables_viewer_organize_trigger(auth_client, app, user,
+                                        tables_enabled):
+    drive_id = _f1_drive(app, user, name="Work")
+    fid = _f2_ptable_in_drive(app, user, drive_id, "stray.ptable")
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    # Preview-first gating language, adapted to the viewer context.
+    assert "tables-organize-btn" in html
+    assert "nothing moves until you confirm" in html.lower()
+    assert "DocIndex Tables" in html
+    assert "Revert last organize" not in html
+    # After an organize run the viewer offers the revert affordance.
+    auth_client.post("/m/tables/organize/apply", follow_redirects=True)
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    assert "Revert last organize" in html

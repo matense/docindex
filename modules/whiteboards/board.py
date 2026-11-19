@@ -27,6 +27,28 @@ EXTENSION = "wboard"
 MIME_TYPE = "application/json"
 SCENE_VERSION = 1
 
+# Dedicated folder per drive holding that drive's whiteboards ("separated by
+# context"). Created on demand.
+WHITEBOARDS_FOLDER = "DocIndex Whiteboards"
+
+
+def whiteboards_folder(user, drive):
+    """Get-or-create the drive's whiteboards folder. Returns None for synced
+    (read-only) drives — nothing may be created in them."""
+    from app.models import Folder
+    if drive is None or getattr(drive, "is_synced", False):
+        return None
+    folder = (Folder.query
+              .filter_by(user_id=user.id, drive_id=drive.id,
+                         parent_id=None, name=WHITEBOARDS_FOLDER)
+              .first())
+    if folder is None:
+        folder = Folder(user_id=user.id, drive_id=drive.id,
+                        parent_id=None, name=WHITEBOARDS_FOLDER)
+        db.session.add(folder)
+        db.session.commit()
+    return folder
+
 ELEMENT_TYPES = {"rectangle", "ellipse", "diamond", "arrow", "line", "text"}
 
 _STROKE_STYLES = {"solid", "dashed", "dotted"}
@@ -366,12 +388,17 @@ def _guard_writable_drive(drive):
         raise ValueError("A single target drive is required — pick one with "
                          "drive_id.")
     if drive.is_readonly:
-        raise ValueError("Synced drives are read-only — whiteboards cannot "
-                         "be created there.")
+        raise ValueError(f"Synced drive '{drive.name}' is read-only — "
+                         "whiteboards cannot be created there.")
 
 
-def create_board(user, drive, name, elements=None):
-    """Create a whiteboard file in a writable drive. Returns StoredFile."""
+def create_board(user, drive, name, elements=None, folder=None):
+    """Create a whiteboard file in a writable drive. Returns StoredFile.
+
+    A drive-root intent (folder=None) lands in the drive's "DocIndex
+    Whiteboards" folder (created on demand); an explicit folder is
+    respected as-is after ownership validation. Synced drives fail closed
+    — nothing may be created in them."""
     if isinstance(drive, (list, tuple)):
         drive = next((d for d in drive
                       if not getattr(d, "is_readonly", False)), None)
@@ -379,6 +406,21 @@ def create_board(user, drive, name, elements=None):
             raise ValueError("All drives in context are synced (read-only) — "
                              "pick a writable drive.")
     _guard_writable_drive(drive)
+    if folder is not None:
+        # An explicit folder is respected as-is — but it must belong to
+        # the caller on the target drive. Without this a cross-drive or
+        # cross-user folder would silently misplace the board
+        # (save_upload trusts folder.drive_id while drive_id is
+        # overwritten below), so fail closed instead.
+        if folder.user_id != user.id or folder.drive_id != drive.id:
+            raise ValueError("Folder does not belong to the target drive.")
+    if folder is None:
+        # Drive-root intent: every drive keeps its whiteboards in
+        # "DocIndex Whiteboards". No folder helper result on synced
+        # drives means a read-only drive — the guard above already
+        # failed closed naming it; a writable shared drive keeps its
+        # previous drive-root placement.
+        folder = whiteboards_folder(user, drive)
     scene = empty_scene(name)
     raw = list(elements or [])
     clean = [validate_element(e) for e in raw]
@@ -392,11 +434,131 @@ def create_board(user, drive, name, elements=None):
     storage = FileStorage(stream=BytesIO(data),
                           filename=f"{scene['title']}.{EXTENSION}",
                           content_type=MIME_TYPE)
-    stored = file_service.save_upload(storage, user, drive=drive)
+    stored = file_service.save_upload(storage, user, folder=folder,
+                                       drive=drive)
     stored.drive_id = drive.id
     db.session.commit()
     indexing_service.enqueue_index([stored.id])
     return stored
+
+
+# ---------------------------------------------------------------------------
+# Organize: every drive's whiteboards into its "DocIndex Whiteboards" folder
+# ---------------------------------------------------------------------------
+
+def organize_preview(user):
+    """Whiteboards not yet under their drive's whiteboards folder.
+
+    Returns (moves, skipped): moves are
+    {file_id, name, from_drive_id, from_folder_id, to_drive_id, to_folder_id}
+    dicts; skipped counts whiteboards on synced (read-only) drives, which can
+    never move. Whiteboards already inside "DocIndex Whiteboards" — including
+    its subfolders — are left alone. Nothing is changed — call
+    apply_organize() to execute."""
+    moves, skipped = [], 0
+    for stored in list_boards(user.id):
+        drive = stored.drive
+        if drive is None or getattr(drive, "is_synced", False):
+            skipped += 1
+            continue
+        target = whiteboards_folder(user, drive)
+        if stored.folder_id is not None and _is_within(
+                stored.folder, target.id):
+            continue
+        moves.append({
+                "file_id": stored.id, "name": stored.name,
+                "from_drive_id": drive.id,
+                "from_drive_name": drive.name,
+                "from_folder_id": stored.folder_id,
+                "from_folder_name": (stored.folder.name
+                                     if stored.folder else None),
+                "to_drive_id": drive.id,
+                "to_drive_name": drive.name,
+                "to_folder_id": target.id,
+                "to_folder_name": target.name,
+            })
+    return moves, skipped
+
+
+def _is_within(folder, target_id):
+    """True when folder is target or nested under it (cycle-safe)."""
+    node, seen = folder, set()
+    while node is not None and node.id not in seen:
+        if node.id == target_id:
+            return True
+        seen.add(node.id)
+        node = node.parent
+    return False
+
+
+def apply_organize(user):
+    """Execute the current organize preview through the normal move path
+    (version history is preserved) and persist the applied moves as a
+    WhiteboardOrganizePlan for 'Revert last organize'. Returns
+    (record_or_None, applied_count, skipped_count)."""
+    from app.models import WhiteboardOrganizePlan
+    moves, skipped = organize_preview(user)
+    applied = []
+    for move in moves:
+        stored = get_board(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        moved, error = file_service.move_file_to_drive(
+            user, stored.id, move["to_drive_id"], move["to_folder_id"])
+        if error:
+            skipped += 1
+            continue
+        applied.append({
+            "file_id": moved.id, "name": moved.name,
+            "from_drive_id": move["from_drive_id"],
+            "from_folder_id": move["from_folder_id"],
+            "to_drive_id": moved.drive_id,
+            "to_folder_id": moved.folder_id,
+        })
+    record = None
+    if applied:
+        record = WhiteboardOrganizePlan(user_id=user.id, plan=applied,
+                                       applied=True)
+        db.session.add(record)
+        db.session.commit()
+    return record, len(applied), skipped
+
+
+def revert_organize(user):
+    """Replay the inverse moves of the latest applied, non-reverted plan.
+    Returns (moved_back_count, skipped_count, found)."""
+    from app.models import WhiteboardOrganizePlan
+    record = (WhiteboardOrganizePlan.query
+              .filter_by(user_id=user.id, applied=True, reverted=False)
+              .order_by(WhiteboardOrganizePlan.id.desc())
+              .first())
+    if record is None:
+        return 0, 0, False
+    moved, skipped = 0, 0
+    for move in reversed(record.plan or []):
+        stored = get_board(move["file_id"], user.id)
+        if stored is None:
+            skipped += 1
+            continue
+        _, error = file_service.move_file_to_drive(
+            user, stored.id, move["from_drive_id"], move["from_folder_id"])
+        if error:
+            skipped += 1
+        else:
+            moved += 1
+    record.reverted = True
+    db.session.commit()
+    return moved, skipped, True
+
+
+def last_organize_plan(user):
+    """Latest applied, non-reverted plan (what 'Revert' would undo)."""
+    from app.models import WhiteboardOrganizePlan
+    return (WhiteboardOrganizePlan.query
+            .filter_by(user_id=user.id, applied=True, reverted=False)
+            .order_by(WhiteboardOrganizePlan.id.desc())
+            .first())
 
 
 def save_board(stored, scene, note="", source="edit", skip_snapshot=False):

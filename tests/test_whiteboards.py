@@ -553,3 +553,306 @@ def test_ai_tools_end_to_end(app, user, enabled):
         assert wb_tools._tool_create(
             user_obj, {"name": "Bad", "elements": [{"type": "nope"}]},
             None)["error"]
+
+
+# --- Type Folders F4: "DocIndex Whiteboards" folder per drive + organize ---
+
+
+def _f4_wboard_in_drive(app, user_id, drive_id, name="stray",
+                        folder_id=None, make_on=None):
+    fid = _create(app, user_id, make_on or drive_id, name)
+    with app.app_context():
+        stored = db.session.get(StoredFile, fid)
+        stored.drive_id = drive_id
+        stored.folder_id = folder_id
+        db.session.commit()
+    return fid
+
+
+def test_whiteboards_folder_and_routing(app, auth_client, user, enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        assert wb.WHITEBOARDS_FOLDER == "DocIndex Whiteboards"
+        folder = wb.whiteboards_folder(user_obj, drive)
+        assert folder.name == "DocIndex Whiteboards"
+        assert folder.parent_id is None
+        assert folder.drive_id == drive_id
+        # Idempotent — second call returns the same folder.
+        assert wb.whiteboards_folder(user_obj, drive).id == folder.id
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f4-ro")
+        db.session.add(synced)
+        db.session.commit()
+        assert wb.whiteboards_folder(user_obj, synced) is None
+        assert wb.whiteboards_folder(user_obj, None) is None
+
+    # Drive-root create (the web form only picks a drive) routes into the
+    # type folder.
+    auth_client.post("/m/whiteboards/create",
+                     data={"name": "Fresh", "drive_id": drive_id},
+                     follow_redirects=True)
+    with app.app_context():
+        stored = (StoredFile.query
+                  .filter_by(user_id=user, extension="wboard")
+                  .order_by(StoredFile.id.desc()).first())
+        assert stored.folder is not None
+        assert stored.folder.name == "DocIndex Whiteboards"
+        assert stored.folder.drive_id == drive_id
+
+    # Explicit folder: respected, never redirected (direct API + AI tool —
+    # the web form has no explicit-folder picker by design).
+    with app.app_context():
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        placed = wb.create_board(user_obj, drive, "Placed",
+                                 folder=foreign)
+        placed_folder_id = placed.folder_id
+    assert placed_folder_id == foreign_id
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        res = wb_tools._tool_create(
+            user_obj, {"name": "AI placed", "folder_id": foreign_id},
+            None)
+    assert res["created"]["folder"] == "Foreign"
+
+    # Synced drive fails closed, naming the drive.
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        synced = Drive.query.filter_by(user_id=user, name="RO").one()
+        with pytest.raises(ValueError, match="RO"):
+            wb.create_board(user_obj, synced, "Nope")
+
+
+def _f4_setup(app, user):
+    """One drive with a stray root .wboard + one in a foreign folder, one
+    already inside Whiteboards/sub (left alone), and a synced-drive .wboard
+    (skipped). Returns ids dict."""
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        from app.models import User as _User
+
+        user_obj = db.session.get(_User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        wb_root = wb.whiteboards_folder(
+            user_obj, db.session.get(Drive, drive_id))
+        sub = _Folder(name="Sub", user_id=user, drive_id=drive_id,
+                      parent_id=wb_root.id)
+        db.session.add(sub)
+        db.session.commit()
+        sub_id = sub.id
+    with app.app_context():
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f4-rosy")
+        db.session.add(synced)
+        db.session.commit()
+        synced_id = synced.id
+    stray = _f4_wboard_in_drive(app, user, drive_id, "stray")
+    abroad = _f4_wboard_in_drive(app, user, drive_id, "abroad",
+                                 folder_id=foreign_id)
+    nested = _f4_wboard_in_drive(app, user, drive_id, "nested",
+                                 folder_id=sub_id)
+    rosy = _f4_wboard_in_drive(app, user, synced_id, "rosy",
+                               make_on=drive_id)
+    return {"drive_id": drive_id, "foreign_id": foreign_id,
+            "stray": stray, "abroad": abroad, "nested": nested,
+            "rosy": rosy}
+
+
+def test_whiteboards_organize_roundtrip_and_revert(app, auth_client, user,
+                                                  enabled):
+    from app.models import WhiteboardOrganizePlan
+    from app.services import file_service
+
+    ids = _f4_setup(app, user)
+    data = auth_client.get("/m/whiteboards/organize/plan").get_json()
+    assert data["skipped_synced"] == 1
+    assert {m["name"] for m in data["moves"]} == {"stray.wboard",
+                                                  "abroad.wboard"}
+    for move in data["moves"]:
+        assert move["to_drive_id"] == ids["drive_id"]
+        assert move["to_folder_name"] == "DocIndex Whiteboards"
+        assert move["from_drive_id"] == ids["drive_id"]
+
+    # Version history survives the move (normal move path, not a copy).
+    with app.app_context():
+        stored = db.session.get(StoredFile, ids["stray"])
+        file_service.snapshot_version(stored, "test")
+        before = len(db.session.get(StoredFile, ids["stray"]).versions)
+        assert before == 1
+
+    # List page pins the preview-first affordance, no revert yet.
+    html = auth_client.get("/m/whiteboards/").data.decode()
+    assert "wb-organize-btn" in html
+    assert "nothing moves until you confirm" in html.lower()
+    assert "DocIndex Whiteboards" in html
+    assert "Revert last organize" not in html
+
+    resp = auth_client.post("/m/whiteboards/organize/apply",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        for fid in (ids["stray"], ids["abroad"]):
+            stored = db.session.get(StoredFile, fid)
+            assert stored.folder.name == "DocIndex Whiteboards"
+            assert stored.drive_id == ids["drive_id"]
+        assert db.session.get(StoredFile, ids["nested"]).folder.name == "Sub"
+        assert db.session.get(StoredFile, ids["rosy"]).folder_id is None
+        assert len(db.session.get(StoredFile,
+                                  ids["stray"]).versions) == before
+        plan = WhiteboardOrganizePlan.query.one()
+        assert plan.applied is True and plan.reverted is False
+    assert auth_client.get("/m/whiteboards/organize/plan").get_json()[
+        "moves"] == []
+    # After an organize run the list offers the revert affordance.
+    assert "Revert last organize" in \
+        auth_client.get("/m/whiteboards/").data.decode()
+
+    # Revert moves everything back.
+    auth_client.post("/m/whiteboards/organize/revert",
+                     follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(StoredFile, ids["stray"]).folder_id is None
+        assert db.session.get(StoredFile,
+                              ids["abroad"]).folder_id == ids["foreign_id"]
+        assert WhiteboardOrganizePlan.query.one().reverted is True
+    resp = auth_client.post("/m/whiteboards/organize/revert",
+                            follow_redirects=True)
+    assert b"No organize run" in resp.data
+
+
+# --- Type Folders F4 fix round: fail-closed hardening on folder_id ---
+
+
+def test_whiteboards_create_tool_folder_errors(app, user, enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        synced = Drive(name="RO", user_id=user,
+                       source_path="/tmp/f4-err-ro")
+        db.session.add(synced)
+        db.session.commit()
+        synced_id = synced.id
+        synced_folder = _Folder(name="RODir", user_id=user,
+                                drive_id=synced_id, parent_id=None)
+        db.session.add(synced_folder)
+        db.session.commit()
+        synced_folder_id = synced_folder.id
+        # Second user with their own drive + folder.
+        other = User(username="bob", email="bob@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        other_drive = Drive(name="Bob", user_id=other.id)
+        db.session.add(other_drive)
+        db.session.commit()
+        other_folder = _Folder(name="BobDir", user_id=other.id,
+                               drive_id=other_drive.id, parent_id=None)
+        db.session.add(other_folder)
+        db.session.commit()
+        other_folder_id = other_folder.id
+
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        # Invalid folder id.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": "abc"},
+            None)["error"] == "Invalid folder id."
+        # Unknown folder id.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": 999999},
+            None)["error"] == "Folder not found."
+        # Other user's folder.
+        assert wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": other_folder_id},
+            None)["error"] == "Folder not found."
+        # Folder on a synced (read-only) drive fails closed, naming it.
+        err = wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": synced_folder_id},
+            None)["error"]
+        assert "RO" in err and "read-only" in err
+        # Conflicting folder_id + drive_id are rejected, not silently
+        # resolved in favor of one side.
+        err = wb_tools._tool_create(
+            user_obj, {"name": "Bad", "folder_id": foreign_id,
+                       "drive_id": synced_id}, None)["error"]
+        assert "disagree" in err
+        # Matching folder_id + drive_id still works.
+        res = wb_tools._tool_create(
+            user_obj, {"name": "Agree", "folder_id": foreign_id,
+                       "drive_id": drive_id}, None)
+        assert res["created"]["folder"] == "Foreign"
+
+
+def test_whiteboards_create_board_rejects_foreign_folder(app, user,
+                                                         enabled):
+    from app.models import Folder as _Folder
+
+    drive_id = _drive(app, user)
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        drive = db.session.get(Drive, drive_id)
+        other_drive = Drive(name="Other", user_id=user)
+        db.session.add(other_drive)
+        db.session.commit()
+        abroad = _Folder(name="Abroad", user_id=user,
+                         drive_id=other_drive.id, parent_id=None)
+        db.session.add(abroad)
+        db.session.commit()
+        with pytest.raises(ValueError, match="target drive"):
+            wb.create_board(user_obj, drive, "Cross",
+                            folder=abroad)
+        other = User(username="carol", email="carol@example.com")
+        other.set_password("password123")
+        db.session.add(other)
+        db.session.commit()
+        not_mine = _Folder(name="NotMine", user_id=other.id,
+                           drive_id=drive_id, parent_id=None)
+        db.session.add(not_mine)
+        db.session.commit()
+        with pytest.raises(ValueError, match="target drive"):
+            wb.create_board(user_obj, drive, "Theirs",
+                            folder=not_mine)
+        # Nothing was created by the rejected calls.
+        assert StoredFile.query.filter_by(
+            user_id=user, extension="wboard").count() == 0
+
+
+def test_whiteboards_shared_drive_roots_at_drive_root(app, user, enabled,
+                                                      tmp_path):
+    with app.app_context():
+        user_obj = db.session.get(User, user)
+        shared = Drive(name="Shared", user_id=user,
+                       source_path=str(tmp_path), sync_mode="shared")
+        db.session.add(shared)
+        db.session.commit()
+        assert shared.is_synced and not shared.is_readonly
+        # No type folder may be created on synced drives — even writable
+        # shared ones — so the helper stays None...
+        assert wb.whiteboards_folder(user_obj, shared) is None
+        # ...and creation keeps its previous drive-root placement.
+        stored = wb.create_board(user_obj, shared, "Shared board")
+        assert stored.folder_id is None
+        assert stored.drive_id == shared.id
+        assert wb.get_board(stored.id, user) is not None
