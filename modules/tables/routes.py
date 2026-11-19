@@ -31,7 +31,17 @@ import re
 import uuid
 from datetime import datetime
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request, url_for
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from flask_login import current_user
 
 from app.extensions import db
@@ -413,6 +423,7 @@ def view(file_id):
         total=len(rows),
         page_size=PAGE_SIZE,
         editable=(stored.extension or "").lower() == "ptable",
+        revertable=tables_doc.last_organize_plan(current_user) is not None,
     )
 
 
@@ -436,6 +447,57 @@ def rows_api(file_id):
                for name, ctype in zip(header, types, strict=True)]
     window = _display_rows(rows[offset:offset + limit])
     return jsonify({"columns": columns, "rows": window, "total": len(rows)})
+
+
+# ---------------------------------------------------------------------------
+# Organize: every drive's tables into its "DocIndex Tables" folder
+# ---------------------------------------------------------------------------
+
+@bp.get("/organize/plan")
+def organize_plan():
+    """Preview: tables that would move, and where. No changes made —
+    the user must confirm (POST /organize/apply) for anything to move."""
+    moves, skipped = tables_doc.organize_preview(current_user)
+    return jsonify({"moves": moves, "skipped_synced": skipped})
+
+
+@bp.post("/organize/apply")
+def organize_apply():
+    """Execute the organize plan (explicit confirmation only — this is the
+    only path that moves tables)."""
+    record, applied, skipped = tables_doc.apply_organize(current_user)
+    if applied:
+        flash(f"Organized {applied} table(s) into 'DocIndex Tables' "
+              f"folders." + (f" {skipped} skipped." if skipped else ""),
+              "success")
+    else:
+        flash("Nothing to organize — every table is already in place.",
+              "info")
+    return _organize_redirect()
+
+
+@bp.post("/organize/revert")
+def organize_revert():
+    """Undo the last organize: replay the inverse moves of its logged plan."""
+    moved, skipped, found = tables_doc.revert_organize(current_user)
+    if not found:
+        flash("No organize run to revert.", "info")
+    elif moved:
+        flash(f"Reverted: {moved} table(s) moved back."
+              + (f" {skipped} skipped." if skipped else ""), "success")
+    else:
+        flash("Revert found nothing to move back.", "info")
+    return _organize_redirect()
+
+
+def _organize_redirect():
+    """Back to the page that confirmed the organize (the viewer carries it
+    in a ``next`` field), falling back to the files home page — both render
+    the flashed result. Only relative paths are honoured."""
+    target = request.form.get("next") or request.referrer or ""
+    if target.startswith("/") and not target.startswith("//"):
+        return redirect(target)
+    return redirect(url_for("drive.index"))
 
 
 @bp.post("/<int:file_id>/query")

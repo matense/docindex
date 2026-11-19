@@ -854,3 +854,132 @@ def test_save_as_without_personal_drive_stays_at_files_root(
         created = db.session.get(_StoredFile, body["file_id"])
         assert created.drive_id is None
         assert created.folder_id is None
+
+
+# ---------------------------------------------------------------------------
+# Type Folders F2: organize stray .ptables into per-drive "DocIndex Tables"
+# ---------------------------------------------------------------------------
+
+
+def _f2_ptable_in_drive(app, user_id, drive_id, name="stray.ptable",
+                        folder_id=None):
+    fid = _write_table_file(app, user_id, name, "ptable",
+                            _ptable_payload())
+    with app.app_context():
+        stored = db.session.get(_StoredFile, fid)
+        stored.drive_id = drive_id
+        stored.folder_id = folder_id
+        db.session.commit()
+    return fid
+
+
+def _f2_setup(app, user):
+    """One drive with a stray root .ptable + one in a foreign folder, one
+    already inside Tables/sub (left alone), and a synced-drive .ptable
+    (skipped). Returns ids dict."""
+    from app.models import Folder as _Folder
+
+    drive_id = _f1_drive(app, user, name="Work")
+    with app.app_context():
+        from app.models import User as _User
+
+        user_obj = db.session.get(_User, user)
+        foreign = _Folder(name="Foreign", user_id=user,
+                          drive_id=drive_id, parent_id=None)
+        db.session.add(foreign)
+        db.session.commit()
+        foreign_id = foreign.id
+        tables_root = tables_doc.tables_folder(user_obj, db.session.get(
+            _Drive, drive_id))
+        sub = _Folder(name="Sub", user_id=user, drive_id=drive_id,
+                      parent_id=tables_root.id)
+        db.session.add(sub)
+        db.session.commit()
+        sub_id = sub.id
+    synced_id = _f1_drive(app, user, name="RO", synced=True)
+    stray = _f2_ptable_in_drive(app, user, drive_id, "stray.ptable")
+    abroad = _f2_ptable_in_drive(app, user, drive_id, "abroad.ptable",
+                                 folder_id=foreign_id)
+    nested = _f2_ptable_in_drive(app, user, drive_id, "nested.ptable",
+                                 folder_id=sub_id)
+    rosy = _f2_ptable_in_drive(app, user, synced_id, "rosy.ptable")
+    return {"drive_id": drive_id, "foreign_id": foreign_id,
+            "stray": stray, "abroad": abroad, "nested": nested,
+            "rosy": rosy}
+
+
+def test_tables_organize_roundtrip(auth_client, app, user, tables_enabled):
+    from app.models import TableOrganizePlan
+
+    ids = _f2_setup(app, user)
+    data = auth_client.get("/m/tables/organize/plan").get_json()
+    assert data["skipped_synced"] == 1
+    assert {m["name"] for m in data["moves"]} == {"stray.ptable",
+                                                 "abroad.ptable"}
+    for move in data["moves"]:
+        assert move["to_drive_id"] == ids["drive_id"]
+        assert move["to_folder_name"] == "DocIndex Tables"
+        assert move["from_drive_id"] == ids["drive_id"]
+
+    # Version history survives the move (normal move path, not a copy).
+    with app.app_context():
+        stored = db.session.get(_StoredFile, ids["stray"])
+        _file_service.snapshot_version(stored, "test")
+        before = _FileVersion.query.filter_by(
+            file_id=ids["stray"]).count()
+        assert before == 1
+
+    resp = auth_client.post("/m/tables/organize/apply",
+                            follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        for fid in (ids["stray"], ids["abroad"]):
+            stored = db.session.get(_StoredFile, fid)
+            assert stored.folder.name == "DocIndex Tables"
+            assert stored.drive_id == ids["drive_id"]
+        # Inside Tables/sub stays put; synced stays put.
+        assert db.session.get(_StoredFile,
+                              ids["nested"]).folder_id is not None
+        assert db.session.get(_StoredFile,
+                              ids["nested"]).folder.name == "Sub"
+        assert db.session.get(_StoredFile, ids["rosy"]).folder_id is None
+        assert _FileVersion.query.filter_by(
+            file_id=ids["stray"]).count() == before
+        plan = TableOrganizePlan.query.one()
+        assert plan.applied is True and plan.reverted is False
+    # Plan is now empty.
+    assert auth_client.get("/m/tables/organize/plan").get_json()[
+        "moves"] == []
+
+
+def test_tables_organize_revert(auth_client, app, user, tables_enabled):
+    from app.models import TableOrganizePlan
+
+    ids = _f2_setup(app, user)
+    auth_client.post("/m/tables/organize/apply", follow_redirects=True)
+    auth_client.post("/m/tables/organize/revert", follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(_StoredFile, ids["stray"]).folder_id is None
+        assert db.session.get(_StoredFile,
+                              ids["abroad"]).folder_id == ids["foreign_id"]
+        assert TableOrganizePlan.query.one().reverted is True
+    # Nothing left to revert.
+    resp = auth_client.post("/m/tables/organize/revert",
+                            follow_redirects=True)
+    assert b"No organize run" in resp.data
+
+
+def test_tables_viewer_organize_trigger(auth_client, app, user,
+                                        tables_enabled):
+    drive_id = _f1_drive(app, user, name="Work")
+    fid = _f2_ptable_in_drive(app, user, drive_id, "stray.ptable")
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    # Preview-first gating language, adapted to the viewer context.
+    assert "tables-organize-btn" in html
+    assert "nothing moves until you confirm" in html.lower()
+    assert "DocIndex Tables" in html
+    assert "Revert last organize" not in html
+    # After an organize run the viewer offers the revert affordance.
+    auth_client.post("/m/tables/organize/apply", follow_redirects=True)
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    assert "Revert last organize" in html

@@ -5,7 +5,9 @@
  * read-only until "Save as .ptable").
  * T4 adds the pin-as-dashboard-card handoff (GET pin-targets picker, POST
  * pin — no new file, only a card) and the build-automation handoff (POST
- * build-automation — a prefilled workflow, then navigate to its editor). */
+ * build-automation — a prefilled workflow, then navigate to its editor).
+ * Organize previews the per-drive "DocIndex Tables" plan in a modal
+ * (GET organize/plan, POST organize/apply) with a revert affordance. */
 (function () {
   "use strict";
 
@@ -393,6 +395,56 @@
           showError("Could not build the automation.");
         });
     });
+
+    var organizeBtn = document.getElementById("tables-organize-btn");
+    if (organizeBtn) organizeBtn.addEventListener("click", function () {
+      var box = document.getElementById("tables-organize-plan");
+      var confirmBtn = document.getElementById("tables-organize-confirm");
+      var modal = document.getElementById("tables-organize-modal");
+      var planUrl = organizeBtn.getAttribute("data-plan-url");
+      if (!box || !confirmBtn || !modal || !planUrl) return;
+      confirmBtn.disabled = true;
+      box.innerHTML = '<p class="text-xs opacity-50 py-4 text-center">'
+        + '<i class="fas fa-circle-notch fa-spin"></i> Computing plan…</p>';
+      modal.showModal();
+      fetch(planUrl)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var moves = data.moves || [];
+          if (!moves.length) {
+            box.innerHTML = '<p class="text-xs opacity-60 py-4 text-center">'
+              + 'Nothing to organize — every table is already in its '
+              + "'DocIndex Tables' folder."
+              + (data.skipped_synced ? ' (' + data.skipped_synced + ' on read-only drives stay put.)' : '')
+              + '</p>';
+            return;
+          }
+          box.innerHTML = moves.map(function (m) {
+            var from = m.from_folder_name
+              ? esc(m.from_drive_name) + " / " + esc(m.from_folder_name)
+              : esc(m.from_drive_name) + " /";
+            return '<div class="flex items-center gap-2 rounded-lg border border-base-content/10 px-3 py-2">'
+              + '<i class="fas fa-table text-primary flex-shrink-0"></i>'
+              + '<span class="font-medium truncate">' + esc(m.name) + '</span>'
+              + '<span class="text-[11px] opacity-50 truncate ml-auto">' + from
+              + ' <i class="fas fa-arrow-right mx-1"></i> '
+              + esc(m.to_drive_name) + ' / ' + esc(m.to_folder_name) + '</span>'
+              + '</div>';
+          }).join('')
+            + (data.skipped_synced ? '<p class="text-[11px] opacity-50 text-center">'
+              + data.skipped_synced + ' table(s) on read-only drives stay put.</p>' : '');
+          confirmBtn.disabled = false;
+        })
+        .catch(function () {
+          box.innerHTML = '<p class="text-xs text-error py-4 text-center">Could not compute the plan.</p>';
+        });
+    });
+
+    function esc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
 
     var scrollTick = false;
     function onScroll() {

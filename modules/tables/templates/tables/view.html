@@ -29,6 +29,19 @@
                 title="Pin this table as a card on one of your dashboards">Pin to dashboard</button>
         <button id="tables-buildauto" class="btn btn-ghost btn-sm" type="button"
                 title="Create an automation workflow starting from this table">Build automation</button>
+        <button id="tables-organize-btn" class="btn btn-ghost btn-sm" type="button"
+                data-plan-url="{{ url_for('tables.organize_plan') }}"
+                title="Preview a plan that moves every table into its drive's 'DocIndex Tables' folder — nothing moves until you confirm">Organize</button>
+        {% if revertable %}
+        <form method="POST" action="{{ url_for('tables.organize_revert') }}"
+              data-confirm="Move the organized tables back to where they were?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <button type="submit" class="btn btn-ghost btn-sm" title="Undo the last organize run">
+                <i class="fas fa-rotate-left text-warning"></i> Revert last organize
+            </button>
+        </form>
+        {% endif %}
     </div>
     <div id="tables-pin-panel" class="hidden flex flex-wrap items-center gap-2">
         <select id="tables-pin-target" class="select select-bordered select-sm min-w-52"
@@ -81,5 +94,31 @@
         <span id="tables-loading" class="hidden">Loading&hellip;</span>
     </div>
 </div>
+
+<!-- Organize plan modal -->
+<dialog id="tables-organize-modal" class="modal">
+    <div class="modal-box glass-panel max-w-2xl">
+        <h3 class="font-bold text-lg mb-1"><i class="fas fa-sitemap text-secondary"></i> Organize tables</h3>
+        <p class="text-xs opacity-50 mb-4">
+            Every table moves into its drive's <strong>DocIndex Tables</strong> folder.
+            Nothing moves until you press Confirm — review the plan below.
+        </p>
+        <div id="tables-organize-plan" class="flex flex-col gap-1.5 max-h-96 overflow-auto text-sm">
+            <p class="text-xs opacity-50 py-4 text-center">
+                <i class="fas fa-circle-notch fa-spin"></i> Computing plan…
+            </p>
+        </div>
+        <form method="POST" action="{{ url_for('tables.organize_apply') }}" class="modal-action">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.getElementById('tables-organize-modal').close()">Cancel</button>
+            <button type="submit" class="btn btn-primary btn-sm gap-1" id="tables-organize-confirm" disabled>
+                <i class="fas fa-check"></i> Confirm &amp; move
+            </button>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
 <script src="{{ url_for('tables.static', filename='tables.js') }}"></script>
 {% endblock %}
