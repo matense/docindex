@@ -180,6 +180,14 @@ def create_app(config_class=Config):
     migrate.init_app(app, db, directory=MIGRATIONS_DIR)
     csrf.init_app(app)
 
+    # Central error log: capture app.logger warnings and unhandled exceptions
+    # into the error_logs table (visible on /settings/logs). Installed FIRST,
+    # before auto-upgrade/module loading/index recovery below, so startup
+    # failures (e.g. a module that fails to load) are captured too instead
+    # of going only to server stderr.
+    from .services import log_service
+    log_service.install(app)
+
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
         with app.app_context():
             engine = db.engine
@@ -222,14 +230,10 @@ def create_app(config_class=Config):
     app.register_blueprint(behaviors.bp)
 
     # Modules: import everything valid under modules/ and register routes
-    # (guarded per-request by the persisted enable flag).
+    # (guarded per-request by the persisted enable flag). Failures are
+    # captured by the error log installed above.
     from .services import module_service
     module_service.load_all(app)
-
-    # Central error log: capture app.logger warnings and unhandled exceptions
-    # into the error_logs table (visible on /settings/logs).
-    from .services import log_service
-    log_service.install(app)
 
     # Resume any indexing work left over from a previous run (crash/restart):
     # "running" jobs go back to "pending" and drainers pick them up.

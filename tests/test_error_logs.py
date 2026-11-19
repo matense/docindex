@@ -172,3 +172,26 @@ def test_logging_recursion_guard(app):
                    side_effect=RuntimeError("insert failed")):
             handler.emit(record)  # must not raise or hang
         assert ErrorLog.query.count() == 0
+
+
+def test_log_handler_installed_before_module_loading(monkeypatch):
+    """Startup module-load failures must reach error_logs.
+
+    Regression: log_service.install() used to run AFTER
+    module_service.load_all(), so a module that failed to import showed
+    "load failed" on the modules page while /settings/logs stayed empty.
+    """
+    from app import create_app
+    from app.services import log_service, module_service
+    from config import TestConfig
+
+    seen = {}
+    real_load_all = module_service.load_all
+
+    def _spy(app_obj):
+        seen["handlers"] = [type(h) for h in app_obj.logger.handlers]
+        return real_load_all(app_obj)
+
+    monkeypatch.setattr(module_service, "load_all", _spy)
+    create_app(TestConfig)
+    assert log_service.DbLogHandler in seen["handlers"]
