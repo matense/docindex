@@ -523,7 +523,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
     assert "?v=15" in body
-    assert "?v=36" in body
+    assert "?v=38" in body
 
 
 def test_view_mode_title_is_readonly(app, auth_client, user, enabled):
@@ -4838,7 +4838,7 @@ def test_dashboards_organize_roundtrip_and_revert(app, auth_client, user,
     assert "nothing moves until you confirm" in html.lower()
     assert "DocIndex Dashboards" in html
     assert "Revert last organize" not in html
-    assert "?v=36" in html  # list page loads the same builder bundle
+    assert "?v=38" in html  # list page loads the same builder bundle
 
     resp = auth_client.post("/m/dashboards/organize/apply",
                             follow_redirects=True)

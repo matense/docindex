@@ -16,8 +16,8 @@ Inventory (old -> new):
   automation/editor.html: automation.js 2->3, run_form.js 1->2
   automation/run.html + ai_core.js + drive.js: run_form.js 1->2 (hardcoded)
   whiteboards/board.html: wb-editor.js 1->2
-  dashboards/edit.html + list.html: dashboard.css 14->15, dashboard.js 36->37
-  tables/view.html: tables.js none->1 (added)
+  dashboards/edit.html + list.html: dashboard.css 14->15, dashboard.js 37->38 (X2 endRunAll guard; ?v=37 predated the branch)
+  tables/view.html: tables.js none->2 (added)
 """
 
 import importlib.util
@@ -259,8 +259,8 @@ def test_dashboards_edit_pin(auth_client, app, user, all_modules):
     fid = _dashboard(app, user, _drive(app, user))
     html = auth_client.get(f"/m/dashboards/{fid}").data.decode()
     assert "dashboard.css?v=15" in html
-    # ?v=37 pins the X2 endRunAll-guard JS — must move with the asset.
-    assert "dashboard.js?v=37" in html
+    # ?v=38 pins the X2 endRunAll-guard JS — must move with the asset.
+    assert "dashboard.js?v=38" in html
 
 
 def test_tables_view_pin(auth_client, app, user, all_modules):

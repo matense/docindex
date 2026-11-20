@@ -83,7 +83,7 @@
     // editor script on demand — it stays cached in window after first load.
     if (window.DashboardEditor) return boot();
     const s = document.createElement('script');
-    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=36')|tojson }};
+    s.src = {{ (url_for('dashboards.static', filename='dashboard.js') + '?v=38')|tojson }};
     s.onload = boot;
     document.head.appendChild(s);
 })();
