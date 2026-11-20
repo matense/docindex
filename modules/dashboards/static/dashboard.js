@@ -2720,7 +2720,8 @@
             root: root, opts: opts, base: base, mode: "view",
             doc: JSON.parse(JSON.stringify(opts.doc || { cards: [], attachments: [] })),
             charts: {}, observers: [], timers: [],
-            inFlight: {}, runAllActive: false, runAllStop: false, els: {},
+            inFlight: {}, runAllActive: false, runAllStop: false,
+            runAllDone: false, els: {},
             live: {}, consoleFor: null, consoleLive: null,
             consoleReaders: {}, consoleDismissed: false
         };
@@ -4190,6 +4191,7 @@
         if (sel) sel.value = String(cap);
         V.runAllActive = true;
         V.runAllStop = false;
+        V.runAllDone = false;
         V.els.runAllBtn.disabled = true;
         V.els.stopAllBtn.classList.remove("hidden");
         var queue = ids.slice();
@@ -4258,6 +4260,11 @@
     }
 
     function endRunAll(V, total, doneMsg) {
+        // Idempotency guard: both settle() and pump()'s trailing check can
+        // observe the all-finished state for the same run, which toasted
+        // twice. The flag is cleared when a run starts (startRunQueue).
+        if (V.runAllDone) return;
+        V.runAllDone = true;
         V.runAllActive = false;
         V.runAllStop = false;
         V.els.runAllBtn.disabled = false;

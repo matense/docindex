@@ -526,6 +526,21 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "?v=36" in body
 
 
+def test_view_mode_title_is_readonly(app, auth_client, user, enabled):
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id)
+    resp = auth_client.get(f"/m/dashboards/{fid}?mode=view")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'id="dash-title"' in body
+    assert "readonly" in body
+    assert 'title="Read-only in view mode"' in body
+    # Builder mode keeps the editable rename input.
+    resp = auth_client.get(f"/m/dashboards/{fid}")
+    assert resp.status_code == 200
+    assert "Read-only in view mode" not in resp.data.decode()
+
+
 def test_new_rejects_unknown_location(app, auth_client, user, enabled):
     # Explicit drive:/folder: ids that do not exist -> 404, nothing created
     # (must NOT fall through to the default-drive fallback).

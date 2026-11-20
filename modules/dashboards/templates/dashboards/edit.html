@@ -10,10 +10,12 @@
     <div class="glass-panel rounded-2xl px-5 py-3 flex items-center gap-3 flex-wrap sticky top-0 z-10">
         <a href="{{ url_for('dashboards.index') }}" class="btn btn-ghost btn-sm btn-square"
            title="All dashboards"><i class="fas fa-arrow-left"></i></a>
+        {% set dash_mode = request.args.get('mode', 'builder') %}
         <div class="flex-1 min-w-0 dash-toolbar-doc">
             <input id="dash-title" type="text" class="dash-title-input font-bold truncate w-full"
                 value="{{ doc.title }}" maxlength="255" autocomplete="off"
-                spellcheck="false" aria-label="Dashboard title" title="Click to rename" />
+                spellcheck="false" aria-label="Dashboard title"
+                {% if dash_mode == 'view' %}readonly title="Read-only in view mode"{% else %}title="Click to rename"{% endif %} />
             <p class="text-xs opacity-40">
                 {{ file.drive.name if file.drive else '—' }}{% if file.folder %} / {{ file.folder.name }}{% endif %}
             </p>
@@ -21,7 +23,6 @@
         <span id="dash-save-status" class="text-xs opacity-50 whitespace-nowrap">
             <i class="fas fa-check mr-1"></i>Saved
         </span>
-        {% set dash_mode = request.args.get('mode', 'builder') %}
         {% if dash_mode == 'view' %}
         <a href="{{ url_for('dashboards.editor', file_id=file.id) }}"
            class="btn btn-ghost btn-sm gap-1" title="Back to Builder">
