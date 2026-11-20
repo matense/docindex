@@ -98,14 +98,14 @@
       busy = on;
       if (loading) loading.classList.toggle("hidden", !on);
       if (runBtn) runBtn.disabled = on;
+      if (resetBtn) resetBtn.disabled = on;
       paintPagerDisabled();
     }
 
     function paintPagerDisabled() {
       if (prevBtn) prevBtn.disabled = busy || start <= 0;
       if (nextBtn) {
-        nextBtn.disabled = busy || (total !== 0 &&
-                                    start + pageSize >= total);
+        nextBtn.disabled = busy || start + pageSize >= total;
       }
     }
 
@@ -289,6 +289,7 @@
     }
 
     function resetFilter() {
+      if (busy) return;
       if (sqlInput) sqlInput.value = "";
       filtered = false;
       showError(null);
