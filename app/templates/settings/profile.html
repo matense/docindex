@@ -555,6 +555,7 @@
     <div class="glass-panel rounded-2xl p-6 border border-warning/30">
         <h2 class="font-bold text-lg mb-2"><i class="fas fa-shield-halved text-warning"></i> Administration</h2>
         <form method="POST" action="{{ url_for('settings.profile_registration') }}"
+              data-confirm="Change the new-user registration setting?"
               class="flex items-center justify-between gap-4">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div>
@@ -563,7 +564,7 @@
             </div>
             <input type="checkbox" name="enabled" class="toggle toggle-success"
                    {{ 'checked' if registration_enabled }}
-                   onchange="this.form.submit()">
+                   onchange="this.form.requestSubmit()">
         </form>
     </div>
     {% endif %}

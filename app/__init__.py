@@ -1,7 +1,7 @@
 import os
 import sqlite3
 
-from flask import Flask
+from flask import Flask, render_template
 from sqlalchemy import event
 
 from config import Config
@@ -228,6 +228,17 @@ def create_app(config_class=Config):
     app.register_blueprint(ai.bp)
     app.register_blueprint(settings.bp)
     app.register_blueprint(behaviors.bp)
+
+    # Branded error pages (same glass-panel look as the rest of the app):
+    # every abort(403)/abort(404) lands here with an explanation + a way
+    # back instead of the stock Flask page.
+    @app.errorhandler(403)
+    def forbidden(_e):
+        return render_template("errors/403.html"), 403
+
+    @app.errorhandler(404)
+    def not_found(_e):
+        return render_template("errors/404.html"), 404
 
     # Modules: import everything valid under modules/ and register routes
     # (guarded per-request by the persisted enable flag). Failures are

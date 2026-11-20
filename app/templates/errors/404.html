@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Page not found - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-xl mx-auto w-full flex flex-col gap-4 pb-10">
+    <div class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center gap-3">
+        <span class="w-14 h-14 rounded-2xl bg-warning/15 text-warning flex items-center justify-center text-2xl">
+            <i class="fas fa-map-signs"></i>
+        </span>
+        <h1 class="text-xl font-bold">404 — Page not found</h1>
+        <p class="text-sm opacity-60 max-w-md">
+            The page you asked for does not exist or was moved. Check the
+            address, or head back somewhere useful.
+        </p>
+        <div class="flex gap-2 mt-2">
+            <a href="{{ url_for('drive.index') }}" class="btn btn-primary btn-sm gap-1">
+                <i class="fas fa-hard-drive"></i> Back to drive
+            </a>
+            <a href="{{ url_for('settings.profile') }}" class="btn btn-ghost btn-sm gap-1">
+                <i class="fas fa-arrow-left"></i> Back to profile
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

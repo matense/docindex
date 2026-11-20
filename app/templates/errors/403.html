@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Access restricted - DocIndex{% endblock %}
+{% block content %}
+<div class="max-w-xl mx-auto w-full flex flex-col gap-4 pb-10">
+    <div class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center gap-3">
+        <span class="w-14 h-14 rounded-2xl bg-error/15 text-error flex items-center justify-center text-2xl">
+            <i class="fas fa-lock"></i>
+        </span>
+        <h1 class="text-xl font-bold">403 — Access restricted</h1>
+        <p class="text-sm opacity-60 max-w-md">
+            You do not have permission to open this page. If you need
+            access, ask an administrator to grant it.
+        </p>
+        <div class="flex gap-2 mt-2">
+            <a href="{{ url_for('settings.profile') }}" class="btn btn-primary btn-sm gap-1">
+                <i class="fas fa-arrow-left"></i> Back to profile
+            </a>
+            <a href="{{ url_for('drive.index') }}" class="btn btn-ghost btn-sm gap-1">
+                <i class="fas fa-hard-drive"></i> Back to drive
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -118,6 +118,19 @@ def _clamp_int(value, lo, hi):
     return max(lo, min(hi, iv))
 
 
+def _clamp_notice(label, raw, stored, lo, hi):
+    """Notice text when the server clamped a numeric AI setting.
+
+    None when nothing was clamped (empty field or already in range),
+    else e.g. "Max agent steps saved as 128 of requested 1000
+    (allowed 1-128)."
+    """
+    if raw is None or stored is None or raw == stored:
+        return None
+    return (f"{label} saved as {stored} of requested {raw} "
+            f"(allowed {lo}-{hi}).")
+
+
 @bp.route("/help")
 @login_required
 def help_page():
@@ -252,6 +265,10 @@ def trash():
                      StoredFile.deleted_at.isnot(None))
              .count())
     drives = drive_service.trashed_drives(current_user)
+    if q:
+        # File search alone would hide trashed drives on any filtered
+        # view; match them by name too so nothing in the trash is missed.
+        drives = [d for d in drives if q.lower() in (d.name or "").lower()]
     return render_template("settings/trash.html", files=pagination.items,
                            pagination=pagination, q=q, total=total,
                            drives=drives,
@@ -309,7 +326,8 @@ def logs():
                               .distinct().order_by(ErrorLog.source).all())]
     return render_template("settings/logs.html", logs=pagination.items,
                            pagination=pagination, level=level, source=source,
-                           q=q, sources=sources)
+                           q=q, sources=sources,
+                           has_logs=ErrorLog.query.count() > 0)
 
 
 @bp.route("/logs/export")
@@ -356,6 +374,9 @@ def logs_export():
 def logs_clear():
     if not current_user.is_admin:
         abort(403)
+    if ErrorLog.query.count() == 0:
+        flash("The error log is already empty — nothing to clear.", "info")
+        return redirect(url_for("settings.logs"))
     ErrorLog.query.delete(synchronize_session=False)
     db.session.commit()
     flash("Error log cleared.", "success")
@@ -394,6 +415,8 @@ def profile_email():
     email = request.form.get("email", "").strip()
     if not email:
         flash("Email is required.", "error")
+    elif "@" not in email or "." not in email or len(email) > 120:
+        flash("Enter a valid email address.", "error")
     elif User.query.filter(User.email == email, User.id != current_user.id).first():
         flash("That email is already in use.", "error")
     else:
@@ -529,6 +552,9 @@ def ai_settings():
     edit_id = request.args.get("edit", type=int)
     if edit_id:
         editing = _get_owned(edit_id)
+        if editing is None:
+            # Bad/foreign id: say so instead of silently showing Add.
+            flash("Connection not found.", "error")
     return render_template("settings/ai.html", connections=connections,
                            providers=PROVIDERS, editing=editing,
                            keys_rotated=keys_rotated)
@@ -560,16 +586,28 @@ def ai_edit(conn_id):
     conn.model = model[:120]
     conn.vision_model = request.form.get("vision_model", "").strip()[:120]
     conn.embedding_model = request.form.get("embedding_model", "").strip()[:120]
-    conn.max_steps = _clamp_int(request.form.get("max_steps", type=int), 1, 128)
-    conn.long_horizon_steps = _clamp_int(
-        request.form.get("long_horizon_steps", type=int), 1, 256)
+    notices = []
+    raw_steps = request.form.get("max_steps", type=int)
+    conn.max_steps = _clamp_int(raw_steps, 1, 128)
+    notices.append(_clamp_notice("Max agent steps", raw_steps,
+                                conn.max_steps, 1, 128))
+    raw_long = request.form.get("long_horizon_steps", type=int)
+    conn.long_horizon_steps = _clamp_int(raw_long, 1, 256)
+    notices.append(_clamp_notice("Long horizon steps", raw_long,
+                                conn.long_horizon_steps, 1, 256))
     # 0 = unlimited; negatives would brick the connection (never a free slot).
     raw_rpm = request.form.get("rate_limit_rpm", type=int)
     conn.rate_limit_rpm = None if raw_rpm is None else max(0, min(raw_rpm, 600))
-    conn.history_messages = _clamp_int(
-        request.form.get("history_messages", type=int), 1, 200)
-    conn.max_prompt_tokens = _clamp_int(
-        request.form.get("max_prompt_tokens", type=int), 1000, 500000)
+    notices.append(_clamp_notice("Rate limit", raw_rpm,
+                                conn.rate_limit_rpm, 0, 600))
+    raw_hist = request.form.get("history_messages", type=int)
+    conn.history_messages = _clamp_int(raw_hist, 1, 200)
+    notices.append(_clamp_notice("History messages", raw_hist,
+                                conn.history_messages, 1, 200))
+    raw_budget = request.form.get("max_prompt_tokens", type=int)
+    conn.max_prompt_tokens = _clamp_int(raw_budget, 1000, 500000)
+    notices.append(_clamp_notice("Prompt budget", raw_budget,
+                                conn.max_prompt_tokens, 1000, 500000))
     # Only replace the key if a new one was entered (empty keeps the old one)
     new_key = request.form.get("api_key", "").strip()
     if new_key:
@@ -583,6 +621,9 @@ def ai_edit(conn_id):
         conn.is_active = True
     db.session.commit()
     flash(f"Connection '{conn.name}' updated.", "success")
+    for notice in notices:
+        if notice:
+            flash(notice, "info")
     return redirect(url_for("settings.ai_settings"))
 
 
@@ -605,7 +646,11 @@ def ai_add():
 
     name = (name or model)[:120]  # name is optional: fall back to the model name
     is_first = AIConnection.query.filter_by(user_id=current_user.id).count() == 0
+    raw_steps = request.form.get("max_steps", type=int)
+    raw_long = request.form.get("long_horizon_steps", type=int)
     raw_rpm = request.form.get("rate_limit_rpm", type=int)
+    raw_hist = request.form.get("history_messages", type=int)
+    raw_budget = request.form.get("max_prompt_tokens", type=int)
     conn = AIConnection(
         user_id=current_user.id,
         name=name,
@@ -614,14 +659,11 @@ def ai_add():
         model=model[:120],
         vision_model=vision_model[:120],
         embedding_model=request.form.get("embedding_model", "").strip()[:120],
-        max_steps=_clamp_int(request.form.get("max_steps", type=int), 1, 128),
-        long_horizon_steps=_clamp_int(
-            request.form.get("long_horizon_steps", type=int), 1, 256),
+        max_steps=_clamp_int(raw_steps, 1, 128),
+        long_horizon_steps=_clamp_int(raw_long, 1, 256),
         rate_limit_rpm=None if raw_rpm is None else max(0, min(raw_rpm, 600)),
-        history_messages=_clamp_int(
-            request.form.get("history_messages", type=int), 1, 200),
-        max_prompt_tokens=_clamp_int(
-            request.form.get("max_prompt_tokens", type=int), 1000, 500000),
+        history_messages=_clamp_int(raw_hist, 1, 200),
+        max_prompt_tokens=_clamp_int(raw_budget, 1000, 500000),
         is_active=is_first or bool(request.form.get("is_active")),
     )
     if conn.is_active:
@@ -629,6 +671,18 @@ def ai_add():
     db.session.add(conn)
     db.session.commit()
     flash(f"Connection '{name}' saved.", "success")
+    for notice in (
+        _clamp_notice("Max agent steps", raw_steps, conn.max_steps, 1, 128),
+        _clamp_notice("Long horizon steps", raw_long,
+                      conn.long_horizon_steps, 1, 256),
+        _clamp_notice("Rate limit", raw_rpm, conn.rate_limit_rpm, 0, 600),
+        _clamp_notice("History messages", raw_hist,
+                      conn.history_messages, 1, 200),
+        _clamp_notice("Prompt budget", raw_budget,
+                      conn.max_prompt_tokens, 1000, 500000),
+    ):
+        if notice:
+            flash(notice, "info")
     return redirect(url_for("settings.ai_settings"))
 
 
@@ -666,6 +720,7 @@ def ai_clone(conn_id):
 def ai_activate(conn_id):
     conn = _get_owned(conn_id)
     if not conn:
+        flash("Connection not found.", "error")
         return redirect(url_for("settings.ai_settings"))
     AIConnection.query.filter_by(user_id=current_user.id).update({"is_active": False})
     conn.is_active = True
@@ -678,10 +733,12 @@ def ai_activate(conn_id):
 @login_required
 def ai_delete(conn_id):
     conn = _get_owned(conn_id)
-    if conn:
-        db.session.delete(conn)
-        db.session.commit()
-        flash(f"Connection '{conn.name}' deleted.", "success")
+    if not conn:
+        flash("Connection not found.", "error")
+        return redirect(url_for("settings.ai_settings"))
+    db.session.delete(conn)
+    db.session.commit()
+    flash(f"Connection '{conn.name}' deleted.", "success")
     return redirect(url_for("settings.ai_settings"))
 
 

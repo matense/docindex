@@ -53,3 +53,22 @@ def test_login_next_keeps_safe_relative_path(app, user):
     r = _login_with_next(app, "/settings/profile", "query")
     assert r.status_code == 302
     assert r.headers["Location"].endswith("/settings/profile")
+
+
+def test_register_mismatch_repopulates(client):
+    resp = client.post("/register", data={
+        "username": "carol", "email": "carol@example.com",
+        "password": "secret123", "confirm": "different123",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Passwords do not match" in resp.data
+    assert b'value="carol"' in resp.data
+    assert b'value="carol@example.com"' in resp.data
+
+
+def test_login_failure_repopulates_username(client, user):
+    resp = client.post("/login", data={
+        "username": "alice", "password": "wrong",
+    }, follow_redirects=True)
+    assert b"Invalid username or password" in resp.data
+    assert b'value="alice"' in resp.data

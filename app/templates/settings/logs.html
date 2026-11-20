@@ -19,6 +19,7 @@
            class="btn btn-ghost btn-sm gap-1" title="Refresh">
             <i class="fas fa-rotate"></i> Refresh
         </a>
+        {% if has_logs %}
         <a href="{{ url_for('settings.logs_export', level=level, source=source, q=q) }}" download
            class="btn btn-outline btn-primary btn-sm gap-1"
            title="Download the filtered log as CSV (all matching rows)">
@@ -31,6 +32,16 @@
                 <i class="fas fa-trash-can"></i> Clear log
             </button>
         </form>
+        {% else %}
+        <span class="btn btn-outline btn-primary btn-sm gap-1 btn-disabled"
+              title="Nothing to export yet">
+            <i class="fas fa-file-csv"></i> Export CSV
+        </span>
+        <span class="btn btn-outline btn-error btn-sm gap-1 btn-disabled"
+              title="Nothing to clear yet">
+            <i class="fas fa-trash-can"></i> Clear log
+        </span>
+        {% endif %}
     </div>
 
     <!-- Filters -->

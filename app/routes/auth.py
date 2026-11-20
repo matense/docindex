@@ -48,7 +48,9 @@ def login():
                                             url_for("search.results"))
             return redirect(next_page or url_for("search.results"))
         flash("Invalid username or password.", "error")
-    return render_template("auth/login.html",
+    username = request.form.get("username", "").strip() \
+        if request.method == "POST" else ""
+    return render_template("auth/login.html", username=username,
                            registration_enabled=Setting.get_bool("registration_enabled", True))
 
 
@@ -137,10 +139,16 @@ def register():
             except IntegrityError:
                 db.session.rollback()
                 flash("Username or email already taken.", "error")
-                return render_template("auth/register.html")
+                return render_template("auth/register.html",
+                                       username=username, email=email)
             login_user(user)
             return redirect(url_for("search.results"))
-    return render_template("auth/register.html")
+    username = request.form.get("username", "").strip() \
+        if request.method == "POST" else ""
+    email = request.form.get("email", "").strip() \
+        if request.method == "POST" else ""
+    return render_template("auth/register.html",
+                           username=username, email=email)
 
 
 @bp.route("/logout", methods=["POST"])

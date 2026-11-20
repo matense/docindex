@@ -61,7 +61,7 @@
                 </button>
             </div>
             {% else %}
-            <p class="text-xs text-warning">No other writable drive — create one first.</p>
+            <p class="text-xs text-warning">No other writable drive — <a class="link link-primary" href="{{ url_for('drive.index') }}">create one from your drives</a> first.</p>
             {% endif %}
         </form>
 

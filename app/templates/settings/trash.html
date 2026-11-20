@@ -57,6 +57,7 @@
     <div class="glass-panel rounded-2xl overflow-hidden">
         <div class="px-4 py-3 border-b border-base-content/10">
             <form method="POST" action="{{ url_for('settings.trash_settings') }}"
+                  {% if auto_purge %}data-confirm="Turn off automatic purge? Trashed items will wait forever until you purge them manually."{% else %}data-confirm="Turn on automatic purge? Anything in the trash for over 30 days will be permanently deleted, including whole drives." data-confirm-danger{% endif %}
                   class="flex items-center gap-3 flex-wrap rounded-xl px-4 py-3 border
                          {{ 'border-success/50 bg-success/10' if auto_purge else 'border-base-content/15 bg-base-content/[0.02]' }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

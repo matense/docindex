@@ -9,11 +9,11 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label class="input input-bordered flex items-center gap-2">
         <i class="fas fa-user opacity-50"></i>
-        <input type="text" name="username" class="grow" placeholder="Username" required autofocus>
+        <input type="text" name="username" class="grow" placeholder="Username" value="{{ username | default('') }}" required autofocus>
     </label>
     <label class="input input-bordered flex items-center gap-2">
         <i class="fas fa-envelope opacity-50"></i>
-        <input type="email" name="email" class="grow" placeholder="Email" required>
+        <input type="email" name="email" class="grow" placeholder="Email" value="{{ email | default('') }}" required>
     </label>
     <label class="input input-bordered flex items-center gap-2">
         <i class="fas fa-lock opacity-50"></i>

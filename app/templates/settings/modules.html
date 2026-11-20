@@ -46,7 +46,8 @@
                 {% endif %}
             </div>
             {% if not m.error %}
-            <form method="POST" action="{{ url_for('settings.module_toggle', name=m.name) }}">
+            <form method="POST" action="{{ url_for('settings.module_toggle', name=m.name) }}"
+                  data-confirm="{{ 'Disable' if m.enabled else 'Enable' }} module &#34;{{ m.name }}&#34;?{% if m.enabled %} Its pages, tools and tables stop working.{% endif %}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="enabled" value="{{ '0' if m.enabled else '1' }}">
                 <button type="submit"
