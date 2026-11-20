@@ -18,15 +18,19 @@ from app.services import file_service as _file_service
 from app.services import module_service
 
 # Load the module package directly (it lives outside the app package).
+# Mirror module_service._import_module: execute once — re-executing a
+# second copy per test file breaks `is`-identity assertions across files
+# depending on collection order. Reuse the registered object when present.
 _TABLES_DIR = os.path.join(os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "modules", "tables"))
-_spec = importlib.util.spec_from_file_location(
-    "docindex_module_tables", os.path.join(_TABLES_DIR, "__init__.py"),
-    submodule_search_locations=[_TABLES_DIR])
-_tables = importlib.util.module_from_spec(_spec)
-
-sys.modules.setdefault("docindex_module_tables", _tables)
-_spec.loader.exec_module(_tables)
+_tables = sys.modules.get("docindex_module_tables")
+if _tables is None:
+    _spec = importlib.util.spec_from_file_location(
+        "docindex_module_tables", os.path.join(_TABLES_DIR, "__init__.py"),
+        submodule_search_locations=[_TABLES_DIR])
+    _tables = importlib.util.module_from_spec(_spec)
+    sys.modules["docindex_module_tables"] = _tables
+    _spec.loader.exec_module(_tables)
 tables_doc = importlib.import_module("docindex_module_tables.doc")
 
 

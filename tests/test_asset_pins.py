@@ -16,7 +16,7 @@ Inventory (old -> new):
   automation/editor.html: automation.js 2->3, run_form.js 1->2
   automation/run.html + ai_core.js + drive.js: run_form.js 1->2 (hardcoded)
   whiteboards/board.html: wb-editor.js 1->2
-  dashboards/edit.html: dashboard.css 14->15 (dashboard.js ?v=36 untouched)
+  dashboards/edit.html + list.html: dashboard.css 14->15, dashboard.js 36->37
   tables/view.html: tables.js none->1 (added)
 """
 
@@ -38,12 +38,19 @@ _REPO_ROOT = os.path.dirname(_TESTS_DIR)
 
 
 def _load_module(name, dirname):
+    # Mirror module_service._import_module: a module is executed once;
+    # re-executing a second copy per test file breaks `is`-identity
+    # assertions across files (order-dependent). Return the registered
+    # object when present instead of exec-ing a duplicate.
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
     mod_dir = os.path.join(_REPO_ROOT, "modules", dirname)
     spec = importlib.util.spec_from_file_location(
         name, os.path.join(mod_dir, "__init__.py"),
         submodule_search_locations=[mod_dir])
     mod = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault(name, mod)
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -252,8 +259,8 @@ def test_dashboards_edit_pin(auth_client, app, user, all_modules):
     fid = _dashboard(app, user, _drive(app, user))
     html = auth_client.get(f"/m/dashboards/{fid}").data.decode()
     assert "dashboard.css?v=15" in html
-    # ?v=36 is current (bumped with the asset in 6fcb37c6) — must not move.
-    assert "dashboard.js?v=36" in html
+    # ?v=37 pins the X2 endRunAll-guard JS — must move with the asset.
+    assert "dashboard.js?v=37" in html
 
 
 def test_tables_view_pin(auth_client, app, user, all_modules):
