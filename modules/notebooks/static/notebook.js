@@ -581,6 +581,18 @@
             pickerEl.addEventListener("mousedown", (e) => {
                 if (e.target === pickerEl) close();
             });
+            // Esc closes without picking (same as Cancel): mirrors the
+            // in-file Esc idiom (title input, slash popup). Listened on
+            // the backdrop so Esc works from the search input and from
+            // focused result buttons alike (events bubble up here).
+            // NOTE: no `data-close` pattern exists anywhere in this file
+            // (verified by search) — there was nothing to mirror verbatim.
+            pickerEl.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            });
             pickerEl.querySelector(".nb-picker-cancel")
                 .addEventListener("click", close);
             let debounce = null;
@@ -1459,6 +1471,12 @@
         // cell) so cellSig and the autosave payload stay clean.
         const PYRUN_LANGS = ["python", "py", "sql"];
         const pyrunOutputs = {};
+        // In-flight run requests by cell id. A second click on a running
+        // Run button aborts the fetch (client-side cancel). Safe: the
+        // run-cell endpoint (routes.py run_cell) mutates no notebook
+        // state — it only evaluates and returns — and outputs are
+        // session-only, so a discarded late response corrupts nothing.
+        const pyrunControllers = {};
         function pyrunLang(cell) {
             return String((cell.meta && cell.meta.language) || "python")
                 .toLowerCase();
@@ -1591,11 +1609,23 @@
             }
         }
         async function runCodeCell(cell, wrap) {
+            // Second click while a run is in flight: cancel it. The
+            // abort rejects the in-flight fetch below, which paints the
+            // cancelled state and restores the button.
+            const prev = pyrunControllers[cell.id];
+            if (prev) { prev.abort(); return; }
+            const ctrl = new AbortController();
+            pyrunControllers[cell.id] = ctrl;
             pyrunOutputs[cell.id] = { state: "running" };
             paintPyrunOutput(wrap, cell);
             const btn = wrap.querySelector(".nb-pyrun-run");
-            if (btn) btn.disabled = true;
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = "■ Cancel";
+                btn.title = "Cancel the running cell";
+            }
             let data;
+            let cancelled = false;
             try {
                 const resp = await fetch(runCellUrl(), {
                     method: "POST",
@@ -1606,23 +1636,44 @@
                         code: cell.content,
                         input_file_ids: collectInputFileIds(cell.content),
                     }),
+                    signal: ctrl.signal,
                 });
                 data = await resp.json();
             } catch (err) {
-                data = { ok: false, error: "Request failed." };
+                if (err && err.name === "AbortError") {
+                    cancelled = true;
+                } else {
+                    data = { ok: false, error: "Request failed." };
+                }
+            } finally {
+                if (pyrunControllers[cell.id] === ctrl) {
+                    delete pyrunControllers[cell.id];
+                }
             }
-            pyrunOutputs[cell.id] = {
-                state: "done",
-                ok: !!data.ok,
-                stdout: data.stdout || "",
-                result: data.result,
-                error: data.error || "",
-                elapsedMs: data.elapsed_ms,
-            };
+            if (cancelled) {
+                pyrunOutputs[cell.id] = {
+                    state: "done",
+                    ok: false,
+                    error: "Cancelled.",
+                };
+            } else {
+                pyrunOutputs[cell.id] = {
+                    state: "done",
+                    ok: !!data.ok,
+                    stdout: data.stdout || "",
+                    result: data.result,
+                    error: data.error || "",
+                    elapsedMs: data.elapsed_ms,
+                };
+            }
             if (!wrap.isConnected) return;
             paintPyrunOutput(wrap, cell);
             const btn2 = wrap.querySelector(".nb-pyrun-run");
-            if (btn2) btn2.disabled = false;
+            if (btn2) {
+                btn2.disabled = false;
+                btn2.textContent = "▶ Run in pyrun";
+                btn2.title = "Execute this cell in the pyrun sandbox";
+            }
         }
 
         function activeCellIds() {
@@ -3435,7 +3486,11 @@
                 });
                 lang.value = CODE_LANGUAGES.includes(cell.meta.language)
                     ? cell.meta.language : "plaintext";
-                cell.meta.language = lang.value;
+                // Render-time fallback ONLY: never write the fallback back
+                // — save() serializes doc as-is, so assigning here would
+                // downgrade an unknown stored language to plaintext on the
+                // next autosave. The select still shows/edits correctly and
+                // persists via the change handler below.
                 lang.addEventListener("change", () => {
                     cell.meta.language = lang.value;
                     scheduleSave();
