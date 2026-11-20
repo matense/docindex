@@ -522,7 +522,7 @@ def test_editor_shell_boots_spa_safe(app, auth_client, user, enabled):
     assert "DashboardEditor" in body
     for key in ("dashboardId", "saveUrl", "docUrl", "runUrl", "statusUrl"):
         assert key in body
-    assert "?v=14" in body
+    assert "?v=15" in body
     assert "?v=36" in body
 
 

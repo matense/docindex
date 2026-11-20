@@ -239,7 +239,7 @@
 </dialog>
 
 <link rel="stylesheet" href="{{ url_for('automation.static', filename='vendor/drawflow.min.css') }}?v=4">
-<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=6">
+<link rel="stylesheet" href="{{ url_for('automation.static', filename='automation.css') }}?v=7">
 <script>
 // Palette search (no dependency on automation.js load order).
 (function () {
@@ -281,7 +281,7 @@ window.currentWorkflow = { id: {{ workflow.id }},
     function ensureRunForm(next) {
         if (window.AutomationRunForm) { next(); return; }
         const s = document.createElement('script');
-        s.src = "{{ url_for('automation.static', filename='run_form.js') }}?v=1";
+        s.src = "{{ url_for('automation.static', filename='run_form.js') }}?v=2";
         s.onload = next;
         document.body.appendChild(s);
     }
@@ -291,7 +291,7 @@ window.currentWorkflow = { id: {{ workflow.id }},
             return;
         }
         const s = document.createElement('script');
-        s.src = "{{ url_for('automation.static', filename='automation.js') }}?v=2";
+        s.src = "{{ url_for('automation.static', filename='automation.js') }}?v=3";
         s.onload = () => window.AutomationEditor.mount(
             document.getElementById('automation-editor-root'));
         document.body.appendChild(s);

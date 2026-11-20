@@ -212,7 +212,7 @@
         </div>
         {% endif %}
     </div>
-    <script src="{{ url_for('static', filename='js/hashtags.js') }}?v=5" defer></script>
+    <script src="{{ url_for('static', filename='js/hashtags.js') }}?v=6" defer></script>
 
     <!-- Content -->
     <div class="border-t border-base-content/10 pt-4">
@@ -271,7 +271,7 @@
                 </div>
                 {% endif %}
             </div>
-            <script src="{{ url_for('static', filename='js/caption.js') }}?v=2" defer></script>
+            <script src="{{ url_for('static', filename='js/caption.js') }}?v=3" defer></script>
         {% elif file.extension == 'pdf' %}
             <iframe src="{{ url_for('drive.raw', file_id=file.id) }}" class="w-full rounded-lg bg-white"
                     style="height: 72vh"></iframe>

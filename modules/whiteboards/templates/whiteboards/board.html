@@ -51,7 +51,7 @@
     (async () => {
         try {
             if (!window.WhiteboardEditor) {
-                await import('{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}?v=1');
+                await import('{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}?v=2');
             }
             window.WhiteboardEditor?.mount?.();
         } catch (err) {
