@@ -8,6 +8,8 @@
         </a>
         <h1 class="text-xl font-bold truncate flex-1 min-w-0">{{ board.name[:-7] if board.name.endswith('.wboard') else board.name }}</h1>
         <span id="wb-save-state" class="text-xs opacity-50">Saved</span>
+        <button type="button" id="wb-retry-save" class="btn btn-ghost btn-xs hidden" title="Saving failed — try again now">Retry now</button>
+        <button type="button" id="wb-load-remote" class="btn btn-ghost btn-xs hidden" title="Discard unsaved changes and load the server version">Load remote</button>
         <button type="button" id="wb-export" class="btn btn-ghost btn-sm gap-1" title="Export as PNG">
             <i class="fas fa-image"></i><span class="hidden sm:inline">PNG</span>
         </button>
@@ -26,13 +28,50 @@
     </div>
 
     <div id="wb-root" class="rounded-2xl border border-base-content/10 overflow-hidden" style="height: calc(100vh - 220px); min-height: 420px;">
-        <div class="flex items-center justify-center h-full opacity-50 text-sm gap-2">
+        <div data-wb-loading class="flex items-center justify-center h-full opacity-50 text-sm gap-2">
             <i class="fas fa-circle-notch fa-spin"></i> Loading the board editor…
         </div>
     </div>
+
+    <!-- Import-failure surface: cloned into #wb-root when the editor
+         bundle fails to load. Mirrors the dashboards chart-loader error
+         box (bold title + reason + retry affordance). -->
+    <template id="wb-load-error-tpl">
+        <div data-wb-load-error class="alert alert-error m-6" role="alert">
+            <i class="fas fa-triangle-exclamation"></i>
+            <div class="flex-1 text-left">
+                <b>board unavailable</b>
+                <p class="text-sm">The board editor failed to load.</p>
+            </div>
+            <button type="button" id="wb-retry" class="btn btn-sm">Retry</button>
+        </div>
+    </template>
+
+    <!-- Toast container for editor runtime failures (e.g. PNG export). -->
+    <div id="wb-toast-wrap" class="toast toast-bottom toast-center z-[70]"></div>
 </div>
 
 <script type="module">
+    // Toast helper for editor runtime failures (PNG export, remote load).
+    // The React bundle calls this; it is defined here so it exists before
+    // the bundle loads and works even if the bundle never mounts.
+    window.WB_toast = function (msg) {
+        var wrap = document.getElementById("wb-toast-wrap");
+        if (!wrap || !msg) {
+            return;
+        }
+        var t = document.createElement("div");
+        t.className = "alert alert-error";
+        t.setAttribute("role", "alert");
+        var icon = document.createElement("i");
+        icon.className = "fas fa-triangle-exclamation";
+        var span = document.createElement("span");
+        span.textContent = msg;
+        t.appendChild(icon);
+        t.appendChild(span);
+        wrap.appendChild(t);
+        setTimeout(function () { t.remove(); }, 5000);
+    };
     // The editor bundle only auto-executes on full page loads; SPA
     // navigations reuse the cached module, so mount explicitly every
     // time (mount() unmounts any previous root first). Dynamic import()
@@ -48,7 +87,48 @@
     // Lets the AI chat treat this board as the open file (chip + context,
     // mirrors notebooks edit page and drive/view.html).
     window.currentFile = { id: {{ board.id }}, name: {{ (board.name[:-7] if board.name.endswith('.wboard') else board.name)|tojson }} };
-    (async () => {
+    // Import-failure surface: a failed bundle import used to leave the
+    // loading spinner up forever with only a console.error. Now the root
+    // swaps to the error box above, whose Retry button re-attempts the
+    // import in place (no full page reload needed).
+    function wbShowLoadError() {
+        var root = document.getElementById("wb-root");
+        if (!root || root.querySelector("[data-wb-load-error]")) {
+            return;
+        }
+        var tpl = document.getElementById("wb-load-error-tpl");
+        root.innerHTML = "";
+        if (tpl && tpl.content) {
+            root.appendChild(tpl.content.cloneNode(true));
+        } else {
+            var fallback = document.createElement("div");
+            fallback.className = "alert alert-error m-6";
+            fallback.setAttribute("role", "alert");
+            fallback.textContent = "The board editor failed to load.";
+            root.appendChild(fallback);
+        }
+        var btn = document.getElementById("wb-retry");
+        if (btn) {
+            btn.addEventListener("click", function () { wbTryMount(); });
+        }
+    }
+    function wbShowLoading() {
+        var root = document.getElementById("wb-root");
+        if (!root) {
+            return;
+        }
+        root.innerHTML = '<div data-wb-loading class="flex items-center justify-center h-full opacity-50 text-sm gap-2">'
+            + '<i class="fas fa-circle-notch fa-spin"></i> Loading the board editor…</div>';
+    }
+    async function wbTryMount() {
+        var root = document.getElementById("wb-root");
+        // Reset to the spinner only when the editor is not already mounted
+        // (a canvas means a previous mount survived, e.g. SPA re-run:
+        // mount() below unmounts and remounts it, as before).
+        if (root && !root.querySelector("[data-wb-loading]")
+            && !root.querySelector("canvas")) {
+            wbShowLoading();
+        }
         try {
             if (!window.WhiteboardEditor) {
                 await import('{{ url_for('whiteboards.static', filename='dist/wb-editor.js') }}?v=2');
@@ -56,7 +136,9 @@
             window.WhiteboardEditor?.mount?.();
         } catch (err) {
             console.error('Whiteboard editor failed to load:', err);
+            wbShowLoadError();
         }
-    })();
+    }
+    wbTryMount();
 </script>
 {% endblock %}

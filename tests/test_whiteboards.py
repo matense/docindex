@@ -453,6 +453,33 @@ def test_board_pages_and_scene_api(auth_client, app, user, enabled):
     assert bad.status_code == 400
 
 
+def test_board_page_failure_surfaces(auth_client, app, user, enabled):
+    """X5: the board shell renders failure affordances server-side.
+
+    Import-failure error box + Retry (mirroring the dashboards
+    chart-loader error box: bold title + reason + retry affordance),
+    capped-save manual controls, and the toast container the PNG-export
+    catch reports into. The built editor bundle must carry the matching
+    runtime strings (save cap, PNG toast, load-remote).
+    """
+    from pathlib import Path
+
+    drive_id = _drive(app, user)
+    fid = _create(app, user, drive_id, "Surfaces")
+    html = auth_client.get(f"/m/whiteboards/{fid}").data.decode()
+    assert "wb-load-error-tpl" in html
+    assert "wb-retry" in html
+    assert "board editor failed to load" in html
+    assert "wb-retry-save" in html
+    assert "wb-load-remote" in html
+    assert "wb-toast-wrap" in html
+    dist = Path("modules/whiteboards/static/dist/wb-editor.js")
+    bundle = dist.read_text(encoding="utf-8")
+    assert "retry paused" in bundle
+    assert "PNG export failed" in bundle
+    assert "Loaded remote version" in bundle
+
+
 def test_create_route_and_lock_toggle(auth_client, app, user, enabled):
     drive_id = _drive(app, user)
     resp = auth_client.post("/m/whiteboards/create",

@@ -13,6 +13,29 @@ function setSaveState(text) {
   }
 }
 
+// Consecutive automatic save retries before the loop stops and the
+// toolbar offers manual recovery instead. No pre-existing retry
+// constant existed (only server-side _MAX_TEXT/_MAX_ELEMENTS caps).
+const SAVE_MAX_RETRIES = 3;
+
+function setSaveControlsVisible(visible) {
+  for (const id of ["wb-retry-save", "wb-load-remote"]) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.toggle("hidden", !visible);
+    }
+  }
+}
+
+function wbToast(msg) {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.WB_toast === "function"
+  ) {
+    window.WB_toast(msg);
+  }
+}
+
 export default function App() {
   const cfg = window.WB_CONFIG || {};
   const readOnly = !!cfg.readOnly;
@@ -54,6 +77,10 @@ export default function App() {
   const pendingRef = useRef(false);
   const savingRef = useRef(false);
   const saveTimerRef = useRef(null);
+  // Consecutive failed automatic saves. At SAVE_MAX_RETRIES the loop
+  // stops and the toolbar shows manual recovery controls instead of
+  // retrying silently forever.
+  const failCountRef = useRef(0);
   const firstChangeRef = useRef(true);
   // Set while applying a poll-fetched remote scene via updateScene: the
   // echo onChange Excalidraw fires for that programmatic apply is not a
@@ -122,16 +149,115 @@ export default function App() {
         data.version !== undefined ? data.version : versionRef.current;
       baseRef.current = { elements, appState };
       pendingRef.current = false;
+      failCountRef.current = 0;
+      setSaveControlsVisible(false);
       setSaveState("Saved");
     } catch {
       // Keep pendingRef true: the failed local edits are still unsaved, so
       // the poller keeps skipping remote applies until a retry succeeds.
-      setSaveState("Save failed");
-      saveTimerRef.current = setTimeout(doSave, 5000);
+      // Retries are capped: after SAVE_MAX_RETRIES consecutive failures
+      // the loop stops and the user recovers manually (Retry now reloads
+      // this save immediately; Load remote takes the server version).
+      failCountRef.current += 1;
+      if (failCountRef.current >= SAVE_MAX_RETRIES) {
+        setSaveState("Save failed — retry paused");
+        setSaveControlsVisible(true);
+      } else {
+        setSaveState("Save failed");
+        saveTimerRef.current = setTimeout(doSave, 5000);
+      }
     } finally {
       savingRef.current = false;
     }
   }, [cfg.saveUrl, cfg.csrfToken, readOnly]);
+
+  // Manual save-recovery controls. The Flask template renders "Retry now"
+  // and "Load remote" buttons next to the save state, hidden until the
+  // automatic retries are exhausted. Retry now resets the failure count
+  // and saves immediately; Load remote discards unsaved local edits in
+  // favor of the server version (applied through the same restore +
+  // echo-guard path as the live-update poller).
+  useEffect(() => {
+    const retryBtn = document.getElementById("wb-retry-save");
+    const remoteBtn = document.getElementById("wb-load-remote");
+    if (!retryBtn && !remoteBtn) {
+      return undefined;
+    }
+    const onRetry = () => {
+      failCountRef.current = 0;
+      setSaveControlsVisible(false);
+      setSaveState("Saving…");
+      doSave();
+    };
+    const onLoadRemote = async () => {
+      try {
+        const res = await fetch(cfg.sceneUrl, {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) {
+          throw new Error(`load failed (${res.status})`);
+        }
+        const data = await res.json();
+        const scene = (data && data.scene) || {};
+        let elements = scene.elements || [];
+        try {
+          elements = restoreElements(elements, null, {
+            refreshDimensions: true,
+            repairBindings: true,
+          });
+        } catch {
+          elements = scene.elements || [];
+        }
+        const api = apiRef.current;
+        if (api && typeof api.updateScene === "function") {
+          remoteApplyRef.current = true;
+          try {
+            api.updateScene({ elements, appState: scene.appState || {} });
+          } catch {
+            remoteApplyRef.current = false;
+            throw new Error("apply failed");
+          }
+          setTimeout(() => {
+            remoteApplyRef.current = false;
+          }, 1000);
+        }
+        snapshotRef.current = {
+          elements,
+          appState: scene.appState || {},
+          files: snapshotRef.current.files || {},
+        };
+        baseRef.current = {
+          elements,
+          appState: scene.appState || {},
+        };
+        if (data && data.version !== undefined) {
+          versionRef.current = data.version;
+        }
+        pendingRef.current = false;
+        failCountRef.current = 0;
+        setSaveControlsVisible(false);
+        setSaveState("Loaded remote version");
+      } catch (err) {
+        const detail =
+          err && err.message ? `: ${err.message}` : ".";
+        wbToast(`Loading the remote version failed${detail}`);
+      }
+    };
+    if (retryBtn) {
+      retryBtn.addEventListener("click", onRetry);
+    }
+    if (remoteBtn) {
+      remoteBtn.addEventListener("click", onLoadRemote);
+    }
+    return () => {
+      if (retryBtn) {
+        retryBtn.removeEventListener("click", onRetry);
+      }
+      if (remoteBtn) {
+        remoteBtn.removeEventListener("click", onLoadRemote);
+      }
+    };
+  }, [doSave, cfg.sceneUrl]);
 
   const handleChange = useCallback(
     (elements, appState, files) => {
@@ -267,6 +393,7 @@ export default function App() {
           mimeType: "image/png",
         });
         if (!blob) {
+          wbToast("PNG export failed: nothing to export.");
           return;
         }
         const rawTitle =
@@ -280,8 +407,11 @@ export default function App() {
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-      } catch {
-        // Export failed (e.g. no elements to render): leave UI untouched.
+      } catch (err) {
+        // Export failed (e.g. no elements to render): name the failure
+        // in a toast instead of swallowing it silently.
+        const detail = err && err.message ? `: ${err.message}` : ".";
+        wbToast(`PNG export failed${detail}`);
       }
     };
     btn.addEventListener("click", onClick);
