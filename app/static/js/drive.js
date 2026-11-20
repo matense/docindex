@@ -165,6 +165,11 @@
                 window.uiToast(data.error || 'Move failed.', 'error');
             }
             refreshPage();
+        }).catch(() => {
+            // Network failure (or a non-JSON error body): the move did not
+            // run — surface it instead of failing silently. Selection is
+            // kept so the user can retry.
+            if (window.uiToast) window.uiToast('Move failed — could not reach the server.', 'error');
         });
     }
 
@@ -189,6 +194,9 @@
                 window.uiToast(n === 1 ? 'Copied 1 item.' : 'Copied ' + n + ' items.', 'success');
             }
             refreshPage();
+        }).catch(() => {
+            // Network failure (or a non-JSON error body) — surface it.
+            if (window.uiToast) window.uiToast('Copy failed — could not reach the server.', 'error');
         });
     }
 
@@ -356,9 +364,15 @@
             method: 'POST',
             headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
-        }).then(r => r.json()).then(() => {
+        }).then(r => r.json()).then((data) => {
             S.selected.clear();
+            if (data && data.ok === false && window.uiToast) {
+                window.uiToast(data.error || 'Delete failed.', 'error');
+            }
             refreshPage();
+        }).catch(() => {
+            // Network failure (or a non-JSON error body) — surface it.
+            if (window.uiToast) window.uiToast('Delete failed — could not reach the server.', 'error');
         });
     };
 
@@ -441,8 +455,13 @@
         }
         entries.push({ icon: 'fa-circle-info', label: 'Info',
                        action: () => showFileInfo(id) });
-        entries.push({ icon: 'fa-diagram-project', label: 'Run workflow…',
-                       action: () => openRunWorkflow(id, name) });
+        // Fail closed when the Automation module is off: the modal is only
+        // rendered then (like the gitsync/gitdrives entries), so its absence
+        // means "no entry" rather than a dead button.
+        if (document.getElementById('run-wf-modal')) {
+            entries.push({ icon: 'fa-diagram-project', label: 'Run workflow…',
+                           action: () => openRunWorkflow(id, name) });
+        }
         if (!synced) {
             entries.push('-',
                 { icon: 'fa-copy', label: 'Copy', action: () => window.driveCopySelection() },
@@ -480,7 +499,16 @@
                         method: 'POST',
                         headers: { 'X-CSRFToken': csrfToken(), 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: body.toString(),
-                    }).then(() => refreshPage());
+                    }).then((r) => {
+                        if (!r.ok && window.uiToast) {
+                            window.uiToast('Delete failed (HTTP ' + r.status + ').', 'error');
+                        }
+                        refreshPage();
+                    }).catch(() => {
+                        // Network failure — surface it instead of refreshing
+                        // as if the delete had run.
+                        if (window.uiToast) window.uiToast('Delete failed — could not reach the server.', 'error');
+                    });
                 } });
         }
         return entries;
@@ -660,6 +688,7 @@ function renameFile(fileId, currentName) {
 // `var` (not `let`) so the SPA can re-execute this script after every
 // navigation without throwing "Identifier has already been declared".
 var runWfCache = null;
+var runWfDisabled = false;
 
 async function openRunWorkflow(fileId, fileName) {
     const modal = document.getElementById('run-wf-modal');
@@ -669,17 +698,29 @@ async function openRunWorkflow(fileId, fileName) {
     list.innerHTML = '<div class="text-xs opacity-40 p-4 text-center">loading…</div>';
     modal.showModal();
     if (runWfCache === null) {
+        // RAW fetch (not apiFetch): a 404 means the Automation module is
+        // disabled — fail closed with a message that says so, instead of
+        // implying the user should author a workflow that cannot run.
+        runWfCache = [];
         try {
-            const data = await apiFetch('/m/automation/api/for-file', null, { silent: true });
-            runWfCache = (data && data.workflows) || [];
+            const resp = await fetch('/m/automation/api/for-file',
+                                     { headers: { 'Accept': 'application/json' } });
+            if (resp.status === 404) {
+                runWfDisabled = true;
+            } else if (resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                runWfCache = (data && data.workflows) || [];
+            }
         } catch {
             runWfCache = [];
         }
     }
     if (!runWfCache.length) {
         list.innerHTML = '<div class="text-xs opacity-40 p-6 text-center">' +
-            'No workflows accept a file yet.<br>Add a <b>Trigger input</b> node to a ' +
-            'workflow in Automation (or start from the "Translate a file" example).</div>';
+            (runWfDisabled
+                ? 'The Automation module is disabled.<br>Enable it under Profile → Manage modules to run workflows.'
+                : 'No workflows accept a file yet.<br>Add a <b>Trigger input</b> node to a ' +
+                  'workflow in Automation (or start from the "Translate a file" example).') + '</div>';
         return;
     }
     list.innerHTML = '';
@@ -959,7 +1000,12 @@ function showFileInfo(fileId) {
                     merge.title = 'Open the merge review page — the AI proposes a merged content and you review it before anything is saved';
                     merge.onclick = () => {
                         document.getElementById('info-modal').close();
-                        if (info.is_editable) {
+                        // Same writability rule the merge routes enforce
+                        // (_get_merge_pair → _guard_writable): read-only
+                        // mirror files would only land on a 400 page.
+                        // Duplicates are same-drive, so info.is_readonly
+                        // covers both sides of the merge.
+                        if (info.is_editable && !info.is_readonly) {
                             window.location.href = '/file/' + fileId + '/merge/' + dup.id;
                         } else if (window.aiChat && window.aiChat.attachAndAsk) {
                             window.aiChat.attachAndAsk(
@@ -967,6 +1013,8 @@ function showFileInfo(fileId) {
                                 'These two files have identical content (same SHA-256). ' +
                                 'Read both, confirm they match, and if they differ in any way ' +
                                 'explain the differences and suggest how to merge them.');
+                        } else if (window.uiToast) {
+                            window.uiToast('Merging needs an editable file or enabled AI.', 'error');
                         }
                     };
                     row.appendChild(name);

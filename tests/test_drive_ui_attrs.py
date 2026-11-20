@@ -102,3 +102,66 @@ def test_shared_drive_marks_container_writable(auth_client, app, tmp_path):
     assert 'data-is-synced="1"' not in tag
     # Shared .txt files are editable in place.
     assert 'data-editable="1"' in tag
+
+
+# --- X1: drive viewer + guards parity (I1/I2) ---
+
+def _make_mirror_file(app, user, tmp_path, name="hello.txt",
+                      content="hello synced"):
+    """A mirror-synced (read-only) drive + editable file + one version,
+    built directly in the DB (no sync machinery)."""
+    from app.models import Drive, FileVersion
+    (tmp_path / name).write_text(content, encoding="utf-8")
+    with app.app_context():
+        drive = Drive(name="RO", user_id=user, source_path=str(tmp_path))
+        db.session.add(drive)
+        db.session.flush()
+        stored = StoredFile(
+            name=name, stored_name=f"ro-{name}", extension="txt",
+            mime_type="text/plain", size=len(content),
+            user_id=user, drive_id=drive.id,
+            source_path=str(tmp_path / name))
+        db.session.add(stored)
+        db.session.flush()
+        db.session.add(FileVersion(
+            file_id=stored.id, version=1, stored_name=f"ro-{name}-v1",
+            size=len(content), source="upload"))
+        db.session.commit()
+        return drive.id, stored.id
+
+
+def test_writable_file_view_shows_restore(auth_client, app):
+    """Control: an editable file with history offers Restore."""
+    _upload(auth_client, "notes.txt", b"version one")
+    _upload(auth_client, "notes.txt", b"version two")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="notes.txt").one().id
+    resp = auth_client.get(f"/file/{fid}/view")
+    assert resp.status_code == 200
+    assert b"Restore" in resp.data
+
+
+def test_readonly_mirror_view_hides_restore(auth_client, app, user, tmp_path):
+    """Read-only mirror file: no Restore entry (the route would 400)."""
+    _did, fid = _make_mirror_file(app, user, tmp_path)
+    resp = auth_client.get(f"/file/{fid}/view")
+    assert resp.status_code == 200
+    assert b"read-only" in resp.data  # the synced banner still explains
+    assert b"Restore" not in resp.data
+
+
+def test_info_reports_readonly_for_mirror_file(auth_client, app, user,
+                                               tmp_path):
+    """The info modal payload carries the writability flag drive.js gates
+    the merge entry on."""
+    _did, fid = _make_mirror_file(app, user, tmp_path)
+    data = auth_client.get(f"/file/{fid}/info").get_json()
+    assert data["is_readonly"] is True
+
+
+def test_info_reports_writable_for_regular_file(auth_client, app):
+    _upload(auth_client, "notes.txt", b"plain text body")
+    with app.app_context():
+        fid = StoredFile.query.filter_by(name="notes.txt").one().id
+    data = auth_client.get(f"/file/{fid}/info").get_json()
+    assert data["is_readonly"] is False

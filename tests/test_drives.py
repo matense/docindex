@@ -604,3 +604,66 @@ def test_failed_drive_trash_leaves_nothing_behind(auth_client, app, user,
         assert StoredFile.query.filter(
             StoredFile.drive_id == wid,
             StoredFile.deleted_at.isnot(None)).count() == 0
+
+
+# --- X1: drive guards parity (I2 sync gating, M1/M2 trash scope) ---
+
+def test_sync_controls_hidden_for_non_admin(auth_client, app, user, tmp_path):
+    """Sync now + sync-create entries are admin-only (routes abort 403)."""
+    from app.models import Drive as _Drive
+    from app.models import User as _User
+    with app.app_context():
+        drive = _Drive(name="RO", user_id=user, source_path=str(tmp_path))
+        db.session.add(drive)
+        db.session.commit()
+        did = drive.id
+    auth_client.post(f"/drives/{did}/select", follow_redirects=True)
+
+    html = auth_client.get("/").data.decode()
+    assert "Sync now" not in html
+    assert "Sync a local folder" not in html
+
+    with app.app_context():
+        db.session.get(_User, user).is_admin = True
+        db.session.commit()
+    html = auth_client.get("/").data.decode()
+    assert "Sync now" in html
+    assert "Sync a local folder" in html
+
+
+def test_empty_trash_clears_drives_too(auth_client, app, user):
+    """Empty trash purges trashed drives as well as files (matches the
+    button copy 'empty trash')."""
+    _upload(auth_client, "personal.txt", b"personal stuff")
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    _upload(auth_client, "w2.txt", b"more work")
+    with app.app_context():
+        from app.models import Drive as _Drive
+        wid = _Drive.query.filter_by(name="Work").one().id
+        pid = StoredFile.query.filter_by(name="personal.txt").one().id
+    auth_client.post(f"/file/{pid}/delete", follow_redirects=True)
+    auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
+
+    resp = auth_client.post("/trash/empty", follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        from app.models import Drive as _Drive2
+        assert _Drive2.query.filter_by(name="Work").count() == 0
+        assert StoredFile.query.count() == 0
+    assert b"drive" in resp.data.lower()
+
+
+def test_trash_page_empty_button_covers_drives(auth_client, app):
+    """A trashed drive with no trashed files still offers Empty trash,
+    with copy that mentions drives."""
+    auth_client.post("/drives/create", data={"name": "Work"},
+                     follow_redirects=True)
+    with app.app_context():
+        wid = Drive.query.filter_by(name="Work").one().id
+    auth_client.post(f"/drives/{wid}/delete", follow_redirects=True)
+
+    resp = auth_client.get("/settings/trash")
+    assert resp.status_code == 200
+    assert b"Empty trash" in resp.data
+    assert b"drive(s)" in resp.data.lower()

@@ -20,7 +20,7 @@
         <div class="flex-1 min-w-0">
             <h1 class="text-xl font-bold">Trash</h1>
             <p class="text-xs opacity-50">
-                Deleted files wait here — restore them to their original folder or purge
+                Deleted files and drives wait here — restore them or purge
                 them forever. Nothing is lost until you purge. Most recently deleted first.
             </p>
         </div>
@@ -28,13 +28,13 @@
            class="btn btn-ghost btn-sm gap-1" title="Refresh">
             <i class="fas fa-rotate"></i> Refresh
         </a>
-        {% if total %}
+        {% if total or drives %}
         <form method="POST" action="{{ url_for('drive.empty_trash') }}"
-              data-confirm="Permanently delete all {{ total }} file(s) in the trash? This cannot be undone."
+              data-confirm="Permanently delete all {{ total }} file(s) and {{ drives|length }} drive(s) in the trash? This cannot be undone."
               data-confirm-danger>
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-outline btn-error btn-sm gap-1">
-                <i class="fas fa-fire"></i> Empty trash ({{ total }})
+                <i class="fas fa-fire"></i> Empty trash ({{ total + drives|length }})
             </button>
         </form>
         {% endif %}
@@ -135,7 +135,7 @@
         </div>
         {% endfor %}
         {% endif %}
-        {% if files %}
+        {% if files or drives %}
         <div class="divide-y divide-base-content/5">
             {% for t in files %}
             <div class="px-4 py-3 hover:bg-base-content/[0.03] transition-colors">
@@ -209,7 +209,7 @@
         <div class="text-center py-14 opacity-50">
             <i class="fas fa-trash-can text-4xl mb-3 block"></i>
             <p class="font-semibold">Trash is empty{% if q %} — nothing matches this search{% endif %}.</p>
-            <p class="text-xs mt-1">Deleted files will appear here, ready to restore.</p>
+            <p class="text-xs mt-1">Deleted files and drives will appear here, ready to restore.</p>
         </div>
         {% endif %}
     </div>

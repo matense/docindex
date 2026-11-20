@@ -866,7 +866,11 @@ def empty_trash():
     trashed = file_service.trashed_files(current_user.id)
     for stored in trashed:
         file_service.purge_file(stored)
-    flash(f"Trash emptied — {len(trashed)} file(s) permanently deleted.", "success")
+    trashed_drives = drive_service.trashed_drives(current_user)
+    for drive in trashed_drives:
+        drive_service.purge_drive(current_user, drive.id)
+    flash(f"Trash emptied — {len(trashed)} file(s) and "
+          f"{len(trashed_drives)} drive(s) permanently deleted.", "success")
     return redirect(url_for("settings.trash"))
 
 
@@ -979,6 +983,7 @@ def info(file_id):
         ],
         "is_image": stored.is_image,
         "is_editable": stored.is_editable,
+        "is_readonly": file_service.is_readonly_file(stored),
         "has_thumbnail": file_service.has_thumbnail(stored),
     })
 

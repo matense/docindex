@@ -7,6 +7,8 @@
 </script>
 <div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
     <!-- Toolbar -->
+    {# Same writability rule the routes enforce (_guard_writable): mirror-synced files are read-only. #}
+    {% set writable = not (file.is_synced and (not file.drive or file.drive.is_readonly)) %}
     <div class="flex items-center justify-between flex-wrap gap-2">
         <h1 class="text-xl font-bold flex items-center gap-2 min-w-0">
             <i class="fas fa-file-lines text-primary flex-shrink-0"></i>
@@ -28,7 +30,7 @@
                 <i class="fas fa-arrows-rotate"></i> Shared · two-way sync
             </span>
             {% endif %}
-            {% if not (file.is_synced and (not file.drive or file.drive.is_readonly)) and file.is_editable %}
+            {% if writable and file.is_editable %}
             <a href="{{ url_for('drive.edit', file_id=file.id) }}" class="btn btn-primary btn-sm">
                 <i class="fas fa-pen"></i> Edit
             </a>
@@ -127,6 +129,8 @@
                         {% if file.is_editable %}
                         <a href="{{ url_for('drive.version_diff', file_id=file.id, version_id=v.id) }}"
                            class="btn btn-xs btn-ghost"><i class="fas fa-code-compare"></i> Diff vs current</a>
+                        {% endif %}
+                        {% if writable and file.is_editable %}
                         <form method="POST" action="{{ url_for('drive.version_restore', file_id=file.id, version_id=v.id) }}"
                               data-confirm="Restore v{{ v.version }}? The current content is kept in the history.">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -105,11 +105,13 @@
                                     <i class="fas fa-pen opacity-60"></i>
                                     <span class="flex-1 text-left">Edit "{{ current_drive.name }}"</span>
                                 </button>
+                                {% if current_user.is_admin %}
                                 <button type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors"
                                         onclick="document.getElementById('sync-drive-modal').showModal()">
                                     <i class="fas fa-arrows-rotate text-info"></i>
                                     <span class="flex-1 text-left">Sync a local folder...</span>
                                 </button>
+                                {% endif %}
                                 {% if gitdrives_enabled %}
                                 <a href="{{ url_for('gitdrives.index') }}" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/10 text-sm transition-colors">
                                     <i class="fas fa-code-branch text-secondary"></i>
@@ -237,12 +239,22 @@
             <!-- Bottom Dock -->
             <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50" id="bottom-dock">
                 <div class="glass-dock rounded-3xl px-5 py-3 flex items-end gap-5 shadow-2xl">
+                    {% if current_drive and current_drive.is_readonly %}
+                    <span title="Uploads are disabled on read-only synced drives — switch to a regular drive to upload">
+                        <button type="button" class="dock-item opacity-40" data-shortcut="U" disabled aria-disabled="true">
+                            <span class="shortcut-badge">⌥U</span>
+                            <span class="dock-icon dock-tile dock-tile-primary"><i class="fas fa-cloud-arrow-up"></i></span>
+                            <span class="dock-label">Upload</span>
+                        </button>
+                    </span>
+                    {% else %}
                     <button type="button" class="dock-item" data-shortcut="U"
                             onclick="document.getElementById('upload-modal').showModal()" title="Upload files (Alt+U)">
                         <span class="shortcut-badge">⌥U</span>
                         <span class="dock-icon dock-tile dock-tile-primary"><i class="fas fa-cloud-arrow-up"></i></span>
                         <span class="dock-label">Upload</span>
                     </button>
+                    {% endif %}
                     {% if ai_enabled %}
                     <button type="button" class="dock-item" data-shortcut="A"
                             onclick="window.aiChat && window.aiChat.toggle()" title="AI Assistant (Alt+A)">
@@ -299,7 +311,9 @@
                 <form method="dialog" class="modal-backdrop"><button>close</button></form>
             </dialog>
 
-            <!-- Sync local folder modal -->
+            <!-- Sync local folder modal (admin only: sync-create aborts 403
+                 for non-admins, so they get neither the entry nor the form) -->
+            {% if current_user.is_admin %}
             <dialog id="sync-drive-modal" class="modal">
                 <div class="modal-box glass-panel max-w-lg">
                     <div class="flex items-center gap-3 mb-2">
@@ -363,6 +377,7 @@
                 </div>
                 <form method="dialog" class="modal-backdrop"><button>close</button></form>
             </dialog>
+            {% endif %}
             {% endif %}
             {% if ai_enabled %}
                 {% include 'components/ai_chat.html' %}
