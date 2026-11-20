@@ -269,6 +269,22 @@ def test_merge_preview_returns_diff(auth_client, app):
     assert any(line.startswith("+beta content") for line in diff)
 
 
+def test_merge_preview_surfaces_fetch_errors(auth_client, app):
+    """X7: the diff-preview path reports failures (try/catch + resp.ok)
+    through the shared status line like the AI-merge button, instead of
+    stalling silently when the fetch fails or answers non-ok."""
+    _two_files(auth_client)
+    with app.app_context():
+        a = StoredFile.query.filter_by(name="a.txt").one()
+        b = StoredFile.query.filter_by(name="b.txt").one()
+    html = auth_client.get(f"/file/{a.id}/merge/{b.id}").data.decode()
+    seg = html.split("previewBtn.addEventListener")[1]
+    assert "try" in seg
+    assert "catch" in seg
+    assert "resp.ok" in seg
+    assert "showStatus(" in seg
+
+
 # --- B6: locked atomic snapshots ---
 
 def test_snapshot_inside_lock_and_atomic_write(auth_client, app, monkeypatch):

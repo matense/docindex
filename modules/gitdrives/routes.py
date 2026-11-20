@@ -36,8 +36,9 @@ def index():
     # A clone error stashed by create() pops as a modal with the reason
     # (flashes alone are easy to miss).
     clone_error = session.pop("git_clone_error", None)
+    form = session.pop("git_clone_form", None) or {}
     return render_template("gitdrives/index.html", drives=drives,
-                           clone_error=clone_error)
+                           clone_error=clone_error, form=form)
 
 
 @bp.post("/create")
@@ -48,6 +49,12 @@ def create():
     branch = (request.form.get("branch") or "").strip() or None
     username = (request.form.get("username") or "").strip() or None
     token = (request.form.get("token") or "").strip() or None
+    name = (request.form.get("name") or "").strip()
+    # Keep the typed (non-secret) fields so a failed create re-renders
+    # with them intact instead of wiping the form (never stash the token).
+    session["git_clone_form"] = {
+        "repo_url": url, "branch": branch or "",
+        "name": name, "username": username or ""}
     provider = drive_service.get_drive_source("git")
     error = provider.validate(current_user, {
         "repo_url": url, "branch": branch,
@@ -57,7 +64,6 @@ def create():
         session["git_clone_error"] = error
         return redirect(url_for("gitdrives.index"))
 
-    name = (request.form.get("name") or "").strip()
     if not name:
         # Friendly default from the repo URL (…/org/my-repo[.git]).
         tail = url.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
@@ -97,11 +103,13 @@ def create():
         return redirect(url_for("gitdrives.index"))
     if job.state == "done":
         s = job.stats
+        session.pop("git_clone_form", None)
         flash(f'Git drive "{drive.name}" created — {s["added"]} file(s) '
               f'imported, {s["skipped"]} skipped.', "success")
         return redirect(url_for("drive.index"))
     flash(f'Git drive "{drive.name}" is cloning — follow the progress '
           f"in the sync widget; files appear as they land.", "success")
+    session.pop("git_clone_form", None)
     return redirect(url_for("drive.index"))
 
 

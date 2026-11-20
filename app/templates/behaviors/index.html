@@ -205,7 +205,9 @@
                   btn.querySelector('i').className =
                       data.favorite ? 'fas fa-star' : 'far fa-star';
               })
-              .catch(() => {});
+              .catch(() => {
+                  if (window.uiToast) window.uiToast('Could not update the star — try again.', 'error');
+              });
         });
     });
 
@@ -307,7 +309,10 @@
 
     function openPreview(key) {
         fetchPersona(key).then(p => {
-            if (!p) return;
+            if (!p) {
+                if (window.uiToast) window.uiToast('Could not load the persona preview.', 'error');
+                return;
+            }
             current = p;
             document.getElementById('persona-preview-emoji').textContent = p.emoji || '🎭';
             document.getElementById('persona-preview-name').textContent = p.name || key;
@@ -321,17 +326,24 @@
                 contentEl.textContent = p.content || '';
             }
             previewModal.showModal();
+        }).catch(() => {
+            if (window.uiToast) window.uiToast('Could not load the persona preview.', 'error');
         });
     }
 
     function usePersona(key) {
         fetchPersona(key || (current && current.key)).then(p => {
-            if (!p) return;
+            if (!p) {
+                if (window.uiToast) window.uiToast('Could not load the persona — try again.', 'error');
+                return;
+            }
             const modal = document.getElementById('behavior-new-modal');
             modal.querySelector('input[name="name"]').value = p.name || '';
             modal.querySelector('textarea[name="content"]').value = p.content || '';
             previewModal.close();
             modal.showModal();
+        }).catch(() => {
+            if (window.uiToast) window.uiToast('Could not load the persona — try again.', 'error');
         });
     }
 
@@ -367,7 +379,9 @@
                     if (p) p.favorite = data.favorite;
                     applyFilter();  // re-render cards (Favorites order)
                 })
-                .catch(() => {});
+                .catch(() => {
+                  if (window.uiToast) window.uiToast('Could not update the star — try again.', 'error');
+              });
             return;
         }
         if (pv) openPreview(pv.dataset.preview);

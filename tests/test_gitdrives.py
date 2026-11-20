@@ -814,3 +814,30 @@ def test_find_lfs_pointers_budget_expiry_returns_partial(tmp_path,
     (root / "real.txt").write_bytes(POINTER)
     monkeypatch.setattr(gs, "_LFS_WALK_BUDGET", 0)
     assert gs.find_lfs_pointers(str(root)) == (0, [])
+
+
+# --- X7: honest clone form (live check wiring + repopulation) ---
+
+
+def test_clone_form_wires_live_check_and_repopulates(auth_client, app,
+                                                     enabled):
+    """The clone form validates the URL live against /api/check (debounced,
+    inline error text) and a failed create re-renders with the typed
+    (non-secret) fields kept instead of wiping the form."""
+    html = auth_client.get("/m/gitdrives/").data.decode()
+    assert "/m/gitdrives/api/check" in html
+    assert "clone-check-error" in html
+    resp = auth_client.post(
+        "/m/gitdrives/create",
+        data={"repo_url": "/nonexistent/path/no-repo-here",
+              "branch": "feature-x", "name": "My Mirror",
+              "username": "ci-bot", "token": "s3cret"},
+        follow_redirects=True)
+    assert resp.status_code == 200
+    html = resp.data.decode()
+    assert 'value="/nonexistent/path/no-repo-here"' in html
+    assert 'value="feature-x"' in html
+    assert 'value="My Mirror"' in html
+    assert 'value="ci-bot"' in html
+    # Secrets are never repopulated.
+    assert "s3cret" not in html

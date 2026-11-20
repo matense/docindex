@@ -31,28 +31,33 @@
         <!-- Full navigation (no SPA swap): the result either pops a modal
              with the failure reason or redirects to the drive list. -->
         <form method="POST" action="{{ url_for('gitdrives.create') }}" data-no-spa
-              class="flex flex-col gap-3">
+              id="clone-form" class="flex flex-col gap-3">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label class="flex flex-col gap-1">
                 <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Repository URL</span>
-                <input type="text" name="repo_url" required
+                <input type="text" name="repo_url" required id="clone-repo-url"
                        placeholder="https://github.com/org/repo.git  or  /srv/git/repo"
+                       value="{{ form.get('repo_url', '') }}"
                        class="input input-bordered w-full font-mono text-sm">
+                <span class="text-xs text-error hidden" id="clone-check-error" role="alert"></span>
             </label>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label class="flex flex-col gap-1">
                     <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Branch (optional)</span>
                     <input type="text" name="branch" placeholder="main (remote default)"
+                           value="{{ form.get('branch', '') }}"
                            class="input input-bordered w-full font-mono text-sm">
                 </label>
                 <label class="flex flex-col gap-1">
                     <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Display name (optional)</span>
                     <input type="text" name="name" placeholder="Taken from the URL"
+                           value="{{ form.get('name', '') }}"
                            class="input input-bordered w-full text-sm">
                 </label>
                 <label class="flex flex-col gap-1">
                     <span class="text-xs font-semibold opacity-60 uppercase tracking-wide">Username (private repos)</span>
                     <input type="text" name="username" placeholder="anything (Azure DevOps accepts any)"
+                           value="{{ form.get('username', '') }}"
                            class="input input-bordered w-full font-mono text-sm" autocomplete="off">
                 </label>
                 <label class="flex flex-col gap-1">
@@ -125,4 +130,44 @@
     });
 </script>
 {% endif %}
+<script>
+    // Live URL validation: debounced POST to /api/check while typing, with
+    // the reason as inline text under the field. Advisory only — the
+    // server still validates authoritatively on submit, and a failed
+    // create pops the full reason unmissably.
+    window.addEventListener('DOMContentLoaded', () => {
+        const form = document.getElementById('clone-form');
+        const urlInput = document.getElementById('clone-repo-url');
+        const err = document.getElementById('clone-check-error');
+        if (!form || !urlInput || !err) return;
+        const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content || '';
+        let timer = null;
+        let last = '';
+        const show = (msg) => {
+            err.textContent = msg || '';
+            err.classList.toggle('hidden', !msg);
+        };
+        urlInput.addEventListener('input', () => {
+            const v = urlInput.value.trim();
+            show('');
+            if (timer) clearTimeout(timer);
+            if (!v || v === last) return;
+            timer = setTimeout(async () => {
+                last = v;
+                try {
+                    const resp = await fetch("{{ url_for('gitdrives.check') }}", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+                        body: JSON.stringify({ repo_url: v }),
+                    });
+                    const data = await resp.json();
+                    if (!data.ok) show(data.error || 'This repository URL looks invalid.');
+                } catch {
+                    // Typing-time network hiccup: stay silent here — the
+                    // failed-create path still reports the reason.
+                }
+            }, 400);
+        });
+    });
+</script>
 {% endblock %}
