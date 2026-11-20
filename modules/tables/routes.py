@@ -319,6 +319,25 @@ def _cell_text(value):
     return str(value)
 
 
+def _columns_with_stats(header, rows):
+    """Header columns with the stats row kept (numeric columns only).
+
+    Shared by the viewer paint and both JSON windows so the header strip
+    stays consistent between the base view, pager/scroll windows and
+    filtered views: stats recompute from the rows actually backing the
+    view (the full table for ``rows_api`` — the viewer already holds it
+    in memory — the full filtered result for ``query_api``).
+    """
+    types = [sniff_column_type([row[i] for row in rows])
+             for i in range(len(header))]
+    columns = []
+    for i, name in enumerate(header):
+        stats = column_stats([row[i] for row in rows]) \
+            if types[i] == "number" else None
+        columns.append({"name": name, "type": types[i], "stats": stats})
+    return columns
+
+
 def _display_rows(rows):
     return [[_cell_text(cell) for cell in row] for row in rows]
 
@@ -408,13 +427,7 @@ def view(file_id):
         header, rows = _read_table(stored)
     except (ValueError, OSError) as exc:
         abort(400, description=f"Could not read table file: {exc}")
-    types = [sniff_column_type([row[i] for row in rows])
-             for i in range(len(header))]
-    columns = []
-    for i, name in enumerate(header):
-        stats = column_stats([row[i] for row in rows]) \
-            if types[i] == "number" else None
-        columns.append({"name": name, "type": types[i], "stats": stats})
+    columns = _columns_with_stats(header, rows)
     return render_template(
         "tables/view.html",
         file=stored,
@@ -441,10 +454,7 @@ def rows_api(file_id):
         header, rows = _read_table(stored)
     except (ValueError, OSError) as exc:
         abort(400, description=f"Could not read table file: {exc}")
-    types = [sniff_column_type([row[i] for row in rows])
-             for i in range(len(header))]
-    columns = [{"name": name, "type": ctype}
-               for name, ctype in zip(header, types, strict=True)]
+    columns = _columns_with_stats(header, rows)
     window = _display_rows(rows[offset:offset + limit])
     return jsonify({"columns": columns, "rows": window, "total": len(rows)})
 
@@ -555,10 +565,7 @@ def query_api(file_id):
     names = [str(key) for key in records[0].keys()]
     display = [[_cell_text(rec.get(name)) for name in names]
                for rec in records]
-    types = [sniff_column_type([row[i] for row in display])
-             for i in range(len(names))]
-    columns = [{"name": name, "type": ctype}
-               for name, ctype in zip(names, types, strict=False)]
+    columns = _columns_with_stats(names, display)
     return jsonify({"ok": True, "columns": columns,
                     "rows": display[offset:offset + limit],
                     "total": len(records)})

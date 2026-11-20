@@ -7,9 +7,48 @@
  * pin — no new file, only a card) and the build-automation handoff (POST
  * build-automation — a prefilled workflow, then navigate to its editor).
  * Organize previews the per-drive "DocIndex Tables" plan in a modal
- * (GET organize/plan, POST organize/apply) with a revert affordance. */
+ * (GET organize/plan, POST organize/apply) with a revert affordance.
+ * Honesty pass: History entry point (server-rendered versions panel reusing
+ * the drive per-version routes), keepalive unload flush for the focused
+ * cell, a single FETCH_TIMEOUT_MS for every fetch with busy reset + error
+ * toast in all catch paths, filtered-view notice + kept stats row, pager
+ * loading state, no-match Reset nudge, failed saves preserving drafts. */
 (function () {
   "use strict";
+
+  // Single module constant for every tables fetch: hung requests abort
+  // after this long instead of wedging the grid on "Loading…" forever.
+  var FETCH_TIMEOUT_MS = 30000;
+
+  // fetch() with a timeout. Manual AbortController (not AbortSignal.timeout)
+  // so older browsers get the same behavior; timeouts surface as AbortError.
+  function timedFetch(url, options) {
+    options = options || {};
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); },
+                           FETCH_TIMEOUT_MS);
+    options.signal = controller.signal;
+    return fetch(url, options).then(function (resp) {
+      clearTimeout(timer);
+      return resp;
+    }, function (err) {
+      clearTimeout(timer);
+      throw err;
+    });
+  }
+
+  // Timeout-aware message for a fetch failure: offline and aborted
+  // requests say so, everything else falls back to the caller's copy.
+  function failMessage(err, fallback) {
+    if (err && err.name === "AbortError") {
+      return "Request timed out — try again.";
+    }
+    if (typeof navigator !== "undefined" && navigator &&
+        navigator.onLine === false) {
+      return "You appear to be offline — try again.";
+    }
+    return fallback;
+  }
 
   function init() {
     var mount = document.getElementById("tables-grid");
@@ -49,9 +88,25 @@
       return "/m/tables/" + encodeURIComponent(fileId);
     }
 
+    // Pager/Run clicks during a load used to vanish silently
+    // (loadWindow early-returns while busy). Disabled buttons plus the
+    // visible spinner make the loading state explicit instead.
+    // showLoading always re-derives the pager state so turning loading
+    // off can never wedge Prev/Next enabled at an endpoint (or disabled
+    // mid-list).
     function showLoading(on) {
       busy = on;
       if (loading) loading.classList.toggle("hidden", !on);
+      if (runBtn) runBtn.disabled = on;
+      paintPagerDisabled();
+    }
+
+    function paintPagerDisabled() {
+      if (prevBtn) prevBtn.disabled = busy || start <= 0;
+      if (nextBtn) {
+        nextBtn.disabled = busy || (total !== 0 &&
+                                    start + pageSize >= total);
+      }
     }
 
     function showError(msg) {
@@ -92,6 +147,35 @@
           badge.textContent = columns[i].type;
           th.appendChild(badge);
         }
+        // The stats row is server-rendered on first paint and recomputed
+        // by the rows/query APIs for every window after that, so the
+        // strip survives paging and filtering instead of vanishing.
+        // Sparkline SVG is server-generated markup, injected as HTML;
+        // every stat value goes through textContent.
+        if (columns[i].stats) {
+          var stats = document.createElement("div");
+          stats.className = "col-stats text-xs font-normal opacity-80";
+          var st = columns[i].stats;
+          var pairs = [["stat-sum", "sum", st.sum],
+                       ["stat-avg", "avg", st.avg],
+                       ["stat-min", "min", st.min],
+                       ["stat-max", "max", st.max],
+                       ["stat-null", "null", st.nulls]];
+          for (var s = 0; s < pairs.length; s++) {
+            if (pairs[s][2] === undefined || pairs[s][2] === null) continue;
+            var span = document.createElement("span");
+            span.className = pairs[s][0];
+            span.textContent = pairs[s][1] + " " + pairs[s][2];
+            stats.appendChild(span);
+            stats.appendChild(document.createTextNode(" "));
+          }
+          if (st.sparkline) {
+            var shot = document.createElement("span");
+            shot.innerHTML = st.sparkline;
+            stats.appendChild(shot);
+          }
+          th.appendChild(stats);
+        }
         theadRow.appendChild(th);
       }
     }
@@ -117,6 +201,7 @@
     }
 
     function paintStatus() {
+      paintAuxBlocks();
       if (!status) return;
       if (total === 0) {
         status.textContent = filtered ? "No matching rows" : "No rows";
@@ -125,8 +210,18 @@
       var end = Math.min(start + pageSize, total);
       var label = filtered ? "Matching rows " : "Rows ";
       status.textContent = label + (start + 1) + "-" + end + " of " + total;
-      if (prevBtn) prevBtn.disabled = start <= 0;
-      if (nextBtn) nextBtn.disabled = end >= total;
+      paintPagerDisabled();
+    }
+
+    // Server-rendered honesty blocks: the filtered-view notice (editing is
+    // disabled while filtered) and the no-match block pointing at Reset.
+    // Hidden inputs — paintStatus drives them so every path stays honest.
+    function paintAuxBlocks() {
+      var notice = document.getElementById("tables-filtered-notice");
+      if (notice) notice.classList.toggle("hidden", !filtered);
+      var nomatch = document.getElementById("tables-nomatch");
+      if (nomatch) nomatch.classList.toggle("hidden",
+                                            !(filtered && total === 0));
     }
 
     function applyData(data, next) {
@@ -146,7 +241,7 @@
         runQuery(next);
         return;
       }
-      fetch(baseUrl() + "/rows?offset=" + next + "&limit=" + pageSize)
+      timedFetch(baseUrl() + "/rows?offset=" + next + "&limit=" + pageSize)
         .then(function (resp) {
           if (!resp.ok) throw new Error("rows fetch failed: " + resp.status);
           return resp.json();
@@ -154,7 +249,8 @@
         .then(function (data) {
           applyData(data, next);
         })
-        .catch(function () {
+        .catch(function (err) {
+          showError(failMessage(err, "Could not load rows."));
           if (status) status.textContent = "Could not load rows.";
         })
         .finally(function () {
@@ -164,7 +260,8 @@
 
     function runQuery(next) {
       var sql = sqlInput ? sqlInput.value : "";
-      fetch(baseUrl() + "/query", {
+      showLoading(true);
+      timedFetch(baseUrl() + "/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sql: sql, offset: next, limit: pageSize })
@@ -183,8 +280,8 @@
           filtered = true;
           applyData(out.data, next);
         })
-        .catch(function () {
-          showError("Query failed unexpectedly.");
+        .catch(function (err) {
+          showError(failMessage(err, "Query failed unexpectedly."));
         })
         .finally(function () {
           showLoading(false);
@@ -199,7 +296,24 @@
         theadRow.innerHTML = headSnapshot;
         colNames = readColNames();
       }
+      paintStatus();
       loadWindow(0);
+    }
+
+    // A failed save must NOT re-render the grid: loadWindow(start) would
+    // rebuild tbody from the server and wipe every other in-progress
+    // draft. Instead the failed cell keeps its text, gets an error
+    // outline, and the toast explains — the user can retry by editing
+    // and blurring again.
+    function flagCellError(td, msg) {
+      td.style.outline = "2px solid #f87171";
+      td.title = msg;
+      showError(msg + " Your edit is kept — fix the problem and blur the cell to retry.");
+    }
+
+    function clearCellError(td) {
+      td.style.outline = "";
+      td.title = "Click to edit";
     }
 
     function commitEdit(td) {
@@ -208,7 +322,7 @@
       var value = td.textContent;
       if (row < 0 || !col) return;
       showError(null);
-      fetch(baseUrl() + "/cell", {
+      timedFetch(baseUrl() + "/cell", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ row: row, col: col, value: value })
@@ -220,17 +334,17 @@
         })
         .then(function (out) {
           if (!out.ok || !out.data.ok) {
-            showError((out.data && out.data.error) || "Could not save.");
-            loadWindow(start);
+            flagCellError(td, (out.data && out.data.error) ||
+                              "Could not save.");
             return;
           }
+          clearCellError(td);
           td.textContent = out.data.value;
           if (status) status.textContent = "Saved.";
           paintStatusSoon();
         })
-        .catch(function () {
-          showError("Could not save the cell.");
-          loadWindow(start);
+        .catch(function (err) {
+          flagCellError(td, failMessage(err, "Could not save the cell."));
         });
     }
 
@@ -271,7 +385,7 @@
     if (saveAsBtn) saveAsBtn.addEventListener("click", function () {
       showError(null);
       showLoading(true);
-      fetch(baseUrl() + "/save-as", { method: "POST" })
+      timedFetch(baseUrl() + "/save-as", { method: "POST" })
         .then(function (resp) {
           return resp.json().then(function (data) {
             return { ok: resp.ok, data: data };
@@ -285,16 +399,16 @@
           }
           window.location.href = "/m/tables/" + out.data.file_id;
         })
-        .catch(function () {
+        .catch(function (err) {
           showLoading(false);
-          showError("Save failed unexpectedly.");
+          showError(failMessage(err, "Save failed unexpectedly."));
         });
     });
 
     function openPinPanel() {
       if (!pinPanel || !pinTarget) return;
       showError(null);
-      fetch(baseUrl() + "/pin-targets")
+      timedFetch(baseUrl() + "/pin-targets")
         .then(function (resp) {
           return resp.json().then(function (data) {
             return { ok: resp.ok, data: data };
@@ -324,8 +438,8 @@
           if (pinTitle) pinTitle.value = out.data.suggested_title || "";
           pinPanel.classList.remove("hidden");
         })
-        .catch(function () {
-          showError("Could not load dashboards.");
+        .catch(function (err) {
+          showError(failMessage(err, "Could not load dashboards."));
         });
     }
 
@@ -337,7 +451,7 @@
       if (busy) return;
       showError(null);
       showLoading(true);
-      fetch(baseUrl() + "/pin", {
+      timedFetch(baseUrl() + "/pin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -366,16 +480,16 @@
             status.appendChild(link);
           }
         })
-        .catch(function () {
+        .catch(function (err) {
           showLoading(false);
-          showError("Pin failed unexpectedly.");
+          showError(failMessage(err, "Pin failed unexpectedly."));
         });
     });
     if (buildBtn) buildBtn.addEventListener("click", function () {
       if (busy) return;
       showError(null);
       showLoading(true);
-      fetch(baseUrl() + "/build-automation", { method: "POST" })
+      timedFetch(baseUrl() + "/build-automation", { method: "POST" })
         .then(function (resp) {
           return resp.json().then(function (data) {
             return { ok: resp.ok, data: data };
@@ -390,9 +504,9 @@
           }
           window.location.href = out.data.url;
         })
-        .catch(function () {
+        .catch(function (err) {
           showLoading(false);
-          showError("Could not build the automation.");
+          showError(failMessage(err, "Could not build the automation."));
         });
     });
 
@@ -407,7 +521,7 @@
       box.innerHTML = '<p class="text-xs opacity-50 py-4 text-center">'
         + '<i class="fas fa-circle-notch fa-spin"></i> Computing plan…</p>';
       modal.showModal();
-      fetch(planUrl)
+      timedFetch(planUrl)
         .then(function (r) { return r.json(); })
         .then(function (data) {
           var moves = data.moves || [];
@@ -435,8 +549,9 @@
               + data.skipped_synced + ' table(s) on read-only drives stay put.</p>' : '');
           confirmBtn.disabled = false;
         })
-        .catch(function () {
-          box.innerHTML = '<p class="text-xs text-error py-4 text-center">Could not compute the plan.</p>';
+        .catch(function (err) {
+          box.innerHTML = '<p class="text-xs text-error py-4 text-center">'
+            + esc(failMessage(err, "Could not compute the plan.")) + '</p>';
         });
     });
 
@@ -472,6 +587,47 @@
       loadWindow(start + pageSize);
     });
     if (scroller) scroller.addEventListener("scroll", onScroll);
+
+    // History entry point: the panel is server-rendered (per-version
+    // download/diff/restore reuse the existing drive routes); the button
+    // only toggles it.
+    var histBtn = document.getElementById("tables-history-btn");
+    var histPanel = document.getElementById("tables-history-panel");
+    if (histBtn && histPanel) histBtn.addEventListener("click", function () {
+      histPanel.classList.toggle("hidden");
+      histBtn.classList.toggle("btn-active");
+    });
+
+    // Filtered-notice and no-match blocks both offer Reset as the way out.
+    function wireReset(id) {
+      var btn = document.getElementById(id);
+      if (btn) btn.addEventListener("click", resetFilter);
+    }
+    wireReset("tables-notice-reset");
+    wireReset("tables-nomatch-reset");
+
+    // Dirty guard (mirrors the notebooks keepalive pattern): an edit lives
+    // only in the contentEditable <td> until blur commits it, so a tab
+    // closed mid-edit would lose it silently. On unload, flush the focused
+    // cell best-effort via keepalive — the response can never be read, but
+    // the write still lands server-side (with its version snapshot).
+    function flushPendingCell() {
+      var el = document.activeElement;
+      if (!el || !tbody.contains(el) ||
+          el.getAttribute("contenteditable") !== "true") return;
+      var row = parseInt(el.getAttribute("data-r") || "-1", 10);
+      var col = el.getAttribute("data-c") || "";
+      if (row < 0 || !col) return;
+      try {
+        fetch(baseUrl() + "/cell", {
+          method: "POST", keepalive: true,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ row: row, col: col, value: el.textContent })
+        });
+      } catch (err) { /* best effort: unload is fire-and-forget */ }
+    }
+    window.addEventListener("beforeunload", flushPendingCell);
+
     paintStatus();
   }
 

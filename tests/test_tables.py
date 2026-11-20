@@ -983,3 +983,83 @@ def test_tables_viewer_organize_trigger(auth_client, app, user,
     auth_client.post("/m/tables/organize/apply", follow_redirects=True)
     html = auth_client.get(f"/m/tables/{fid}").data.decode()
     assert "Revert last organize" in html
+
+
+# ---------------------------------------------------------------------------
+# X3: Tables viewer honesty — history entry, filtered notice, no-match Reset,
+# kept stats row
+# ---------------------------------------------------------------------------
+
+
+def test_viewer_links_history(auth_client, app, user, tables_enabled):
+    import re
+
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    # History/version entry point is server-rendered in the viewer.
+    assert "tables-history-btn" in html
+    assert "History" in html
+    assert "tables-history-panel" in html
+    # No versions yet: empty-state copy, no per-version links.
+    assert "No previous versions yet" in html
+    assert f"/file/{fid}/history/" not in html
+    # After an edit the panel reuses the existing drive per-version routes.
+    r = auth_client.post(f"/m/tables/{fid}/cell",
+                         json={"row": 0, "col": "a", "value": "9"})
+    assert r.status_code == 200
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    assert f"/file/{fid}/history/" in html
+    assert "Download" in html
+    assert re.search(r"tables-history-btn[^>]*>.*?History",
+                     html, re.S)
+
+
+def test_viewer_filtered_notice_and_nomatch_reset(auth_client, app, user,
+                                                  tables_enabled):
+    import re
+
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            _ptable_payload())
+    html = auth_client.get(f"/m/tables/{fid}").data.decode()
+    # Filtered-view notice: editing is disabled, points at Reset.
+    assert "tables-filtered-notice" in html
+    assert "tables-notice-reset" in html
+    notice = re.search(r'id="tables-filtered-notice".*?</div>',
+                       html, re.S).group(0)
+    assert "editing is disabled" in notice.lower()
+    assert "Reset" in notice
+    # No-match block: offers the Reset path forward.
+    assert "tables-nomatch" in html
+    assert "tables-nomatch-reset" in html
+    nomatch = re.search(r'id="tables-nomatch".*?</div>', html, re.S).group(0)
+    assert "No matching rows" in nomatch
+    assert "Reset" in nomatch
+
+
+def test_query_and_rows_keep_column_stats(auth_client, app, user,
+                                          tables_enabled):
+    doc = tables_doc.new_table([{"name": "price", "type": "number"},
+                                {"name": "label", "type": "text"}],
+                               [["1", "x"], ["2", "y"]])
+    fid = _write_table_file(app, user, "t.ptable", "ptable",
+                            tables_doc.serialize(doc).encode("utf-8"))
+    # Filtered view recomputes the stats row from the filtered result.
+    out = auth_client.post(
+        f"/m/tables/{fid}/query",
+        json={"sql": "SELECT * FROM t0"}).get_json()
+    assert out["ok"] is True
+    by_name = {c["name"]: c for c in out["columns"]}
+    assert by_name["label"].get("stats") is None
+    stats = by_name["price"].get("stats")
+    assert stats is not None
+    assert stats["sum"] == "3"
+    assert stats["avg"] == "1.5"
+    assert stats["min"] == "1"
+    assert stats["max"] == "2"
+    assert stats["nulls"] == 0
+    # Unfiltered paging keeps the header stats too (same renderHead path).
+    rows = auth_client.get(f"/m/tables/{fid}/rows").get_json()
+    rby_name = {c["name"]: c for c in rows["columns"]}
+    assert rby_name["price"].get("stats") is not None
+    assert rby_name["price"]["stats"]["sum"] == "3"

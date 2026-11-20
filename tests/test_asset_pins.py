@@ -259,7 +259,7 @@ def test_dashboards_edit_pin(auth_client, app, user, all_modules):
 def test_tables_view_pin(auth_client, app, user, all_modules):
     fid = _table_file(app, user)
     html = auth_client.get(f"/m/tables/{fid}").data.decode()
-    assert "tables.js?v=1" in html
+    assert "tables.js?v=2" in html
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,11 @@
             <h1 class="font-bold truncate">{{ file.name }}</h1>
             <p class="text-xs opacity-40">{{ total }} rows &times; {{ columns|length }} columns</p>
         </div>
+        <button type="button" class="btn btn-ghost btn-sm gap-1" id="tables-history-btn"
+                title="Version history — every cell edit keeps a restorable snapshot">
+            <i class="fas fa-clock-rotate-left"></i> History
+            {% if file.versions %}<span class="badge badge-primary badge-sm">{{ file.versions | length }}</span>{% endif %}
+        </button>
     </div>
 
     <div class="flex flex-wrap items-center gap-2" id="tables-filterbar">
@@ -52,6 +57,80 @@
         <button id="tables-pin-cancel" class="btn btn-ghost btn-sm" type="button">Cancel</button>
     </div>
     <div id="tables-error" class="hidden text-sm text-error" role="alert"></div>
+    <div id="tables-filtered-notice" class="hidden text-sm opacity-70" role="status">
+        Filtered view — editing is disabled while a filter is active.
+        <button id="tables-notice-reset" class="btn btn-ghost btn-xs link" type="button">Reset</button>
+        to edit the full table.
+    </div>
+    <div id="tables-nomatch" class="hidden text-sm opacity-70" role="status">
+        No matching rows —
+        <button id="tables-nomatch-reset" class="btn btn-ghost btn-xs link" type="button">Reset the filter</button>.
+    </div>
+
+    {# Same writability rule the drive routes enforce (_guard_writable):
+       mirror-synced files are read-only. History reuses the existing
+       drive per-version routes (download/diff/restore) — no new routes. #}
+    {% set writable = not (file.is_synced and (not file.drive or file.drive.is_readonly)) %}
+    <div id="tables-history-panel" class="hidden">
+        {% if file.versions %}
+        <div class="version-timeline">
+            <div class="version-entry version-current">
+                <div class="version-dot"><i class="fas fa-circle"></i></div>
+                <div class="version-body">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-bold">Current version</span>
+                        <span class="badge badge-success badge-sm">live</span>
+                    </div>
+                    <div class="text-xs opacity-50">
+                        {{ file.updated_at.strftime('%Y-%m-%d %H:%M') if file.updated_at }} ·
+                        {{ (file.size / 1024) | round(1) }} KB
+                    </div>
+                </div>
+            </div>
+            {% for v in file.versions %}
+            <div class="version-entry">
+                <div class="version-dot version-dot-{{ v.source }}">
+                    <i class="fas {{ {'upload': 'fa-cloud-arrow-up', 'edit': 'fa-pen', 'merge': 'fa-code-merge', 'restore': 'fa-rotate-left'}.get(v.source, 'fa-clock') }}"></i>
+                </div>
+                <div class="version-body">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-bold">v{{ v.version }}</span>
+                        <span class="badge badge-ghost badge-sm">{{ v.source }}</span>
+                        {% if v.note %}<span class="text-xs opacity-60">{{ v.note }}</span>{% endif %}
+                    </div>
+                    <div class="text-xs opacity-50">
+                        {{ v.created_at.strftime('%Y-%m-%d %H:%M') if v.created_at }} ·
+                        {{ (v.size / 1024) | round(1) }} KB
+                    </div>
+                    <div class="flex gap-2 mt-1.5">
+                        <a href="{{ url_for('drive.version_download', file_id=file.id, version_id=v.id) }}"
+                           class="btn btn-xs btn-ghost"><i class="fas fa-download"></i> Download</a>
+                        {% if file.is_editable %}
+                        <a href="{{ url_for('drive.version_diff', file_id=file.id, version_id=v.id) }}"
+                           class="btn btn-xs btn-ghost"><i class="fas fa-code-compare"></i> Diff vs current</a>
+                        {% endif %}
+                        {% if writable and file.is_editable %}
+                        <form method="POST" action="{{ url_for('drive.version_restore', file_id=file.id, version_id=v.id) }}"
+                              data-confirm="Restore v{{ v.version }}? The current content is kept in the history.">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-xs btn-outline btn-primary">
+                                <i class="fas fa-rotate-left"></i> Restore
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-6 opacity-50 text-sm border border-dashed border-base-content/20 rounded-xl">
+            <i class="fas fa-clock-rotate-left text-2xl mb-2 block"></i>
+            No previous versions yet. Editing a .ptable cell snapshots a
+            version first — the history starts with the first edit.
+        </div>
+        {% endif %}
+    </div>
 
     <div class="overflow-auto rounded-2xl" id="tables-scroll">
         <table class="table table-zebra w-full" id="tables-table">
@@ -120,5 +199,5 @@
     </div>
     <form method="dialog" class="modal-backdrop"><button>close</button></form>
 </dialog>
-<script src="{{ url_for('tables.static', filename='tables.js') }}?v=1"></script>
+<script src="{{ url_for('tables.static', filename='tables.js') }}?v=2"></script>
 {% endblock %}
