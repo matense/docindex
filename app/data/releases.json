@@ -1,6 +1,37 @@
 {
   "releases": [
     {
+      "version": "0.1.23",
+      "date": "2026-11-20",
+      "title": "Interface honesty pass: staleness, guards, and visible failures",
+      "sections": [
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "Stale JavaScript eliminated: every first-party bundle now carries a cache-busting version that moves with its code, so new behavior actually reaches your browser instead of hiding behind old cached files.",
+            "Dashboard card footers always render: an unclosed template div used to swallow the footer (and the delete button) on prompt cards — fixed and pinned.",
+            "Run-all toasts once, and view-mode titles are read-only instead of silently dropping edits.",
+            "Tables viewer tells the truth: version history link, unsaved-changes protection on tab close, fetch timeouts with error toasts instead of frozen grids, filtered-view notice with stats kept, honest pager states, and failed saves that preserve your other edits.",
+            "Notebooks: runs can be cancelled mid-flight, Esc closes the file picker, unknown languages no longer get silently downgraded.",
+            "Whiteboards: failed library loads, stuck saves, and failed PNG exports now show an error with a retry path instead of spinning forever in silence.",
+            "Drive honesty: read-only files no longer offer Restore/Merge, non-admins no longer see sync controls that 403, emptying the trash also clears trashed drives, and failed network actions toast instead of failing silently.",
+            "Settings honesty: branded forbidden pages with a way back, forms that keep your input on validation errors, truthful flash messages, and confirmation before destructive toggles.",
+            "Git clone form validates the URL live as you type, keeps your non-secret fields on failure (tokens never come back), and merge preview failures surface instead of showing a blank diff.",
+            "Git drives page loads instantly even with huge checkouts: the LFS badge is computed in the background sync and cached per drive (was: full filesystem walk on every page load, plus unbounded network calls now time out)."
+          ]
+        },
+        {
+          "title": "Improved",
+          "icon": "fa-wrench",
+          "entries": [
+            "Startup failures (e.g. a module that fails to load) are now recorded in the error log, so the modules page message can actually be investigated.",
+            "Git sync completion emits file events so event-driven automations see synced files."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.22",
       "date": "2026-11-19",
       "title": "Argon phase 4: sealed automation compute, tables module, type folders",
