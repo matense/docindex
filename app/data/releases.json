@@ -1,6 +1,21 @@
 {
   "releases": [
     {
+      "version": "0.1.24",
+      "date": "2026-11-23",
+      "title": "AI Settings accepts private LAN provider URLs",
+      "sections": [
+        {
+          "title": "Fixed",
+          "icon": "fa-bug-slash",
+          "entries": [
+            "AI Settings no longer rejects private LAN base URLs: 10/8, 172.16/12, 192.168/16, CGNAT 100.64/10 (Tailscale) and IPv6 ULA fc00::/7 are now accepted alongside public hosts and loopback, so self-hosted Ollama/LM Studio mirrors on the LAN save and test cleanly.",
+            "SSRF guard stays strict where it matters: cloud metadata/link-local (169.254.169.254), multicast, unspecified (0.0.0.0) and reserved ranges remain blocked even for owner-typed AI URLs, and automation input.http keeps the public-only policy."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.1.23",
       "date": "2026-11-20",
       "title": "Interface honesty pass: staleness, guards, and visible failures",

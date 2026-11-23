@@ -93,18 +93,22 @@ def _get_owned(conn_id):
     return conn
 
 
-def _valid_base_url(url, allow_loopback=False):
+def _valid_base_url(url, allow_loopback=False, allow_private=False):
     """SSRF guard for AI base URLs: http(s) only, and the host must resolve
-    (via getaddrinfo, fail closed) exclusively to public IPs — IPv4-mapped
-    IPv6 is unwrapped first so obfuscated loopback/link-local forms cannot
-    slip through.
+    (via getaddrinfo, fail closed) to acceptable IPs — public always,
+    loopback iff ``allow_loopback``, private LAN iff ``allow_private``
+    (IPv4-mapped IPv6 is unwrapped first so obfuscated loopback/link-local
+    forms cannot slip through; link-local/multicast/unspecified stay
+    blocked even with both carve-outs).
 
-    Local Ollama/LM Studio is a flagship flow, so the settings routes pass
-    ``allow_loopback=True``: the URL is typed in by the account owner
-    (admin-configured), which keeps loopback working there while every
-    other context stays strict.
+    Local Ollama/LM Studio — plus LAN mirrors like ``http://192.168.x.x``
+    or Tailscale ``http://100.x.y.z`` — are flagship flows, so the settings
+    routes pass ``allow_loopback=True, allow_private=True``: the URL is
+    typed in by the account owner (admin-configured), which keeps those
+    flows working while every other context stays strict.
     """
-    reason = _ssrf_block_reason(url, allow_loopback=allow_loopback)
+    reason = _ssrf_block_reason(url, allow_loopback=allow_loopback,
+                                allow_private=allow_private)
     if reason is None:
         return True, ""
     return False, reason
@@ -574,7 +578,7 @@ def ai_edit(conn_id):
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
-    ok, msg = _valid_base_url(base_url, allow_loopback=True)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True, allow_private=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings", edit=conn_id))
@@ -639,7 +643,7 @@ def ai_add():
     if not base_url or not model:
         flash("Base URL and model are required.", "error")
         return redirect(url_for("settings.ai_settings"))
-    ok, msg = _valid_base_url(base_url, allow_loopback=True)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True, allow_private=True)
     if not ok:
         flash(msg, "error")
         return redirect(url_for("settings.ai_settings"))
@@ -750,7 +754,7 @@ def ai_test():
     api_key = (data.get("api_key") or "").strip()
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok, msg = _valid_base_url(base_url, allow_loopback=True)
+    ok, msg = _valid_base_url(base_url, allow_loopback=True, allow_private=True)
     if not ok:
         return jsonify({"ok": False, "message": msg}), 400
     ok, message = ai_service.test_connection(base_url, api_key)
@@ -763,7 +767,7 @@ def ai_test_existing(conn_id):
     conn = _get_owned(conn_id)
     if not conn:
         return jsonify({"ok": False, "message": "Connection not found."}), 404
-    ok, msg = _valid_base_url(conn.base_url, allow_loopback=True)
+    ok, msg = _valid_base_url(conn.base_url, allow_loopback=True, allow_private=True)
     if not ok:
         # Stored before the S3 lockdown (e.g. a metadata/nip.io URL):
         # refuse without fetching — the row stays a working SSRF oracle.
@@ -788,7 +792,7 @@ def ai_models():
             api_key = ai_service.decrypt_api_key(conn.api_key or "")
     if not base_url:
         return jsonify({"ok": False, "message": "Base URL is required."}), 400
-    ok_url, url_msg = _valid_base_url(base_url, allow_loopback=True)
+    ok_url, url_msg = _valid_base_url(base_url, allow_loopback=True, allow_private=True)
     if not ok_url:
         return jsonify({"ok": False, "message": url_msg}), 400
     try:
